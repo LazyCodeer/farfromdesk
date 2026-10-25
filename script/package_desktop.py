@@ -3,7 +3,7 @@ import argparse, hashlib, json, pathlib, platform, shutil, subprocess, tarfile, 
 from release_installers import write_installer
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default=json.loads((ROOT/'release.json').read_text())['version']+'-preview.1')
+parser.add_argument('--version', default=json.loads((ROOT/'release.json').read_text())['version'])
 args = parser.parse_args()
 if not args.version or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in args.version):
     raise SystemExit('Invalid version')

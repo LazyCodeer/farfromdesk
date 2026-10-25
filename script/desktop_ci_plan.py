@@ -37,7 +37,7 @@ if __name__ == '__main__':
     run_id, number = int(os.environ['FFD_RUN']), int(os.environ['FFD_NUMBER'])
     if run_id <= 0 or number <= 0:
         raise ValueError('Invalid workflow identity')
-    result.update(version=f"{release['version']}-preview.{run_id}",
+    result.update(version=release['version'],
                   app=release['version'], build=max(release['build'], 2000 + number))
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8', newline='\n') as stream:
         for key, value in result.items():

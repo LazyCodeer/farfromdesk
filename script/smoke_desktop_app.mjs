@@ -1,12 +1,12 @@
 // Start the actual packaged native entry point against disposable account state.
-import {mkdtempSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {mkdtempSync,readFileSync,existsSync,rmSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {createServer} from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import assert from 'node:assert/strict';
-const state=mkdtempSync(join(tmpdir(),'ffd-native-smoke-'));
+const state=realpathSync(mkdtempSync(join(tmpdir(),'ffd-native-smoke-')));
 const stage=resolve('build/desktop-release/stage');
 const binary=process.platform==='darwin'?join(stage,'FarFromDesk.app/Contents/MacOS/FarFromDesk'):
   join(stage,'FarFromDesk',process.platform==='win32'?'farfromdesk.exe':'farfromdesk');
@@ -33,8 +33,16 @@ try {
   const status=await (await fetch(base+'/api/status',{headers})).json();
   assert.equal(status.preferences.backgroundEnabled,false);
   assert.equal(status.master,null);assert.equal(status.voice.ready,true);assert.equal(status.voice.bundled,true);
+  let roles;
+  for(let i=0;i<30;i++){roles=await (await fetch(base+'/api/agents',{headers})).json();if(roles.sync?.state!=='pending')break;await new Promise(r=>setTimeout(r,500));}
+  assert.equal(roles.sync?.state,'complete');
+  assert.deepEqual(roles.agents.map(a=>a.name).sort(),['farfromdesk-coordinator','farfromdesk-worker']);
+  assert.ok(roles.installation.every(a=>a.installation.length===2&&a.installation.every(p=>p.status==='installed'&&p.path.startsWith(state))));
+  for(const a of roles.installation)for(const p of a.installation){assert.ok(existsSync(p.path));assert.match(readFileSync(p.path,'utf8'),/Start routine replies with one purposeful emoji/);}
+  // A fresh launch creates these instructions without pairing, a request or a manual sync command.
+  assert.equal(status.master,null);
   assert.equal((await fetch(base+'/api/shutdown',{method:'POST',headers,body:'{}'})).status,200);
-  console.log('Native UI rendered, startup registration read, bundled backend/voice, isolated paused state and authenticated shutdown passed.');
+  console.log('Native UI rendered, startup registration read, bundled backend/voice, both native agent catalogs, isolated paused state and authenticated shutdown passed.');
 } finally {
   if(headers)await fetch(base+'/api/shutdown',{method:'POST',headers,body:'{}',signal:AbortSignal.timeout(2000)}).catch(()=>{});
   app.kill();

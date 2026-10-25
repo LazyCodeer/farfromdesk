@@ -30,6 +30,7 @@ extension _BridgeScreens on _DeskState {
     bool selected,
     VoidCallback onTap, {
     int? count,
+    bool compact = false,
   }) => Material(
     color: selected ? action : surface,
     borderRadius: BorderRadius.circular(8),
@@ -39,7 +40,10 @@ extension _BridgeScreens on _DeskState {
       child: ConstrainedBox(
         constraints: const BoxConstraints(minHeight: 44),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 10 : 16,
+            vertical: 12,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
@@ -78,15 +82,6 @@ extension _BridgeScreens on _DeskState {
     final titles = ['Home', 'Activity', 'Settings'];
     final pending = (status['pendingJobs'] ?? []).length;
     final count = pending + (status['approvals'] ?? []).length;
-    final connection = connected
-        ? 'Connected'
-        : !ready
-        ? 'Offline'
-        : status['whatsapp']?['status'] == 'connecting'
-        ? 'Connecting'
-        : preferences['backgroundEnabled'] != true
-        ? 'Paused'
-        : 'Offline';
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -97,29 +92,18 @@ extension _BridgeScreens on _DeskState {
                 padding: const EdgeInsets.symmetric(horizontal: 22),
                 child: Row(
                   children: [
+                    Image.asset(
+                      'assets/ffd-icon.png',
+                      key: const ValueKey('header-logo'),
+                      width: 28,
+                      height: 28,
+                    ),
+                    const SizedBox(width: 10),
                     Text(
-                      'FarFromDesk / ${titles[section]}',
+                      'FarFromDesk',
                       style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: connected ? success : muted,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      connection,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: connected ? success : muted,
                       ),
                     ),
                     const Spacer(),
@@ -129,11 +113,37 @@ extension _BridgeScreens on _DeskState {
                         height: 14,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       ),
-                    IconButton(
-                      tooltip: 'Refresh',
-                      onPressed: busy ? null : refresh,
-                      icon: const Icon(Icons.refresh, size: 18, color: muted),
-                    ),
+                    if (update.release != null) ...[
+                      const SizedBox(width: 12),
+                      Tooltip(
+                        message:
+                            'Version ${update.release!.version} is available',
+                        child: TextButton.icon(
+                          onPressed: showUpdate,
+                          style: TextButton.styleFrom(
+                            foregroundColor: accent,
+                            backgroundColor: accent.withValues(alpha: .12),
+                            minimumSize: const Size(0, 34),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(9),
+                            ),
+                          ),
+                          icon: const Icon(Icons.system_update_alt, size: 16),
+                          label: const Text(
+                            'Update available',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                   ],
                 ),
               ),
@@ -146,78 +156,88 @@ extension _BridgeScreens on _DeskState {
                     width: 86,
                     child: Column(
                       children: [
-                        const SizedBox(height: 22),
-                        SizedBox(
-                          width: 42,
-                          height: 42,
-                          child: Center(
-                            child: Image.asset(
-                              'assets/ffd-icon.png',
-                              width: 27,
-                              height: 27,
-                            ),
+                        const SizedBox(height: 12),
+                        Container(
+                          key: const ValueKey('navigation-rail'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 10,
                           ),
-                        ),
-                        const SizedBox(height: 22),
-                        for (var i = 0; i < 3; i++)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 9),
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                Material(
-                                  color: section == i
-                                      ? accentWash
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(10),
-                                  child: SizedBox(
-                                    width: 40,
-                                    height: 40,
-                                    child: IconButton(
-                                      tooltip: titles[i],
-                                      isSelected: section == i,
-                                      style: IconButton.styleFrom(
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            10,
+                          decoration: BoxDecoration(
+                            color: panelColor,
+                            border: Border.all(
+                              color: muted.withValues(alpha: .18),
+                            ),
+                            borderRadius: BorderRadius.circular(28),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (var i = 0; i < 3; i++)
+                                Padding(
+                                  padding: EdgeInsets.only(
+                                    bottom: i == 2 ? 0 : 8,
+                                  ),
+                                  child: Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      Material(
+                                        color: section == i
+                                            ? accentWash
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(20),
+                                        child: SizedBox(
+                                          width: 40,
+                                          height: 40,
+                                          child: IconButton(
+                                            tooltip: titles[i],
+                                            isSelected: section == i,
+                                            style: IconButton.styleFrom(
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(20),
+                                              ),
+                                            ),
+                                            onPressed: () => go(i),
+                                            icon: Icon(
+                                              [
+                                                Icons.home_outlined,
+                                                Icons.history,
+                                                Icons.settings_outlined,
+                                              ][i],
+                                              size: 18,
+                                              color: section == i
+                                                  ? accent
+                                                  : muted,
+                                            ),
                                           ),
                                         ),
                                       ),
-                                      onPressed: () => go(i),
-                                      icon: Icon(
-                                        [
-                                          Icons.home_outlined,
-                                          Icons.history,
-                                          Icons.settings_outlined,
-                                        ][i],
-                                        size: 18,
-                                        color: section == i ? accent : muted,
-                                      ),
-                                    ),
+                                      if (i == 1 && count > 0)
+                                        Positioned(
+                                          right: -3,
+                                          top: -3,
+                                          child: Container(
+                                            padding: const EdgeInsets.all(4),
+                                            decoration: const BoxDecoration(
+                                              color: action,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: Text(
+                                              '$count',
+                                              style: const TextStyle(
+                                                fontSize: 9,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                 ),
-                                if (i == 1 && count > 0)
-                                  Positioned(
-                                    right: -3,
-                                    top: -3,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(4),
-                                      decoration: const BoxDecoration(
-                                        color: action,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Text(
-                                        '$count',
-                                        style: const TextStyle(
-                                          fontSize: 9,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
+                            ],
                           ),
+                        ),
                         const Spacer(),
                       ],
                     ),
@@ -581,6 +601,7 @@ extension _BridgeScreens on _DeskState {
           trailing: small('A one-time setup'),
         ),
       if (connected) destinationCard(),
+      codingPlatformsCard(),
       card(
         master != null
             ? assistantSummary(master)
@@ -838,6 +859,128 @@ extension _BridgeScreens on _DeskState {
     }
   }
 
+  Map? preferredPlatform(String provider) =>
+      List<Map>.from(status['platformPreferences'] ?? [])
+          .where((p) => p['provider'] == provider)
+          .firstOrNull;
+
+  Widget codingPlatformsCard() => panel(
+    'Coding platforms',
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        small(
+          'Choose which detected app to use for new sessions on each platform. Your coordinator and existing sessions stay connected.',
+        ),
+        gap(18),
+        for (final provider in ['codex', 'claude']) ...[
+          Container(
+            key: ValueKey('platform-preference-$provider'),
+            padding: const EdgeInsets.all(14),
+            margin: const EdgeInsets.only(bottom: 10),
+            decoration: BoxDecoration(
+              color: canvas,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: line),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      provider == 'codex'
+                          ? Icons.terminal_rounded
+                          : Icons.auto_awesome_outlined,
+                      size: 20,
+                      color: accent,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        provider == 'codex' ? 'Codex' : 'Claude',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: surface,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          key: ValueKey('platform-runtime-$provider'),
+                          value: preferredPlatform(provider)?['executionMode'],
+                          hint: const Text(
+                            'Choose an option',
+                            style: TextStyle(fontSize: 13, color: muted),
+                          ),
+                          isDense: true,
+                          dropdownColor: surface,
+                          items: [
+                            for (final option in platforms.where(
+                              (p) => p['provider'] == provider,
+                            ))
+                              DropdownMenuItem<String>(
+                                value: option['executionMode'],
+                                enabled:
+                                    option['available'] == true &&
+                                    option['canCreate'] != false,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 12),
+                                  child: Text(
+                                    '${option['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}${option['available'] != true
+                                        ? ' · not detected'
+                                        : option['canCreate'] == false
+                                        ? ' · sign in first'
+                                        : ''}',
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                ),
+                              ),
+                          ],
+                          onChanged: busy
+                              ? null
+                              : (value) {
+                                  if (value != null) {
+                                    savePreferredPlatform(provider, value);
+                                  }
+                                },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                gap(9),
+                small(
+                  preferredPlatform(provider)?['connectionLabel'] ?? 'No preference saved. Choose Desktop or CLI independently of your coordinator.',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  Future<void> savePreferredPlatform(String provider, String mode) async {
+    final option = platforms.cast<Map>().firstWhere(
+      (p) => p['provider'] == provider && p['executionMode'] == mode,
+    );
+    await post('/api/platform-preference', {
+      'provider': provider,
+      'executionMode': mode,
+      'connectionRevision': option['connection']?['revision'],
+    });
+  }
+
   Widget assistantSummary(dynamic master) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -877,6 +1020,10 @@ extension _BridgeScreens on _DeskState {
                 small(
                   '${master['provider'] == 'claude' ? 'Claude' : 'Codex'} · ${master['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}',
                 ),
+                if (master['connection'] != null) ...[
+                  gap(4),
+                  small(master['connection']),
+                ],
               ],
             ),
           ),
@@ -933,6 +1080,7 @@ extension _BridgeScreens on _DeskState {
     ],
   );
   Future<void> showInstructions() async {
+    final delivery = status['masterSetup']?['roleDelivery'];
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -940,10 +1088,44 @@ extension _BridgeScreens on _DeskState {
         content: SizedBox(
           width: 560,
           height: 360,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              status['masterSetup']?['prompt'] ?? 'Instructions unavailable.',
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (delivery != null) ...[
+                if (delivery['agentName'] != null) ...[
+                  Text(
+                    delivery['agentName'].toString(),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                Text(
+                  'Version ${delivery['policyVersion']}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                small(
+                  delivery['state'] == 'sent'
+                      ? 'Sent to this session. Later messages use a short role reference.'
+                      : delivery['state'] == 'unselected'
+                      ? 'Select a coordinator session to apply these instructions.'
+                      : 'Ready for the next request. This version has not been sent to the session yet.',
+                ),
+                const SizedBox(height: 16),
+              ],
+              Expanded(
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    status['masterSetup']?['prompt'] ??
+                        'Instructions unavailable.',
+                    style: const TextStyle(fontSize: 13, height: 1.5),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
         actions: [
@@ -954,6 +1136,17 @@ extension _BridgeScreens on _DeskState {
         ],
       ),
     );
+  }
+
+  String? get desktopLauncher {
+    final id = selectedNativeId.isNotEmpty
+        ? selectedNativeId
+        : selectedPlatform?['launcherId'];
+    return (selectedPlatform?['sessions'] ?? []).cast<Map>().any(
+          (s) => s['id'] == id && s['available'] == true,
+        )
+        ? id as String?
+        : null;
   }
 
   Widget masterForm() {
@@ -1015,6 +1208,32 @@ extension _BridgeScreens on _DeskState {
             ),
           ],
         ),
+        gap(12),
+        if (selectedPlatform?['connection'] != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: canvas,
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: line),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  selectedPlatform?['connection']['state'] == 'verified'
+                      ? Icons.verified_user_outlined
+                      : Icons.account_circle_outlined,
+                  size: 18,
+                  color: accent,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: small(selectedPlatform!['connection']['label']),
+                ),
+              ],
+            ),
+          ),
         gap(14),
         Container(
           padding: const EdgeInsets.all(4),
@@ -1044,6 +1263,37 @@ extension _BridgeScreens on _DeskState {
         ),
         gap(14),
         if (setupAction == 'new') ...[
+          if (platform == 'claude:desktop') ...[
+            const Text('Start from a desktop session'),
+            gap(8),
+            DropdownButtonFormField<String>(
+              initialValue: desktopLauncher,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                hintText: 'Choose the Claude account and session to use',
+              ),
+              items: [
+                for (final s
+                    in (selectedPlatform?['sessions'] ?? []).cast<Map>())
+                  if (s['available'] == true)
+                    DropdownMenuItem(
+                      value: s['id'].toString(),
+                      child: Text(
+                        s['name'] ?? s['id'],
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+              ],
+              onChanged: busy
+                  ? null
+                  : (value) => editSetup(() => selectedNativeId = value ?? ''),
+            ),
+            gap(8),
+            small(
+              'The new chat uses this desktop session’s account. Your CLI login is separate.',
+            ),
+            gap(16),
+          ],
           Row(
             children: [
               const Text(
@@ -1166,7 +1416,10 @@ extension _BridgeScreens on _DeskState {
                               const SizedBox(width: 12),
                               Text(
                                 s['available'] == true
-                                    ? 'Can resume'
+                                    ? (platform.endsWith(':desktop') ||
+                                              platform == 'claude:cli'
+                                          ? 'Native session'
+                                          : 'Resume in CLI')
                                     : 'Unavailable',
                                 style: TextStyle(
                                   fontSize: 11,
@@ -1204,7 +1457,7 @@ extension _BridgeScreens on _DeskState {
           ),
           gap(8),
           small(
-            'Saved CLI chats can receive requests. This does not verify account limits or successful execution.',
+            'Desktop keeps the selected chat’s account. CLI resume uses the account shown above. Availability does not verify subscription limits.',
           ),
         ],
         if (selectedPlatform?['available'] != true) ...[
@@ -1250,7 +1503,11 @@ extension _BridgeScreens on _DeskState {
               enabled:
                   can &&
                   (setupAction == 'new'
-                      ? (automaticName || customName.text.trim().isNotEmpty)
+                      ? (selectedPlatform?['canCreate'] != false &&
+                            (platform != 'claude:desktop' ||
+                                desktopLauncher != null) &&
+                            (automaticName ||
+                                customName.text.trim().isNotEmpty))
                       : existing),
             ),
           ],
@@ -1283,6 +1540,10 @@ extension _BridgeScreens on _DeskState {
       await post('/api/master-create', {
         'provider': parts[0],
         'executionMode': parts[1],
+        'connectionRevision': selectedPlatform?['connection']?['revision'],
+        'desktopParentId': platform == 'claude:desktop'
+            ? desktopLauncher
+            : null,
         'name': automaticName
             ? 'FarFromDesk · $platformName'
             : customName.text.trim(),
@@ -1301,6 +1562,7 @@ extension _BridgeScreens on _DeskState {
       await post('/api/master-select', {
         'provider': parts[0],
         'executionMode': parts[1],
+        'connectionRevision': selectedPlatform?['connection']?['revision'],
         'sessionId': selectedNativeId,
         'operationId': const Uuid().v4(),
       });
@@ -1392,8 +1654,10 @@ extension _BridgeScreens on _DeskState {
 
   bool includeJob(Map job, String filter) => switch (filter) {
     'Waiting' => ['queued', 'dispatched', 'submitted'].contains(job['status']),
-    'Needs review' => ['uncertain', 'failed'].contains(job['status']),
-    'Answered' => job['status'] == 'completed',
+    'Needs review' =>
+      ['uncertain', 'failed'].contains(job['status']) ||
+          job['outcome'] == 'blocked',
+    'Answered' => job['status'] == 'completed' && job['outcome'] != 'blocked',
     'Closed' => ['reviewed', 'replaced', 'auto_closed'].contains(job['status']),
     _ => true,
   };
@@ -1407,30 +1671,195 @@ extension _BridgeScreens on _DeskState {
     'replaced' => 'Master replaced',
     _ => state[0].toUpperCase() + state.substring(1),
   };
+  String requestTitle(Map job) {
+    final preview = (job['preview'] ?? '')
+        .toString()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (preview.isNotEmpty) return preview;
+    final id = job['id'].toString();
+    return id.startsWith('report:')
+        ? 'Worker report'
+        : id.startsWith('master:')
+        ? 'Delegated task'
+        : 'WhatsApp request';
+  }
+
+  String requestKind(Map job) => job['id'].toString().startsWith('report:')
+      ? 'Worker report'
+      : job['id'].toString().startsWith('master:')
+      ? 'Worker task'
+      : 'Your request';
+  Map? requestBinding(Map job) =>
+      List<Map>.from(status['bindings'] ?? [])
+          .where((b) => b['id'] == job['binding_id'])
+          .firstOrNull;
+  String requestState(Map job) => switch (job['outcome']) {
+    'done' => 'Done',
+    'blocked' => 'Blocked',
+    'reviewed' => 'Reviewed',
+    'cancelled' => 'Cancelled',
+    _ => jobLabel(job['status']),
+  };
+  Color requestColor(Map job) =>
+      ['uncertain', 'failed'].contains(job['status']) ||
+          job['outcome'] == 'blocked'
+      ? warning
+      : job['status'] == 'completed'
+      ? success
+      : ['queued', 'dispatched', 'submitted'].contains(job['status'])
+      ? accent
+      : muted;
+  Future<void> recoveryGuide() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Your requests stay saved'),
+        content: const SizedBox(
+          width: 460,
+          child: Text(
+            'Closing the window keeps work running when background access is on. If the service stops, unsent requests resume when it starts again. Replies wait for WhatsApp to reconnect.\n\nFor a request needing review, check the exact native chat first. Close tracking if you already received the answer or no longer need it. Uncertain tasks are never resent automatically.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> activityScreen() {
-    final jobs = allJobs.where((j) => includeJob(j, activityFilter)).toList();
+    final query = activityQuery.trim().toLowerCase();
+    final jobs = allJobs
+        .where(
+          (j) =>
+              includeJob(j, activityFilter) &&
+              '${requestTitle(j)} ${requestBinding(j)?['name'] ?? ''} ${j['id']}'
+                  .toLowerCase()
+                  .contains(query),
+        )
+        .toList();
+    final eligibleIds = jobs
+        .where((j) => j['canClose'] == true)
+        .take(500)
+        .map((j) => j['id'] as String)
+        .toSet();
+    final allSelected =
+        eligibleIds.isNotEmpty && chosen.containsAll(eligibleIds);
+    final someSelected = eligibleIds.any(chosen.contains);
+    void toggleSelection() => changeView(() {
+      if (allSelected) {
+        chosen.removeAll(eligibleIds);
+      } else {
+        chosen.addAll(eligibleIds);
+      }
+    });
     return [
-      panel(
-        'Requests are saved on this $computer',
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      Container(
+        margin: const EdgeInsets.only(bottom: 20),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: panelColor,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
           children: [
-            const Text(
-              'Closing the window keeps work running when background access is on. If the service stops, unsent requests resume when it runs again; uncertain deliveries stay here for review. Recorded replies wait for WhatsApp to reconnect.',
-              style: TextStyle(color: muted),
+            const Icon(Icons.history_rounded, size: 18, color: accent),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                '${(status['pendingJobs'] ?? []).length} unfinished · Requests are saved on this $computer',
+                style: const TextStyle(fontSize: 12, color: muted),
+              ),
             ),
-            gap(),
-            const Text(
-              'For Awaiting reply or Needs review: check the exact native chat below. If you already received the answer, or no longer need a reply, close the request after review. To continue interrupted work, send a new message after checking what already ran.',
+            TextButton(
+              onPressed: recoveryGuide,
+              child: const Text(
+                'How recovery works',
+                style: TextStyle(fontSize: 12),
+              ),
             ),
-            if (preferences['backgroundEnabled'] != true) ...[
-              gap(),
-              button('Open background settings', () => go(2)),
-            ],
           ],
         ),
-        trailing: small('${(status['pendingJobs'] ?? []).length} unfinished'),
       ),
+      if (List<Map>.from(status['voiceRequests'] ?? []).any(
+        (v) =>
+            ['failed', 'routing_blocked', 'interrupted'].contains(v['status']),
+      ))
+        panel(
+          'Voice notes needing attention',
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              small(
+                'Transcription and routing are tracked separately. Check the problem before resending.',
+              ),
+              for (final v
+                  in List<Map>.from(status['voiceRequests'] ?? [])
+                      .where(
+                        (v) => [
+                          'failed',
+                          'routing_blocked',
+                          'interrupted',
+                        ].contains(v['status']),
+                      )
+                      .take(5))
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    v['status'] == 'routing_blocked'
+                        ? 'Transcribed · routing blocked'
+                        : 'Voice note ${v['status']}',
+                  ),
+                  subtitle: Text(
+                    v['id'],
+                    style: const TextStyle(color: muted, fontSize: 11),
+                  ),
+                  trailing: button('Details', () => requestTimeline(v['id'])),
+                ),
+            ],
+          ),
+        ),
+      if ((status['unlinkedUpdates'] ?? []).isNotEmpty)
+        panel(
+          'Native updates saved for review',
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              small(
+                'These updates have no verified request link. They stay on this computer to avoid sending a duplicate or addressing the wrong request. Latest 50 · retained for 7 days.',
+              ),
+              for (final u in List<Map>.from(
+                status['unlinkedUpdates'],
+              ).take(10))
+                ExpansionTile(
+                  title: Text(
+                    List<Map>.from(status['bindings'] ?? [])
+                            .where((b) => b['id'] == u['binding_id'])
+                            .firstOrNull?['name'] ??
+                        'Native session update',
+                  ),
+                  subtitle: Text(
+                    DateTime.fromMillisecondsSinceEpoch(u['at'])
+                        .toLocal()
+                        .toString(),
+                  ),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: button(
+                        'Read local update',
+                        () => readLocalUpdate(u['id']),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
       for (final a in status['approvals'] ?? [])
         panel(
           '${a['alias']} needs your input',
@@ -1470,126 +1899,181 @@ extension _BridgeScreens on _DeskState {
             ],
           ),
         ),
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        child: Row(
+
+      Container(
+        decoration: BoxDecoration(
+          color: panelColor,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+              child: Row(
                 children: [
-                  const Text(
-                    'Request history',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w500),
+                  const Expanded(
+                    child: Text(
+                      'Request history',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                  gap(5),
-                  small('Unfinished first · then recent replies'),
+                  SizedBox(
+                    width: 230,
+                    child: TextField(
+                      onChanged: (value) =>
+                          changeView(() => activityQuery = value),
+                      decoration: const InputDecoration(
+                        hintText: 'Search requests',
+                        prefixIcon: Icon(Icons.search, size: 18),
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 12,
+                        ),
+                      ),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
                 ],
               ),
             ),
-            small('${allJobs.length} requests'),
-          ],
-        ),
-      ),
-      Wrap(
-        spacing: 6,
-        runSpacing: 6,
-        children: [
-          for (final filter in [
-            'All',
-            'Waiting',
-            'Needs review',
-            'Answered',
-            'Closed',
-          ])
-            navTab(
-              filter,
-              activityFilter == filter,
-              () => changeView(() => activityFilter = filter),
-              count: allJobs.where((j) => includeJob(j, filter)).length,
-            ),
-        ],
-      ),
-      gap(16),
-      Row(
-        children: [
-          button(
-            'Select eligible',
-            () => changeView(() {
-              chosen.clear();
-              chosen.addAll(
-                jobs
-                    .where((j) => j['canClose'] == true)
-                    .take(500)
-                    .map((j) => j['id'] as String),
-              );
-            }),
-          ),
-          if (chosen.isNotEmpty) ...[
-            const SizedBox(width: 10),
-            button('Clear selection', () => changeView(chosen.clear)),
-          ],
-          const Spacer(),
-          button(
-            'Close selected (${chosen.length})…',
-            bulkClose,
-            enabled: chosen.isNotEmpty,
-          ),
-        ],
-      ),
-      gap(14),
-      small(
-        'Select requests awaiting a reply or review. Known active deliveries, permissions and unfinished delegated work are protected.',
-      ),
-      gap(10),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        child: Row(
-          children: [
-            const SizedBox(width: 38),
-            Expanded(child: small('Session')),
-            SizedBox(width: 112, child: small('Received')),
-            SizedBox(width: 146, child: small('Status')),
-            const SizedBox(width: 20),
-          ],
-        ),
-      ),
-      if (jobs.isEmpty)
-        Padding(
-          padding: const EdgeInsets.all(22),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Icon(Icons.inbox_outlined, color: accent, size: 24),
-              gap(13),
-              Text(
-                activityFilter == 'All'
-                    ? 'No requests yet'
-                    : 'No matching requests',
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w500,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                key: const ValueKey('activity-filter-group'),
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: canvas,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: muted.withValues(alpha: .12)),
+                ),
+                child: Row(
+                  children: [
+                    for (final filter in [
+                      'All',
+                      'Waiting',
+                      'Needs review',
+                      'Answered',
+                      'Closed',
+                    ])
+                      Expanded(
+                        flex: filter == 'Needs review' ? 5 : 4,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: navTab(
+                            filter,
+                            activityFilter == filter,
+                            () => changeView(() => activityFilter = filter),
+                            compact: true,
+                            count: allJobs
+                                .where((j) => includeJob(j, filter))
+                                .length,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              gap(10),
-              small(
-                activityFilter == 'All'
-                    ? 'Send a task in your connected WhatsApp chat to get started.'
-                    : 'There are no requests in this category in the loaded history.',
-              ),
-            ],
-          ),
-        ),
-      for (final j in jobs) activityRow(j),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
-        child: Row(
-          children: [
-            small(
-              'Showing ${jobs.length} of ${allJobs.length} loaded requests',
             ),
-            const Spacer(),
-            small('All unfinished + latest 100'),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 20, 10),
+              child: Row(
+                children: [
+                  Tooltip(
+                    message: 'Select reviewable requests in this list',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: eligibleIds.isEmpty ? null : toggleSelection,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 10),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              key: const ValueKey('select-visible-requests'),
+                              tristate: true,
+                              value: allSelected
+                                  ? true
+                                  : someSelected
+                                  ? null
+                                  : false,
+                              onChanged: eligibleIds.isEmpty
+                                  ? null
+                                  : (_) => toggleSelection(),
+                            ),
+                            const Text(
+                              'Select all',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (chosen.isNotEmpty)
+                    TextButton(
+                      onPressed: () => changeView(chosen.clear),
+                      child: const Text(
+                        'Clear selection',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  const Spacer(),
+                  if (chosen.isNotEmpty)
+                    button('Close selected (${chosen.length})…', bulkClose)
+                  else
+                    small('${jobs.length} requests'),
+                ],
+              ),
+            ),
+            Container(
+              color: canvas.withValues(alpha: .4),
+              padding: const EdgeInsets.fromLTRB(64, 11, 48, 11),
+              child: Row(
+                children: [
+                  Expanded(child: small('Request / session')),
+                  SizedBox(width: 92, child: small('Received')),
+                  SizedBox(width: 132, child: small('Status')),
+                ],
+              ),
+            ),
+            if (jobs.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(36),
+                child: Column(
+                  children: [
+                    const Icon(Icons.inbox_outlined, color: muted, size: 28),
+                    gap(12),
+                    Text(
+                      query.isNotEmpty
+                          ? 'No matching requests'
+                          : 'No requests here yet',
+                      style: const TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                    gap(8),
+                    small(
+                      query.isNotEmpty
+                          ? 'Try a session name or a few words from your request.'
+                          : 'Send a task in your connected WhatsApp chat to get started.',
+                    ),
+                  ],
+                ),
+              ),
+            for (final j in jobs) activityRow(j),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              child: Row(
+                children: [
+                  small('Showing ${jobs.length} of ${allJobs.length} loaded'),
+                  const Spacer(),
+                  small('All unfinished + latest 100'),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -1597,126 +2081,273 @@ extension _BridgeScreens on _DeskState {
   }
 
   Widget activityRow(Map job) {
-    final binding = List<Map>.from(status['bindings'] ?? [])
-        .where((b) => b['id'] == job['binding_id'])
-        .firstOrNull;
-    final review = ['uncertain', 'failed'].contains(job['status']);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 38,
-            child: Checkbox(
-              value: chosen.contains(job['id']),
-              onChanged: job['canClose'] == true
-                  ? (v) => changeView(() {
-                      if (v == true) {
-                        chosen.add(job['id']);
-                      } else {
-                        chosen.remove(job['id']);
-                      }
-                    })
-                  : null,
+    final binding = requestBinding(job), color = requestColor(job);
+    final review =
+        ['uncertain', 'failed'].contains(job['status']) ||
+        job['outcome'] == 'blocked';
+    final time = DateTime.fromMillisecondsSinceEpoch(job['created_at'])
+        .toLocal();
+    final selected = chosen.contains(job['id']);
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: muted.withValues(alpha: .09))),
+      ),
+      child: Material(
+        color: selected ? accent.withValues(alpha: .08) : Colors.transparent,
+        child: Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            key: PageStorageKey('request-${job['id']}'),
+            tilePadding: const EdgeInsets.fromLTRB(12, 5, 16, 5),
+            childrenPadding: const EdgeInsets.fromLTRB(64, 8, 24, 20),
+            leading: SizedBox(
+              width: 36,
+              child: Tooltip(
+                message: job['canClose'] == true
+                    ? 'Select for review'
+                    : 'Active or already closed requests cannot be selected',
+                child: Checkbox(
+                  value: selected,
+                  onChanged: job['canClose'] == true
+                      ? (value) => changeView(() {
+                          if (value == true) {
+                            chosen.add(job['id']);
+                          } else {
+                            chosen.remove(job['id']);
+                          }
+                        })
+                      : null,
+                ),
+              ),
             ),
-          ),
-          Expanded(
-            child: Material(
-              color: panelColor,
-              borderRadius: BorderRadius.circular(12),
-              child: Theme(
-                data: Theme.of(context)
-                    .copyWith(dividerColor: Colors.transparent),
-                child: ExpansionTile(
-                  tilePadding: const EdgeInsets.symmetric(horizontal: 16),
-                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                  title: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          binding?['name'] ??
-                              binding?['alias'] ??
-                              'Coding session',
+            title: Row(
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 18),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          requestTitle(job),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 112,
-                        child: small(
-                          DateTime.fromMillisecondsSinceEpoch(job['created_at'])
-                              .toLocal()
-                              .toString()
-                              .substring(5, 16),
+                        const SizedBox(height: 6),
+                        Text(
+                          '${binding?['name'] ?? binding?['alias'] ?? 'Coding session'} · ${requestKind(job)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, color: muted),
                         ),
+                      ],
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 92,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+                        style: const TextStyle(fontSize: 12),
                       ),
-                      SizedBox(
-                        width: 146,
-                        child: Text(
-                          jobLabel(job['status']),
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: review
-                                ? warning
-                                : job['status'] == 'completed'
-                                ? success
-                                : muted,
-                          ),
-                        ),
+                      const SizedBox(height: 4),
+                      small(
+                        '${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')}',
                       ),
                     ],
                   ),
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: SelectableText(
-                        'Request: ${job['id']}\nSession: ${binding?['native_id'] ?? 'Unknown'}\nProject: ${binding?['cwd'] ?? 'Unavailable'}',
-                        style: const TextStyle(fontSize: 12, color: muted),
+                ),
+                SizedBox(
+                  width: 132,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: .1),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        requestState(job),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
-                    gap(12),
-                    if (job['error'] != null)
-                      Text(
-                        job['error'],
-                        style: const TextStyle(color: warning),
-                      ),
-                    if (review)
-                      const Text(
-                        'Delivery or completion could not be confirmed. Check the native chat before sending anything again. This request will not be resent automatically.',
-                      ),
-                    gap(12),
-                    Wrap(
-                      spacing: 10,
-                      children: [
-                        if (job['canClose'] == true)
-                          button('Close after review…', () async {
-                            if (await confirm(
-                              'Close this request after review?',
-                              'This ends tracking for the exact request. History is kept; native work is not stopped or marked successful.',
-                            )) {
-                              await post('/api/request-review', {
-                                'requestId': job['id'],
-                                'expectedStatus': job['status'],
-                                'confirmed': true,
-                              });
-                            }
-                          }),
-                        if (![
-                          'reviewed',
-                          'replaced',
-                          'auto_closed',
-                          'completed',
-                        ].contains(job['status']))
-                          button('Send reviewed document', () => document(job)),
-                      ],
-                    ),
-                  ],
+                  ),
+                ),
+              ],
+            ),
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                // SelectableText has an internal scroll position that shares
+                // the ExpansionTile's PageStorage bucket (bool vs. double).
+                // Static selectable metadata does not need its own scroll view.
+                child: SelectionArea(
+                  child: Text(
+                    'Request: ${job['id']}\nSession: ${binding?['native_id'] ?? 'Unknown'}\nProject: ${binding?['cwd'] ?? 'Unavailable'}',
+                    style: const TextStyle(fontSize: 12, color: muted),
+                  ),
                 ),
               ),
+              gap(12),
+              if (job['error'] != null)
+                Text(job['error'], style: const TextStyle(color: warning)),
+              if (job['last_error'] != null && job['error'] == null) ...[
+                gap(8),
+                small(
+                  'Earlier error (cleared after a later response): ${job['last_error']}',
+                ),
+              ],
+              if (review && job['outcome'] == null)
+                const Text(
+                  'Delivery or completion could not be confirmed. Check the native chat before sending anything again. This request will not be resent automatically.',
+                ),
+              gap(12),
+              Wrap(
+                spacing: 10,
+                children: [
+                  button(
+                    'Timing and delivery',
+                    () => requestTimeline(job['id']),
+                  ),
+                  if (job['canClose'] == true)
+                    button('Close after review…', () async {
+                      if (await confirm(
+                        'Close this request after review?',
+                        'This ends tracking for the exact request. History is kept; native work is not stopped or marked successful.',
+                      )) {
+                        await post('/api/request-review', {
+                          'requestId': job['id'],
+                          'expectedStatus': job['status'],
+                          'confirmed': true,
+                        });
+                      }
+                    }),
+                  if (![
+                    'reviewed',
+                    'replaced',
+                    'auto_closed',
+                    'completed',
+                  ].contains(job['status']))
+                    button('Send reviewed document', () => document(job)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> readLocalUpdate(String id) async {
+    Map<String, dynamic>? loaded;
+    await act(() async {
+      loaded = await api.get('/api/hook-update?id=${Uri.encodeComponent(id)}');
+    });
+    if (!mounted || loaded == null) return;
+    final data = loaded!;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Local native update'),
+        content: SizedBox(
+          width: 560,
+          height: 360,
+          child: SingleChildScrollView(
+            child: SelectableText(data['text'] ?? 'Unavailable'),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> requestTimeline(String id) async {
+    Map<String, dynamic>? loaded;
+    await act(() async {
+      loaded = await api.get(
+        '/api/request-events?id=${Uri.encodeComponent(id)}',
+      );
+    });
+    if (!mounted || loaded == null) return;
+    final data = loaded!;
+    final events = List<Map>.from(data['events'] ?? []);
+    final deliveries = List<Map>.from(data['deliveries'] ?? []);
+    String time(dynamic value) => value is num
+        ? DateTime.fromMillisecondsSinceEpoch(value.toInt())
+              .toLocal()
+              .toString()
+        : 'Not observed';
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Request timing and delivery'),
+        content: SizedBox(
+          width: 600,
+          height: 420,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText(
+                  id,
+                  style: const TextStyle(color: muted, fontSize: 12),
+                ),
+                gap(12),
+                const Text(
+                  'Sent means accepted by WhatsApp. Delivery and read receipts appear only when observed; none of these proves the task succeeded.',
+                ),
+                if (events.isEmpty) ...[
+                  gap(12),
+                  const Text(
+                    'Timing was not recorded for this older request. Historical completion times are unknown.',
+                  ),
+                ],
+                for (final e in events)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: SelectableText(
+                      '${time(e['at'])} · ${e['event']}\n${e['details']}${e['turn_id'] == null ? '' : '\nTurn: ${e['turn_id']}'}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                for (final d in deliveries)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      '${d['reply_kind'] ?? 'Reply'} · ${d['status']} · ${d['attempts']} retries\nSent: ${time(d['sent_at'])}\nDelivered: ${time(d['delivered_at'])}\nRead: ${time(d['read_at'])}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+              ],
             ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
           ),
         ],
       ),
@@ -2078,6 +2709,38 @@ extension _BridgeScreens on _DeskState {
           ],
         ),
       ),
+      panel(
+        'App updates',
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              checkingUpdates
+                  ? 'Checking for updates…'
+                  : update.release != null
+                  ? 'Version ${update.release!.version} is available.'
+                  : update.problem ??
+                        (update.checkedAt == null
+                            ? 'Updates are checked automatically when the app opens, then every six hours.'
+                            : 'No newer compatible release found.'),
+            ),
+            gap(12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                button(
+                  'Check for updates',
+                  () => checkUpdates(manual: true),
+                  enabled: !checkingUpdates,
+                ),
+                if (update.release != null)
+                  button('View update', showUpdate, primary: true),
+              ],
+            ),
+          ],
+        ),
+      ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         child: Row(
@@ -2092,7 +2755,9 @@ extension _BridgeScreens on _DeskState {
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                 ),
                 gap(5),
-                small("Version ${const String.fromEnvironment('FFD_VERSION', defaultValue: '0.7.0')}" ),
+                small(
+                  "Version ${const String.fromEnvironment('FFD_VERSION', defaultValue: '0.7.0')}",
+                ),
               ],
             ),
             const Spacer(),

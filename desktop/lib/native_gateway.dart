@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ffi';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:http/http.dart' as http;
@@ -8,6 +9,8 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:path/path.dart' as p;
 
 import 'gateway.dart';
+import 'updates.dart';
+import 'document_preparation.dart';
 
 class NativeGateway extends Gateway {
   final String state;
@@ -42,6 +45,78 @@ class NativeGateway extends Gateway {
     );
   }
 
+  Future<UpdateChecker>? _updateChecker;
+  bool _updatesClosed = false;
+  Future<UpdateChecker> loadUpdateChecker() async {
+    final abi = Abi.current();
+    final arch =
+        [Abi.macosArm64, Abi.linuxArm64, Abi.windowsArm64].contains(abi)
+        ? 'arm64'
+        : [Abi.macosX64, Abi.linuxX64, Abi.windowsX64].contains(abi)
+        ? 'x64'
+        : 'unsupported';
+    final file = File(p.join(state, 'update-check.json'));
+    final checker = UpdateChecker(
+      current: installedVersion,
+      platform: Platform.isMacOS ? 'macos' : Platform.operatingSystem,
+      architecture: arch,
+      save: (data) async {
+        if (_updatesClosed) return;
+        await file.parent.create(recursive: true);
+        final temporary = File('${file.path}.tmp');
+        await temporary.writeAsString(jsonEncode(data), flush: true);
+        await temporary.rename(file.path);
+      },
+    );
+    try {
+      if (await file.exists() && await file.length() <= 600 * 1024) {
+        checker.restore(jsonDecode(await file.readAsString()));
+      }
+    } catch (_) {}
+    if (_updatesClosed) checker.close();
+    return checker;
+  }
+
+  @override
+  Future<UpdateCheck> checkUpdates({bool manual = false}) async {
+    if (Platform.environment['FFD_SMOKE_TEST'] == '1') {
+      return const UpdateCheck();
+    }
+    final checker = await (_updateChecker ??= loadUpdateChecker());
+    return checker.check(manual: manual);
+  }
+
+  @override
+  void closeUpdates() {
+    _updatesClosed = true;
+    _updateChecker?.then((checker) => checker.close());
+  }
+
+  @override
+  Future<void> openReleasePage(Uri uri) async {
+    if (!trustedReleaseUrl(uri)) {
+      throw StateError('Unrecognized release download location.');
+    }
+    final command = Platform.isMacOS
+        ? '/usr/bin/open'
+        : Platform.isWindows
+        ? p.join(
+            Platform.environment['SystemRoot'] ?? r'C:\Windows',
+            'System32',
+            'rundll32.exe',
+          )
+        : 'xdg-open';
+    final result = await Process.run(command, [
+      if (Platform.isWindows) 'url.dll,FileProtocolHandler',
+      uri.toString(),
+    ]);
+    if (result.exitCode != 0) {
+      throw StateError(
+        'Could not open your browser. Try again after checking your default browser.',
+      );
+    }
+  }
+
   Future<void> start() async {
     launchAtStartup.setup(
       appName: 'FarFromDesk',
@@ -49,10 +124,16 @@ class NativeGateway extends Gateway {
       packageName: 'com.codecylabs.farfromdesk',
     );
     final executableDir = p.dirname(Platform.resolvedExecutable);
-    final root = Platform.environment['FFD_BACKEND_ROOT'] ??
-        (Platform.isMacOS ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend')) : p.join(executableDir, 'backend'));
+    final root =
+        Platform.environment['FFD_BACKEND_ROOT'] ??
+        (Platform.isMacOS
+            ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend'))
+            : p.join(executableDir, 'backend'));
     final buildFile = File(p.join(root, 'build.json'));
-    final expectedCommit = await buildFile.exists() ? (jsonDecode(await buildFile.readAsString()) as Map<String, dynamic>)['sourceCommit'] : null;
+    final expectedCommit = await buildFile.exists()
+        ? (jsonDecode(await buildFile.readAsString())
+              as Map<String, dynamic>)['sourceCommit']
+        : null;
     Future<bool> connected() async {
       final file = File(p.join(state, 'admin-token'));
       if (!await file.exists()) return false;
@@ -64,8 +145,11 @@ class NativeGateway extends Gateway {
             'A different backend is running. Update it before starting FarFromDesk.',
           );
         }
-        if (expectedCommit != null && result['sourceCommit'] != expectedCommit) {
-          throw StateError('Another FarFromDesk version is still running. Pause background forwarding and quit that version before starting this update.');
+        if (expectedCommit != null &&
+            result['sourceCommit'] != expectedCommit) {
+          throw StateError(
+            'Another FarFromDesk version is still running. Pause background forwarding and quit that version before starting this update.',
+          );
         }
         return true;
       } on SocketException {
@@ -96,7 +180,8 @@ class NativeGateway extends Gateway {
         'WSB_STATE_DIR': state,
         'WSB_PORT': '$port',
         'FFD_PORTABLE_AGENTS': Platform.isMacOS ? '0' : '1',
-        if (Platform.isMacOS) 'WSB_DESKTOP_SYNC_BIN': p.join(root, 'native', 'desktop-sync'),
+        if (Platform.isMacOS)
+          'WSB_DESKTOP_SYNC_BIN': p.join(root, 'native', 'desktop-sync'),
       },
       mode: ProcessStartMode.detached,
     );
@@ -142,22 +227,50 @@ class NativeGateway extends Gateway {
   @override
   Future<Map<String, dynamic>> get(String path) => _request(path, null);
   @override
-  Future<Map<String, dynamic>> post(String path, Map<String, dynamic> data) =>
-      _request(path, data);
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/desktop/document' &&
+        data.containsKey('_localDocumentPath')) {
+      if (data['confirmed'] != true) {
+        throw StateError('Confirm the reviewed file first.');
+      }
+      final executableDir = p.dirname(Platform.resolvedExecutable);
+      final root =
+          Platform.environment['FFD_BACKEND_ROOT'] ??
+          (Platform.isMacOS
+              ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend'))
+              : p.join(executableDir, 'backend'));
+      final node =
+          Platform.environment['FFD_NODE_BIN'] ??
+          p.join(root, 'runtime', Platform.isWindows ? 'node.exe' : 'node');
+      final prepared = await prepareDesktopDocument(
+        node: node,
+        root: root,
+        state: state,
+        port: port,
+        path: data['_localDocumentPath'] as String,
+        bindingId: data['bindingId'] as String,
+        requestId: data['requestId'] as String,
+      );
+      return _request(path, {
+        'bindingId': data['bindingId'],
+        'requestId': data['requestId'],
+        'confirmed': true,
+        'artifactId': prepared['artifactId'],
+        'caption': data['caption'] ?? '',
+      });
+    }
+    return _request(path, data);
+  }
+
   @override
   Future<String?> chooseFile(String label) async =>
       (await openFile(confirmButtonText: label))?.path;
   @override
-  Future<Map<String, dynamic>> readDocument(String path) async {
-    final file = File(path);
-    if (await file.length() > 10 * 1024 * 1024) {
-      throw StateError('Documents must be at most 10 MiB.');
-    }
-    return {
-      'filename': p.basename(path),
-      'base64': base64Encode(await file.readAsBytes()),
-    };
-  }
+  Future<Map<String, dynamic>> readDocument(String path) =>
+      reviewedDocumentReference(path);
 
   @override
   Future<void> reportReady() async {

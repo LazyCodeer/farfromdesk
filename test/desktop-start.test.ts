@@ -23,7 +23,7 @@ test('desktop classification requires app ancestry; bundled executable in termin
   const rows='10 1 /Applications/Claude.app/Contents/MacOS/Claude\n20 10 /bundle/claude\n21 20 /child\n30 1 /bin/zsh\n40 30 /bundle/claude\n50 51 /loop\n51 50 /loop';
   assert.deepEqual([...desktopOwnedPids(rows)],[10,20,21]);
   assert.equal(executionMode('claude','desktop'),'desktop');assert.equal(executionMode('claude',undefined),'cli');
-  assert.throws(()=>executionMode('codex','desktop'));assert.throws(()=>executionMode('claude','other'));
+  assert.equal(executionMode('codex','desktop'),'desktop');assert.throws(()=>executionMode('claude','other'));
 });
 test('submission alone stays uncertain; later exact child acknowledgment recovers without resend',async()=>{
   const f=fixture();try {
@@ -36,7 +36,7 @@ test('submission alone stays uncertain; later exact child acknowledgment recover
 });
 test('CLI session, missing launcher and wrong child folder cannot satisfy desktop creation',async()=>{
   const f=fixture();try {
-    await assert.rejects(f.starts.parent(undefined),/Choose/);
+    await assert.rejects(f.starts.parent(undefined),/No owner-connected/);
     f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'cli',available:true}]});
     await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/reachable/);assert.equal(f.sends(),0);
     f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true},{id:child,cwd:'/',executionMode:'desktop',available:true}]});
@@ -84,4 +84,18 @@ test('native Desktop local_ identity resolves to its separate messaging UUID bef
     await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/acknowledgment/);
     f.receipts(true,desktopId);await f.starts.confirm(f.binding);assert.equal(f.store.binding(f.binding.id)?.native_id,child);
   }finally{f.close();}
+});
+
+
+test('new Desktop sessions reuse only owner-connected launchers and stop for account ambiguity',async()=>{
+ const f=fixture();try {
+  const launcher=f.store.register('launcher','claude',parent,f.cwd).binding;
+  f.store.set(`execution-mode:${launcher.id}`,'desktop');f.store.set('selected',JSON.stringify([launcher.id]));
+  assert.equal((await f.starts.parent(undefined)).id,parent);
+  f.store.enable(launcher.id,false);await assert.rejects(f.starts.parent(undefined),/No owner-connected/);
+  f.store.enable(launcher.id,true);
+  const second=f.store.register('second','claude',child,f.cwd).binding;f.store.set(`execution-mode:${second.id}`,'desktop');f.store.set('selected',JSON.stringify([launcher.id,second.id]));
+  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,accountScope:'a'},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,accountScope:'b'}]}) as any;
+  await assert.rejects(f.starts.parent(undefined),/different accounts/);assert.equal(f.sends(),0);
+ }finally{f.close();}
 });

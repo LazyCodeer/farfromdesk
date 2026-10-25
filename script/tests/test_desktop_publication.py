@@ -3,11 +3,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from publish_desktop_release import TARGETS, validate, verify_remote
+from publish_desktop_release import TARGETS, validate, verify_remote, verify_tag
 from publish_release import digest
 
-VERSION='0.7.0-preview.123'
+VERSION='0.7.1'
 COMMIT='b'*40
 
 class DesktopPublicationTests(unittest.TestCase):
@@ -26,6 +27,18 @@ class DesktopPublicationTests(unittest.TestCase):
             for name in ['install.sh','install.ps1']:(folder/'install'/name).write_text('Fixture '+VERSION)
     def tearDown(self):self.tmp.cleanup()
     def test_complete_all_platform_release(self):self.assertEqual(len(validate(self.root,VERSION,COMMIT)),18)
+    def test_unstable_or_path_like_version_is_rejected(self):
+        for version in ['0.7.1-preview.1', '../0.7.1', '01.7.1', 'v0.7.1']:
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'stable version'):
+                validate(self.root, version, COMMIT)
+    def test_tag_must_point_to_exact_source(self):
+        with patch('publish_desktop_release.gh', return_value='[]'):
+            verify_tag('owner/repo', 'v0.7.1', COMMIT)
+            with self.assertRaises(RuntimeError): verify_tag('owner/repo', 'v0.7.1', COMMIT, required=True)
+        ref={'ref':'refs/tags/v0.7.1','object':{'type':'commit','sha':COMMIT}}
+        with patch('publish_desktop_release.gh', return_value=json.dumps([ref])):
+            verify_tag('owner/repo', 'v0.7.1', COMMIT, required=True)
+            with self.assertRaises(RuntimeError): verify_tag('owner/repo', 'v0.7.1', 'c'*40)
     def test_missing_platform(self):
         (self.root/'farfromdesk-windows-2022').rename(self.root/'unexpected')
         with self.assertRaisesRegex(ValueError,'four target'):validate(self.root,VERSION,COMMIT)

@@ -1,13 +1,17 @@
-import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,normalizeMessageContent,Browsers,type WASocket} from '@whiskeysockets/baileys';
+import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,normalizeMessageContent,Browsers,proto,type WASocket} from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
 import type { Router } from './router.js';
-import { transcribeAudio, audioFormat } from './audio.js';
+import { transcribeAudio, audioFormat, type AudioObserver } from './audio.js';
 import { createHash } from 'node:crypto';
 import { BufferJSON } from '@whiskeysockets/baileys';
+import { disposeIncoming, incomingMetadata, type AttachmentKind, type IncomingFile } from './attachments.js';
+import { Artifacts } from './artifacts.js';
+import { sendDiskDocument, MediaHostLimitError } from './document-delivery.js';
+import { errorCode } from './request-events.js';
 
 export function isSelfMessage(key:{fromMe?:boolean|null;remoteJid?:string|null;remoteJidAlt?:string|null},owners:string[]) {
   if(key.fromMe!==true)return false;
@@ -29,8 +33,16 @@ export class WhatsApp {
   receiving=new Set<string>();
   audioBusy=0;
   audioControllers=new Set<AbortController>();
-  transcribe=(audio:any,signal?:AbortSignal)=>transcribeAudio(this.store,audio,signal);
-  constructor(private store:Store,private router:Router,private authDirectory=join(stateDir,'whatsapp-auth')) {}
+  mediaControllers=new Set<AbortController>();
+  downloadFile=(media:any,kind:AttachmentKind,signal?:AbortSignal)=>this.router.attachments.download(media,kind,signal);
+  artifacts:Artifacts;
+  sendDocument=sendDiskDocument;
+  transcribe=(audio:any,signal?:AbortSignal,observe?:AudioObserver)=>transcribeAudio(this.store,audio,signal,observe);
+  constructor(private store:Store,private router:Router,private authDirectory=join(stateDir,'whatsapp-auth')) {
+    this.artifacts=new Artifacts(store);
+    router.attachments.interrupt('The bridge restarted while downloading your attachment. Please resend it.');
+    router.attachments.cleanup();this.artifacts.cleanup();
+  }
   phoneNumber() {
     if(this.status==='logged out')return undefined;
     const jid=this.selfJid??this.store.get('whatsapp-owner');
@@ -142,8 +154,28 @@ export class WhatsApp {
         if(this.sock!==sock||e.type!=='notify'||this.status!=='connected')return;
         for(const m of e.messages)void this.receiveMessage(m).catch(()=>{this.error='Incoming message could not be processed.';});
       });
+      sock.ev.on('messages.update',updates=>{
+        if(this.sock!==sock||this.closed||this.loggingOut||this.status!=='connected')return;
+        for(const {key,update} of updates)this.receiveReceipt(key,update.status);
+      });
+      sock.ev.on('message-receipt.update',updates=>{
+        if(this.sock!==sock||this.closed||this.loggingOut||this.status!=='connected')return;
+        for(const {key,receipt} of updates){
+          if(!receipt.userJid||!this.owners.includes(jidNormalizedUser(receipt.userJid)))continue;
+          if(receipt.readTimestamp||receipt.playedTimestamp)this.receiveReceipt(key,proto.WebMessageInfo.Status.READ);
+          else if(receipt.receiptTimestamp)this.receiveReceipt(key,proto.WebMessageInfo.Status.DELIVERY_ACK);
+        }
+      });
       if(!this.flusher)this.flusher=setInterval(()=>void this.flush(),1500);
     } finally {this.connecting=false;}
+  }
+  receiveReceipt(key:{id?:string|null;remoteJid?:string|null;fromMe?:boolean|null},status?:number|null) {
+    if(this.closed||this.loggingOut||this.status!=='connected'||key.fromMe!==true||!key.id||!key.remoteJid)return false;
+    const destination=key.remoteJid.endsWith('@g.us')?key.remoteJid:this.owners.includes(jidNormalizedUser(key.remoteJid))?this.selfJid:undefined;
+    if(!destination)return false;
+    if(status===proto.WebMessageInfo.Status.READ||status===proto.WebMessageInfo.Status.PLAYED)return this.store.deliveryReceipt(key.id,destination,'read');
+    if(status===proto.WebMessageInfo.Status.DELIVERY_ACK)return this.store.deliveryReceipt(key.id,destination,'delivered');
+    return false; // SERVER_ACK alone proves neither delivery nor reading.
   }
   async receiveMessage(m:any) {
     if(this.closed||this.loggingOut||this.router.stopped||this.status!=='connected'||!m.key?.id||this.store.isOurs(m.key.id)||m.key.fromMe!==true)return;
@@ -151,41 +183,72 @@ export class WhatsApp {
     const group=m.key.remoteJid===destination&&destination?.endsWith('@g.us');
     if((!self&&!group)||this.store.seen(id)||this.receiving.has(id))return;
     const msg=normalizeMessageContent(m.message),audio=msg?.audioMessage;
+    const media=msg?.imageMessage??msg?.documentMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
     let text=msg?.conversation??msg?.extendedTextMessage?.text;
-    if(!text&&!audio)return;
+    if(!text&&!audio&&!media)return;
     this.receiving.add(id);
     try {
       if(group)await this.verifyGroup(destination!);
       if(this.closed||this.loggingOut||this.router.stopped)return;
       const origin=self?this.selfJid!:destination!;
       await this.store.destinationContext.run(origin,async()=>{
+        if(media) {
+          if(!this.store.db.prepare("INSERT OR IGNORE INTO media_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now()).changes)return;
+          const controller=new AbortController();let file:IncomingFile|undefined;
+          try {
+            incomingMetadata(media,kind);
+            const incoming={id,text:media.caption??'',quotedId:media.contextInfo?.stanzaId??undefined};
+            const target=this.router.attachmentTarget(incoming);
+            if(this.mediaControllers.size>=2)throw new Error('Two attachments are already downloading. Please wait, then resend this one.');
+            this.mediaControllers.add(controller);
+            file=await this.downloadFile(media,kind,controller.signal);
+            if(this.closed||this.loggingOut||this.router.stopped)return;
+            if(group)await this.verifyGroup(origin);
+            if(this.closed||this.loggingOut||this.router.stopped)return;
+            this.router.receiveAttachment(incoming,file,target);
+          }catch(e) {
+            if(this.closed)return;
+            const message=(e as Error).message;
+            const safe=/^(?:Use a simple|Unsupported|Attachment |Files must|Text files|Binary data|Invalid (?:PDF|PNG|JPEG|WebP|GIF|ZIP|gzip|executable|WebAssembly)|Expected a complete|The intended session|Choose an exact session|That quoted message|Session is missing|Two attachments|Incoming attachment)/;
+            this.store.output(undefined,safe.test(message)?message:'I couldn’t receive this attachment. Please resend a supported image or document. Documents support the WhatsApp ceiling of 2,097,152,000 bytes when disk space permits.',`media-error:${id}`,origin);
+            this.store.remember(id);this.store.db.prepare("UPDATE media_inbox SET status='failed' WHERE id=?").run(id);
+          }finally{disposeIncoming(file);this.mediaControllers.delete(controller);}
+          return;
+        }
         if(audio) {
           const claimed=this.store.db.prepare("INSERT OR IGNORE INTO audio_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now());
           if(!claimed.changes)return;
-          let started=false;const controller=new AbortController();
+          let started=false,routingStarted:number|undefined;const controller=new AbortController();
+          this.store.event(id,'voice_received',{audioSeconds:Number(audio.seconds),engine:'whisper.cpp',model:this.store.get('audio-origin')==='bundled'?'bundled':'custom'});
           const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected')]);
           const originalRouting=routing();
           try {
             audioFormat(audio);
             if(this.audioBusy>=2)throw new Error('Two voice notes are already processing. Please wait for their replies, then resend this one.');
             this.audioBusy++;started=true;this.audioControllers.add(controller);
-            this.store.output(undefined,'Voice note received. I’m transcribing it locally on your Mac.',`audio-progress:${id}`,origin);
-            text=await this.transcribe(audio,controller.signal);
+            this.store.output(undefined,'Voice note received. I’m transcribing it locally on your computer.',`audio-progress:${id}`,origin);
+            text=await this.transcribe(audio,controller.signal,event=>this.store.voiceEvent(id,event));
             if(this.closed||this.loggingOut||this.router.stopped)return; // Restart recovery reports interruption.
             if(group)await this.verifyGroup(origin);
             if(this.closed||this.loggingOut||this.router.stopped)return;
+            routingStarted=performance.now();this.store.voiceEvent(id,{stage:'route',state:'started'});
             if(routing()!==originalRouting)throw new Error('The selected session changed during transcription. Please resend the note to the intended session.');
             if(!text?.trim()||text.length>32000)throw new Error('No clear speech detected. Please resend or type your message.');
             if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions explicitly; voice transcription may mishear them.');
-            await this.router.receive({id,text,quotedId:audio.contextInfo?.stanzaId??undefined});
-            this.store.db.prepare("UPDATE audio_inbox SET status='processed' WHERE id=?").run(id);
+            const result=await this.router.receive({id,text,quotedId:audio.contextInfo?.stanzaId??undefined});
+            const routed=result.status==='queued'||result.status==='handled';
+            this.store.voiceEvent(id,{stage:'route',state:routed?'completed':'failed',durationMs:performance.now()-routingStarted,...(!routed?{code:result.code??'routing_unavailable'}:{})});
+            this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routed?'processed':'routing_blocked',id);
+            if(!routed&&result.status!=='blocked')this.store.output(undefined,'Your voice note was transcribed, but could not be routed. Select an active session, then send a new request.',`audio-route:${id}`,origin);
           }catch(e) {
             if(this.closed)return;
+            if(routingStarted!==undefined)this.store.voiceEvent(id,{stage:'route',state:'failed',durationMs:performance.now()-routingStarted,code:errorCode(e)});
+            this.store.event(id,'voice_failed',{code:errorCode(e)});
             // Never echo provider output, media URLs, transcript or command paths.
             const allowed=/^(?:Voice transcription is not configured|Unsupported voice-note format|Voice notes must|Two voice notes|The selected session changed|No clear speech detected|Please type permission)/;
-            const message=allowed.test((e as Error).message)?(e as Error).message:'I couldn’t transcribe this voice note. Please resend a clear recording (up to 5 minutes), or type your message.';
+            const message=allowed.test((e as Error).message)?(e as Error).message:'I couldn’t transcribe this voice note. Please resend a clear recording (up to 5 minutes for local transcription), or type your message.';
             this.store.output(undefined,message,`audio-error:${id}`,origin);this.store.remember(id);
-            this.store.db.prepare("UPDATE audio_inbox SET status='failed' WHERE id=?").run(id);
+            this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routingStarted===undefined?'failed':'routing_blocked',id);
           }finally{if(started)this.audioBusy--;this.audioControllers.delete(controller);}
           return;
         }
@@ -208,19 +271,26 @@ export class WhatsApp {
           const sock:WASocket=this.sock;
           if(destination!==this.selfJid)await this.verifyGroup(destination);
           if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
-          let content:any={text:m.body};
+          let content:any={text:m.body},sent:any;
           if(m.artifact_id) {
             const a=this.store.db.prepare('SELECT * FROM artifacts WHERE id=? AND binding_id=?').get(m.artifact_id,m.binding_id) as any;
-            if(!a||createHash('sha256').update(a.data).digest('hex')!==a.sha256){this.store.db.prepare("UPDATE outbox SET status='failed',error='Prepared document integrity check failed' WHERE id=?").run(m.id);continue;}
-            content={document:Buffer.from(a.data),fileName:a.filename,mimetype:a.mime,caption:m.body};
+            const b=this.store.binding(m.binding_id),job=a&&this.store.job(a.request_id);
+            if(!a||a.removed_at||a.owner&&a.owner!==this.selfJid||a.native_id&&a.native_id!==b?.native_id||!job||job.binding_id!==m.binding_id||['replaced','cancelled','reviewed','auto_closed'].includes(job.status)||a.destination&&a.destination!==destination||!a.storage_key&&createHash('sha256').update(a.data).digest('hex')!==a.sha256){this.store.db.prepare("UPDATE outbox SET status='failed',error='Prepared document integrity or ownership check failed' WHERE id=?").run(m.id);continue;}
+            if(a.storage_key) {
+              sent=await this.sendDocument(sock,destination,a,m.body,m.wa_id,this.artifacts.disk,async()=>{
+                if(this.closed||this.loggingOut||this.router.stopped||this.status!=='connected'||this.sock!==sock)throw new Error('WhatsApp delivery was stopped.');
+                if(destination!==this.selfJid)await this.verifyGroup(destination);
+                if(this.closed||this.loggingOut||this.router.stopped||this.sock!==sock)throw new Error('WhatsApp delivery was stopped.');
+              });
+            }else content={document:Buffer.from(a.data),fileName:a.filename,mimetype:a.mime,caption:m.body};
           }
-          const sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
+          if(!sent)sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
           if(sent?.message)this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(sent.message,BufferJSON.replacer),m.id);
           this.store.sent(m.id);
         }
-        catch(e){this.error=(e as Error).message;this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
+        catch(e){this.error=(e as Error).message;if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
       }
     } finally {this.flushing=false;}
   }
-  close(){this.stopAuth?.();if(!this.closed)this.store.interruptAudio('Background operation stopped while processing your voice note. Please resend it after the bridge reconnects.');this.closed=true;for(const controller of this.audioControllers)controller.abort();clearTimeout(this.reconnect);clearInterval(this.flusher);this.flusher=undefined;const sock=this.sock;this.sock=undefined;sock?.end(undefined);}
+  close(){this.stopAuth?.();this.artifacts.disk.abortAll();if(!this.closed){this.store.interruptAudio('Background operation stopped while processing your voice note. Please resend it after the bridge reconnects.');this.router.attachments.interrupt('Background operation stopped while downloading your attachment. Please resend it after reconnection.');}this.closed=true;for(const controller of [...this.audioControllers,...this.mediaControllers])controller.abort();clearTimeout(this.reconnect);clearInterval(this.flusher);this.flusher=undefined;const sock=this.sock;this.sock=undefined;sock?.end(undefined);}
 }

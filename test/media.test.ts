@@ -23,7 +23,7 @@ const note=(id='note',key:any={},audio:any={})=>({key:{id,fromMe:true,remoteJid:
 const html=Buffer.from('<!doctype html><html><body>Private review</body></html>');
 
 test('documents validate names, signatures, bytes, UTF-8 and exact local files',()=>{
-  for(const name of ['../a.html','/tmp/a.html','bad\n.html','secret.env','script.js','x..html'])assert.throws(()=>validateArtifact(name,html));
+  for(const name of ['../a.html','/tmp/a.html','bad\n.html','secret.env','file.unknown','x..html'])assert.throws(()=>validateArtifact(name,html));
   assert.throws(()=>validateArtifact('a.pdf',html));assert.throws(()=>validateArtifact('a.png',html));assert.throws(()=>validateArtifact('a.jpg',html));
   assert.throws(()=>validateArtifact('a.html',Buffer.from('not html')));assert.throws(()=>validateArtifact('a.txt',Buffer.from([255])));
   assert.throws(()=>validateArtifact('a.txt',Buffer.alloc(MAX_ARTIFACT_BYTES+1)));assert.throws(()=>validateArtifact('a.txt',Buffer.alloc(0)));
@@ -144,7 +144,7 @@ test('pausing cancels active transcription and queues one interruption reply for
 test('audio provider missing and malicious media locations fail before network access',async()=>{
   const f=fixture();try {
     await assert.rejects(transcribeAudio(f.store,note().message.audioMessage),/not configured/);
-    assert.throws(()=>audioFormat({mimetype:'audio/ogg',fileLength:11*1024*1024}));
+    assert.equal(audioFormat({mimetype:'audio/ogg',fileLength:64*1024*1024}),'ogg');
     for(const path of ['https://127.0.0.1/private','//localhost/private','/\\localhost/','/bad\npath'])await assert.rejects(downloadAudio({mimetype:'audio/ogg',directPath:path,mediaKey:Buffer.alloc(32)}),/cannot be downloaded/);
   }finally{f.close();}
 });

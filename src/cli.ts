@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { spawn,execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { handleHook } from './hooks.js';
-import { readLocalArtifact } from './artifacts.js';
+import { inspectLocalArtifact } from './large-file.js';
+import { uploadArtifact } from './artifact-upload.js';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 const args=process.argv.slice(2),command=args.shift();
@@ -32,17 +33,35 @@ async function main() {
     console.log(JSON.stringify(await api('/api/register',{provider,alias,nativeId,cwd,mode}),null,2));
   }
   else if(command==='send'||command==='respond') {
+    const flag=(name:string)=>{const i=args.indexOf(name);return i<0?undefined:args.splice(i,2)[1];};
+    const turnId=flag('--turn-id'),outcome=flag('--outcome');
     const alias=args[0],c=credentials(alias);
     const text=command==='send'&&args.length>1?args.slice(1).join(' '):readFileSync(0,'utf8');
     const requestId=command==='respond'?args[1]:undefined,kind=command==='respond'&&args[2]==='progress'?'progress':'final';
-    const r=await fetch(baseUrl+'/api/session/reply',{method:'POST',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({text,requestId,kind,eventId:randomUUID()})});
+    const r=await fetch(baseUrl+'/api/session/reply',{method:'POST',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({text,requestId,kind,eventId:randomUUID(),turnId,outcome})});
     if(!r.ok)throw new Error(await r.text());console.log('Queued for WhatsApp.');
   }
-  else if(command==='prepare-file') {
-    const [alias,requestId,path]=args,c=credentials(alias);
-    if(!requestId||!path||(args[3]!==undefined&&args[3]!=='--self'))throw new Error('Usage: prepare-file NAME REQUEST-ID /absolute/reviewed/document.html [--self]');
-    const artifact=readLocalArtifact(path);
-    console.log(JSON.stringify(await api('/api/artifacts/prepare',{bindingId:c.data.id,requestId,filename:artifact.filename,base64:artifact.data.toString('base64'),destinationMode:args[3]==='--self'?'self':'request'}),null,2));
+  else if(command==='prepare-file'||command==='prepare-desktop-file') {
+    const desktop=command==='prepare-desktop-file'?JSON.parse(readFileSync(0,'utf8')):undefined;
+    const [alias,requestId,path]=desktop?['',desktop.requestId,desktop.path]:args;
+    const bindingId=desktop?desktop.bindingId:credentials(alias).data.id;
+    if(typeof bindingId!=='string'||!requestId||!path||(args[3]!==undefined&&args[3]!=='--self'))throw new Error('Usage: prepare-file NAME REQUEST-ID /absolute/reviewed/document.html [--self]');
+    let capability:any;try{capability=await api('/api/media/capabilities');}catch{throw new Error('Could not confirm streaming file support in the installed backend. Update it separately before preparing documents with this CLI.');}
+    if(capability.preparation!=='stream-v1')throw new Error('Installed backend does not support streaming file preparation. Update it separately first.');
+    const artifact=await inspectLocalArtifact(path);let uploadId:string|undefined;
+    try {
+      if(artifact.bytes>capability.maxOutgoingDocumentBytes)throw new Error('This file exceeds the installed backend document limit.');
+      const reservation=await api('/api/artifacts/reserve',{bindingId,requestId,filename:artifact.filename,bytes:artifact.bytes,sha256:artifact.sha256,destinationMode:args[3]==='--self'?'self':'request'});
+      if(reservation.artifactId){console.log(JSON.stringify(reservation,null,2));return;}
+      uploadId=reservation.uploadId;
+      const result=await uploadArtifact(baseUrl+'/api/artifacts/upload/'+uploadId,initializeState(),artifact.handle,artifact.bytes);
+      console.log(JSON.stringify(result,null,2));
+    }catch(e){if(uploadId){
+      const status=await api('/api/artifacts/upload-status?id='+encodeURIComponent(uploadId)).catch(()=>undefined);
+      if(status?.state==='prepared'){console.log(JSON.stringify(status,null,2));return;}
+      await api('/api/artifacts/upload-cancel',{uploadId}).catch(()=>{});
+    }throw e;}
+    finally{await artifact.handle.close();}
   }
   else if(command==='respond-file'||command==='delivery') {
     const c=credentials(args[0]);
@@ -50,6 +69,22 @@ async function main() {
     const d=command==='respond-file'?{requestId:args[1],artifactId:args[2],caption:readFileSync(0,'utf8').trim()}:undefined;
     const r=await fetch(baseUrl+path,{method:d?'POST':'GET',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:d?JSON.stringify(d):undefined});
     const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));
+  }
+  else if(command==='agents') {
+    const op=args.shift()??'list';
+    if(op==='list')console.log(JSON.stringify(await api('/api/agents'),null,2));
+    else if(op==='sync')console.log(JSON.stringify(await api('/api/agents/sync',{}),null,2));
+    else if(op==='create')console.log(JSON.stringify(await api('/api/agents',JSON.parse(readFileSync(0,'utf8'))),null,2));
+    else if(op==='assign'){const c=credentials(args[0]);console.log(JSON.stringify(await api('/api/agents/assign',{bindingId:c.data.id,name:args[1]}),null,2));}
+    else throw new Error('Use agents list|sync|create (JSON on stdin)|assign SESSION AGENT-NAME');
+  }
+  else if(command==='style') {
+    const c=credentials(args[0]);console.log(JSON.stringify(await api('/api/roles',{bindingId:c.data.id,style:args[1]}),null,2));
+  }
+  else if(command==='media-capabilities')console.log(JSON.stringify(await api('/api/media/capabilities'),null,2));
+  else if(command==='cleanup-media')console.log(await api('/api/media/cleanup',{}));
+  else if(command==='cancel-file'||command==='cancel-attachments') {
+    const c=credentials(args[0]);console.log(await api(command==='cancel-file'?'/api/artifacts/cancel':'/api/attachments/cancel',{bindingId:c.data.id,artifactId:args[1],requestId:args[1]}));
   }
   else if(command==='configure-audio')console.log(await api('/api/audio-config',{ffmpeg:args[0],whisper:args[1],model:args[2]}));
   else if(command==='hook') {
@@ -78,11 +113,19 @@ async function main() {
     const bindingIndex=args.indexOf('--binding');
     const alias=bindingIndex<0?'whatsapp-master':args.splice(bindingIndex,2)[1];
     const operation=args.shift(),c=credentials(alias);
+    const attachmentIndex=args.indexOf('--attachments');
+    const attachmentIds=attachmentIndex>=0?args.splice(attachmentIndex,2)[1]?.split(','):[];
+    if(attachmentIndex>=0&&(!attachmentIds?.length||operation!=='dispatch'))throw new Error('Use --attachments ID[,ID] only with master dispatch.');
     const pageIndex=args.findIndex(a=>['--more','--back','--page'].includes(a));
     let page='0';if(operation==='sessions'&&pageIndex>=0){const flag=args.splice(pageIndex,1)[0];page=flag==='--more'?'more':flag==='--back'?'back':args.splice(pageIndex,1)[0];}
-    const path=operation==='recover-worker'?'/api/master/recover-worker':operation==='create-worker'?'/api/master/create-worker':operation==='creation-status'?'/api/master/worker-status?id='+encodeURIComponent(args[0]??''):operation==='sessions'?'/api/master/sessions?search='+encodeURIComponent(args.join(' '))+'&page='+encodeURIComponent(page):operation==='selected'?'/api/master/selected':operation==='connect'?'/api/master/connect':operation==='dispatch'?'/api/master/dispatch':operation==='quiet'?'/api/master/quiet':null;
-    if(!path)throw new Error('Use master [--binding ALIAS] create-worker REQUEST-ID PROVIDER NAME EVENT-ID [desktop|cli] (task on stdin) | creation-status [ID] | recover-worker REQUEST-ID ID | sessions [search] [--more|--back|--page N] | selected | connect REQUEST-ID PROVIDER:UUID[,PROVIDER:UUID] | dispatch REQUEST-ID BINDING-ID[,BINDING-ID] EVENT-ID | quiet REPORT-ID');
-    const data=operation==='recover-worker'?{requestId:args[0],id:args[1]}:operation==='create-worker'?{requestId:args[0],provider:args[1],name:args[2],eventId:args[3],executionMode:args[4],text:readFileSync(0,'utf8')}:operation==='connect'?{requestId:args[0],targets:args[1]?.split(',')}:operation==='dispatch'?{requestId:args[0],targets:args[1]?.split(','),eventId:args[2],text:readFileSync(0,'utf8')}:operation==='quiet'?{requestId:args[0]}:undefined;
+    if(['agents','define-agent','assign-agent'].includes(operation??'')) {
+      const d=operation==='agents'?undefined:operation==='define-agent'?{...JSON.parse(readFileSync(0,'utf8')),requestId:args[0]}:{requestId:args[0],bindingId:args[1],name:args[2]};
+      const result=await fetch(baseUrl+'/api/master/'+operation,{method:d?'POST':'GET',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:d?JSON.stringify(d):undefined});
+      const data=await result.json() as any;if(!result.ok)throw new Error(data.error);console.log(JSON.stringify(data,null,2));return;
+    }
+    const path=operation==='recover-worker'?'/api/master/recover-worker':operation==='create-worker'?'/api/master/create-worker':operation==='creation-status'?'/api/master/worker-status?id='+encodeURIComponent(args[0]??''):operation==='sessions'?'/api/master/sessions?search='+encodeURIComponent(args.join(' '))+'&page='+encodeURIComponent(page):operation==='selected'?'/api/master/selected':operation==='connect'?'/api/master/connect':operation==='dispatch'?'/api/master/dispatch':operation==='resolve'?'/api/master/resolve':operation==='quiet'?'/api/master/quiet':null;
+    if(!path)throw new Error('Use master [--binding ALIAS] create-worker REQUEST-ID PROVIDER NAME EVENT-ID [desktop|cli] (task on stdin) | creation-status [ID] | recover-worker REQUEST-ID ID | sessions [search] [--more|--back|--page N] | selected | connect REQUEST-ID PROVIDER:UUID[,PROVIDER:UUID] | dispatch REQUEST-ID BINDING-ID[,BINDING-ID] EVENT-ID | quiet REPORT-ID [done|blocked|reviewed|cancelled] | resolve OWNER-REQUEST-ID done|blocked|reviewed|cancelled');
+    const data=operation==='recover-worker'?{requestId:args[0],id:args[1]}:operation==='create-worker'?{requestId:args[0],provider:args[1],name:args[2],eventId:args[3],executionMode:args[4],text:readFileSync(0,'utf8')}:operation==='connect'?{requestId:args[0],targets:args[1]?.split(',')}:operation==='dispatch'?{requestId:args[0],targets:args[1]?.split(','),eventId:args[2],attachmentIds,text:readFileSync(0,'utf8')}:operation==='resolve'?{requestId:args[0],outcome:args[1]}:operation==='quiet'?{requestId:args[0],resolveOutcome:args[1]}:undefined;
     const r=await fetch(baseUrl+path,{method:data?'POST':'GET',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:data?JSON.stringify(data):undefined});
     const out=await r.json() as any;if(!r.ok)throw new Error(out.error);console.log(JSON.stringify(out,null,2));
   }
@@ -118,6 +161,6 @@ async function main() {
     }
     console.log('Installed the session-scoped WhatsApp skill for Claude Code and Codex.');
   }
-  else console.log('Commands: status | sessions codex|claude | register PROVIDER NAME ID CWD [desktop|channel] | send NAME [TEXT, or stdin] | respond NAME REQUEST-ID [progress] | prepare-file NAME REQUEST-ID /absolute/file | respond-file NAME REQUEST-ID ARTIFACT-ID (caption on stdin) | delivery NAME DELIVERY-ID | configure-audio /absolute/ffmpeg /absolute/whisper-cli /absolute/model | command /COMMAND | open | channel-config NAME | claude-channel NAME | install | stop-service | install-skills | install-hooks');
+  else console.log('Commands: style NAME friendly|cheerful|professional|coding | media-capabilities | cleanup-media | cancel-file NAME ARTIFACT-ID | cancel-attachments NAME REQUEST-ID | status | sessions codex|claude | register PROVIDER NAME ID CWD [desktop|channel] | send NAME [TEXT, or stdin] | respond NAME REQUEST-ID [progress] | prepare-file NAME REQUEST-ID /absolute/file | respond-file NAME REQUEST-ID ARTIFACT-ID (caption on stdin) | delivery NAME DELIVERY-ID | configure-audio /absolute/ffmpeg /absolute/whisper-cli /absolute/model | command /COMMAND | open | channel-config NAME | claude-channel NAME | install | stop-service | install-skills | install-hooks');
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1;});

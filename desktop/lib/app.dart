@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
 import 'gateway.dart';
+import 'updates.dart';
 
 import 'bridge_theme.dart';
 part 'screens.dart';
@@ -38,7 +39,8 @@ class _DeskState extends State<Desk> {
   String platform = 'codex:cli',
       setupAction = 'new',
       selectedNativeId = '',
-      activityFilter = 'All';
+      activityFilter = 'All',
+      activityQuery = '';
   bool automaticName = true, showGroups = false, loadingGroups = false;
   List<Map> groups = [];
   int visibleSessions = 30;
@@ -47,7 +49,9 @@ class _DeskState extends State<Desk> {
   final search = TextEditingController();
   final chosen = <String>{};
   final audio = <String, String>{};
-  Timer? timer;
+  Timer? timer, updateTimer;
+  UpdateCheck update = const UpdateCheck();
+  bool checkingUpdates = false;
   Gateway get api => widget.gateway;
   List<dynamic> get platforms => status['masterSetup']?['platforms'] ?? [];
   Map<String, dynamic> get preferences =>
@@ -57,6 +61,11 @@ class _DeskState extends State<Desk> {
     super.initState();
     section = api.initialScreen;
     boot();
+    unawaited(checkUpdates());
+    updateTimer = Timer.periodic(
+      const Duration(hours: 1),
+      (_) => checkUpdates(),
+    );
   }
 
   Future<void> boot() async {
@@ -77,9 +86,91 @@ class _DeskState extends State<Desk> {
   @override
   void dispose() {
     timer?.cancel();
+    updateTimer?.cancel();
+    api.closeUpdates();
     search.dispose();
     customName.dispose();
     super.dispose();
+  }
+
+  Future<void> checkUpdates({bool manual = false}) async {
+    if (checkingUpdates) return;
+    setState(() => checkingUpdates = true);
+    try {
+      final result = await api.checkUpdates(manual: manual);
+      if (mounted) setState(() => update = result);
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => update = UpdateCheck(
+            release: update.release,
+            problem: 'Could not check for updates. Try again later.',
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => checkingUpdates = false);
+    }
+  }
+
+  Future<void> showUpdate() async {
+    final release = update.release;
+    if (release == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('A new FarFromDesk is available'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Version ${release.version}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Installed: $installedVersion · Download: ${(release.bytes / (1024 * 1024)).ceil()} MB',
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Download the update now and install it when your current work is finished. Your requests and WhatsApp pairing are stored separately from the app.',
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Before replacing the app, pause background forwarding in Settings and quit FarFromDesk. Downloading does not stop your sessions.',
+              ),
+              if (update.problem != null) ...[
+                const SizedBox(height: 10),
+                Text(update.problem!, style: const TextStyle(color: warning)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Later'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              act(() => api.openReleasePage(release.notes));
+            },
+            child: const Text('Release notes'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              act(() => api.openReleasePage(release.download));
+            },
+            child: const Text('Download update'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> refresh() async {
@@ -322,6 +413,8 @@ class _DeskState extends State<Desk> {
   }) async {
     var query = '', currentPage = 0;
     final selected = <String>{};
+    String selectionKey(Map s) =>
+        '${s['provider']}:${s['executionMode']}:${s['id']}';
     return showDialog<List<Map>>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -329,9 +422,10 @@ class _DeskState extends State<Desk> {
           final filtered = entries
               .cast<Map>()
               .where(
-                (s) => '${s['name']} ${s['cwd']} ${s['id']}'
-                    .toLowerCase()
-                    .contains(query.toLowerCase()),
+                (s) =>
+                    '${s['provider']} ${s['executionMode']} ${s['name']} ${s['cwd']} ${s['id']}'
+                        .toLowerCase()
+                        .contains(query.toLowerCase()),
               )
               .toList();
           final pages = (filtered.length / 10).ceil().clamp(1, 100000);
@@ -362,7 +456,7 @@ class _DeskState extends State<Desk> {
                             in filtered.skip(currentPage * 10).take(10))
                           CheckboxListTile(
                             controlAffinity: ListTileControlAffinity.leading,
-                            value: selected.contains(s['id']),
+                            value: selected.contains(selectionKey(s)),
                             onChanged: s['available'] != true
                                 ? null
                                 : (v) => update(() {
@@ -370,9 +464,9 @@ class _DeskState extends State<Desk> {
                                       selected.clear();
                                     }
                                     if (v == true) {
-                                      selected.add(s['id']);
+                                      selected.add(selectionKey(s));
                                     } else {
-                                      selected.remove(s['id']);
+                                      selected.remove(selectionKey(s));
                                     }
                                   }),
                             title: Text(
@@ -381,7 +475,7 @@ class _DeskState extends State<Desk> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              '${s['cwd']}\n${s['status'] ?? ''}',
+                              '${s['provider']} ${s['executionMode']} · ${s['cwd']}\n${s['status'] ?? ''}',
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -390,7 +484,7 @@ class _DeskState extends State<Desk> {
                           const Padding(
                             padding: EdgeInsets.all(24),
                             child: Text(
-                              'No matching sessions. Sign in with the native CLI, open a project, then refresh apps.',
+                              'No matching sessions. Open the exact chat in its Desktop app or CLI, then refresh apps.',
                             ),
                           ),
                       ],
@@ -433,7 +527,7 @@ class _DeskState extends State<Desk> {
                         context,
                         entries
                             .cast<Map>()
-                            .where((s) => selected.contains(s['id']))
+                            .where((s) => selected.contains(selectionKey(s)))
                             .toList(),
                       ),
                 child: Text(
@@ -451,9 +545,17 @@ class _DeskState extends State<Desk> {
 
   Future<void> browse() async {
     final entries = <Map>[];
-    for (final option in platforms.where((p) => p['executionMode'] == 'cli')) {
+    for (final option in platforms) {
       for (final s in option['sessions'] ?? []) {
-        entries.add({...s, 'provider': option['provider']});
+        if ((s['executionMode'] ?? 'cli') == option['executionMode']) {
+          entries.add({
+            ...s,
+            'provider': option['provider'],
+            'executionMode': option['executionMode'],
+            'connectionLabel':
+                option['connection']?['label'] ?? 'Native session account',
+          });
+        }
       }
     }
     final selected = await sessionDialog(
@@ -464,12 +566,15 @@ class _DeskState extends State<Desk> {
     if (selected == null || selected.isEmpty) return;
     if (!await confirm(
       'Resume these selected sessions?',
-      'Finish active native turns first. These ${selected.length} exact sessions will be added; your other connections remain. Native permissions still apply.',
+      '${selected.map((s) => "${s['name']} · ${s['provider']} ${s['executionMode']}\n${s['connectionLabel']}").join('\n\n')}\n\nThese exact connections will be added or reviewed. Queued work may run using the selected connection. Native permissions still apply.',
     )) {
       return;
     }
     await post('/api/desktop/connect-sessions', {
-      'targets': selected.map((s) => '${s['provider']}:${s['id']}').toList(),
+      'targets': selected
+          .map((s) => '${s['provider']}:${s['executionMode']}:${s['id']}')
+          .toList(),
+      'reviewConnections': true,
     });
   }
 

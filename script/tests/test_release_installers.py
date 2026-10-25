@@ -14,7 +14,7 @@ class InstallerEncodingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'
             target = Path(directory) / 'target'
-            source.write_bytes('FarFromDesk … — 0.7.0-preview.1\r\n'.encode('utf-8'))
+            source.write_bytes('FarFromDesk … — 0.7.1\r\n'.encode('utf-8'))
             code = ('from pathlib import Path; from release_installers import write_installer; '
                     'import sys; write_installer(Path(sys.argv[1]),Path(sys.argv[2]),"0.7.0-preview.42")')
             env = {**os.environ, 'PYTHONUTF8': '0', 'PYTHONCOERCECLOCALE': '0',

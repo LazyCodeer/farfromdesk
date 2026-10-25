@@ -31,7 +31,8 @@ export async function handleHook(provider:string,input:any) {
   const fingerprint=createHash('sha256').update(`${c.id}:${turn}:${text}`).digest('hex');
   const dir=join(stateDir,'spool');mkdirSync(dir,{recursive:true,mode:0o700});
   const temp=join(dir,`${fingerprint}.${process.pid}.tmp`);
-  writeFileSync(temp,JSON.stringify({bindingId:c.id,text,at:Date.now(),eventId:`hook:${fingerprint}`}),{mode:0o600});
+  const requestId=typeof input.request_id==='string'?input.request_id:undefined;
+  writeFileSync(temp,JSON.stringify({bindingId:c.id,text,at:Date.now(),eventId:`hook:${fingerprint}`,requestId,turnId:typeof input.turn_id==='string'?input.turn_id:undefined}),{mode:0o600});
   renameSync(temp,join(dir,`${fingerprint}.json`));
 }
 export function drainHooks(store:Store) {
@@ -40,10 +41,15 @@ export function drainHooks(store:Store) {
     const path=join(dir,f);
     try {
       const d=JSON.parse(readFileSync(path,'utf8')),b=store.binding(d.bindingId);
-      // A final explicitly sent by this agent suppresses the immediately following Stop
-      // notification. Never synthesise a completion message or read transcript files.
-      const sentAt=Number(store.get(`explicit-final:${b?.id}`)??0);
-      if(b?.enabled&&typeof d.text==='string'&&!(sentAt&&d.at>=sentAt&&d.at-sentAt<120000))store.output(b,d.text,d.eventId);
+      // A time window on a binding could discard another concurrent request's reply.
+      // Only exact request/turn evidence permits deduplication or phone delivery.
+      if(b?.enabled&&typeof d.text==='string') {
+        const turnId=typeof d.turnId==='string'?d.turnId:undefined;
+        const requestId=typeof d.requestId==='string'?d.requestId:turnId?store.hookRequest(b.id,turnId):undefined;
+        const job=requestId?store.job(requestId):undefined;
+        if(job&&job.binding_id===b.id&&job.status!=='replaced')store.output(b,d.text,d.eventId,job.destination??null,{requestId,turnId,kind:'hook',origin:'hook'});
+        else store.holdHook(d.eventId,b.id,d.text,turnId);
+      }
       unlinkSync(path);
     } catch {store.audit('invalid-hook-spool',undefined,f);}
   }

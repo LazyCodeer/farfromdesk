@@ -1,10 +1,15 @@
-import { Store, type Binding } from './store.js';
+import { queueOwnerReceipt } from './coordinator-experience.js';
+import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
 import type { Approvals } from './approvals.js';
 import type { Coordinator } from './coordinator.js';
+import { Attachments, type IncomingFile } from './attachments.js';
+import { updateRole, turnEnvelope } from './roles.js';
+import { errorCode, type ReplyContext, type RequestOutcome } from './request-events.js';
 
+export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
 export type Incoming = {id:string;text:string;quotedId?:string};
-export const help = `Commands\n/sessions [NAME] — five recent sessions per platform, or search\n/sessions more — older sessions\n/sessions back — previous page\n/use NAME — set direct-session focus\n/to NAME message — send to one connected session\n/status — bridge and queue\n/workspace — approved project location\n/workspace revoke — pause created workers and revoke workspace access\n/stop NAME — interrupt bridge-run work\n/pause NAME — stop forwarding\n/resume NAME — enable forwarding\n/approve CODE or /deny CODE\n/answer CODE your answer\nReview unfinished requests in the app’s Activity page.\n\nTell the master which session to work on; it connects that exact session automatically. Connections accumulate across platforms. Ambiguous names get a choice of matches. Quote an agent reply to address that exact session.`;
+export const help = `Commands\n/sessions [NAME] — five recent sessions per platform, or search\n/sessions more — older sessions\n/sessions back — previous page\n/use NAME — set direct-session focus\n/to NAME message — send to one connected session\n/status — bridge and queue\n/style NAME friendly|cheerful|professional|coding — reply tone\n/workspace — approved project location\n/workspace revoke — pause created workers and revoke workspace access\n/stop NAME — interrupt bridge-run work\n/pause NAME — stop forwarding\n/resume NAME — enable forwarding\n/approve CODE or /deny CODE\n/answer CODE your answer\nReview unfinished requests in the app’s Activity page.\n\nTell the master which session to work on; it connects that exact session automatically. Connections accumulate across platforms. Ambiguous names get a choice of matches. Quote an agent reply to address that exact session.`;
 export class Router {
   coordinator?:Coordinator;
   hasPendingCreation?:(requestId:string)=>boolean;
@@ -12,24 +17,60 @@ export class Router {
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {}
-  async receive(m:Incoming) {
-    if(this.stopped)return;
-    if(this.store.seen(m.id))return;
-    const text=m.text.trim();if(!text)return;
+  attachments:Attachments;
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.attachments=new Attachments(store);}
+  attachmentTarget(m:Incoming) {
+    let text=m.text.trim(),b:Binding|undefined;
+    if(text.startsWith('/')) {
+      const match=/^\/to\s+(\S+)(?:\s+([\s\S]*))?$/i.exec(text);
+      if(!match)throw new Error('Attachment captions cannot run bridge commands. Use /to NAME caption or quote a session reply.');
+      b=this.need(match[1]);text=match[2]?.trim()??'';
+    } else if(m.quotedId) {
+      b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
+    } else b=this.coordinator?this.coordinator.master():this.store.binding(this.store.get('active')??'');
+    if(!b)throw new Error('Choose an exact session before sending an attachment.');
+    this.need(b.id);
+    if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
+    return {binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
+      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.get('whatsapp-owner')])};
+  }
+  receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
+    if(this.stopped||this.store.seen(m.id))return;
+    if(this.attachmentTarget(m).identity!==target.identity)throw new Error('The intended session changed during download. Please resend to the intended session.');
+    this.store.db.exec('BEGIN IMMEDIATE');
+    try {
+      if(this.store.job(m.id))throw new Error('This attachment request already exists. Check its status before resending.');
+      this.queue(m.id,this.need(target.binding.id),target.text);
+      this.attachments.stage(target.binding,m.id,file);this.store.remember(m.id);
+      this.store.db.prepare("UPDATE media_inbox SET status='processed' WHERE id=?").run(m.id);
+      this.store.db.exec('COMMIT');
+    }catch(e){this.store.db.exec('ROLLBACK');this.attachments.cleanupOrphans();throw e;}
+    this.pump();
+  }
+  private receiving=new Set<string>();
+  async receive(m:Incoming):Promise<RouteResult> {
+    if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
+    this.receiving.add(m.id);
+    try{return await this.receiveOnce(m);}finally{this.receiving.delete(m.id);}
+  }
+  private async receiveOnce(m:Incoming):Promise<RouteResult> {
+    if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+    if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
+    const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
     // Commands are deterministic. Their text is never interpreted by a routing model.
     try {
       const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show my sessions|list all sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
       if(this.coordinator&&!m.quotedId&&browsing) {
+        queueOwnerReceipt(this.store,m.id,this.coordinator.master(),true);
         let search=text.replace(/^\/sessions\s*/i,'');
         const more=/^(?:(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|\/sessions more)$/i.test(text);
         const back=/^(?:previous page|\/sessions back)$/i.test(text);
         if(!/^\/sessions\s+/i.test(text))search=/^(?:find|search)(?: for)? sessions? (.+)$/i.exec(text)?.[1]??'';
-        this.store.output(undefined,await this.coordinator.list(search,more?'more':back?'back':0),`command:${m.id}`);this.store.remember(m.id);return;
+        this.store.output(undefined,await this.coordinator.list(search,more?'more':back?'back':0),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       const selection=/^(?:(?:\/select|select|choose|pick)\s+)?(\d+(?:(?:\s*,\s*|\s+and\s+|\s+)\d+)*)$/i.exec(text);
       if(this.coordinator&&!m.quotedId&&selection&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
-        this.store.output(undefined,await this.coordinator.select(selection[1].replace(/\band\b/gi,',')),`command:${m.id}`);this.store.remember(m.id);return;
+        this.store.output(undefined,await this.coordinator.select(selection[1].replace(/\band\b/gi,',')),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(text.startsWith('/')) {
         const match=/^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)!;
@@ -40,6 +81,7 @@ export class Router {
         else if(cmd==='use') {const b=this.need(args);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
         else if(cmd==='to') {const [alias,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /to NAME message');this.queue(m.id,this.need(alias),words.join(' '));}
         else if(cmd==='status')this.store.output(undefined,`Active: ${this.store.binding(this.store.get('active')??'')?.alias??'none'}\nRunning: ${this.busy.size}\nWaiting permissions: ${this.approvals.pending.size}\n${this.store.jobs().slice(0,8).map(j=>`${j.id} · ${this.store.binding(j.binding_id)?.alias} · ${j.status}${j.error?` · ${j.error}`:''}`).join('\n')}`,`command:${m.id}`);
+        else if(cmd==='style') {const [name,style,...extra]=args.split(/\s+/);if(extra.length||!style)throw new Error('Use /style NAME friendly|cheerful|professional|coding.');const b=this.need(name==='master'?this.store.get('master')??'':name);updateRole(this.store,b,style);this.store.output(b,`Reply style set to ${style}. It applies from the next work turn.`,`command:${m.id}`);}
         else if(cmd==='stop') {const b=this.need(args);this.native.stop(b);this.store.output(b,'Pending bridge approvals denied. Interrupt active work using the native app stop control. The bridge does not kill your session.',`command:${m.id}`);}
         else if(cmd==='pause'||cmd==='resume') {const b=this.store.binding(args);if(!b)throw new Error('Unknown session');this.store.enable(b.id,cmd==='resume');if(cmd==='pause'){this.native.stop(b);this.channelClients.delete(b.id);}this.store.output(undefined,`${b.alias}: ${cmd==='resume'?'enabled':'paused'}`,`command:${m.id}`);}
         else if(cmd==='approve'||cmd==='deny') {this.approvals.answer(args,cmd,'approval');this.store.output(undefined,'Decision delivered.',`command:${m.id}`);}
@@ -51,14 +93,29 @@ export class Router {
         if(m.quotedId) {
           b=this.store.quotedBinding(m.quotedId);
           if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME message.');
-        } else if(this.coordinator){this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return;}
+        } else if(this.coordinator){this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return {status:'queued',requestId:m.id};}
         else b=this.store.binding(this.store.get('active')??'');
         if(!b)throw new Error('Choose a session with /use NAME or quote an agent reply. Send /sessions to see your sessions.');
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
-    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`);this.store.remember(m.id);}
-    this.pump();
+    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`);this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
+    this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};
+  }
+  unfinishedChildren(id:string) {
+    return !!this.store.db.prepare(`SELECT 1 FROM inbox i JOIN settings s ON s.key='parent:'||i.id
+      WHERE s.value=? AND i.status NOT IN ('completed','reviewed','auto_closed','replaced') LIMIT 1`).get(id);
+  }
+  resolveOwner(id:string,outcome:RequestOutcome,acknowledgingReport?:string) {
+    const job=this.store.job(id),master=this.coordinator?.master();
+    if(!job||!/^(wa|local):/.test(id)||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
+    if(!['done','blocked','reviewed','cancelled'].includes(outcome))throw new Error('An explicit outcome is required.');
+    if(job.status==='completed'){if(job.outcome!==outcome)throw new Error('This request already has a different outcome.');return;}
+    const children=this.store.db.prepare(`SELECT i.id,i.binding_id FROM inbox i JOIN settings s ON s.key='parent:'||i.id WHERE s.value=?`).all(id) as {id:string;binding_id:string}[];
+    const related=new Set([job.binding_id,...children.map(c=>c.binding_id)]);
+    const pendingReports=this.store.db.prepare(`SELECT i.id FROM inbox i LEFT JOIN settings s ON s.key='report-parent:'||i.id LEFT JOIN settings legacy ON legacy.key='parent:'||substr(i.id,8) WHERE i.id LIKE 'report:%' AND COALESCE(s.value,legacy.value)=? AND i.status NOT IN ('completed','reviewed','auto_closed','replaced')`).all(id) as {id:string}[];
+    if(this.hasPendingCreation?.(id)||this.unfinishedChildren(id)||pendingReports.some(r=>r.id!==acknowledgingReport)||[...this.approvals.pending.values()].some(p=>related.has(p.binding.id)))throw new Error('Finish or review delegated work, reports and pending approvals before resolving the owner request.');
+    this.store.jobState(id,'completed',null,outcome);this.store.event(id,'owner_resolved',{outcome});
   }
   requestProtected(id:string,bindingId:string) {
     if(this.busy.has(bindingId)||this.store.hasDispatched(bindingId)||[...this.approvals.pending.values()].some(p=>p.binding.id===bindingId))return true;
@@ -125,7 +182,13 @@ export class Router {
   need(id:string){const b=this.store.binding(id);if(!b?.enabled)throw new Error('Session is missing or paused. Send /sessions.');return b;}
   queue(id:string,b:Binding,text:string) {
     if(text.length>32000)throw new Error('Message exceeds 32,000 characters.');
-    this.store.enqueue(id,b,text);
+    this.store.db.exec('SAVEPOINT queue_owner');
+    try {
+      const exists=!!this.store.job(id);
+      this.store.enqueue(id,b,text);
+      if(!exists&&b.id===this.coordinator?.master()?.id)queueOwnerReceipt(this.store,id,b);
+      this.store.db.exec('RELEASE queue_owner');
+    }catch(e){this.store.db.exec('ROLLBACK TO queue_owner; RELEASE queue_owner');throw e;}
   }
   pump() {
     if(this.stopped)return;
@@ -134,7 +197,7 @@ export class Router {
       const job=this.store.queued(b.id);if(!job)continue;
       this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
       void this.native.run(b,job.body,job.id).then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
-        if(this.store.job(job.id)?.status==='replaced')return;
+        if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
         this.store.jobState(job.id,'uncertain',(e as Error).message);
         this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null);
       }).finally(()=>{this.busy.delete(b.id);this.pump();});
@@ -147,18 +210,40 @@ export class Router {
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.store.queued(b.id);if(!job)return null;
-    this.store.jobState(job.id,'dispatched');return job;
+    const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply',request_id:job.id,kinds:['progress','final']},this.attachments.references(b,job.id,true));
+    this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
   }
-  channelReply(b:Binding,text:string,kind:string,requestId?:string,source?:string) {
+  channelReply(b:Binding,text:string,kind:string,requestId?:string,source?:string,context:Pick<ReplyContext,'turnId'|'outcome'>={}) {
+    if(!['progress','final'].includes(kind))throw new Error('Use progress or final');
+    if(typeof text!=='string'||!text.trim()||text.length>100000)throw new Error('Reply text must be nonempty and under 100,000 characters');
+    if(context.turnId!==undefined&&(typeof context.turnId!=='string'||!context.turnId.length||context.turnId.length>200||/[\x00-\x20]/.test(context.turnId)))throw new Error('Invalid provider turn ID.');
+    if(context.outcome!==undefined&&!['done','blocked','reviewed','cancelled'].includes(context.outcome))throw new Error('Invalid request outcome.');
     if(!this.store.binding(b.id)?.enabled)throw new Error('This session is inactive.');
     if(requestId&&this.store.job(requestId)?.status==='replaced')throw new Error('This request was closed when its master was replaced.');
-    if(kind==='final'&&requestId&&this.hasPendingCreation?.(requestId))throw new Error('Session creation is still pending. Send progress and keep the owner request open.');
+    if(kind==='final'&&[...this.approvals.pending.values()].some(p=>p.binding.id===b.id))throw new Error('A native approval is still pending. Resolve it before marking this request final.');
+    if(kind==='final'&&requestId&&(this.hasPendingCreation?.(requestId)||this.unfinishedChildren(requestId)))throw new Error('Delegated work or session creation is still pending. Send progress and keep the owner request open.');
     if(kind==='final'&&!requestId&&this.store.unfinished(b.id).length)throw new Error('This session has open bridge requests. Use respond NAME REQUEST-ID (or whatsapp_reply with requestId) from the original message so the final reply closes the correct request. Use progress for an interim update.');
     if(requestId){const j=this.store.job(requestId);if(!j||j.binding_id!==b.id)throw new Error('Reply request does not belong to this session.');}
-    this.store.output(b,text,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination());
-    if(requestId&&kind==='final')this.store.jobState(requestId,'completed');
-    else if(requestId)this.store.db.prepare('UPDATE inbox SET updated_at=? WHERE id=?').run(Date.now(),requestId);
+    if(requestId&&kind==='final') {
+      const previous=this.store.get(`final-reply:${requestId}`);
+      if(previous!==undefined){if(previous!==text)throw new Error('This request already has a different final reply.');return {accepted:true,newlyQueued:false};}
+      if(this.store.job(requestId)?.status==='completed')return {accepted:true,newlyQueued:false};
+    }
+    if(requestId?.startsWith('report:')&&kind==='final') {
+      this.coordinator?.quiet(requestId,context.outcome);return {accepted:true,newlyQueued:false,acknowledged:true};
+    }
+    if(requestId)source=`reply:${kind}:${b.id}:${requestId}:${kind==='final'?'final':context.turnId?hash(context.turnId+':'+text):source??hash(text)}`;
+    let queued=false;
+    this.store.db.exec('BEGIN IMMEDIATE');
+    try {
+    queued=this.store.output(b,text,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination(),{...context,requestId,kind:kind==='final'?'final':'progress',origin:'agent'})===true;
+    if(requestId&&kind==='final')this.store.set(`final-reply:${requestId}`,text);
+    if(requestId&&kind==='final')this.store.jobState(requestId,'completed',null,context.outcome);
+    else if(requestId){const j=this.store.job(requestId)!;if(['uncertain','failed'].includes(j.status))this.store.jobState(requestId,'submitted');else this.store.db.prepare('UPDATE inbox SET updated_at=? WHERE id=?').run(Date.now(),requestId);}
     if(kind==='final')this.store.set(`explicit-final:${b.id}`,String(Date.now()));
-    if(kind==='final'&&requestId)this.coordinator?.workerReply(b,text,requestId);
+    if(queued&&requestId)this.coordinator?.workerReply(b,text,requestId,false,kind as 'progress'|'final');
+    this.store.db.exec('COMMIT');
+    }catch(e){this.store.db.exec('ROLLBACK');throw e;}
+    if(queued&&this.coordinator)this.pump();return {accepted:true,newlyQueued:queued};
   }
 }

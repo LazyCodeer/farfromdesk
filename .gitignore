@@ -38,3 +38,6 @@ __pycache__/
 .flutter-plugins-dependencies
 /test-results/
 /preview-output/
+
+# Machine-specific local build/install reports
+/docs/local-build-*.md

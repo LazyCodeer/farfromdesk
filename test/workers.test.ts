@@ -7,6 +7,7 @@ import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
 import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
+import { Connections, connectionProfile } from '../src/connections.js';
 import { Workers } from '../src/workers.js';
 import { ClaudeSession } from '../src/claude-session.js';
 
@@ -14,15 +15,17 @@ const uuid='44444444-4444-4444-a444-444444444444';
 function fixture() {
   const dir=mkdtempSync(join(tmpdir(),'tether-workers-')),root=join(dir,'Projects');
   const store=new Store(':memory:'),approvals=new Approvals(store);
+  const prefer=(provider:string,mode:string,desktopParentId?:string)=>store.set(`platform-preference:${provider}`,JSON.stringify({executionMode:mode,desktopParentId,route:{accountKey:'test-account',profileId:connectionProfile(provider as any,mode as any)}}));
+  prefer('codex','cli');prefer('claude','cli');
   const native={run:async()=>{},stop:()=>{},validate:async()=>{},catalog:async()=>({sessions:[],cursor:null})};
   const router=new Router(store,native as any,approvals),c=new Coordinator(store,native as any,router,()=>{});router.coordinator=c;
   const master=store.register('test-master','codex',uuid,dir).binding;store.set('master',master.id);store.set('whatsapp-owner','123@s.whatsapp.net');
   store.enqueue('wa:create',master,'Create a test project');
   let creations=0,stops=0;
-  const masters={provisionWorker:async()=>{creations++;},recoverWorker:async()=>{},stopWorker:()=>{stops++;}};
+  const masters={connections:new Connections(store,async()=>({state:"verified",label:"Test account",accountKey:"test-account"})),provisionWorker:async()=>{creations++;},recoverWorker:async()=>{},stopWorker:()=>{stops++;}};
   const workers=new Workers(store,router,masters as any,root,()=>{});router.hasPendingCreation=id=>workers.pending(id);
   const request={requestId:'wa:create',provider:'codex' as const,name:'Website',text:'Make a test website',eventId:'first'};
-  return {dir,root,store,approvals,router,c,master,masters,workers,request,counts:()=>({creations,stops}),close:()=>{router.stopped=true;approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
+  return {dir,root,store,approvals,router,c,master,masters,workers,request,prefer,counts:()=>({creations,stops}),close:()=>{router.stopped=true;approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 async function settled(f:ReturnType<typeof fixture>){await Promise.all([...f.workers.tasks.values()]);await new Promise(r=>setTimeout(r,5));}
 function approve(f:ReturnType<typeof fixture>,answer='approve'){const code=[...f.approvals.pending.keys()][0];assert.ok(code);f.approvals.answer(code,answer,'approval');}
@@ -161,14 +164,41 @@ if(m.type==='control_response')send({type:'result',session_id:id,subtype:'succes
 
 test('worker creation freezes execution mode and configured Desktop launcher without CLI fallback',async()=>{
   const f=fixture();try {
-    f.store.set('claude-execution-mode','desktop');f.store.set('claude-desktop-parent',uuid);
-    let parents=0;(f.masters as any).desktop={parent:async(id:string)=>{assert.equal(id,uuid);parents++;}};
+    f.store.set('claude-execution-mode','desktop');f.prefer('claude','desktop',uuid);f.store.set('claude-desktop-parent',uuid);
+    let parents=0;(f.masters as any).desktop={parent:async(id:string)=>{assert.equal(id,uuid);parents++;return {id:uuid};}};
     const request={...f.request,provider:'claude' as const};
     const op=await f.workers.start(request);await new Promise(r=>setTimeout(r,0));approve(f);await settled(f);
     assert.equal(f.workers.get(op.id)?.executionMode,'desktop');assert.equal(parents,1);
     const b=f.c.selected()[0];assert.equal(f.store.get(`execution-mode:${b.id}`),'desktop');assert.equal(f.store.get(`desktop-parent:${b.id}`),uuid);
-    f.store.set('claude-execution-mode','cli');await f.workers.start(request);assert.equal(parents,1);
+    f.prefer('claude','cli');await f.workers.start(request);assert.equal(parents,1);
     await assert.rejects(f.workers.start({...request,executionMode:'cli'}),/different task/);
     assert.equal(f.store.get(`execution-mode:${b.id}`),'desktop');
+  }finally{f.close();}
+});
+
+test('new Codex workers honor a saved Desktop choice without invoking a Claude launcher',async()=>{
+  const f=fixture();try {
+    f.prefer('codex','desktop');
+    const op=await f.workers.start(f.request);assert.equal(op.executionMode,'desktop');assert.equal(op.desktopParentId,undefined);
+    approve(f);await settled(f);const b=f.c.selected()[0];
+    assert.equal(f.workers.get(op.id)?.status,'ready');assert.equal(f.masters.connections.route(b)?.transport,'native-session');
+    assert.equal(f.store.get(`execution-mode:${b.id}`),'desktop');
+    await assert.rejects(f.workers.start({...f.request,executionMode:'cli'}),/different task/);
+  }finally{f.close();}
+});
+test('new platform with no saved runtime requires a choice instead of defaulting to CLI',async()=>{
+  const f=fixture();try {
+    f.store.db.prepare('DELETE FROM settings WHERE key=?').run('platform-preference:claude');
+    await assert.rejects(f.workers.start({...f.request,provider:'claude'}),/Choose claude Desktop or CLI/);
+    assert.equal(f.workers.operations().length,0);assert.equal(f.approvals.pending.size,0);assert.equal(f.counts().creations,0);
+  }finally{f.close();}
+});
+
+
+test('new workers reject changed preferred CLI accounts before approval or creation',async()=>{
+  const f=fixture();try {
+    f.masters.connections=new Connections(f.store,async()=>({state:'verified',label:'Different CLI account',accountKey:'changed-account'}));
+    await assert.rejects(f.workers.start(f.request),/preferred CLI account or provider changed/);
+    assert.equal(f.workers.operations().length,0);assert.equal(f.approvals.pending.size,0);assert.equal(f.counts().creations,0);
   }finally{f.close();}
 });

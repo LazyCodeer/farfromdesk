@@ -25,4 +25,4 @@ Never commit the application's state directory, linked-device credentials, admin
 
 ## Support status
 
-Only the current private development branch is maintained. No public security SLA or supported release range is established yet. Public release requires the checks in docs/RELEASING.md.
+Security fixes target the latest stable release and main branch. Older releases may not receive backports. No response-time SLA is promised. Use GitHub private vulnerability reporting from the Security tab; do not publish exploits involving private data in issues. Release checks are documented in docs/RELEASING.md.

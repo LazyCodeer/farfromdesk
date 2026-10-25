@@ -1,10 +1,10 @@
 # FarFromDesk per-user Windows desktop installer. Run with PowerShell 5.1+.
 [CmdletBinding()]
-param([string]$Version = '0.7.0-preview.1', [string]$ReleaseBase = '', [switch]$NoLaunch, [switch]$DryRun)
+param([string]$Version = '0.7.1', [string]$ReleaseBase = '', [switch]$NoLaunch, [switch]$DryRun)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 if ($Version -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid release version.' }
-if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { throw 'This preview supports Windows x64. Native ARM64 packaging is pending.' }
+if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { throw 'This release supports Windows x64. Native ARM64 packaging is pending.' }
 if (-not $ReleaseBase) { $ReleaseBase = "https://github.com/LazyCodeer/farfromdesk/releases/download/v$Version" }
 if (([Uri]$ReleaseBase).Scheme -ne 'https') { throw 'Release base must use HTTPS.' }
 $asset = "FarFromDesk-$Version-windows-x64.zip"
@@ -16,7 +16,7 @@ try {
   try {
     Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBase/$asset" -OutFile $archive
     Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBase/$asset.sha256" -OutFile (Join-Path $temp 'checksum')
-  } catch { throw 'Release download failed. It may be unpublished or require private access. No app was installed.' }
+  } catch { throw 'Release download failed. It may be unpublished or be temporarily unavailable. No app was installed.' }
   $expected = ((Get-Content -LiteralPath (Join-Path $temp 'checksum') -Raw).Trim() -split '\s+')[0]
   if ($expected -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $expected) { throw 'Checksum verification failed. Installation stopped.' }
   Add-Type -AssemblyName System.IO.Compression.FileSystem

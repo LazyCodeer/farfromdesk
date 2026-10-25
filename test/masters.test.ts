@@ -14,11 +14,14 @@ if(process.argv.includes('--version')){console.log('fake native CLI');process.ex
 const rl=require('node:readline').createInterface({input:process.stdin});
 const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
 rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;
-if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
-else if(m.method==='thread/read')send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
+if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt',email:'test@example.com'}}});
+else if(m.method==='config/read')send({id:m.id,result:{config:{model_provider:'openai'}}});
+else if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
+else if((m.method==='thread/read'||m.method==='thread/resume'))send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
 else {send({id:m.id,result:{}});if(m.method==='turn/start'){send({method:'item/completed',params:{threadId:'${nativeId}',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{status:'completed'}}});}}
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=join(dir,'state');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
+const { Connections }=await import('../src/connections.js');
 const { Masters,codexDesktopInstalled,masterName }=await import('../src/masters.js');
 const { Coordinator }=await import('../src/coordinator.js');
 const { CodexSession }=await import('../src/codex-session.js');
@@ -32,6 +35,7 @@ function fixture(){
   const native={run:async()=>{},stop:()=>{},catalog:async()=>({sessions:[],cursor:null}),validate:async()=>{}};
   const router=new Router(store,native as any,approvals),coordinator=new Coordinator(store,native as any,router);router.coordinator=coordinator;
   const masters=new Masters(store,router);
+  masters.connections=new Connections(store,async()=>({state:"verified",label:"Test account",accountKey:"test-account"}));
   let closed=false;const close=()=>{if(closed)return;closed=true;masters.close();approvals.cancel();store.close();};
   cleanups.push(close);return {store,router,masters,approvals,close};
 }
@@ -44,7 +48,7 @@ test('native creation persists exact identity, scoped tools and friendly instruc
   assert.equal(f.store.get('master'),old.id);await f.masters.create('codex',id);await settled(f);
   assert.equal(f.masters.operation().status,'ready');const b=f.store.binding(f.store.get('master')!)!;
   assert.equal(b.native_id,nativeId);assert.equal(f.store.binding(old.id)!.enabled,0);assert.equal(f.store.bindings().length,2);
-  assert.match(readFileSync(join(b.cwd,'AGENTS.md'),'utf8'),/friendly WhatsApp coordinator/);
+  assert.match(readFileSync(join(b.cwd,'AGENTS.md'),'utf8'),/# FarFromDesk Coordinator/);
   assert.match(readFileSync(join(b.cwd,'.agents/skills/whatsapp-master/SKILL.md'),'utf8'),/session_bridge MCP tools/);
   f.store.enqueue('wa:hello',b,'hello');await f.masters.run(b,'hello','wa:hello');
   assert.equal(f.store.job('wa:hello')!.status,'completed');assert.match(f.store.outbound().body,/I can help/);f.close();
@@ -244,4 +248,56 @@ test('session name validation rejects nontext, oversized and hidden controls bef
  const f=fixture();f.masters.platforms=[{provider:'codex',available:true}];
  for(const name of [42,'x'.repeat(81),'bad\nname','bad\u202ename'])await assert.rejects(f.masters.create('codex','32323232-3232-4232-a232-323232323232','cli',undefined,name),/name/);
  assert.equal(f.store.bindings().length,0);assert.equal(f.masters.operation(),null);
+});
+
+test('concurrent identical setup requests retain one operation while authentication is checked',async()=>{
+  const f=fixture();await f.masters.discover();
+  const id='87878787-8787-4787-a787-878787878787';
+  const results=await Promise.all([f.masters.create('codex',id,'cli'),f.masters.create('codex',id,'cli')]);
+  assert.equal(results[0].id,id);assert.equal(results[1].id,id);await settled(f);
+  assert.equal(f.store.bindings().length,1);assert.equal(f.masters.operation().status,'ready');
+});
+
+test('platform preferences save independently, preserve requests and survive coordinator replacement',async()=>{
+  const f=fixture();await f.masters.discover();
+  const old=f.store.register('current','codex','11111111-1111-4111-a111-111111111111',dir).binding;
+  f.store.set('master',old.id);f.store.enqueue('wa:preserve',old,'Keep this request');
+  await f.masters.setPlatformPreference('codex','cli');
+  f.masters.platforms=f.masters.platforms.filter(p=>!(p.provider==='claude'&&p.executionMode==='desktop'));
+  f.masters.platforms.push({provider:'claude',executionMode:'desktop',available:true});
+  f.masters.desktop.parent=async()=>({id:nativeId,name:'Independent launcher',cwd:dir,executionMode:'desktop'} as any);
+  await f.masters.setPlatformPreference('claude','desktop',nativeId);
+  const prefs=f.masters.platformPreferences();assert.equal(prefs.find(p=>p.provider==='codex')?.executionMode,'cli');
+  assert.equal(prefs.find(p=>p.provider==='claude')?.desktopParentId,nativeId);
+  assert.equal(f.store.get('master'),old.id);assert.equal(f.store.job('wa:preserve')?.status,'queued');assert.equal(f.store.bindings().length,1);
+  const next=f.store.register('replacement','claude','12121212-1212-4212-a212-121212121212',dir).binding;
+  f.store.set(`execution-mode:${next.id}`,'cli');f.masters.activate(next);
+  assert.deepEqual(f.masters.platformPreferences(),prefs);
+});
+test('platform preferences reject missing, unsupported and signed-out choices without changing a saved preference',async()=>{
+  const f=fixture();await f.masters.discover();await f.masters.setPlatformPreference('codex','cli');
+  const before=f.masters.platformPreferences();
+  await assert.rejects(f.masters.setPlatformPreference('cursor' as any,'cli'),/detected/);
+  await assert.rejects(f.masters.setPlatformPreference('codex',undefined),/explicitly/);
+  await assert.rejects(f.masters.setPlatformPreference('claude','cli'),/not detected/);
+  f.masters.connections=new Connections(f.store,async()=>({state:'signed-out',label:'CLI signed out'}));
+  await assert.rejects(f.masters.setPlatformPreference('codex','cli'),/signed out/);
+  assert.deepEqual(f.masters.platformPreferences(),before);
+});
+
+
+test('Claude Desktop preference saves without any launcher lookup and preserves a configured launcher',async()=>{
+  const f=fixture();await f.masters.discover();
+  f.masters.platforms=f.masters.platforms.filter(p=>!(p.provider==='claude'&&p.executionMode==='desktop'));
+  f.masters.platforms.push({provider:'claude',executionMode:'desktop',available:true,sessions:[]});
+  f.masters.desktop.parent=async()=>{throw new Error('Must not look up sessions when only choosing a runtime');};
+  await f.masters.setPlatformPreference('claude','desktop');
+  assert.equal(f.masters.platformPreferences().find(p=>p.provider==='claude')?.executionMode,'desktop');
+  assert.equal(f.masters.platformPreferences().find(p=>p.provider==='claude')?.desktopParentId,null);
+  const saved=JSON.parse(f.store.get('platform-preference:claude')!);
+  f.store.set('platform-preference:claude',JSON.stringify({...saved,desktopParentId:nativeId,launcherName:'Previously chosen',route:{...saved.route,accountScope:'scope'}}));
+  await f.masters.setPlatformPreference('claude','desktop');
+  const preference=f.masters.platformPreferences().find(p=>p.provider==='claude');
+  assert.equal(preference?.desktopParentId,nativeId);assert.equal(preference?.launcherName,'Previously chosen');
+  assert.equal(f.store.get('master'),undefined);assert.equal(f.store.bindings().length,0);
 });

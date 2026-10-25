@@ -2,11 +2,11 @@
 # FarFromDesk user-local desktop installer. No sudo, package manager, or browser UI.
 set -eu
 umask 077
-version=${FFD_VERSION:-0.7.0-preview.1}
+version=${FFD_VERSION:-0.7.1}
 case "$version" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid release version.' >&2; exit 1;; esac
 case "$(uname -s)" in Darwin) os=macos;; Linux) os=linux;; *) echo 'Use install.ps1 on Windows.' >&2; exit 1;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=x64;; *) echo 'This CPU is not supported.' >&2; exit 1;; esac
-if [ "$os" = linux ] && [ "$arch" != x64 ]; then echo 'Linux arm64 builds are not available in this preview.' >&2; exit 1; fi
+if [ "$os" = linux ] && [ "$arch" != x64 ]; then echo 'Linux arm64 builds are not available for this release.' >&2; exit 1; fi
 extension=tar.gz; [ "$os" != macos ] || extension=zip
 asset="FarFromDesk-$version-$os-$arch.$extension"
 base=${FFD_RELEASE_BASE:-https://github.com/LazyCodeer/farfromdesk/releases/download/v$version}
@@ -17,7 +17,7 @@ temp=$(mktemp -d "${TMPDIR:-/tmp}/farfromdesk.XXXXXXXX")
 trap 'rm -rf "$temp"' EXIT HUP INT TERM
 download() {
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$1" --output "$2" || {
-    echo 'Release download failed. The release may be unpublished or require private access. No app was installed.' >&2; exit 1;
+    echo 'Release download failed. The release may be unpublished or be temporarily unavailable. No app was installed.' >&2; exit 1;
   }
 }
 printf 'Downloading FarFromDesk %s for %s %s…\n' "$version" "$os" "$arch"

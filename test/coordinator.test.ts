@@ -131,7 +131,7 @@ test('router recognizes older history and name search while ordinary requests go
     await f.router.receive({id:'wa:back',text:'previous page'});assert.equal(f.c.pageDetails().page,1);
     await f.router.receive({id:'wa:find',text:'find session Project 3'});assert.equal(f.c.pageDetails().sessions[0].id,uuid(3));
     await f.router.receive({id:'wa:task',text:'Work on Project 3'});assert.equal(f.store.job('wa:task')?.binding_id,f.master.id);
-    assert.match(f.store.job('wa:task')!.body,/master_connect/);
+    assert.equal(f.store.job('wa:task')!.body,'Work on Project 3');
     await new Promise(r=>setTimeout(r,10));
   }finally{f.router.stopped=true;f.close();}
 });
@@ -153,5 +153,16 @@ test('Claude saved-session metadata exposes history and timestamps, not transcri
     assert.equal((await claudeHistory(root))[0].name,'Renamed work');
     rmSync(join(dir,uuid(1)+'.jsonl'));assert.equal((await claudeHistory(root)).length,0);
     assert.equal(activityTime(1700000000),1700000000000);assert.equal(activityTime(1700000000000),1700000000000);assert.equal(activityTime('bad'),undefined);
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('Claude title index enriches existing history and refreshes without loading full messages',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'ffd-index-')),dir=join(root,'project');mkdirSync(dir);
+  try {
+    writeFileSync(join(dir,uuid(1)+'.jsonl'),JSON.stringify({sessionId:uuid(1),cwd:'/tmp/galileo',timestamp:'2026-10-25T00:00:00Z'})+'\n');
+    const index=(title:string)=>JSON.stringify({entries:[{sessionId:uuid(1),projectPath:'/tmp/galileo',summary:title,modified:'2026-10-25T12:00:00Z'},{sessionId:uuid(2),projectPath:'/tmp/galileo',summary:'Must not invent a session'}]});
+    writeFileSync(join(dir,'sessions-index.json'),index('Galileo repo migration'));
+    let rows=await claudeHistory(root);assert.equal(rows.length,1);assert.equal(rows[0].name,'Galileo repo migration');assert.equal(rows[0].activation,'cli-resume');
+    writeFileSync(join(dir,'sessions-index.json'),index('Renamed migration'));rows=await claudeHistory(root);assert.equal(rows[0].name,'Renamed migration');
   }finally{rmSync(root,{recursive:true,force:true});}
 });

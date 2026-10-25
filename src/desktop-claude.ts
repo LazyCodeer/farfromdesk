@@ -86,6 +86,6 @@ export async function claudeDesktopProcesses() {
 export type ExecutionMode='desktop'|'cli';
 export function executionMode(provider:string,value:unknown):ExecutionMode {
   const mode=value??'cli';
-  if(!['desktop','cli'].includes(String(mode))||(provider!=='claude'&&mode!=='cli'))throw new Error('Choose Desktop or CLI for Claude; Codex uses its native CLI adapter.');
+  if(!['codex','claude'].includes(provider)||!['desktop','cli'].includes(String(mode)))throw new Error('Choose Desktop or CLI for a supported coding platform.');
   return mode as ExecutionMode;
 }

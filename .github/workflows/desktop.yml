@@ -8,7 +8,7 @@ on:
         default: linux
         options: [linux, windows, macos-arm64, macos-x64, all]
       publish:
-        description: 'Publish a complete private release from main'
+        description: 'Publish a complete public release from main'
         type: boolean
         default: false
   push:

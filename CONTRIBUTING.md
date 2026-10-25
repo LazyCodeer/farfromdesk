@@ -1,6 +1,6 @@
 # Contributing to FarFromDesk
 
-FarFromDesk is licensed under MIT. The repository is currently private while the preview is prepared. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
+FarFromDesk is licensed under MIT. Fork this repository and open a pull request. Only the repository owner can merge or publish changes. Website, installer and release-workflow changes require owner review. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
 
 ## Local workflow
 

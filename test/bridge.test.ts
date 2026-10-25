@@ -65,7 +65,7 @@ test('WhatsApp numbered selection uses a frozen snapshot and never chooses anoth
   const c=new Coordinator(f.store,n as any,f.router,()=>{});f.router.coordinator=c;
   await f.router.receive({id:'wa:list',text:'Show my sessions'});catalog.reverse();
   await f.router.receive({id:'wa:select',text:'Select 1 and 2'});assert.deepEqual(c.selected().map(b=>b.native_id),[idA,idB]);
-  await f.router.receive({id:'wa:master',text:'Ask both for updates'});await tick();assert.equal(f.runs[0][0].id,master.id);assert.match(f.runs[0][1],/Currently selected worker sessions/);f.close();
+  await f.router.receive({id:'wa:master',text:'Ask both for updates'});await tick();assert.equal(f.runs[0][0].id,master.id);assert.equal(f.runs[0][1],'Ask both for updates');f.close();
 });
 test('master cannot dispatch to an unselected worker or with an invented user request',()=>{
   const f=fixture();const master=f.store.register('whatsapp-master','codex','33333333-3333-4333-a333-333333333333','/tmp/master').binding;f.store.set('master',master.id);f.store.set('selected',JSON.stringify([f.a.binding.id]));

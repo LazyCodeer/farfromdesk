@@ -1,14 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:farfromdesk/app.dart';
 import 'package:farfromdesk/preview.dart';
+import 'package:farfromdesk/updates.dart';
 
 void main() {
   setUpAll(() async {
     final font = FontLoader('DMSans')
       ..addFont(rootBundle.load('assets/DMSans.ttf'));
     await font.load();
+    final icons = FontLoader('MaterialIcons')
+      ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
+    await icons.load();
   });
   void size(WidgetTester tester) {
     tester.view.physicalSize = const Size(1160, 900);
@@ -18,13 +24,191 @@ void main() {
   }
 
   testWidgets(
+    'Activity presents request summaries and supports search and recovery guidance',
+    (tester) async {
+      size(tester);
+      final api = ActivityDesignGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(find.text('FarFromDesk'), findsOneWidget);
+      expect(find.text('Connected'), findsNothing);
+      expect(find.byTooltip('Refresh'), findsNothing);
+      expect(find.text('Check delivery after reconnecting'), findsOneWidget);
+      expect(find.text('How recovery works'), findsOneWidget);
+      if (Platform.environment['FFD_CAPTURE_ACTIVITY'] == '1') {
+        await expectLater(
+          find.byType(Scaffold),
+          matchesGoldenFile('../../.local/activity-redesign.png'),
+        );
+      }
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Search requests'),
+        'reconnecting',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Check delivery after reconnecting'), findsOneWidget);
+      expect(find.text('Review the website changes'), findsNothing);
+      await tester.tap(find.text('How recovery works'));
+      await tester.pumpAndSettle();
+      expect(find.text('Your requests stay saved'), findsOneWidget);
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+      expect(api.calls, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets('Activity request expansion remains bounded and interactive', (
+    tester,
+  ) async {
+    size(tester);
+    final api = ActivityDesignGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    final row = find.byKey(const PageStorageKey('request-wa:sample-wait'));
+    await tester.ensureVisible(row);
+    await tester.tap(find.text('Review the website changes'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getSize(row).height, lessThan(450));
+    await tester.ensureVisible(find.text('Timing and delivery'));
+    await tester.tap(find.text('Timing and delivery'));
+    await tester.pumpAndSettle();
+    expect(find.text('Request timing and delivery'), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Done'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.ensureVisible(row);
+    await tester.tap(find.text('Review the website changes'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review the website changes'));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(row).height, lessThan(450));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets(
+    'Header branding, grouped filters and visible selection work together',
+    (tester) async {
+      size(tester);
+      final api = ActivityDesignGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      final logo = find.byKey(const ValueKey('header-logo'));
+      expect(
+        tester.getTopLeft(logo).dx,
+        lessThan(tester.getTopLeft(find.text('FarFromDesk')).dx),
+      );
+      expect(tester.getTopLeft(logo).dy, lessThan(52));
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('navigation-rail'))).dy,
+        lessThan(80),
+      );
+      final group = find.byKey(const ValueKey('activity-filter-group'));
+      final waiting = find.descendant(
+        of: group,
+        matching: find.text('Waiting'),
+      );
+      await tester.ensureVisible(waiting);
+      final target = find
+          .ancestor(of: waiting, matching: find.byType(InkWell))
+          .first;
+      await tester.tapAt(tester.getTopLeft(target) + const Offset(4, 4));
+      await tester.pumpAndSettle();
+      expect(find.text('Check delivery after reconnecting'), findsNothing);
+      final select = find.byKey(const ValueKey('select-visible-requests'));
+      await tester.tap(select);
+      await tester.pumpAndSettle();
+      expect(find.text('Close selected (1)…'), findsOneWidget);
+      expect(tester.widget<Checkbox>(select).value, true);
+      await tester.tap(select);
+      await tester.pumpAndSettle();
+      expect(find.text('Close selected (1)…'), findsNothing);
+      expect(api.calls, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'Update banner stays in the top bar on every page and downloads only after a click',
+    (tester) async {
+      tester.view.physicalSize = const Size(900, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final api = UpdateGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      for (final page in ['Home', 'Activity', 'Settings']) {
+        await tester.tap(find.byTooltip(page));
+        await tester.pumpAndSettle();
+        expect(find.text('Update available'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('Update available')).dy,
+          lessThan(52),
+        );
+        expect(
+          tester.getTopLeft(find.text('Update available')).dx,
+          greaterThan(650),
+        );
+        expect(find.byTooltip('Refresh'), findsNothing);
+        expect(tester.takeException(), isNull);
+      }
+      expect(api.opened, isEmpty);
+      await tester.tap(find.text('Update available'));
+      await tester.pumpAndSettle();
+      expect(find.text('Version 0.8.0'), findsOneWidget);
+      await tester.tap(find.text('Later'));
+      await tester.pumpAndSettle();
+      expect(api.opened, isEmpty);
+      await tester.tap(find.text('Update available'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Download update'));
+      await tester.pumpAndSettle();
+      expect(api.opened.single.path, endsWith('.dmg'));
+      expect(api.calls, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      expect(api.closed, true);
+    },
+  );
+  testWidgets(
+    'Activity exposes blocked voice routing and fetches diagnostics only on demand',
+    (tester) async {
+      size(tester);
+      final api = AuditGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(find.text('Voice notes needing attention'), findsOneWidget);
+      expect(find.text('Transcribed · routing blocked'), findsOneWidget);
+      expect(api.diagnosticCalls, isEmpty);
+      await tester.ensureVisible(find.text('Details'));
+      await tester.tap(find.text('Details'));
+      await tester.pumpAndSettle();
+      expect(find.text('Request timing and delivery'), findsOneWidget);
+      expect(find.textContaining('voice_route_failed'), findsOneWidget);
+      expect(find.textContaining('Delivered: Not observed'), findsOneWidget);
+      expect(api.diagnosticCalls, ['/api/request-events?id=wa%3Avoice']);
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
     'Build-41 shell and pairing consent preserve the existing design and authorization',
     (tester) async {
       size(tester);
       final api = PreviewGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      expect(find.text('FarFromDesk / Home'), findsOneWidget);
+      expect(find.text('FarFromDesk'), findsWidgets);
+      expect(find.byTooltip('Refresh'), findsNothing);
+      expect(find.text('FarFromDesk / Home'), findsNothing);
       expect(find.text('Pair your phone'), findsOneWidget);
       final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
       expect(
@@ -91,7 +275,7 @@ void main() {
       await tester.tap(find.byTooltip('Activity'));
       await tester.pumpAndSettle();
       expect(find.text('Request history'), findsOneWidget);
-      expect(find.text('Select eligible'), findsOneWidget);
+      expect(find.text('Select all'), findsOneWidget);
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       expect(find.text('Run in the background'), findsOneWidget);
@@ -120,4 +304,320 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+  testWidgets(
+    'Platform selection keeps CLI account status separate and requires a desktop launcher',
+    (tester) async {
+      size(tester);
+      final api = ConnectionGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Change platform or master'));
+      await tester.tap(find.text('Change platform or master'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create new session'));
+      await tester.pumpAndSettle();
+      expect(find.text('Test CLI account'), findsOneWidget);
+      await tester.tap(find.byType(DropdownButton<String>).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude CLI').last);
+      await tester.pumpAndSettle();
+      expect(find.text('CLI signed out · sign in to this CLI'), findsWidgets);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Create replacement'),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byType(DropdownButton<String>).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude Desktop').last);
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Uses the selected desktop chat’s account · identity not exposed',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Start from a desktop session'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Create replacement'),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Personal desktop chat').last);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Create replacement'));
+      await tester.tap(find.text('Create replacement'));
+      await tester.pumpAndSettle();
+      expect(api.submitted?['provider'], 'claude');
+      expect(api.submitted?['executionMode'], 'desktop');
+      expect(api.submitted?['desktopParentId'], 'desktop-personal');
+      expect(api.submitted?['connectionRevision'], 'desktop-revision');
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'Home saves Desktop immediately without a launcher or session picker',
+    (tester) async {
+      size(tester);
+      final api = PreferenceGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      final codex = find.byKey(const ValueKey('platform-runtime-codex'));
+      final claude = find.byKey(const ValueKey('platform-runtime-claude'));
+      await tester.ensureVisible(codex);
+      expect(tester.widget<DropdownButton<String>>(codex).value, isNull);
+      await tester.tap(codex);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('CLI').last);
+      await tester.pumpAndSettle();
+      expect(api.saved['codex']?['executionMode'], 'cli');
+      expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
+      await tester.ensureVisible(claude);
+      await tester.tap(claude);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<DropdownButton<String>>(claude)
+            .items!
+            .singleWhere((i) => i.value == 'cli')
+            .enabled,
+        false,
+      );
+      await tester.tap(find.text('Desktop').last);
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Choose Claude Desktop launcher'), findsNothing);
+      expect(api.saved['claude']?['executionMode'], 'desktop');
+      expect(api.saved['claude']!.containsKey('desktopParentId'), false);
+      expect(api.saved['claude']?['connectionRevision'], 'desktop-revision');
+      expect(api.saved['codex']?['executionMode'], 'cli');
+      expect(api.calls, everyElement('/api/platform-preference'));
+      expect(api.calls.length, 2);
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Home'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
+      expect(tester.widget<DropdownButton<String>>(claude).value, 'desktop');
+      expect(tester.takeException(), isNull);
+      if (Platform.environment['FFD_CAPTURE_PLATFORMS'] == '1') {
+        await tester.ensureVisible(find.text('Coding platforms'));
+        await tester.pumpAndSettle();
+        await expectLater(
+          find.byType(Scaffold),
+          matchesGoldenFile('../../.local/platform-preferences.png'),
+        );
+      }
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+}
+
+class PreferenceGateway extends ConnectionGateway {
+  final saved = <String, Map<String, dynamic>>{};
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['platformPreferences'] = saved.values.toList();
+    for (final option in data['masterSetup']['platforms']) {
+      if (option['provider'] == 'claude') option['sessions'] = [];
+    }
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/platform-preference') {
+      saved[data['provider']] = {
+        ...data,
+        'connectionLabel':
+            'Selected ${data['provider']} ${data['executionMode']} account',
+        if (data['desktopParentId'] != null)
+          'launcherName': 'Personal desktop chat',
+      };
+    }
+    return super.post(path, data);
+  }
+}
+
+class AuditGateway extends PreviewGateway {
+  AuditGateway() : super(fixture: 'activity', screen: 'activity');
+  final diagnosticCalls = <String>[];
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    if (path.startsWith('/api/request-events')) {
+      diagnosticCalls.add(path);
+      return {
+        'events': [
+          {
+            'event': 'voice_route_failed',
+            'at': 1792911400000,
+            'details': '{"code":"routing_unavailable"}',
+          },
+        ],
+        'deliveries': [
+          {
+            'status': 'sent',
+            'reply_kind': 'final',
+            'attempts': 0,
+            'sent_at': 1792911400000,
+          },
+        ],
+      };
+    }
+    final data = await super.get(path);
+    data['voiceRequests'] = [
+      {
+        'id': 'wa:voice',
+        'status': 'routing_blocked',
+        'created_at': 1792911400000,
+      },
+    ];
+    return data;
+  }
+}
+
+class UpdateGateway extends PreviewGateway {
+  UpdateGateway() : super(fixture: 'connected');
+  final opened = <Uri>[];
+  bool closed = false;
+  @override
+  Future<UpdateCheck> checkUpdates({bool manual = false}) async => UpdateCheck(
+    release: AppRelease(
+      '0.8.0',
+      Uri.parse(
+        'https://github.com/LazyCodeer/farfromdesk/releases/download/v0.8.0/FarFromDesk-0.8.0-macos-arm64.dmg',
+      ),
+      Uri.parse(
+        'https://github.com/LazyCodeer/farfromdesk/releases/tag/v0.8.0',
+      ),
+      400000000,
+    ),
+  );
+  @override
+  Future<void> openReleasePage(Uri uri) async {
+    opened.add(uri);
+  }
+
+  @override
+  void closeUpdates() {
+    closed = true;
+  }
+}
+
+class ActivityDesignGateway extends PreviewGateway {
+  ActivityDesignGateway() : super(fixture: 'activity', screen: 'activity');
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['pendingJobs'] = [
+      {
+        'id': 'wa:sample-review',
+        'binding_id': 'sample-worker',
+        'status': 'uncertain',
+        'canClose': true,
+        'created_at': 1792911450000,
+        'preview': 'Check delivery after reconnecting',
+      },
+      {
+        'id': 'wa:sample-wait',
+        'binding_id': 'sample-worker',
+        'status': 'submitted',
+        'canClose': true,
+        'created_at': 1792911400000,
+        'preview': 'Review the website changes',
+      },
+      {
+        'id': 'wa:sample-queue',
+        'binding_id': 'sample-worker',
+        'status': 'queued',
+        'created_at': 1792911300000,
+        'preview': 'Run the release checks',
+      },
+    ];
+    data['jobs'] = [
+      {
+        'id': 'wa:sample-done',
+        'binding_id': 'sample-worker',
+        'status': 'completed',
+        'outcome': 'done',
+        'created_at': 1792911200000,
+        'preview': 'Summarize the latest changes',
+      },
+      {
+        'id': 'wa:sample-closed',
+        'binding_id': 'sample-worker',
+        'status': 'reviewed',
+        'created_at': 1792911000000,
+        'preview': 'Check the previous build',
+      },
+    ];
+    return data;
+  }
+}
+
+class ConnectionGateway extends PreviewGateway {
+  ConnectionGateway() : super(fixture: 'connected');
+  Map<String, dynamic>? submitted;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    for (final p in data['masterSetup']['platforms']) {
+      final desktop = p['executionMode'] == 'desktop';
+      final signedOut = p['provider'] == 'claude' && !desktop;
+      p['available'] = true;
+      p['canCreate'] = !signedOut;
+      p['connection'] = {
+        'state': desktop
+            ? 'native'
+            : signedOut
+            ? 'signed-out'
+            : 'verified',
+        'label': desktop
+            ? 'Uses the selected desktop chat’s account · identity not exposed'
+            : signedOut
+            ? 'CLI signed out · sign in to this CLI'
+            : 'Test CLI account',
+        'revision': desktop ? 'desktop-revision' : 'cli-revision',
+      };
+      if (desktop) {
+        p['sessions'] = [
+          {
+            'id': 'desktop-personal',
+            'name': 'Personal desktop chat',
+            'cwd': '/sample/personal',
+            'available': true,
+          },
+          {
+            'id': 'desktop-work',
+            'name': 'Work desktop chat',
+            'cwd': '/sample/work',
+            'available': true,
+          },
+        ];
+      }
+    }
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/master-create') submitted = Map.from(data);
+    return super.post(path, data);
+  }
 }

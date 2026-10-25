@@ -8,20 +8,20 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LazyCodeer/farfromdesk/releases"><strong>Download desktop previews</strong></a> ·
+  <a href="https://github.com/LazyCodeer/farfromdesk/releases"><strong>Download FarFromDesk</strong></a> ·
   <a href="https://ffd.codecylabs.com">Website</a> ·
   <a href="#get-started-in-three-steps">Get started</a> ·
   <a href="#what-you-can-do">Features</a> ·
   <a href="#questions">Questions</a>
 </p>
 
-<p align="center"><strong>Private preview</strong> · macOS · Windows · Linux desktop previews</p>
+<p align="center"><strong>Open source · MIT</strong> · macOS · Windows · Linux</p>
 
 Ask for updates, give your coding assistants instructions, and get their replies in WhatsApp. Your assistants keep their own context and tools. You choose which sessions to connect.
 
 ## Download FarFromDesk
 
-Visit [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases), open a **0.7.0 shared desktop preview**, and expand **Assets**. Older releases contain only the earlier Mac app. GitHub's automatic “Source code” downloads are not the installed app.
+Visit the [latest release](https://github.com/LazyCodeer/farfromdesk/releases/latest) and choose the download for your computer below. Mac ZIP and DMG files contain **FarFromDesk.app**. GitHub's automatic “Source code” downloads are for contributors, not the installed app.
 
 | Your computer | Download | Requirements |
 | --- | --- | --- |
@@ -32,9 +32,19 @@ Visit [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases), ope
 
 On Mac, drag **FarFromDesk.app** from the DMG into Applications, or extract the ZIP. Windows and Linux archives contain the app and its bundled backend; extract the whole folder together. Each release includes optional installation scripts, checksums and release notes. Local voice tools and the multilingual model are included, so the first voice note needs no model download.
 
-**Private preview:** You need a GitHub account with repository access. Mac builds are ad-hoc signed and not Apple-notarized; Windows builds are unsigned. Your operating system may block them. Do not disable security protections. A signed public release and public one-command installer are not available yet.
+**Signing:** Mac builds are ad-hoc signed and not Apple-notarized; Windows builds are unsigned. Your operating system may require explicit approval or block installation under organizational policy. Do not disable security protections. Downloads do not require a GitHub account.
 
-Mac supports the existing Desktop integrations (which require Python 3) and CLI options. Windows and Linux currently support **Codex CLI and Claude CLI**; controlling their Desktop chats is not available. Native startup and voice checks run on all four build targets, but real-phone/provider account testing is still required on each operating system. ARM Windows/Linux and older Linux distributions are not supported by this preview.
+Mac supports the existing Desktop integrations (which require Python 3) and CLI options. Windows and Linux currently support **Codex CLI and Claude CLI**; controlling their Desktop chats is not available. Native startup and voice checks run on all four build targets, but real-phone/provider account testing is still required on each operating system. ARM Windows/Linux and older Linux distributions are not supported by this release.
+
+## Install from your terminal
+
+On macOS or Linux, this downloads the latest version-pinned installer, verifies the app archive checksum, and installs for your user account:
+
+```sh
+curl -fsSL --proto '=https' --proto-redir '=https' https://github.com/LazyCodeer/farfromdesk/releases/latest/download/install.sh -o /tmp/farfromdesk-install.sh && sh /tmp/farfromdesk-install.sh
+```
+
+On Windows, download **install.ps1** from the latest release and run it in PowerShell, or use the ZIP download. You can inspect either installer before running it. No administrator access is required. Pause forwarding and quit an older FarFromDesk before replacing it; your pairing and saved requests stay outside the app installation.
 
 ## Get started in three steps
 
@@ -106,7 +116,7 @@ FarFromDesk uses an unofficial WhatsApp connection and is not affiliated with Wh
 
 **Can I use more than one session?** Yes. Selecting a new session adds it to the connected set. Quote a reply to address that particular session.
 
-**Where do updates appear?** New app downloads and release notes appear in [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases). Automatic in-app updating is not available yet.
+**Where do updates appear?** New app downloads and release notes appear in [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases). FarFromDesk checks for newer compatible releases automatically and shows **Update available** in the top-right bar. You can also check in Settings. Clicking the banner lets you read the release notes and download the version for your computer; installation remains manual. Checks run on launch and at most every six hours; no model credentials are sent to GitHub.
 
 **Need help?** See [Troubleshooting](docs/TROUBLESHOOTING.md). For a bug report, include your app version, platform, and sanitized steps. Never share pairing QR codes, credentials, or private recordings. Report sensitive issues using [our security policy](SECURITY.md).
 

@@ -7,8 +7,9 @@ import type { Router } from './router.js';
 import type { Masters } from './masters.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { saveBindingCredentials } from './server.js';
+import type { SessionRoute } from './connections.js';
 
-type Creation={executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain';bindingId?:string;cwd?:string;error?:string};
+type Creation={route?:SessionRoute;executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain';bindingId?:string;cwd?:string;error?:string};
 type Workspace={path:string;dev:number;ino:number;approvedAt:number};
 export class Workers {
   tasks=new Map<string,Promise<void>>();
@@ -24,7 +25,12 @@ export class Workers {
   pending(requestId:string){return this.operations().some(o=>o.requestId===requestId&&['awaiting_approval','needs_approval','creating'].includes(o.status));}
   get(id:string){return JSON.parse(this.store.get(`worker-create:${id}`)??'null') as Creation|null;}
   save(op:Creation){this.store.set(`worker-create:${op.id}`,JSON.stringify(op));}
-  view(id?:string){return this.operations().filter(o=>!id||o.id===id).map(({text,...op})=>op);}
+  view(id?:string){return this.operations().filter(o=>!id||o.id===id).map(({text,...op})=>{
+    const taskRequestId=op.bindingId?`master:${op.requestId}:create-${op.id}:${op.bindingId}`:undefined;
+    const task=taskRequestId?this.store.job(taskRequestId):undefined;
+    const execution=task?(['uncertain','failed'].includes(task.status)?'blocked':task.status==='completed'?'answered':task.status==='submitted'?'awaiting_reply':task.status==='dispatched'?'submitting':task.status):'not_started';
+    return {...op,taskRequestId,taskStatus:task?.status,execution,outcome:task?.outcome,currentError:task?.error??(task?null:op.error),lastError:task?.last_error??op.error};
+  });}
   revoke() {
     this.store.set('worker-workspace','null');
     for(const b of this.store.bindings())if(this.store.get(`managed-worker:${b.id}`)==='true') {
@@ -44,7 +50,7 @@ export class Workers {
     const w=this.workspace(),op=this.operations().find(o=>o.bindingId===b.id);
     if(!w||!op||b.cwd!==join(w.path,`project-${op.id}`)||lstatSync(b.cwd).isSymbolicLink()||realpathSync(b.cwd)!==b.cwd)throw new Error('Worker workspace is not approved or its path changed. Forwarding stopped.');
   }
-  async start(input:{requestId:string;provider:Provider;name:string;text:string;eventId:string;executionMode?:unknown}) {
+  async start(input:{requestId:string;provider:Provider;name:string;text:string;eventId:string;executionMode?:unknown}):Promise<any> {
     if(this.closed||this.router.stopped)throw new Error('Background operation is paused.');
     const parent=this.router.coordinator!.ownerRequest(input.requestId);
     if(!['codex','claude'].includes(input.provider)||!this.router.coordinator!.enabled().includes(input.provider))throw new Error('Choose an enabled platform.');
@@ -52,13 +58,21 @@ export class Workers {
     const requestedMode=input.executionMode;
     const id=createHash('sha256').update(input.requestId+'\0'+input.eventId).digest('hex').slice(0,24);
     let op=this.get(id);
-    const mode=executionMode(input.provider,requestedMode??(op?(op.executionMode??'cli'):(input.provider==='claude'?this.store.get('claude-execution-mode'):undefined)));
-    const desktopParentId=op?.desktopParentId??(mode==='desktop'?this.store.get('claude-desktop-parent'):undefined);
+    const preference=JSON.parse(this.store.get(`platform-preference:${input.provider}`)??'null');
+    const savedMode=preference?.executionMode;
+    if(requestedMode===undefined&&!op&&!savedMode)throw new Error(`Choose ${input.provider} Desktop or CLI for this new session. No default connection has been selected for this platform.`);
+    const mode=executionMode(input.provider,requestedMode??(op?(op.executionMode??'cli'):savedMode));
+    const desktopParentId=op?.desktopParentId??(input.provider==='claude'&&mode==='desktop'?preference?.desktopParentId:undefined);
     if(op) {
       if((op.executionMode??'cli')!==mode||op.provider!==input.provider||op.name!==input.name||op.text!==input.text)throw new Error('A creation event ID cannot be reused for a different task.');
       if(op.status!=='needs_approval'||this.tasks.has(id))return this.view(id)[0];
     }else {
-      op={executionMode:mode,desktopParentId,requestId:input.requestId,provider:input.provider,name:input.name,text:input.text,eventId:input.eventId,id,masterId:parent.binding_id,status:'awaiting_approval'};
+      const route=await this.masters.connections.prepare({provider:input.provider,cwd:join(this.root,`project-${id}`)},mode,mode==='cli');
+      if(preference?.executionMode===mode&&mode==='cli'&&(route.accountKey!==preference.route?.accountKey||route.profileId!==preference.route?.profileId))throw new Error('The preferred CLI account or provider changed. Review Coding platforms in Home before creating this session.');
+      // Recheck after the bounded account probe; an owner request may have closed meanwhile.
+      this.router.coordinator!.ownerRequest(input.requestId);
+      const concurrent=this.get(id);if(concurrent)return this.start(input);
+      op={route,executionMode:mode,desktopParentId,requestId:input.requestId,provider:input.provider,name:input.name,text:input.text,eventId:input.eventId,id,masterId:parent.binding_id,status:'awaiting_approval'};
     }
     this.save(op);
     const destination=parent.destination??this.store.get('whatsapp-owner')!;
@@ -88,7 +102,10 @@ export class Workers {
     return this.workspaceGrant;
   }
   async create(op:Creation) {
-    if(op.executionMode==='desktop')await this.masters.desktop.parent(op.desktopParentId);
+    if(op.provider==='claude'&&op.executionMode==='desktop') {
+      const launcher=await this.masters.desktop.parent(op.desktopParentId);
+      op={...op,desktopParentId:launcher.id};this.save(op);
+    }
     const w=await this.approveWorkspace(op);
     if(this.closed)return;
     if(!w){this.save({...op,status:'denied'});this.store.output(undefined,'Project creation was not approved. No session was created.',`worker-create:${op.id}:denied`);this.reportFailure(this.get(op.id)!);return;}
@@ -102,6 +119,7 @@ export class Workers {
     let b=r.binding;this.store.enable(b.id,false);this.saveCredentials(b,r.token);
     op={...op,bindingId:b.id,cwd};this.save(op);
     this.store.set(`execution-mode:${b.id}`,op.executionMode??'cli');if(op.desktopParentId)this.store.set(`desktop-parent:${b.id}`,op.desktopParentId);
+    if(op.route)this.masters.connections.save(b,op.route);
     this.store.set(`name:${b.id}`,op.name);this.store.set(`managed-worker:${b.id}`,'true');
     const instructions='This is a dedicated owner-requested coding project. Preserve native permissions. Work only on the requested project. Report progress and final results on the exact incoming bridge request. Do not contact other sessions or approve your own permissions.';
     writeFileSync(join(cwd,'AGENTS.md'),instructions,{mode:0o600});writeFileSync(join(cwd,'CLAUDE.md'),instructions,{mode:0o600});
@@ -145,6 +163,7 @@ export class Workers {
   private reportFailure(op:Creation) {
     const master=this.router.coordinator!.master(),parent=this.store.job(op.requestId);
     if(!master||master.id!==op.masterId||!parent||parent.status==='replaced')return;
+    this.store.set(`report-parent:report:creation:${op.id}:${op.status}`,op.requestId);
     this.store.enqueue(`report:creation:${op.id}:${op.status}`,master,`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. Close the original owner request as blocked if no further work is possible; do not create a replacement or duplicate the notification.`,parent.destination??null);
     this.router.pump();
   }

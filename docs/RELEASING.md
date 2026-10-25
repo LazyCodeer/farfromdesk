@@ -8,14 +8,14 @@ The quick job has a ten-minute timeout and cancels superseded runs. Its real run
 
 ## Prepare a release
 
-Update `release.json` on main when a release is intended. That explicit change starts `.github/workflows/desktop.yml`, which automatically builds and publishes a complete private prerelease. Do not change release.json for routine fixes unless a release is wanted.
+Update `release.json` on main when a release is intended. That explicit change starts `.github/workflows/desktop.yml`, which automatically builds and publishes a complete public stable release. Do not change release.json for routine fixes unless a release is wanted.
 
 Alternatively, choose Actions → FarFromDesk desktop release → Run workflow:
 
 - Debugging: select just Linux, Windows, Apple Silicon, or Intel. Leave **publish** unchecked. The default is Linux only.
 - Release: select main, target **all**, and check **publish**.
 
-The preflight rejects partial or non-main publication before native runners are allocated. Shared checks must pass before native compilation begins. Version suffixes use the GitHub run ID; build numbers are at least `2000 + run number`.
+The preflight rejects partial or non-main publication before native runners are allocated. Shared checks must pass before native compilation begins. The stable tag is exactly `v<release.json version>`. Increment that version for each new release; reruns cannot replace an already published release with different bytes. Build numbers are at least `2000 + run number`.
 
 All four release targets still perform native compilation, portable tests, bundled speech transcription/silence/corruption checks, architecture/archive validation and packaged UI startup. Apple Silicon runs the full backend suite once; shared Flutter analysis and widget tests run once on Ubuntu. A native failure cancels the remaining matrix jobs and prevents publication. Native jobs are capped at 35 minutes each; publication at 15 minutes. These are per-job bounds, not an account-wide spending cap.
 
@@ -27,9 +27,9 @@ For a platform-specific failure, use a single-target manual build. For a failed 
 
 ## Publication and downloads
 
-Only the publish job receives `contents: write`. Actions are pinned to commit SHAs. Publication requires all four source-matched manifests, six app archives, six checksums, and two identical version-stamped installers: 18 assets total. It verifies local and remote sizes/digests and repository privacy. Interrupted uploads remain a draft; published releases are immutable.
+Only the publish job receives `contents: write`. Actions are pinned to commit SHAs. Publication requires all four source-matched manifests, six app archives, six checksums, and two identical version-stamped installers: 18 assets total. It verifies local and remote sizes/digests and public repository visibility. Interrupted uploads remain a draft; published releases are immutable.
 
-Mac ZIP and DMG files contain FarFromDesk.app. Windows uses a ZIP, Linux a tar.gz. Private downloads require repository access. GitHub's source archives are not app installers. The README links to `/releases` because prereleases do not resolve through `/releases/latest`.
+Mac ZIP and DMG files contain FarFromDesk.app. Windows uses a ZIP, Linux a tar.gz. Public downloads require no GitHub login. GitHub's source archives are not app installers. The README and update checker use the stable release feed; `/releases/latest` selects the published stable release.
 
 The older Swift workflow, `.github/workflows/release.yml`, is manual-only and retained for legacy Mac maintenance. It is not the shared desktop release pipeline.
 
@@ -37,8 +37,12 @@ The older Swift workflow, `.github/workflows/release.yml`, is manual-only and re
 
 GitHub must permit Actions spending. Every allocated job consumes its own runtime, including work performed before cancellation or failure. macOS is substantially more expensive than Linux; parallel workflow elapsed time is not the sum of billed runner usage. Check account usage before requesting repeated native builds. The workflows never raise billing limits or change repository visibility.
 
-No Developer ID/notarization or Windows signing credentials are configured. These remain private previews. Passing isolated native tests does not prove real-phone/provider-account compatibility on every platform. Windows/Linux currently support CLI sessions, not Desktop chat injection.
+No Developer ID/notarization or Windows signing credentials are configured. Public availability does not imply signing or notarization. Passing isolated native tests does not prove real-phone/provider-account compatibility on every platform. Windows/Linux currently support CLI sessions, not Desktop chat injection.
 
 ## Validate pipeline changes locally
 
 Run `actionlint` and `python3 -m unittest discover -s script/tests`. Selection tests cover single-target defaults, full releases, unsupported inputs and rejection of partial/non-main publication. Keep account state, credentials and private recordings out of CI and release assets.
+
+## Contribution and publication authority
+
+CODEOWNERS assigns all paths, including website and workflow files, to @LazyCodeer. Public contributors fork and submit PRs; they have no repository write access. Main requires a PR, owner review, resolved conversations and no force pushes/deletion, with the repository administrator retaining bypass for owner-maintained releases. No outside collaborator has merge access. Fork PR workflows use read-only tokens, receive no deployment secrets, and require owner approval to run. Website CI only builds/tests; website deployment remains an owner operation. The release workflow publishes only from main after all target checks pass.

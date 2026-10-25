@@ -27,14 +27,22 @@ export class DesktopStarts {
   get(id:string):Start|null{return JSON.parse(this.store.get(`desktop-start:${id}`)??'null');}
   save(op:Start){this.store.set(`desktop-start:${op.bindingId}`,JSON.stringify(op));}
   async parent(id:unknown) {
-    if(typeof id!=='string'||!id)throw new Error('Choose an existing Claude Desktop session to start new sessions. No CLI fallback is used.');
-    const c=await this.native.catalog('claude'),s=c.sessions.find((s:any)=>s.id===id&&s.executionMode==='desktop'&&s.available===true);
+    const c=await this.native.catalog('claude',undefined,{fresh:true});
+    if(id===undefined||id===null||id==='') {
+      const bindings=[this.store.binding(this.store.get('master')??''),...JSON.parse(this.store.get('selected')??'[]').map((key:string)=>this.store.binding(key))].filter(Boolean);
+      const candidates=c.sessions.filter(s=>s.executionMode==='desktop'&&s.available===true&&bindings.some((b:any)=>b.enabled&&b.provider==='claude'&&b.native_id===s.id&&b.cwd===s.cwd&&this.store.get(`execution-mode:${b.id}`)==='desktop'));
+      const scopes=new Set(candidates.map(s=>s.accountScope??'unknown'));
+      if(!candidates.length)throw new Error('No owner-connected Claude Desktop launcher is available. Connect one Desktop chat once, or choose Claude CLI. This Claude command cannot start a new Desktop chat with a prompt on its own.');
+      if(scopes.size>1)throw new Error('Connected Claude Desktop chats belong to different accounts. Select the launcher account before creating a new chat.');
+      id=candidates.sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)||a.id.localeCompare(b.id))[0].id;
+    }
+    const s=c.sessions.find((s:any)=>s.id===id&&s.executionMode==='desktop'&&s.available===true);
     if(!s)throw new Error('The selected Claude Desktop session has no reachable inbox. Open it in Claude and check its Peer address in /status.');
-    return s;
+    return s.activation==='desktop-open'?await this.native.activation.ready(s):s;
   }
   async create(b:Binding,parentId:string,title:string,instructions:string) {
     if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
-    await this.parent(parentId);
+    const launcher=await this.parent(parentId);parentId=launcher.id;
     if(realpathSync(b.cwd)!==b.cwd)throw new Error('Desktop project path changed.');
     const op:Start={bindingId:b.id,parentId,cwd:b.cwd,nonce:randomUUID(),status:'prepared'};
     this.save(op);

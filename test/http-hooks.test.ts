@@ -17,7 +17,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
   saveBindingCredentials(a.binding,a.token);saveBindingCredentials(b.binding,b.token);
   let logoutCalls=0,pauseCalls=0;
   const wa={status:'not paired',logout:async()=>{logoutCalls++;}} as any;
-  const services={masters:{options:()=>({})},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
+  const services={masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
   const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
   const url=`http://127.0.0.1:${port}`;
   try {
@@ -32,7 +32,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
     assert.equal(wrongHost,403);
     assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
-    for(const endpoint of ['/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown']) {
+    for(const endpoint of ['/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown']) {
       assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
     }
     store.enqueue('job-a',a.binding,'Task A');store.enqueue('job-b',b.binding,'Task B');
@@ -46,7 +46,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     assert.equal(store.job('job-a')?.status,'completed');
     await handleHook('codex',{session_id:'unregistered',hook_event_name:'Stop',last_assistant_message:'Must not leave'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);
     await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);
-    await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,2);
+    await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);assert.equal(store.unlinkedHooks().length,1);
     const permission=handleHook('codex',{session_id:a.binding.native_id,hook_event_name:'PermissionRequest',tool_name:'Bash',tool_input:{command:'echo test'}});
     for(let i=0;i<50&&!approvals.pending.size;i++)await new Promise(r=>setTimeout(r,10));
     assert.equal(approvals.pending.size,1);approvals.answer([...approvals.pending.keys()][0],'deny','approval');
@@ -101,7 +101,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const connected=await post('/api/master/connect',connect);assert.equal(connected.status,200);
     assert.equal((await connected.json()).sessions[0].id,b.binding.id);
     const list=await fetch(url+'/api/master/sessions?search=API',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}});
-    assert.equal(list.status,200);const listed=await list.json();assert.equal(listed.sessions[0].target,`claude:${b.binding.native_id}`);assert.equal(listed.page,0);
+    assert.equal(list.status,200);const listed=await list.json();assert.equal(listed.sessions[0].target,`claude:cli:${b.binding.native_id}`);assert.equal(listed.page,0);
     assert.equal((await fetch(url+'/api/master/sessions?page=-1',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,400);
     const replacement=store.register('other-master','codex','33333333-3333-4333-a333-333333333333','/tmp');store.set('master',replacement.binding.id);
     assert.equal((await post('/api/master/connect',connect)).status,403);
