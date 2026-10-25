@@ -19,6 +19,10 @@ Real bundled speech checks use a fixed public English Ogg/Opus fixture, assert a
 
 ## Observed integration results — 25 October 2026
 
+The four-target checkpoint [40179656154](https://github.com/LazyCodeer/farfromdesk/actions/runs/40179656154) completed successfully at source `66992c4e8b2d9bc53de99a1860525f43a8c1c943`: both Mac architectures, Windows x64 and Linux x64 passed compilation, speech, packaging and rendered-UI startup. The full backend suite had 141 tests (140 passed, one optional audio test skipped); bundled audio was run separately and passed. The portable suite passed 23 tests. The 6.6-second public English fixture took 7.028 seconds through the Windows production transcription path with one thread. This excludes WhatsApp download, queueing and agent/reply time. Publication reruns the gates for its exact final commit, including the installer-byte normalization and explicit startup-migration option.
+
+The Mac build at `ae2afdc` also passed the stricter rendered-UI check locally with disposable state. A single fresh, paused RSS sample measured approximately 289 MiB for app plus backend; this does not measure active transcription or provider-session memory.
+
 - Local full backend suite: 140 tests, 139 passed, one optional installed-audio test skipped. Separate installed-audio validation is part of CI.
 - Local portable subset: 19 passed, including process-crash lock recovery and exact-session authorization.
 - Publication/packaging tests: 16 passed; Unix installer fixtures: three passed.
