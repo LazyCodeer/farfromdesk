@@ -37,4 +37,4 @@ Exercise offline/reconnect, duplicate inbound events, unavailable apps, expired 
 
 ## CI scope
 
-The GitHub workflow runs backend and native fixture tests without signing credentials, private app accounts, live WhatsApp, or speech downloads. Opt-in speech and live checks are skipped there. CI passing is not a public-release certification.
+The GitHub workflow runs backend and native fixture tests without signing credentials, private app accounts, live WhatsApp, or speech downloads. Opt-in speech and live checks are skipped there. CI passing is not a public-release certification. The explicit release script runs checks locally before building a preview archive.

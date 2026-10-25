@@ -28,7 +28,7 @@
     "typescript": "^5.9.3"
   },
   "description": "Your coding sessions, one WhatsApp message away.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/LazyCodeer/sidekick.git"

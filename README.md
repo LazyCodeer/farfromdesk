@@ -4,194 +4,110 @@
 
 <p align="center">
   <strong>Step away from your desk. Stay close to your work.</strong><br />
-  A native Mac app that connects your WhatsApp to your coding assistants.
+  Connect WhatsApp to your coding assistants on your Mac.
 </p>
 
 <p align="center">
-  <a href="#get-started">Get started</a> ·
+  <a href="https://github.com/LazyCodeer/sidekick/releases"><strong>Download for Mac</strong></a> ·
+  <a href="#get-started-in-three-steps">Get started</a> ·
   <a href="#what-you-can-do">Features</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="docs/reference.md">Technical guide</a> ·
-  <a href="CONTRIBUTING.md">Contribute</a>
+  <a href="#questions">Questions</a>
 </p>
 
-<p align="center"><strong>Private preview</strong> · macOS 14+ · Apple Silicon packaged build · Local voice transcription</p>
+<p align="center"><strong>Private preview</strong> · macOS 14+ · Apple Silicon</p>
 
-Sidekick lets you ask for updates, give your coding assistants instructions, and receive their replies from WhatsApp. Your agents keep their own context, tools, accounts, and permissions. You choose which sessions to connect.
+Ask for updates, give your coding assistants instructions, and get their replies in WhatsApp. Your assistants keep their own context and tools. You choose which sessions to connect.
 
-> **Release status:** This repository is a private development preview. There is no public, notarized installer yet. Build instructions are available below. Compatibility depends on the installed coding app, account, and native transport. We do not claim that every provider/version has passed a real-phone end-to-end test.
+## Download Sidekick
 
-## A conversation, not another dashboard
+Visit [GitHub Releases](https://github.com/LazyCodeer/sidekick/releases), open the newest Sidekick preview, and expand **Assets**. Download the **Sidekick … macOS arm64.zip** app file. The “Source code” files GitHub adds automatically are not the app.
 
-Illustrative examples of requests you can send after setup:
+Requires macOS 14 or later on Apple Silicon, a compatible signed-in coding app, and Python 3 for the native desktop helper.
 
-```text
-You       Show my recent sessions.
-You       Select 2 and 5.
-You       Give me an update on the website redesign.
-You       Ask that session to fix the mobile navigation.
-You       Send me the result when it's ready.
-```
+Unzip the download and move **Sidekick.app** into Applications. Open it to begin setup. The download includes the local voice transcription tools and model.
 
-Selecting another session adds it to the connected set. Your previous sessions stay connected. Replies retain their session identity, and you can quote a reply to address that session directly.
+**Access:** The repository and its downloads are private. You must be signed into a GitHub account with access.
 
-## Get started
+**Preview status:** This first preview is not Apple-notarized. macOS may block it. It is intended for invited testers; a notarized release is still needed for a normal public install experience. Do not disable your Mac's security protections to run it.
 
-Once the app is built and your chosen coding app is available:
+## Windows and Linux
+
+**Coming soon.** Windows and Linux apps are in the pipeline. Downloads will appear in [Releases](https://github.com/LazyCodeer/sidekick/releases) when they are ready.
+
+## Get started in three steps
 
 ### 1. Connect WhatsApp
 
-Open Sidekick and scan the QR from **WhatsApp → Settings → Linked devices → Link a device**. Choose **Message yourself** or a supported private group containing only your own account.
+Open Sidekick and scan its QR code from **WhatsApp → Settings → Linked devices → Link a device**. Choose **Message yourself** or a supported private group containing only your account.
 
-### 2. Choose your coding assistant
+### 2. Choose your assistant
 
-Select Codex or Claude, choose Desktop or CLI, and connect an existing master session or create one. This session coordinates requests to your selected workers. Native folder approvals, account permissions, and app compatibility still apply.
+Choose Codex or Claude and the Desktop or CLI option you use. Connect an existing coordinating session or create one. Your app's normal sign-in, account limits, and permissions still apply.
 
 ### 3. Send a message
 
-Send `/sessions`, select the sessions you want, and ask for an update or an action. Text and supported voice notes use the same permission boundaries. Keep your Mac awake, online, and the required native apps available.
+Ask Sidekick to show your sessions, select the ones you want, and send an instruction or voice note. Keep your Mac awake, online, and your chosen coding apps available.
 
-For setup problems, see [Troubleshooting](docs/TROUBLESHOOTING.md).
+## Your work, a message away
+
+> “Show my recent sessions.”
+
+> “Give me an update on the website redesign.”
+
+> “Ask that session to fix the mobile navigation.”
+
+> “Send me the result when it's ready.”
+
+These are example requests. Sidekick routes them to your selected assistants and brings their replies back to you.
 
 ## What you can do
 
-| Capability | What it means |
+| | |
 | --- | --- |
-| Multiple sessions | Connect multiple sessions on the same or different supported platforms. |
-| Recent-session discovery | Browse five sessions per platform, ordered by native last activity; search names and load older results. |
-| Desktop or CLI | Choose the integration that matches your installed app and account. |
-| Your own WhatsApp chat | Use Message yourself or a supported owner-only group. |
-| Voice requests | Decode and transcribe supported voice notes locally with FFmpeg and whisper.cpp. |
-| Document replies | Prepare approved artifacts and send them through a session-scoped reply path. |
-| Permission requests | Respond to supported native approval requests without turning every request into blanket access. |
-| Durable request tracking | Inspect queued, submitted, completed, failed, and uncertain requests. |
-| Change your master | Replace the coordinating session without manually clearing every old pending request. |
-| Optional background operation | Keep the bridge running with explicit background and awake preferences. |
-
-## Supported integrations
-
-| Mode | Prerequisites and boundaries |
-| --- | --- |
-| Codex Desktop | Compatible installed Codex app and native queue support. Queue acceptance does not prove the agent executed the request. |
-| Codex CLI | Authenticated, compatible Codex CLI/app-server runtime. Native approval policy remains active. |
-| Claude Desktop | Compatible running Claude app and an exact, reachable local session inbox. Saved history can be listed without being currently reachable. |
-| Claude CLI | Authenticated Claude Code CLI with an eligible account. A Desktop login is not automatically a CLI login. |
-
-New Claude Desktop sessions require a selected reachable launcher and compatible native session creation support. Account limits or native folder consent can still prevent creation. Sidekick reports those conditions; it does not bypass them.
+| **Stay connected to multiple sessions** | Add another session without disconnecting the ones already selected. |
+| **Find the right conversation** | Browse recent sessions, search by name, or ask for older ones. |
+| **Send a voice note** | Supported recordings are transcribed on your Mac and handled like text requests. |
+| **Receive files and updates** | Get approved documents and progress from your selected assistants. |
+| **Choose where replies go** | Use your personal WhatsApp chat or a supported owner-only private group. |
+| **Stay in control** | Review supported permission requests and see unfinished work in Activity. |
+| **Change your assistant** | Switch the coordinating session or platform from Home. |
+| **Work while your screen is locked** | Optionally prevent idle sleep while keeping your Mac locked. |
 
 ## How it works
 
-```mermaid
-flowchart LR
-    Phone[Your WhatsApp] <-->|Linked device| Bridge[Sidekick on your Mac]
-    Bridge <-->|Durable request queue| Master[Selected master session]
-    Master <--> Codex[Selected Codex sessions]
-    Master <--> Claude[Selected Claude sessions]
-    Codex --> Outbox[Correlated replies and documents]
-    Claude --> Outbox
-    Master --> Outbox
-    Outbox --> Bridge
-```
+**Your WhatsApp → Sidekick on your Mac → Your selected coding sessions → Replies in WhatsApp.**
 
-The master decides how to coordinate your request. The selected coding agent performs the work under its existing permissions. Sidekick transports requests, approvals, and replies, while tracking their lifecycle.
+Sidekick connects to the assistants you already use. It does not replace their subscriptions or account permissions. The selected coordinating session helps direct your requests to the right worker sessions.
 
-Voice notes are downloaded to the Mac, converted into the format the local speech engine accepts, and transcribed locally. The transcript then enters the ordinary routing path. FFmpeg converts audio; whisper.cpp recognizes speech. The coding assistant may still use its own cloud model service.
+## Works with your tools
 
-## Privacy and permission boundaries
+Sidekick has **Codex Desktop**, **Codex CLI**, **Claude Desktop**, and **Claude CLI** options. Availability depends on your installed version, sign-in, account, and whether the selected session can be reached.
 
-- Only the authenticated owner's allowed chat destination can initiate requests.
-- Session-scoped credentials bind replies to registered sessions and request IDs.
-- The management API listens on loopback and checks bearer credentials, hosts, and origins.
-- The attachment flow stages approved artifacts rather than accepting arbitrary file paths from a remote request.
-- Inbound deduplication and a durable outbox reduce duplicate dispatches and support recovery.
-- Voice approval commands must be typed; transcription is not used to authorize an approval command.
-- Sidekick preserves native permissions. It is **not** a sandbox for an agent that already has broad filesystem access.
+A chat visible in history may need to be opened before Sidekick can connect. A Desktop login does not automatically sign you into the CLI. Not every version and account combination has completed a real-phone test.
 
-WhatsApp transport uses the unofficial Baileys linked-device library. Sidekick is not affiliated with or endorsed by WhatsApp, Meta, Anthropic, or OpenAI. Service changes may affect compatibility. Review [SECURITY.md](SECURITY.md) before using it with sensitive projects.
+## Private by design, with you in control
 
-## Build from source
+- Your linked account and selected destination control incoming requests.
+- Voice transcription happens on your Mac. WhatsApp and your coding assistants still use their normal network services.
+- Your assistants retain their normal permissions. Sidekick does not isolate an assistant that already has broad file access.
+- Uncertain requests are held for review rather than automatically repeated.
 
-### Requirements
+Sidekick uses an unofficial WhatsApp connection and is not affiliated with WhatsApp, Meta, Anthropic, or OpenAI. Changes to those services can affect compatibility.
 
-- Apple Silicon Mac running macOS 14 or later for the bundled app/speech build.
-- Xcode or Command Line Tools with a Swift 6 toolchain.
-- Node.js **22.13+** and npm.
-- Python **3.12+**, CMake, and the standard macOS build tools.
-- A supported coding app/runtime, signed in with an eligible account.
-- Internet access for initial dependency, speech source, and model downloads.
+## Questions
 
-```sh
-git clone https://github.com/LazyCodeer/sidekick.git
-cd sidekick
-npm ci
-npm run check
-npm test
-./script/test_macos.sh
-./script/build_and_run.sh --build-only
-./script/install_macos.sh
-```
+**Does my Mac need to stay on?** Yes. Sidekick runs on your Mac, so it must stay awake and connected for real-time control.
 
-Access to the private repository is required. Use `./script/install_macos.sh --replace` when updating an existing local installation. The installer backs up the previous app.
+**Can I close the lid?** The awake option prevents idle sleep; it does not override every closed-lid condition. Supported external-display setups may keep the Mac available. It never removes your lock-screen password.
 
-The app displays **Sidekick**. Its bundle filename remains `Session Bridge.app`, and its executable, service identifiers, and state directory retain their original names for migration compatibility. Existing pairings and stored requests are not renamed or discarded.
+**What happens if the app closes during a request?** Request history is saved. Activity shows work that needs a reply or review. If a request may already have run, check its native conversation before retrying.
 
-The build prepares pinned FFmpeg/whisper.cpp sources and a checksum-verified multilingual base model, then bundles them for local transcription. Model downloads occur during the build, not when you send a voice note. The current package is ad-hoc signed for local development, not Developer ID signed or notarized. Do not disable macOS security controls to run an untrusted build.
+**Can I use more than one session?** Yes. Selecting a new session adds it to the connected set. Quote a reply to address that particular session.
 
-The app can initialize its bundled background service. Existing developer installations are reused. Advanced CLI setup and native hook installation are documented in [the technical guide](docs/reference.md).
+**Where do updates appear?** New app downloads and release notes appear in [GitHub Releases](https://github.com/LazyCodeer/sidekick/releases). Automatic in-app updating is not available yet.
 
-## Development and verification
+**Need help?** See [Troubleshooting](docs/TROUBLESHOOTING.md). For a bug report, include your app version, platform, and sanitized steps. Never share pairing QR codes, credentials, or private recordings. Report sensitive issues using [our security policy](SECURITY.md).
 
-```sh
-npm run check                 # TypeScript checks
-npm test                      # Backend unit/integration suite
-./script/test_macos.sh         # Native contract and UI-state tests
-npm run build                 # Compile the bridge
-```
+## License
 
-The normal suite uses controlled fixtures. Local speech and live-service checks are explicitly opt-in; see [Testing](docs/TESTING.md). A green test suite is not proof that a phone message completed a real native action. Validate the chosen account, app version, hooks, delivery, and correlated reply before relying on remote control.
-
-| Directory | Responsibility |
-| --- | --- |
-| `macos/` | SwiftUI app, platform discovery, setup and request UI |
-| `src/` | WhatsApp transport, routing, queue, approvals, media and native adapters |
-| `native/` | Vendored native desktop delivery helpers |
-| `skills/` | Agent instructions for scoped replies and attachments |
-| `test/` | Backend tests and synthetic audio fixture |
-| `script/` | Build, install, packaging and diagnostic tools |
-| `docs/` | Architecture, testing, troubleshooting and release guidance |
-
-## Common questions
-
-**Does this replace Claude or Codex?** No. It connects to your existing tools and accounts.
-
-**Can I use it while my Mac is locked?** The optional awake setting prevents idle sleep while enabled. It does not remove the lock screen or override manual sleep, battery shutdown, or every closed-lid condition.
-
-**Does my Mac need to stay on?** Yes. This is a local bridge. If the Mac or network is unavailable, real-time control is unavailable.
-
-**What happens after a crash?** Durable state survives restarts. Ambiguous submissions are marked uncertain instead of being blindly replayed. Review the native chat before retrying an action that may have already happened.
-
-**Is voice transcription offline?** Speech recognition runs on the Mac. WhatsApp delivery and cloud-backed coding assistants still require their normal network connections.
-
-**Is this ready for public distribution?** Not yet. The [release checklist](docs/RELEASING.md) tracks signing, compatibility verification, licensing, and packaging work.
-
-## Roadmap
-
-Planned, not a promise of shipped functionality:
-
-- Developer ID signed and notarized macOS releases.
-- Published compatibility matrix backed by real-phone tests.
-- Cleaner first-run readiness checks and recovery guidance.
-- Measured startup, memory, and transcription performance across supported Macs.
-- Additional provider adapters where a supported, permission-preserving path exists.
-
-## Contributing and reporting issues
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). Useful reports include app/runtime versions, sanitized steps, expected behavior, and actual request state. Never attach account credentials, pairing QR codes, personal recordings, or complete state databases.
-
-Use the repository's bug and feature templates for ordinary reports. Security issues follow the private process in [SECURITY.md](SECURITY.md).
-
-## License and acknowledgments
-
-Sidekick's first-party source is currently **all rights reserved** during private preview; an open-source license has not been selected. Third-party components retain their own licenses. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-Built with SwiftUI, Node.js, Baileys, SQLite, whisper.cpp, and FFmpeg. UI fonts retain their bundled license notices. Thanks to the maintainers of those projects.
+[MIT](LICENSE)

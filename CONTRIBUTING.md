@@ -1,10 +1,10 @@
 # Contributing to Sidekick
 
-Sidekick is a private preview. Repository access does not grant a redistribution license. Read the README, security policy and relevant adapter before changing behavior.
+Sidekick is licensed under MIT. The repository is currently private while the preview is prepared. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
 
 ## Local workflow
 
-1. Install the README prerequisites and run `npm ci`.
+1. Install the development guide prerequisites and run `npm ci`.
 2. Create a focused branch from `main`.
 3. Make a small, reviewable change with tests for behavioral fixes.
 4. Run `npm run check`, `npm test`, and native tests for Swift changes.

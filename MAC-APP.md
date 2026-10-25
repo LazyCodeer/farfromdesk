@@ -4,7 +4,7 @@ The native app is built with SwiftUI and targets macOS 14+. The packaged speech 
 
 ## Build and install
 
-Follow the prerequisites in [README](README.md), then run:
+Follow the prerequisites in [development guide](docs/DEVELOPMENT.md), then run:
 
 ```sh
 npm ci
