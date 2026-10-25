@@ -1,4 +1,6 @@
 import { createMotion } from './motion.js';
+import { createExperience } from './experience.js';
+const destroyExperience = createExperience();
 
 const abort = new AbortController();
 const listen = (node, type, fn) => node.addEventListener(type, fn, {signal:abort.signal});
@@ -50,9 +52,9 @@ listen(privacy, 'click', event => {
   if (event.target === privacy && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) privacy.close();
 });
 document.querySelectorAll('details').forEach(details => listen(details, 'toggle', motion.refresh));
-listen(document.querySelector('[data-replay]'), 'click', motion.replay);
+
 const responsiveNav = window.matchMedia('(min-width: 768px)');
 listen(responsiveNav, 'change', event => { if (event.matches) setMenu(false); });
 
 // Fast back/forward navigation preserves the page; HMR fully tears down listeners.
-if (import.meta.hot) import.meta.hot.dispose(() => { abort.abort(); motion.destroy(); });
+if (import.meta.hot) import.meta.hot.dispose(() => { abort.abort(); motion.destroy(); destroyExperience(); });

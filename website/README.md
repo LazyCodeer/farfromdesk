@@ -17,15 +17,16 @@ The build is in `dist/`. Without a confirmed `SITE_URL`, it emits `noindex, nofo
 
 ## Design and content
 
-The website adapts the existing Codecy Labs Vite, semantic HTML, CSS and GSAP approach: its split hero, rounded arrow buttons, self-hosted Outfit / DM Sans / Instrument Serif, native FAQ disclosures and reversible reduced-motion animation contexts. FarFromDesk supplies the dark neutral / indigo palette and mark.
+A light, spatial product site built on the existing Vite, CSS and GSAP foundation. Self-hosted Outfit/DM Sans, navy type, pale surfaces and the original indigo FFD identity.
 
-The phone, Mac, pairing, session graph and voice-note visuals are labelled illustrations with synthetic content. They are not screenshots of a user's sessions. The QR is an icon, not a usable pairing code. Motion explains request/reply order, setup transitions, session scope and local transcription. Nothing loops indefinitely.
+- A Three.js scene connects a phone, FFD hub and laptop. Three camera views, pointer response and a user-triggered message path explain the connection.
+- A request simulator supports update, voice-note and quoted-session examples with accessible live status and sample replies. It never contacts WhatsApp or coding sessions.
+- Mobile and reduced-motion users get a lightweight WebP rendering first and explicitly choose to load 3D. The message simulator is immediately available.
+- Rendering happens on demand; there is no perpetual render loop. Device-pixel ratio is capped, offscreen rendering stops, and unavailable/lost WebGL leaves a static poster.
+- Three-step setup supports ArrowUp/Down, Home and End. Privacy dialog supports Escape and focus restoration. Mobile navigation closes after selection or Escape.
+- Product illustrations and example content are synthetic and labelled. No tracking, forms, user data or application APIs.
 
-- Three-step walkthrough supports keyboard arrows, Home and End.
-- Native privacy dialog supports Escape and focus restoration.
-- Mobile navigation closes after selection or Escape.
-- Content is built into static HTML; no tracking, forms, user data or application APIs.
-- Default OS reduced-motion preferences disable animated transitions.
+Three.js is lazy-loaded separately (about 139 KB gzip) and its MIT license is included under public/licenses. scene-poster.webp is a rendered image of our own scene, used as an intentional fast fallback. The social card reflects the current design.
 
 ## Release links
 

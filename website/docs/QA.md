@@ -53,3 +53,16 @@ No app build, restart, real WhatsApp message, private screenshot, native session
 ## Short URL deployment — 25 October 2026
 
 Owner changed DNS to ffd.codecylabs.com; full product name remains FarFromDesk. Release 20261025-ffd-03 uses the new canonical/OG/schema/sitemap origin. All five site tests pass. All 26 deployed files byte-match over normal DNS and verified HTTPS; HTTP redirects with 301 and unknown paths return 404. Company/portfolio remain HTTPS 200. New hostname certificate issued and renewal dry-run including Nginx reload passed; dedicated timer remains active. Live browser successfully opened https://ffd.codecylabs.com/, confirmed canonical and loaded images. Screenshot: ignored review/ffd-live.png.
+
+
+## Interactive 3D redesign — 25 October 2026
+
+- Existing five static build tests pass. New request scenarios, rapid scenario switching, scene loading, camera controls and sample-message playback tested in the browser.
+- Mobile first load has zero WebGL canvases and shows the scene poster. Explore in 3D successfully creates one canvas; camera switching and send action work. No horizontal overflow at 320, 390, 768, 1024 and 1440px.
+- Keyboard setup tabs select one panel; privacy Escape restores focus. Reduced-motion and WebGL failure paths are implemented and code-reviewed; an actual OS preference toggle/context-loss event was not simulated in this tool.
+- Local mobile Lighthouse: performance 99, accessibility 100, best practices 100, SEO 100; LCP 1.9s, TBT 10ms, CLS 0. Desktop: 98/100/100/100; LCP 0.4s, TBT 140ms, CLS 0. These are synthetic local measurements, not field results.
+- The initial mobile prototype scored 67 performance because of WebGL initialization; loading 3D on mobile only on request resolved this. No constant render loop runs on desktop.
+- Three.js is a lazy ~139KB gzip module; Vite reports its >500KB uncompressed chunk size. It is intentionally isolated rather than downloaded on initial mobile load.
+- Social-card and fallback images are generated from our own synthetic scene. No private screenshots, app sessions or workspace data used.
+
+- Public deployment verification: all 29 files match local build over HTTPS. Actual browser loads the 3D scene under the production CSP, shows the correct canonical URL and has no horizontal overflow. Company and portfolio HTTPS remain 200; unknown FarFromDesk path returns 404. Previous release retained.
