@@ -13,11 +13,15 @@ import { Masters } from './masters.js';
 import { PowerPolicy } from './power.js';
 import { installBundledAudio } from './speech-bundle.js';
 import { Workers } from './workers.js';
+import { PortableNative } from './portable-native.js';
+import { portableAgents } from './platform.js';
+import { acquireServiceLock } from './service-lock.js';
 
 const token=initializeState();
+const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
 const store=new Store(join(stateDir,'bridge.sqlite'));
 try {installBundledAudio(store);}catch{console.error('Bundled voice assets could not be initialized. Reinstall the app or configure local speech tools.');}
-const approvals=new Approvals(store),native=new NativeAgents(store,approvals),router=new Router(store,native,approvals),wa=new WhatsApp(store,router);
+const approvals=new Approvals(store),native=portableAgents?new PortableNative(store,approvals):new NativeAgents(store,approvals),router=new Router(store,native,approvals),wa=new WhatsApp(store,router);
 const coordinator=new Coordinator(store,native,router);router.coordinator=coordinator;
 const masters=new Masters(store,router),power=new PowerPolicy(store,router,wa);
 const workers=new Workers(store,router,masters);router.hasPendingCreation=id=>workers.pending(id);
@@ -31,7 +35,7 @@ server.on('listening',()=>{
   store.recover();
   void coordinator.refresh();
   void masters.discover();power.apply();
-  console.log(`WhatsApp Session Bridge listening at ${baseUrl}. Open Session Bridge.app to manage it.`);
+  console.log(`FarFromDesk listening at ${baseUrl}. Open FarFromDesk to manage it.`);
   // Existing paired accounts reconnect; first-time pairing is an explicit UI action.
   if(power.enabled&&existsSync(join(stateDir,'whatsapp-auth','creds.json')))
     void wa.connect().catch(e=>{wa.error=(e as Error).message;});
@@ -45,3 +49,5 @@ function shutdown(){if(shutting)return;shutting=true;router.stopped=true;clearIn
 process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);
 process.on('uncaughtException',e=>{console.error(`Bridge fatal error: ${e.message}`);shutdown();});
 process.on('unhandledRejection',e=>{console.error(`Bridge promise failed: ${e instanceof Error?e.message:'unknown failure'}`);shutdown();});
+
+server.on('ffd-shutdown',shutdown);

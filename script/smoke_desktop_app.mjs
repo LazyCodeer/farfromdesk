@@ -1,0 +1,42 @@
+// Start the actual packaged native entry point against disposable account state.
+import {mkdtempSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {createServer} from 'node:net';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import assert from 'node:assert/strict';
+const state=mkdtempSync(join(tmpdir(),'ffd-native-smoke-'));
+const stage=resolve('build/desktop-release/stage');
+const binary=process.platform==='darwin'?join(stage,'FarFromDesk.app/Contents/MacOS/FarFromDesk'):
+  join(stage,'FarFromDesk',process.platform==='win32'?'farfromdesk.exe':'farfromdesk');
+assert.ok(existsSync(binary),'Packaged native executable must exist');
+const socket=createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');
+const port=socket.address().port;await new Promise(r=>socket.close(r));
+const base=`http://127.0.0.1:${port}`;
+const app=spawn(binary,[],{stdio:'inherit',env:{...process.env,WSB_STATE_DIR:state,WSB_PORT:String(port),
+  WSB_CODEX_BIN:join(state,'missing-codex'),WSB_CLAUDE_BIN:join(state,'missing-claude'),
+  CODEX_HOME:join(state,'codex'),CLAUDE_CONFIG_DIR:join(state,'claude')}});
+let headers;
+try {
+  let health;
+  for(let i=0;i<180;i++) {
+    await new Promise(r=>setTimeout(r,500));
+    if(app.exitCode!==null)throw new Error(`Native app exited early: ${app.exitCode}`);
+    if(!existsSync(join(state,'admin-token')))continue;
+    headers={Authorization:`Bearer ${readFileSync(join(state,'admin-token'),'utf8').trim()}`,'Content-Type':'application/json'};
+    try {const r=await fetch(base+'/api/health',{headers,signal:AbortSignal.timeout(2000)});if(r.ok){health=await r.json();break;}}catch{}
+  }
+  assert.equal(health?.app,'FarFromDesk');assert.equal(health.protocol,1);
+  assert.equal((await fetch(base+'/api/status')).status,401);
+  const status=await (await fetch(base+'/api/status',{headers})).json();
+  assert.equal(status.preferences.backgroundEnabled,false);
+  assert.equal(status.master,null);assert.equal(status.voice.ready,true);assert.equal(status.voice.bundled,true);
+  assert.equal((await fetch(base+'/api/shutdown',{method:'POST',headers,body:'{}'})).status,200);
+  console.log('Native desktop startup, bundled backend/voice, isolated paused state and authenticated shutdown passed.');
+} finally {
+  if(headers)await fetch(base+'/api/shutdown',{method:'POST',headers,body:'{}',signal:AbortSignal.timeout(2000)}).catch(()=>{});
+  app.kill();
+  await new Promise(r=>setTimeout(r,1500));
+  rmSync(state,{recursive:true,force:true,maxRetries:5,retryDelay:500});
+}

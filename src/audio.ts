@@ -73,7 +73,7 @@ export async function transcribeLocal(data:Buffer,format:string,config:AudioConf
 }
 export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal) {
   const saved=store.get('audio-config');
-  if(!saved)throw new Error('Voice transcription is not configured on this Mac yet. Please type your message; configure local Whisper in the bridge CLI.');
+  if(!saved)throw new Error('Voice transcription is not configured on this computer yet. Please type your message; configure local Whisper in the bridge CLI.');
   const config=validateAudioConfig(JSON.parse(saved)),format=audioFormat(audio);
   return transcribeLocal(await downloadAudio(audio,signal),format,config,stateDir,signal);
 }

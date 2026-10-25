@@ -112,7 +112,7 @@ export class WhatsApp {
       const setKeys=state.keys.set;
       state.keys.set=data=>write(async()=>{await setKeys(data);});
       this.status='connecting';
-      const sock=makeWASocket({auth:state,logger:pino({level:'silent'}),browser:Browsers.macOS('Session Bridge'),markOnlineOnConnect:false,syncFullHistory:false,shouldSyncHistoryMessage:()=>false,emitOwnEvents:false,
+      const sock=makeWASocket({auth:state,logger:pino({level:'silent'}),browser:(process.platform==='win32'?Browsers.windows:process.platform==='darwin'?Browsers.macOS:Browsers.ubuntu)('FarFromDesk'),markOnlineOnConnect:false,syncFullHistory:false,shouldSyncHistoryMessage:()=>false,emitOwnEvents:false,
         getMessage:async key=>{const r=this.store.db.prepare('SELECT body,artifact_id,wa_message FROM outbox WHERE wa_id=?').get(key.id??'') as any;return r?.wa_message?JSON.parse(r.wa_message,BufferJSON.reviver):r&&!r.artifact_id?{conversation:r.body}:undefined;}});
       this.sock=sock;
       sock.ev.on('creds.update',()=>void write(saveCreds).catch(()=>{this.error='Could not save WhatsApp credentials';}));

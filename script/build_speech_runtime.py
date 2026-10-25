@@ -11,7 +11,9 @@ import tarfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-ARCH = os.environ.get('WSB_TARGET_ARCH', 'arm64')
+SYSTEM = platform.system()
+ARCH = os.environ.get('WSB_TARGET_ARCH', {'AMD64':'x86_64', 'aarch64':'arm64'}.get(platform.machine(), platform.machine()))
+SUFFIX = '.exe' if SYSTEM == 'Windows' else ''
 if ARCH not in ('arm64', 'x86_64'):
     raise RuntimeError('Unsupported speech architecture')
 WORK = ROOT / ('build/speech-toolchain' if ARCH == 'arm64' else 'build/speech-toolchain-x86_64')
@@ -40,7 +42,10 @@ def download(url, path, expected):
         raise RuntimeError('Downloaded file checksum does not match pinned source: ' + path.name)
     temporary.replace(path)
 
-def run(args, cwd=None):
+def run(args, cwd=None, unix=False):
+    if SYSTEM == 'Windows' and unix:
+        bash = os.environ.get('FFD_MSYS_BASH', r'C:\msys64\usr\bin\bash.exe')
+        args = [bash, '-lc', 'export PATH=/ucrt64/bin:/usr/bin; exec "$@"', 'ffd-speech', *args]
     subprocess.run(args, cwd=cwd, check=True)
 
 def extract(archive, name):
@@ -55,8 +60,8 @@ def extract(archive, name):
     return folders[0]
 
 def main():
-    if platform.system() != 'Darwin':
-        raise RuntimeError('This speech runtime build requires macOS.')
+    if SYSTEM not in ('Darwin', 'Linux', 'Windows'):
+        raise RuntimeError('Unsupported speech platform.')
     WORK.mkdir(parents=True, exist_ok=True)
     for name, (url, sha) in SOURCES.items():
         cached = ROOT / 'build/speech-toolchain' / name
@@ -75,33 +80,43 @@ def main():
         '--enable-decoder=opus,vorbis,mp3,mp3float,aac,aac_fixed,alac,flac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,amrnb,amrwb',
         '--enable-encoder=pcm_s16le', '--enable-muxer=wav',
         '--enable-filter=aresample,aformat,anull,atrim,abuffer,abuffersink,format',
-        '--cc=clang', '--arch=' + ARCH, '--target-os=darwin',
-        '--extra-cflags=-arch ' + ARCH + ' -mmacosx-version-min=14.0', '--extra-ldflags=-arch ' + ARCH + ' -mmacosx-version-min=14.0',
     ]
-    if ARCH == 'x86_64':
-        ffmpeg_args.extend(['--enable-cross-compile', '--disable-x86asm'])
-    if not (ffmpeg / 'ffmpeg').exists():
-        run(ffmpeg_args, ffmpeg)
-        run(['make', '-j', '4', 'ffmpeg'], ffmpeg)
+    if SYSTEM == 'Darwin':
+        ffmpeg_args.extend(['--cc=clang', '--arch=' + ARCH, '--target-os=darwin',
+            '--extra-cflags=-arch ' + ARCH + ' -mmacosx-version-min=14.0', '--extra-ldflags=-arch ' + ARCH + ' -mmacosx-version-min=14.0'])
+        if ARCH == 'x86_64': ffmpeg_args.append('--enable-cross-compile')
+    elif SYSTEM == 'Windows':
+        ffmpeg_args.extend(['--cc=gcc', '--target-os=mingw32', '--extra-ldflags=-static'])
+    else:
+        ffmpeg_args.append('--cc=cc')
+    if ARCH == 'x86_64': ffmpeg_args.append('--disable-x86asm')
+    if not (ffmpeg / ('ffmpeg' + SUFFIX)).exists():
+        run(ffmpeg_args, ffmpeg, unix=True)
+        run(['make', '-j', '4', 'ffmpeg' + SUFFIX], ffmpeg, unix=True)
     whisper_build = WORK / 'whisper-build'
     cmake_args = ['cmake', '-S', str(whisper), '-B', str(whisper_build),
-        '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0',
-        '-DCMAKE_OSX_ARCHITECTURES=' + ARCH, '-DBUILD_SHARED_LIBS=OFF',
-        '-DGGML_BACKEND_DL=OFF', '-DGGML_NATIVE=OFF', '-DGGML_METAL=' + ('ON' if ARCH == 'arm64' else 'OFF'), '-DGGML_METAL_EMBED_LIBRARY=ON',
+        '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=OFF', '-DGGML_OPENMP=OFF',
+        '-DGGML_BACKEND_DL=OFF', '-DGGML_NATIVE=OFF', '-DGGML_METAL=' + ('ON' if SYSTEM == 'Darwin' and ARCH == 'arm64' else 'OFF'), '-DGGML_METAL_EMBED_LIBRARY=ON',
         '-DGGML_BLAS=OFF', '-DWHISPER_BUILD_TESTS=OFF', '-DWHISPER_BUILD_SERVER=OFF']
+    if SYSTEM == 'Darwin':
+        cmake_args.extend(['-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0', '-DCMAKE_OSX_ARCHITECTURES=' + ARCH])
+    if SYSTEM == 'Windows':
+        cmake_args.extend(['-A', 'x64', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'])
     if ARCH == 'arm64':
         cmake_args.append('-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16')
     else:
         cmake_args.extend(['-DGGML_AVX=OFF', '-DGGML_AVX2=OFF', '-DGGML_FMA=OFF', '-DGGML_F16C=OFF'])
     run(cmake_args)
-    run(['cmake', '--build', str(whisper_build), '--target', 'whisper-cli', '-j', '4'])
+    run(['cmake', '--build', str(whisper_build), '--target', 'whisper-cli', '--config', 'Release', '-j', '4'])
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    for src, name in [(ffmpeg / 'ffmpeg', 'ffmpeg'), (whisper_build / 'bin/whisper-cli', 'whisper-cli')]:
+    whisper_bin = whisper_build / ('bin/Release/whisper-cli.exe' if SYSTEM == 'Windows' else 'bin/whisper-cli')
+    for src, name in [(ffmpeg / ('ffmpeg' + SUFFIX), 'ffmpeg' + SUFFIX), (whisper_bin, 'whisper-cli' + SUFFIX)]:
         shutil.copy2(src, OUTPUT / name)
-        run(['codesign', '--force', '--sign', '-', str(OUTPUT / name)])
-        linked = subprocess.check_output(['otool', '-L', str(OUTPUT / name)], text=True).splitlines()[1:]
-        if any(not line.strip().startswith(('/usr/lib/', '/System/Library/')) for line in linked):
-            raise RuntimeError('Speech tool still depends on external libraries: ' + name)
+        if SYSTEM == 'Darwin':
+            run(['codesign', '--force', '--sign', '-', str(OUTPUT / name)])
+            linked = subprocess.check_output(['otool', '-L', str(OUTPUT / name)], text=True).splitlines()[1:]
+            if any(not line.strip().startswith(('/usr/lib/', '/System/Library/')) for line in linked):
+                raise RuntimeError('Speech tool still depends on external libraries: ' + name)
     model = OUTPUT / 'ggml-base.bin'
     existing = Path(os.environ.get('WSB_MODEL_SOURCE', str(Path.home() / 'Library/Application Support/WhatsApp Session Bridge/models/ggml-base.bin')))
     if existing.is_file() and digest(existing) == MODEL_HASH:
@@ -122,12 +137,13 @@ def main():
     shutil.copy2(__file__, licenses / 'build_speech_runtime.py')
     (licenses / 'build-options.json').write_text(json.dumps({'ffmpeg': ffmpeg_args, 'whisper': cmake_args}, indent=2).replace(str(ROOT), '${PROJECT_ROOT}'))
     manifest = {'schema': 1, 'architecture': 'arm64' if ARCH == 'arm64' else 'x64', 'minimumMacOS': '14.0',
-        'ffmpeg': 'ffmpeg', 'whisper': 'whisper-cli', 'model': 'ggml-base.bin',
+        'platform': {'Darwin':'darwin','Linux':'linux','Windows':'win32'}[SYSTEM],
+        'ffmpeg': 'ffmpeg' + SUFFIX, 'whisper': 'whisper-cli' + SUFFIX, 'model': 'ggml-base.bin',
         'versions': {'ffmpeg': '9.0.2', 'whisper': '1.9.2', 'model': 'multilingual-base'},
-        'sha256': {name: digest(OUTPUT / name) for name in ['ffmpeg', 'whisper-cli', 'ggml-base.bin']}}
+        'sha256': {name: digest(OUTPUT / name) for name in ['ffmpeg' + SUFFIX, 'whisper-cli' + SUFFIX, 'ggml-base.bin']}}
     (OUTPUT / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     for path in OUTPUT.rglob('*'):
-        path.chmod(0o755 if path.is_dir() or path.name in ['ffmpeg', 'whisper-cli'] else 0o644)
+        path.chmod(0o755 if path.is_dir() or path.name in ['ffmpeg' + SUFFIX, 'whisper-cli' + SUFFIX] else 0o644)
     print('Self-contained speech runtime:', OUTPUT)
 
 if __name__ == '__main__':

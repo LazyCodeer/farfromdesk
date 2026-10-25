@@ -26,8 +26,10 @@ export function installBundledAudio(store:Store,directory=defaultSpeechBundle) {
   const manifest=join(directory,'manifest.json');
   if(!existsSync(manifest))return {configured:false,preserved:false};
   const data=JSON.parse(readFileSync(manifest,'utf8'));
-  if(data.schema!==1||data.architecture!==process.arch||data.ffmpeg!=='ffmpeg'||data.whisper!=='whisper-cli'||data.model!=='ggml-base.bin')throw new Error('Bundled voice assets have an unsupported manifest.');
-  const config={ffmpeg:join(directory,'ffmpeg'),whisper:join(directory,'whisper-cli'),model:join(directory,'ggml-base.bin')};
+  const ext=process.platform==='win32'?'.exe':'';
+  if(data.platform&&data.platform!==process.platform)throw new Error('Bundled voice assets target a different platform.');
+  if(data.schema!==1||data.architecture!==process.arch||data.ffmpeg!=='ffmpeg'+ext||data.whisper!=='whisper-cli'+ext||data.model!=='ggml-base.bin')throw new Error('Bundled voice assets have an unsupported manifest.');
+  const config={ffmpeg:join(directory,'ffmpeg'+ext),whisper:join(directory,'whisper-cli'+ext),model:join(directory,'ggml-base.bin')};
   validateAudioConfig(config);
   for(const path of Object.values(config)) {
     if(!lstatSync(path).isFile())throw new Error('Bundled voice assets must be regular files.');

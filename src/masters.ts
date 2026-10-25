@@ -14,6 +14,8 @@ import { ClaudeSession } from './claude-session.js';
 import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { masterPolicy } from './master-policy.js';
+import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
+import { ClaudeSDKSession } from './claude-sdk-session.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
@@ -30,7 +32,7 @@ export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
 }
 export class Masters {
   runtimes=new Map<string,CodexSession>();
-  claudeRuntimes=new Map<string,ClaudeSession>();
+  claudeRuntimes=new Map<string,ClaudeSession|ClaudeSDKSession>();
   desktop:DesktopStarts;
   creating=false;
   platforms:any[]=[];
@@ -69,7 +71,7 @@ export class Masters {
     if(this.discovery)return this.discovery;
     this.discovery=(async()=>{
     const platforms:any[]=await Promise.all(([['codex',codexBin],['claude',claudeBin]] as const).map(async([provider,bin])=>{
-      try {await exec(bin,['--version'],{timeout:5000,maxBuffer:10000});return {provider,executionMode:'cli',available:true,label:provider==='codex'?'Codex · native CLI':'Claude Code · background CLI'};}
+      try {const command=nativeCommand(bin,['--version']);await exec(command.binary,command.args,{timeout:5000,maxBuffer:10000,windowsHide:true});return {provider,executionMode:'cli',available:true,label:provider==='codex'?'Codex · native CLI':'Claude Code · background CLI'};}
       catch{return {provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'Native CLI unavailable. Claude Desktop uses its separate app session.'};}
     }));
     const fallback=(provider:Provider)=>this.platforms.filter(p=>p.provider===provider&&(provider==='claude'||p.executionMode==='cli')).flatMap(p=>(p.sessions??[]).map((s:any)=>({...s,provider,executionMode:p.executionMode})));
@@ -80,6 +82,7 @@ export class Masters {
     for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):codex);
     platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'Open a Claude Desktop Code chat to connect. Saved chats without a running local inbox cannot receive messages yet.'});
     platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
+    if(portableAgents)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
     const digest=createHash('sha256').update(JSON.stringify(platforms)).digest('hex');
     if(digest!==this.catalogDigest){this.catalogDigest=digest;this.catalogRevision=randomUUID();}
@@ -182,6 +185,7 @@ export class Masters {
   async useDesktop(sessionId:string,operationId:string){return this.useSession('claude','desktop',sessionId,operationId);}
   async useSession(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string) {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
+    requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),previous=this.operation(operationId);
     if(previous){if(previous.selectedSessionId!==sessionId||previous.provider!==provider||previous.executionMode!==mode)throw new Error('Selection ID cannot change sessions or platforms.');return previous;}
     this.assertIdle();this.creating=true;
@@ -196,7 +200,7 @@ export class Masters {
       this.setAside();
       if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
       this.stopWorker(b.id);this.store.set(`execution-mode:${b.id}`,mode);
-      if(provider==='codex'&&mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
+      if(mode==='cli'&&(provider==='codex'||portableAgents))this.store.set(`managed-${provider}:${b.id}`,'true');
       this.saveOperation({id:operationId,provider,executionMode:mode,selectedSessionId:session.id,bindingId:b.id,nativeId:b.native_id,cwd:b.cwd,status:'creating'});
       this.activate(b,operationId);this.store.set(`name:${b.id}`,session.name);
       this.store.set('selected',JSON.stringify((JSON.parse(this.store.get('selected')??'[]') as string[]).filter(id=>id!==b!.id)));
@@ -205,6 +209,7 @@ export class Masters {
   }
   async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown) {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+    requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),name=masterName(provider,mode,requestedName),previous=this.operation(operationId);
     if(previous){if(previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():''))throw new Error('Creation ID cannot change platform or desktop launcher.');return previous;}
     this.assertIdle();
@@ -277,7 +282,8 @@ export class Masters {
       runtime=new CodexSession(codexBin,b.cwd,(method,params)=>this.approval(b,method,params));this.runtimes.set(b.id,runtime);
       await runtime.initialize();
       const worker=this.store.get(`managed-worker:${b.id}`)==='true';
-      await runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',...(worker?{}:{developerInstructions:masterPolicy,config:{'mcp_servers.session_bridge':this.mcpConfig(b)}})});
+      const resumed=await runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',...(b.id===this.store.get('master')?{developerInstructions:masterPolicy}:{}),config:{'mcp_servers.session_bridge':this.mcpConfig(b)}});
+      if(portableAgents&&(resumed.thread?.id!==b.native_id||typeof resumed.thread?.cwd!=='string'||realpathSync(resumed.thread.cwd)!==realpathSync(b.cwd))){this.stopWorker(b.id);throw new Error('Native resume returned a different session or project. Delivery stopped.');}
     }
     const active=runtime;
     await new Promise<void>((resolve,reject)=>{
@@ -306,6 +312,11 @@ export class Masters {
     });
   }
   private claudeWorker(b:Binding,resume:boolean) {
+    if(portableAgents)return new ClaudeSDKSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
+      if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
+      const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
+      return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
+    },{session_bridge:this.mcpConfig(b)});
     return new ClaudeSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
@@ -313,6 +324,7 @@ export class Masters {
     },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(b.cwd,'bridge-mcp.json'),allowedTools:['master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet'].map(t=>`mcp__session_bridge__${t}`).join(',')});
   }
   async provisionWorker(b:Binding) {
+    requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
     if(this.store.get(`execution-mode:${b.id}`)==='desktop') {
       await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'FarFromDesk project','Use the incoming bridge CLI reply command for future requests.');return;
     }
@@ -332,6 +344,7 @@ export class Masters {
   }
   stopWorker(id:string){this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
   async recoverWorker(b:Binding) {
+    requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
     this.stopWorker(b.id);
     if(this.store.get(`execution-mode:${b.id}`)==='desktop'){await this.desktop.confirm(b);return;}
     if(b.provider==='claude') {

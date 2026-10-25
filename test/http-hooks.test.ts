@@ -32,7 +32,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
     assert.equal(wrongHost,403);
     assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
-    for(const endpoint of ['/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout']) {
+    for(const endpoint of ['/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown']) {
       assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
     }
     store.enqueue('job-a',a.binding,'Task A');store.enqueue('job-b',b.binding,'Task B');
@@ -70,6 +70,8 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const doc={bindingId:a.binding.id,requestId:'job-a',filename:'review.html',base64:Buffer.from('<html>Review</html>').toString('base64')};
     assert.equal((await post('/api/artifacts/prepare',doc)).status,403);
     assert.equal((await post('/api/audio-config',{})).status,403);
+    assert.equal((await post('/api/desktop/document',doc,'test-admin-token')).status,400);
+    assert.equal((await post('/api/desktop/document',{...doc,confirmed:true,requestId:'job-b'},'test-admin-token')).status,400);
     const prep=await post('/api/artifacts/prepare',doc,'test-admin-token');assert.equal(prep.status,200);
     const artifactId=(await prep.json()).artifactId;
     assert.equal((await post('/api/session/document',{requestId:'job-b',artifactId})).status,400);
@@ -81,6 +83,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const deliveryUrl=url+'/api/session/delivery?id='+delivery.id;
     assert.equal((await fetch(deliveryUrl,{headers:{Authorization:`Bearer ${b.token}`,'X-Binding-Id':b.binding.id}})).status,400);
     assert.equal((await fetch(deliveryUrl,{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,200);
+    const desktopSent=await post('/api/desktop/document',{...doc,filename:'desktop-review.html',confirmed:true,caption:'Reviewed by owner'},'test-admin-token');assert.equal(desktopSent.status,200);assert.equal((await desktopSent.json()).status,'queued');
     assert.equal((await post('/api/logout',{},'test-admin-token')).status,400);assert.equal(logoutCalls,0);
     assert.equal((await post('/api/logout',{confirmed:true},'test-admin-token')).status,200);assert.equal(logoutCalls,1);assert.equal(pauseCalls,1);assert.equal(wa.status,'logged out');
     wa.logout=async()=>{throw new Error('Simulated unlink failure');};

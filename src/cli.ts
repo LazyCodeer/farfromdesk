@@ -21,7 +21,7 @@ function credentials(alias:string) {
 }
 const xml=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const serviceFile=join(homedir(),'Library/LaunchAgents/com.sagar.whatsapp-session-bridge.plist');
-const target=`gui/${process.getuid!()}/com.sagar.whatsapp-session-bridge`;
+const target=`gui/${process.getuid?.()}/com.sagar.whatsapp-session-bridge`;
 function resolveBin(name:string){if(name.includes('/'))return name;return execFileSync('/usr/bin/which',[name],{encoding:'utf8'}).trim();}
 async function main() {
   if(command==='status'){const d=await api('/api/status');delete d.whatsapp.qr;console.log(JSON.stringify(d,null,2));}
@@ -100,16 +100,17 @@ async function main() {
     child.on('exit',code=>process.exit(code??1));child.on('error',e=>{console.error(e.message);process.exit(1);});
   }
   else if(command==='install') {
+    if(process.platform!=='darwin')throw new Error('Install the FarFromDesk desktop app with the platform installer.');
     initializeState();mkdirSync(dirname(serviceFile),{recursive:true});mkdirSync(join(stateDir,'logs'),{recursive:true,mode:0o700});
     const env:Record<string,string>={PATH:process.env.PATH??'/usr/bin:/bin',WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port,WSB_CODEX_BIN:resolveBin('codex'),WSB_CLAUDE_BIN:resolveBin(claudeBin)};
     if(process.env.WSB_CODEX_SOCKET)env.WSB_CODEX_SOCKET=process.env.WSB_CODEX_SOCKET;
     const p=`<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.sagar.whatsapp-session-bridge</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(join(root,'dist/main.js'))}</string></array><key>WorkingDirectory</key><string>${xml(root)}</string><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([k,v])=>`<key>${k}</key><string>${xml(v)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>${xml(join(stateDir,'logs/service.log'))}</string><key>StandardErrorPath</key><string>${xml(join(stateDir,'logs/error.log'))}</string></dict></plist>`;
     writeFileSync(serviceFile,p,{mode:0o600});
     try{execFileSync('/bin/launchctl',['bootout',target],{stdio:'ignore'});}catch{}
-    execFileSync('/bin/launchctl',['bootstrap',`gui/${process.getuid!()}`,serviceFile],{stdio:'inherit'});
+    execFileSync('/bin/launchctl',['bootstrap',`gui/${process.getuid?.()}`,serviceFile],{stdio:'inherit'});
     console.log('Installed background service. Run npm run bridge -- open to pair WhatsApp.');
   }
-  else if(command==='stop-service') {execFileSync('/bin/launchctl',['bootout',target],{stdio:'inherit'});console.log('Stopped. Credentials and sessions are retained.');}
+  else if(command==='stop-service') {if(process.platform!=='darwin')throw new Error('Use FarFromDesk Settings to stop background operation.');execFileSync('/bin/launchctl',['bootout',target],{stdio:'inherit'});console.log('Stopped. Credentials and sessions are retained.');}
   else if(command==='install-skills') {
     for(const dir of [join(homedir(),'.codex/skills/whatsapp-session'),join(homedir(),'.claude/skills/whatsapp-session')]){
       mkdirSync(dir,{recursive:true});let skill=readFileSync(join(root,'skills/whatsapp-session/SKILL.md'),'utf8').replaceAll('{{BRIDGE_CLI}}',join(root,'dist/cli.js')).replaceAll('{{NODE}}',process.execPath);

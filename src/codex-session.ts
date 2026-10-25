@@ -1,6 +1,7 @@
 import { spawn,type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
+import { nativeCommand } from './platform.js';
 
 /** One native app-server transport. No shell, API keys or alternate model client. */
 export class CodexSession extends EventEmitter {
@@ -10,7 +11,8 @@ export class CodexSession extends EventEmitter {
   alive=true;
   constructor(binary:string,cwd:string,private approval:(method:string,params:any)=>Promise<any>) {
     super();
-    this.process=spawn(binary,['app-server','--stdio'],{cwd,stdio:'pipe',env:process.env});
+    const command=nativeCommand(binary,['app-server']);
+    this.process=spawn(command.binary,command.args,{cwd,stdio:'pipe',env:process.env,windowsHide:true});
     this.process.stderr.resume(); // Native diagnostics may contain private content; never echo them.
     const lines=createInterface({input:this.process.stdout});
     lines.on('line',line=>{

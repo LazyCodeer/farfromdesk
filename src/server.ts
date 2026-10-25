@@ -41,13 +41,13 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(!trustedRequest(req)){json(res,403,{error:'Local requests only'});return;}
       const url=new URL(req.url??'/',`http://127.0.0.1:${port}`),path=url.pathname;
       if(req.method==='GET'&&['/','/app.js','/style.css'].includes(path)) {
-        json(res,410,{error:'The browser dashboard has been retired. Open Session Bridge.app.'});return;
+        json(res,410,{error:'The browser dashboard has been retired. Open FarFromDesk.'});return;
       }
       const token=(req.headers.authorization??'').replace(/^Bearer /,'');
       const isAdmin=equal(token,adminToken);
       const scopedId=req.headers['x-binding-id'];
       const binding=typeof scopedId==='string'?store.authBinding(scopedId,token):undefined;
-      if(!isAdmin&&!binding){json(res,401,{error:'Use Session Bridge.app or provide a valid session token.'});return;}
+      if(!isAdmin&&!binding){json(res,401,{error:'Use FarFromDesk or provide a valid session token.'});return;}
       if(path==='/api/session/document'&&req.method==='POST'&&binding) {
         const d=await body(req);
         if(typeof d.requestId!=='string'||typeof d.artifactId!=='string')throw new Error('Request and prepared artifact IDs required.');
@@ -83,6 +83,9 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{answer});return;
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}
+      if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,pid:process.pid,platform:process.platform});return;}
+      if(path==='/api/shutdown'&&req.method==='POST'){await body(req);json(res,200,{ok:true});setImmediate(()=>server.emit('ffd-shutdown'));return;}
+      if(path==='/api/desktop/connect-sessions'&&req.method==='POST'){const d=await body(req);if(!router.coordinator||!Array.isArray(d.targets)||!d.targets.length||d.targets.length>50)throw new Error('Choose 1–50 exact sessions.');await router.coordinator.refresh();const chosen=d.targets.map((target:string)=>{const s=router.coordinator!.sessions.find(s=>`${s.provider}:${s.id}`===target);if(!s||s.available===false)throw new Error('Refresh and choose an available exact session.');return s;});json(res,200,{sessions:(await router.coordinator.connectSessions(chosen,true)).map(cleanBinding)});return;}
       if(path==='/api/request-review-bulk'&&req.method==='POST') {
         const d=await body(req);if(d.confirmed!==true)throw new Error('Explicit bulk review confirmation is required.');
         json(res,200,router.reviewRequests(d.requests));return;
@@ -94,6 +97,12 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const d=await body(req);
         if(typeof d.requestId!=='string'||typeof d.expectedStatus!=='string'||d.confirmed!==true)throw new Error('An exact request and explicit native-chat review confirmation are required.');
         json(res,200,router.reviewRequest(d.requestId,d.expectedStatus));return;
+      }
+      if(path==='/api/desktop/document'&&req.method==='POST') {
+        const d=await body(req,14*1024*1024),b=store.binding(d.bindingId??'');
+        if(!b||d.confirmed!==true)throw new Error('Choose an exact request and confirm the reviewed document.');
+        const prepared=artifacts.prepare(b,d.requestId,d.filename,d.base64);
+        json(res,200,artifacts.reply(b,d.requestId,prepared.artifactId,d.caption??''));return;
       }
       if(path==='/api/artifacts/prepare'&&req.method==='POST') {
         const d=await body(req,14*1024*1024),b=store.binding(d.bindingId??'');
