@@ -1,6 +1,6 @@
 /** Owner-clicked macOS updater. No provider SDKs, shell interpolation or account switching. */
 import {createHash} from 'node:crypto';
-import {access,cp,lstat,mkdir,readFile,readdir,realpath,rename,rm,stat,statfs,writeFile} from 'node:fs/promises';
+import {access,cp,lstat,mkdir,open,readFile,readdir,realpath,rename,rm,stat,statfs,writeFile} from 'node:fs/promises';
 import {constants,createWriteStream} from 'node:fs';
 import {basename,dirname,isAbsolute,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -49,6 +49,21 @@ export function safeArchiveNames(names:string[]) {
  for(const name of names){
   if(isAbsolute(name)||name.includes('\\')||name.split('/').some(p=>p==='..')||!['FarFromDesk.app','__MACOSX'].includes(name.split('/')[0]))throw new Error('Unsafe path in update archive.');
  }
+}
+export function machoArchitectures(header:Buffer):string[] {
+ if(header.length<8)throw new Error('Invalid Mac executable header.');
+ const magic=header.readUInt32BE(0),thin=[0xfeedfacf,0xcffaedfe],fat=[0xcafebabe,0xbebafeca,0xcafebabf,0xbfbafeca];
+ const little=[0xcffaedfe,0xbebafeca,0xbfbafeca].includes(magic);
+ const word=(offset:number)=>little?header.readUInt32LE(offset):header.readUInt32BE(offset);
+ const name=(cpu:number)=>cpu===0x0100000c?'arm64':cpu===0x01000007?'x86_64':'unsupported';
+ if(thin.includes(magic))return [name(word(4))];
+ if(!fat.includes(magic))throw new Error('Update does not contain a Mac executable.');
+ const count=word(4),stride=[0xcafebabf,0xbfbafeca].includes(magic)?32:20;
+ if(count<1||count>32||8+count*stride>header.length)throw new Error('Invalid universal executable header.');
+ return Array.from({length:count},(_,i)=>name(word(8+i*stride)));
+}
+async function executableArchitectures(path:string) {
+ const file=await open(path,'r');try{const header=Buffer.alloc(4096);const {bytesRead}=await file.read(header,0,header.length,0);return machoArchitectures(header.subarray(0,bytesRead));}finally{await file.close();}
 }
 export function unpackedSize(summary:string) {
  const m=/([\d]+) bytes uncompressed/.exec(summary);if(!m)throw new Error('Cannot verify unpacked update size.');
@@ -147,7 +162,7 @@ export async function runUpdate(requestFile:string) {
   const team=await signature(app),newTeam=await signature(staged);
   if(team&&team!=='not set'&&newTeam!==team)throw new Error('The update is signed by a different publisher.');
   const architecture=process.arch==='arm64'?'arm64':'x86_64';
-  if(!(await command('/usr/bin/lipo',['-archs',join(staged,'Contents/MacOS/FarFromDesk')])).split(/\s+/).includes(architecture))throw new Error('Update architecture does not match this Mac.');
+  if(!(await executableArchitectures(join(staged,'Contents/MacOS/FarFromDesk'))).includes(architecture))throw new Error('Update architecture does not match this Mac.');
   await access(join(staged,'Contents/Resources/backend/dist/main.js'));await access(join(staged,'Contents/Resources/backend/runtime/node'),constants.X_OK);
   const expectedCommit=JSON.parse(await readFile(join(staged,'Contents/Resources/backend/build.json'),'utf8')).sourceCommit;
   if(typeof expectedCommit!=='string'||!expectedCommit)throw new Error('Update build identity is missing.');

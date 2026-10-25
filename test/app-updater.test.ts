@@ -6,7 +6,7 @@ import {mkdtemp,readFile,writeFile,mkdir,rm,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {newer,releaseAsset,checksum,safeArchiveNames,publicResponse,download,swapBundle,extractArchive,unpackedSize} from '../src/app-updater.js';
+import {newer,releaseAsset,checksum,safeArchiveNames,publicResponse,download,swapBundle,extractArchive,unpackedSize,machoArchitectures} from '../src/app-updater.js';
 function release(v='0.8.0') {const name=`FarFromDesk-${v}-macos-arm64.zip`,url=`https://github.com/LazyCodeer/farfromdesk/releases/download/v${v}/${name}`;return {tag_name:'v'+v,draft:false,prerelease:false,assets:[{name,state:'uploaded',browser_download_url:url,size:3},{name:name+'.sha256',state:'uploaded',browser_download_url:url+'.sha256'}]};}
 test('updater rejects same-base local downgrade, wrong channels, missing or foreign assets',()=>{
  assert.equal(newer('0.7.1','0.7.1-local.2022'),false);assert.equal(newer('0.7.2','0.7.1-local.2022'),true);
@@ -70,4 +70,14 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
   await extractArchive(archive,stage).catch(()=>{});
   await assert.rejects(readFile(join(outside,'escaped.txt')),/ENOENT/);
  }finally{await rm(temp,{recursive:true,force:true});}
+});
+
+test('Mac architecture validation needs no external developer tools',()=>{
+ const arm=Buffer.alloc(32);arm.writeUInt32BE(0xcffaedfe,0);arm.writeUInt32LE(0x0100000c,4);
+ assert.deepEqual(machoArchitectures(arm),['arm64']);
+ const intel=Buffer.from(arm);intel.writeUInt32LE(0x01000007,4);assert.deepEqual(machoArchitectures(intel),['x86_64']);
+ const universal=Buffer.alloc(48);universal.writeUInt32BE(0xcafebabe,0);universal.writeUInt32BE(2,4);universal.writeUInt32BE(0x01000007,8);universal.writeUInt32BE(0x0100000c,28);
+ assert.deepEqual(machoArchitectures(universal),['x86_64','arm64']);
+ assert.throws(()=>machoArchitectures(universal.subarray(0,20)),/Invalid universal/);
+ assert.throws(()=>machoArchitectures(Buffer.alloc(32)),/Mac executable/);
 });
