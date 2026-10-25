@@ -68,7 +68,9 @@ export async function transcribeLocal(data:Buffer,format:string,config:AudioConf
     if(!hasAudibleSamples(pcm))throw new Error('No clear speech detected.');
     // Feed the already-validated PCM WAV through Whisper's memory decoder,
     // keeping the decoder input identical across platforms.
-    const transcription=exec(config.whisper,['-m',config.model,'-f','-','-l','auto','-otxt','-of',output,'-nt','-np','-t','4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal});
+    // The pinned Windows GGML runtime stalls with four threads on the hosted
+    // two-core runner; the same binary completes with one. Keep that safe mode.
+    const transcription=exec(config.whisper,['-m',config.model,'-f','-','-l','auto','-otxt','-of',output,'-nt','-np','-t',process.platform==='win32'?'1':'4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal});
     // An early decoder exit is reported by the process promise, not an unhandled
     // EPIPE from the input stream. end() also guarantees the decoder receives EOF.
     transcription.child.stdin?.on('error',()=>{});
