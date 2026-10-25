@@ -1,4 +1,4 @@
-import { pruneDesktopBackend } from './prune_desktop_backend.mjs';
+import { pruneDesktopBackend, pruneDevelopmentFiles } from './prune_desktop_backend.mjs';
 import { cpSync, mkdirSync, copyFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -18,6 +18,8 @@ if(!npmCli)throw new Error('Run through npm run desktop:backend so npm_execpath 
 const result=spawnSync(process.execPath,[npmCli,'ci','--omit=dev','--no-audit','--no-fund'],{cwd:target,stdio:'inherit'});
 if(result.status!==0)process.exit(result.status??1);
 const pruned=pruneDesktopBackend(target);
+const development=pruneDevelopmentFiles(target);
+console.log(`Removed development-only files: ${(development.removedBytes/1024/1024).toFixed(1)} MiB.`);
 console.log(`Removed unused bundled Claude CLI packages: ${(pruned.removedBytes/1024/1024).toFixed(1)} MiB; installed native CLI remains required.`);
 mkdirSync(join(target,'runtime'));copyFileSync(process.execPath,join(target,'runtime',process.platform==='win32'?'node.exe':'node'));
 // Preserve Node's complete upstream license alongside the executable.

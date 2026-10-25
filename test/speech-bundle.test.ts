@@ -4,6 +4,7 @@ import { mkdtempSync,writeFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import {VOICE_MODEL} from '../src/voice-model.js';
 import { Store } from '../src/store.js';
 import { installBundledAudio,audioReadiness,selectSpeechVariant } from '../src/speech-bundle.js';
 
@@ -67,5 +68,21 @@ test('CPU selection checks helper integrity before execution and keeps unsupport
     f.manifest.cpuSelection.probe='speech-cpu'+ext;
     writeFileSync(join(f.dir,'whisper-avx2'+ext),'tampered');
     assert.throws(()=>selectSpeechVariant(f.dir,f.manifest,'x64',probe('avx2')));assert.equal(calls,4);
+  }finally{f.close();}
+});
+
+
+test('first-use bundle validates tools and exposes download instead of claiming voice is ready',()=>{
+  const f=fixture();try {
+    rmSync(join(f.dir,'ggml-base.bin'));
+    f.manifest.modelDelivery='first-use';f.manifest.sha256['ggml-base.bin']=VOICE_MODEL.sha256;
+    writeFileSync(join(f.dir,'manifest.json'),JSON.stringify(f.manifest));
+    installBundledAudio(f.store,f.dir,join(f.dir,'cache'));
+    assert.ok(f.store.get('audio-tools'));
+    const status=audioReadiness(f.store);
+    assert.equal(status.ready,false);assert.equal(status.download?.state,'needed');
+    f.manifest.sha256['ggml-base.bin']='0'.repeat(64);
+    writeFileSync(join(f.dir,'manifest.json'),JSON.stringify(f.manifest));
+    assert.throws(()=>installBundledAudio(f.store,f.dir),/Unsupported downloadable/);
   }finally{f.close();}
 });

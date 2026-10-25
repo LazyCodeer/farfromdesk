@@ -14,6 +14,7 @@ import type { PowerPolicy } from './power.js';
 import type { Workers } from './workers.js';
 import { Artifacts } from './artifacts.js';
 import { validateAudioConfig } from './audio.js';
+import { prepareVoiceModel } from './voice-model.js';
 import { audioReadiness } from './speech-bundle.js';
 import { roleConfig, updateRole, companionStyles } from './roles.js';
 import { fileTypes, MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_OUTGOING_DOCUMENT_BYTES, MAX_INLINE_BYTES } from './file-types.js';
@@ -194,6 +195,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/master-select-desktop'&&req.method==='POST') {
         const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');
         json(res,200,await services.masters.useDesktop(d.sessionId,d.operationId));return;
+      }
+      if(path==='/api/voice-model'&&req.method==='POST') {
+        if(!store.get('audio-tools'))throw new Error('Bundled voice tools are unavailable.');
+        void prepareVoiceModel(store).catch(()=>{});json(res,200,{started:true});return;
       }
       if(path==='/api/master-create'&&req.method==='POST') {
         const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');

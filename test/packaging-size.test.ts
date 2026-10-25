@@ -4,7 +4,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,existsSync,rmSync,readFileSync} from
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 // @ts-ignore packaging script intentionally uses plain JavaScript on all build hosts.
-import {pruneDesktopBackend} from '../script/prune_desktop_backend.mjs';
+import {pruneDesktopBackend,pruneDevelopmentFiles} from '../script/prune_desktop_backend.mjs';
 
 test('packaging removes only redundant platform CLI copies, preserving SDK runtime, native image dependencies and licenses',()=>{
  const dir=mkdtempSync(join(tmpdir(),'ffd-package-'));
@@ -16,5 +16,19 @@ test('packaging removes only redundant platform CLI copies, preserving SDK runti
   assert.equal(pruneDesktopBackend(dir).removedBytes,0);
   // Removing fallback binaries is valid only while the application passes the installed CLI explicitly.
   assert.match(readFileSync(new URL('../src/claude-sdk-session.ts',import.meta.url),'utf8'),/pathToClaudeCodeExecutable:command.binary/);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+
+test('development pruning preserves executable sources, native modules and licensing',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'ffd-types-'));
+ try {
+  const keep=['runtime.js','source.ts','native.node','LICENSE','README.md'];
+  const remove=['index.d.ts','index.d.mts','index.d.cts','runtime.js.map'];
+  mkdirSync(join(dir,'node_modules/pkg'),{recursive:true});
+  for(const file of [...keep,...remove])writeFileSync(join(dir,'node_modules/pkg',file),'fixture');
+  const result=pruneDevelopmentFiles(dir);assert.equal(result.files,4);
+  for(const file of keep)assert.ok(existsSync(join(dir,'node_modules/pkg',file)));
+  for(const file of remove)assert.equal(existsSync(join(dir,'node_modules/pkg',file)),false);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

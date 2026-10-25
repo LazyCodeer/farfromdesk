@@ -159,6 +159,31 @@ void main() {
   );
 
   testWidgets(
+    'First-use voice setup shows download progress, retry and readiness',
+    (tester) async {
+      size(tester);
+      final api = VoiceDownloadGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Download voice model · 141 MB'));
+      await tester.tap(find.text('Download voice model · 141 MB'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Downloading voice model ·'), findsOneWidget);
+      api.phase = 'failed';
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(find.text('Retry voice download'), findsOneWidget);
+      api.phase = 'ready';
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(find.text('Voice notes ready'), findsOneWidget);
+      expect(find.text('Retry voice download'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Instructions render Markdown in a larger dialog with a close icon',
     (tester) async {
       size(tester);
@@ -971,5 +996,36 @@ class SetupProgressGateway extends ConnectionGateway {
       };
     }
     return data;
+  }
+}
+
+class VoiceDownloadGateway extends ConnectionGateway {
+  String phase = 'needed';
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['voice'] = {
+      'ready': phase == 'ready',
+      if (phase != 'ready')
+        'download': {
+          'state': phase,
+          'bytes': phase == 'downloading' ? 74000000 : 0,
+          'total': 147951465,
+          if (phase == 'failed') 'error': 'Download interrupted. Try again.',
+        },
+    };
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/voice-model') {
+      phase = 'downloading';
+      return {};
+    }
+    return super.post(path, data);
   }
 }

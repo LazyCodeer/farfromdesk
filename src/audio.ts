@@ -87,6 +87,11 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
   }finally{await rm(dir,{recursive:true,force:true});}
 }
 export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver) {
+  audioFormat(audio);
+  if(!store.get('audio-config')&&store.get('audio-tools')) {
+    const {prepareVoiceModel}=await import('./voice-model.js');await prepareVoiceModel(store);
+    signal?.throwIfAborted();
+  }
   const saved=store.get('audio-config');
   if(!saved)throw new Error('Voice transcription is not configured on this computer yet. Please type your message; configure local Whisper in the bridge CLI.');
   const config=validateAudioConfig(JSON.parse(saved)),format=audioFormat(audio);

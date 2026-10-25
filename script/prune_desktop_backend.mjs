@@ -19,3 +19,21 @@ export function pruneDesktopBackend(root) {
   for(const name of packages)rmSync(join(scope,name),{recursive:true,force:true});
   return {removedBytes,packages};
 }
+
+
+// Type declarations and source maps are development artifacts, not runtime code.
+export function pruneDevelopmentFiles(root) {
+  let removedBytes=0,files=0;
+  function visit(directory) {
+    for(const name of readdirSync(directory)) {
+      const path=join(directory,name),st=lstatSync(path);
+      if(st.isSymbolicLink())continue;
+      if(st.isDirectory())visit(path);
+      else if(/(?:\.d\.(?:ts|mts|cts)|\.map)$/.test(name)) {
+        removedBytes+=st.size;files++;rmSync(path);
+      }
+    }
+  }
+  const modules=join(root,'node_modules');if(existsSync(modules))visit(modules);
+  return {removedBytes,files};
+}

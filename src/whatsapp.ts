@@ -225,7 +225,7 @@ export class WhatsApp {
             audioFormat(audio);
             if(this.audioBusy>=2)throw new Error('Two voice notes are already processing. Please wait for their replies, then resend this one.');
             this.audioBusy++;started=true;this.audioControllers.add(controller);
-            this.store.output(undefined,'Voice note received. I’m transcribing it locally on your computer.',`audio-progress:${id}`,origin);
+            this.store.output(undefined,(!this.store.get('audio-config')&&this.store.get('audio-tools')?'Voice note received. I’m downloading the voice model once, then I’ll transcribe it locally. This first note may take a few minutes.':'Voice note received. I’m transcribing it locally on your computer.'),`audio-progress:${id}`,origin);
             text=await this.transcribe(audio,controller.signal,event=>this.store.voiceEvent(id,event));
             if(this.closed||this.loggingOut||this.router.stopped)return; // Restart recovery reports interruption.
             if(group)await this.verifyGroup(origin);
@@ -244,7 +244,7 @@ export class WhatsApp {
             if(routingStarted!==undefined)this.store.voiceEvent(id,{stage:'route',state:'failed',durationMs:performance.now()-routingStarted,code:errorCode(e)});
             this.store.event(id,'voice_failed',{code:errorCode(e)});
             // Never echo provider output, media URLs, transcript or command paths.
-            const allowed=/^(?:Voice transcription is not configured|Unsupported voice-note format|Voice notes must|Two voice notes|The selected session changed|No clear speech detected|Please type permission)/;
+            const allowed=/^(?:Voice transcription is not configured|Voice model download did not finish|Unsupported voice-note format|Voice notes must|Two voice notes|The selected session changed|No clear speech detected|Please type permission)/;
             const message=allowed.test((e as Error).message)?(e as Error).message:'I couldn’t transcribe this voice note. Please resend a clear recording (up to 5 minutes for local transcription), or type your message.';
             this.store.output(undefined,message,`audio-error:${id}`,origin);this.store.remember(id);
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routingStarted===undefined?'failed':'routing_blocked',id);

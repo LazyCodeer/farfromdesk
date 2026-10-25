@@ -126,6 +126,10 @@ jobs:
       - run: node script/test_desktop_speech.mjs
         timeout-minutes: 5
       - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
+      - if: runner.os == 'Windows'
+        name: Verify EXE install and uninstall
+        run: python script/test_windows_installer.py --version ${{ needs.version.outputs.version }}
+        timeout-minutes: 6
       - if: runner.os == 'Linux'
         run: xvfb-run -a node script/smoke_desktop_app.mjs
         timeout-minutes: 4
@@ -138,6 +142,7 @@ jobs:
           path: |
             build/desktop-release/*.dmg
             build/desktop-release/*.zip
+            build/desktop-release/*-setup.exe
             build/desktop-release/*.tar.gz
             build/desktop-release/*.sha256
             build/desktop-release/*.json

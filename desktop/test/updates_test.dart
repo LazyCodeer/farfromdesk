@@ -37,6 +37,36 @@ Map<String, dynamic> release(
 }
 
 void main() {
+  test(
+    'Windows prefers the verified EXE installer and retains ZIP fallback',
+    () {
+      final data = release('0.8.0', target: 'windows-x64');
+      expect(
+        selectRelease([data], '0.7.0', 'windows', 'x64')!.download.path,
+        endsWith('.zip'),
+      );
+      final assets = List<Map<String, dynamic>>.from(data['assets']);
+      data['assets'] = assets;
+      assets.addAll([
+        for (final a in assets.toList())
+          {
+            ...a,
+            'name': (a['name'] as String).replaceFirst('.zip', '-setup.exe'),
+            'browser_download_url': (a['browser_download_url'] as String)
+                .replaceFirst('.zip', '-setup.exe'),
+          },
+      ]);
+      expect(
+        selectRelease([data], '0.7.0', 'windows', 'x64')!.download.path,
+        endsWith('-setup.exe'),
+      );
+      assets.removeLast();
+      expect(
+        selectRelease([data], '0.7.0', 'windows', 'x64')!.download.path,
+        endsWith('.zip'),
+      );
+    },
+  );
   test('semantic version comparison handles numeric previews, stable, and metadata', () {
     int compare(String a, String b) =>
         ReleaseVersion.parse(a)!.compareTo(ReleaseVersion.parse(b)!);
@@ -92,9 +122,28 @@ void main() {
     );
   });
   test('local builds do not offer same-base public releases or previews', () {
-    expect(selectRelease([release('0.7.1')], '0.7.1-local.2022', 'macos', 'arm64'), isNull);
-    expect(selectRelease([release('0.8.0-preview.1')], '0.7.1-local.2022', 'macos', 'arm64'), isNull);
-    expect(selectRelease([release('0.7.2')], '0.7.1-local.2022', 'macos', 'arm64')!.version, '0.7.2');
+    expect(
+      selectRelease([release('0.7.1')], '0.7.1-local.2022', 'macos', 'arm64'),
+      isNull,
+    );
+    expect(
+      selectRelease(
+        [release('0.8.0-preview.1')],
+        '0.7.1-local.2022',
+        'macos',
+        'arm64',
+      ),
+      isNull,
+    );
+    expect(
+      selectRelease(
+        [release('0.7.2')],
+        '0.7.1-local.2022',
+        'macos',
+        'arm64',
+      )!.version,
+      '0.7.2',
+    );
   });
   test('download must match the exact official versioned asset URL', () {
     final data = release('0.8.0');

@@ -32,7 +32,7 @@ case "$expected" in *[!a-fA-F0-9]*|'') echo 'Invalid release checksum.' >&2; exi
 [ "${#expected}" = 64 ] || { echo 'Invalid release checksum length.' >&2; exit 1; }
 if command -v shasum >/dev/null; then actual=$(shasum -a 256 "$temp/$asset" | awk '{print $1}'); else actual=$(sha256sum "$temp/$asset" | awk '{print $1}'); fi
 [ "$actual" = "$expected" ] || { echo 'Checksum mismatch. Installation stopped.' >&2; exit 1; }
-printf '[3/4] Unpacking the app and bundled voice tools…\n'
+printf '[3/4] Unpacking the app and local voice tools…\n'
 mkdir "$temp/unpack"
 if [ "$os" = macos ]; then
   unzip -Z1 "$temp/$asset" > "$temp/entries"
@@ -70,4 +70,5 @@ else
   printf 'Installed %s\nOpen FarFromDesk from your application menu.\n' "$target"
   if [ "${FFD_NO_LAUNCH:-0}" != 1 ]; then "$target/farfromdesk" >/dev/null 2>&1 & fi
 fi
+echo 'Voice notes download a 141 MB model once on first use; you can also download it in Settings.'
 echo 'Pair WhatsApp and enable background forwarding inside FarFromDesk. Account data stays outside the app installation.'

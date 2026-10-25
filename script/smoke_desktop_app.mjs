@@ -46,7 +46,7 @@ try {
   assert.equal((await request('/api/status')).status,401);
   const status=await (await request('/api/status',{headers})).json();
   assert.equal(status.preferences.backgroundEnabled,false);
-  assert.equal(status.master,null);assert.equal(status.voice.ready,true);assert.equal(status.voice.bundled,true);
+  assert.equal(status.master,null);assert.equal(status.voice.ready,false);assert.equal(status.voice.download.state,'needed');
   stageLog('checking installed agent instructions');
   let roles;
   for(let i=0;i<30;i++){roles=await (await request('/api/agents',{headers})).json();if(roles.sync?.state!=='pending')break;await new Promise(r=>setTimeout(r,500));}

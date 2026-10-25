@@ -618,7 +618,11 @@ extension _BridgeScreens on _DeskState {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    voice ? 'Voice notes ready' : 'Voice notes unavailable',
+                    voice
+                        ? 'Voice notes ready'
+                        : status['voice']?['download'] != null
+                        ? 'Voice model setup'
+                        : 'Voice notes unavailable',
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
@@ -628,9 +632,15 @@ extension _BridgeScreens on _DeskState {
                   Text(
                     voice
                         ? 'Send a voice note in your connected chat. Audio is processed locally on this $computer.'
+                        : status['voice']?['download'] != null
+                        ? 'The model downloads once on your first voice note. You can also download it now.'
                         : 'Configure local speech tools in Settings to enable voice notes.',
                     style: const TextStyle(fontSize: 12, color: muted),
                   ),
+                  if (status['voice']?['download'] != null) ...[
+                    gap(12),
+                    voiceDownload(),
+                  ],
                 ],
               ),
             ),
@@ -1273,6 +1283,36 @@ extension _BridgeScreens on _DeskState {
           ),
         ),
       ),
+    );
+  }
+
+  Widget voiceDownload() {
+    final d = status['voice']?['download'] ?? {};
+    final downloading = d['state'] == 'downloading';
+    final bytes = (d['bytes'] as num?) ?? 0;
+    final total = (d['total'] as num?) ?? 147951465;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (downloading) ...[
+          LinearProgressIndicator(
+            value: total > 0 ? (bytes / total).clamp(0.0, 1.0) : null,
+          ),
+          gap(8),
+          small(
+            'Downloading voice model · ${(bytes / 1048576).toStringAsFixed(1)} / ${(total / 1048576).round()} MB',
+          ),
+        ] else ...[
+          if (d['error'] != null) ...[small(d['error']), gap(8)],
+          button(
+            d['state'] == 'failed'
+                ? 'Retry voice download'
+                : 'Download voice model · 141 MB',
+            () => post('/api/voice-model'),
+            icon: Icons.download_outlined,
+          ),
+        ],
+      ],
     );
   }
 
@@ -2849,6 +2889,10 @@ extension _BridgeScreens on _DeskState {
               ),
               children: [
                 gap(12),
+                if (status['voice']?['download'] != null) ...[
+                  voiceDownload(),
+                  gap(16),
+                ],
                 for (final item in [
                   ('ffmpeg', 'FFmpeg executable'),
                   ('whisper', 'whisper-cli executable'),

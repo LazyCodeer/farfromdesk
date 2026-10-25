@@ -117,10 +117,12 @@ AppRelease? selectRelease(
     final extensions = platform == 'macos'
         ? ['zip']
         : platform == 'windows'
-        ? ['zip']
+        ? ['exe', 'zip']
         : ['tar.gz'];
     for (final ext in extensions) {
-      final name = 'FarFromDesk-$nameVersion-$platform-$architecture.$ext';
+      final name = ext == 'exe'
+          ? 'FarFromDesk-$nameVersion-$platform-$architecture-setup.exe'
+          : 'FarFromDesk-$nameVersion-$platform-$architecture.$ext';
       final expected = Uri.https(
         'github.com',
         '/$releaseRepository/releases/download/$tag/$name',

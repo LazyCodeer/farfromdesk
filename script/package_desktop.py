@@ -1,6 +1,7 @@
 """Package an already-built native Flutter target. Run on that target's OS."""
 import argparse, hashlib, json, pathlib, platform, shutil, subprocess, tarfile, zipfile, tempfile, struct
 from release_installers import write_installer
+from windows_installer import build_windows_installer
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--version', default=json.loads((ROOT/'release.json').read_text())['version'])
@@ -43,6 +44,12 @@ shutil.copytree(backend,destination,symlinks=True)
 meta_file=destination/'build.json'
 meta=json.loads(meta_file.read_text());meta['buildId']=args.version;meta_file.write_text(json.dumps(meta))
 shutil.copytree(ROOT/'build/speech',destination.parent/'speech',symlinks=False)
+# CI tests the pinned model; users fetch it once into persistent app data on first use.
+speech=destination.parent/'speech'
+(speech/'ggml-base.bin').unlink()
+speech_manifest=json.loads((speech/'manifest.json').read_text())
+speech_manifest['modelDelivery']='first-use'
+(speech/'manifest.json').write_text(json.dumps(speech_manifest,indent=2)+'\n')
 # Remove package-install metadata that is not needed at runtime.
 for name in ['package-lock.json']:
     (destination/name).unlink(missing_ok=True)
@@ -61,6 +68,7 @@ else:
         for path in app.rglob('*'):
             if path.is_file():f.write(path,path.relative_to(stage))
 archives=[archive]
+if os_name=='windows': archives.append(build_windows_installer(app,out,args.version))
 if os_name=='macos':
     dmg=archive.with_suffix('.dmg')
     with tempfile.TemporaryDirectory(prefix='ffd-dmg-') as td:
@@ -75,7 +83,7 @@ for asset in archives:
     asset.with_name(asset.name+'.sha256').write_text(f'{digest}  {asset.name}\n')
     artifacts.append({'name':asset.name,'sha256':digest,'bytes':asset.stat().st_size})
 commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-manifest={'schema':1,'version':args.version,'platform':os_name,'architecture':arch,'sourceCommit':commit,'nativeEntry':'main.dart','speechBundled':True,'signing':'ad-hoc' if os_name=='macos' else 'unsigned','notarized':False,'artifacts':artifacts}
+manifest={'schema':1,'version':args.version,'platform':os_name,'architecture':arch,'sourceCommit':commit,'nativeEntry':'main.dart','speechBundled':True,'voiceModelDelivery':'first-use','signing':'ad-hoc' if os_name=='macos' else 'unsigned','notarized':False,'artifacts':artifacts}
 (out/f'manifest-{os_name}-{arch}.json').write_text(json.dumps(manifest,indent=2)+'\n')
 install=out/'install';shutil.copytree(ROOT/'install',install,dirs_exist_ok=True)
 for f in install.iterdir():

@@ -17,16 +17,24 @@ class DesktopPublicationTests(unittest.TestCase):
         for runner,(system,arch) in TARGETS.items():
             folder=self.root/('farfromdesk-'+runner); folder.mkdir()
             artifacts=[]
-            for ext in (['zip','dmg'] if system=='macos' else ['tar.gz' if system=='linux' else 'zip']):
-                p=folder/f'FarFromDesk-{VERSION}-{system}-{arch}.{ext}'
+            names=[f'FarFromDesk-{VERSION}-{system}-{arch}.{ext}' for ext in (['zip','dmg'] if system=='macos' else ['tar.gz' if system=='linux' else 'zip'])]
+            if system=='windows':names.append(f'FarFromDesk-{VERSION}-windows-x64-setup.exe')
+            for name in names:
+                p=folder/name
                 p.write_bytes(b'Archive-validation fixture')
                 sha=digest(p);p.with_name(p.name+'.sha256').write_text(f'{sha}  {p.name}\n')
                 artifacts.append({'name':p.name,'sha256':sha,'bytes':p.stat().st_size})
-            (folder/f'manifest-{system}-{arch}.json').write_text(json.dumps({'schema':1,'version':VERSION,'sourceCommit':COMMIT,'platform':system,'architecture':arch,'nativeEntry':'main.dart','speechBundled':True,'signing':'ad-hoc' if system=='macos' else 'unsigned','notarized':False,'artifacts':artifacts}))
+            (folder/f'manifest-{system}-{arch}.json').write_text(json.dumps({'schema':1,'version':VERSION,'sourceCommit':COMMIT,'platform':system,'architecture':arch,'nativeEntry':'main.dart','speechBundled':True,'voiceModelDelivery':'first-use','signing':'ad-hoc' if system=='macos' else 'unsigned','notarized':False,'artifacts':artifacts}))
             (folder/'install').mkdir()
             for name in ['install.sh','install.ps1']:(folder/'install'/name).write_text('Fixture '+VERSION)
     def tearDown(self):self.tmp.cleanup()
-    def test_complete_all_platform_release(self):self.assertEqual(len(validate(self.root,VERSION,COMMIT)),18)
+    def test_complete_all_platform_release(self):self.assertEqual(len(validate(self.root,VERSION,COMMIT)),20)
+    def test_windows_exe_is_required(self):
+        next(self.root.rglob('*-setup.exe')).unlink()
+        with self.assertRaisesRegex(ValueError,'Unexpected target files'):validate(self.root,VERSION,COMMIT)
+    def test_windows_exe_checksum_is_verified(self):
+        next(self.root.rglob('*-setup.exe')).write_bytes(b'corrupt installer')
+        with self.assertRaisesRegex(ValueError,'integrity'):validate(self.root,VERSION,COMMIT)
     def test_unstable_or_path_like_version_is_rejected(self):
         for version in ['0.7.1-preview.1', '../0.7.1', '01.7.1', 'v0.7.1']:
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'stable version'):

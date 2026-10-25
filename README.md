@@ -44,10 +44,10 @@ Visit the [latest release](https://github.com/LazyCodeer/farfromdesk/releases/la
 | --- | --- | --- |
 | Mac with Apple Silicon | `macos-arm64.dmg` or `.zip` | macOS 14+ |
 | Mac with Intel | `macos-x64.dmg` or `.zip` | macOS 14+ |
-| Windows PC | `windows-x64.zip` | Windows 10/11 x64; supported signed-in CLI |
+| Windows PC | `windows-x64-setup.exe` or portable `.zip` | Windows 10/11 x64; supported signed-in CLI |
 | Linux PC | `linux-x64.tar.gz` | glibc 2.35+, GTK 3, desktop session; supported signed-in CLI |
 
-On Mac, drag **FarFromDesk.app** from the DMG into Applications, or extract the ZIP. Windows and Linux archives contain the app and its bundled backend; extract the whole folder together. Each release includes optional installation scripts, checksums and release notes. Local voice tools and the multilingual model are included, so the first voice note needs no model download.
+On Mac, drag **FarFromDesk.app** from the DMG into Applications, or extract the ZIP. On Windows, run the **Setup EXE** for a per-user installation and Start menu shortcut. Windows and Linux archives contain the app and its bundled backend; extract the whole folder together. Each release includes optional installation scripts, checksums and release notes. Local voice tools are included. The multilingual voice model (141 MB) downloads once on the first voice note, or from Settings. Later voice notes work offline with the cached model.
 
 **Signing:** Mac builds are ad-hoc signed and not Apple-notarized; Windows builds are unsigned. Your operating system may require explicit approval or block installation under organizational policy. Do not disable security protections. Downloads do not require a GitHub account.
 
@@ -121,7 +121,7 @@ A chat visible in history may need to be opened before FarFromDesk can connect. 
 ## Private by design, with you in control
 
 - Your linked account and selected destination control incoming requests.
-- Voice transcription happens on your computer. WhatsApp and your coding assistants still use their normal network services.
+- Voice transcription happens on your computer; only the initial model download requires a connection to the model host. WhatsApp and your coding assistants still use their normal network services.
 - Your assistants retain their normal permissions. FarFromDesk does not isolate an assistant that already has broad file access.
 - Uncertain requests are held for review rather than automatically repeated.
 

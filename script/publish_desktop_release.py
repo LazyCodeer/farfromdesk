@@ -23,6 +23,7 @@ def validate(root, version, commit):
         manifest = folder / f'manifest-{system}-{arch}.json'
         extensions = ['zip', 'dmg'] if system == 'macos' else ['tar.gz' if system == 'linux' else 'zip']
         names = {f'FarFromDesk-{version}-{system}-{arch}.{ext}' for ext in extensions}
+        if system == 'windows': names.add(f'FarFromDesk-{version}-windows-x64-setup.exe')
         expected = names | {n+'.sha256' for n in names} | {manifest.name, 'install'}
         if folder.is_symlink() or {p.name for p in folder.iterdir()} != expected:
             raise ValueError('Unexpected target files: '+runner)
@@ -32,7 +33,7 @@ def validate(root, version, commit):
         data = json.loads(manifest.read_text())
         if (data['schema'], data['version'], data['sourceCommit'], data['platform'], data['architecture']) != (1, version, commit, system, arch):
             raise ValueError('Manifest identity mismatch')
-        if data['nativeEntry'] != 'main.dart' or data['speechBundled'] is not True:
+        if data['nativeEntry'] != 'main.dart' or data['speechBundled'] is not True or data.get('voiceModelDelivery') != 'first-use':
             raise ValueError('Native app and bundled speech required')
         if data['notarized'] is not False or data['signing'] != ('ad-hoc' if system == 'macos' else 'unsigned'):
             raise ValueError('Signing metadata mismatch')
@@ -113,15 +114,15 @@ def main():
                  '| Computer | Asset |\n|---|---|\n'
                  f'| Apple Silicon Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-arm64.dmg` or `.zip` |\n'
                  f'| Intel Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-x64.dmg` or `.zip` |\n'
-                 f'| Windows 10/11 x64 | `FarFromDesk-{args.version}-windows-x64.zip` |\n'
+                 f'| Windows 10/11 x64 | `FarFromDesk-{args.version}-windows-x64-setup.exe` or portable `.zip` |\n'
                  f'| Linux x64, glibc 2.35+, GTK 3 | `FarFromDesk-{args.version}-linux-x64.tar.gz` |\n\n'
-                 'Mac DMG/ZIP contains **FarFromDesk.app**. Extract Windows/Linux archives before opening. '
+                 'Mac DMG/ZIP contains **FarFromDesk.app**. Run the Windows EXE installer, or extract the portable Windows/Linux archive before opening. '
                  'The automatically generated Source code archives are for contributors, not app installation.\n\n'
                  '## Get started\n\n'
                  '1. Install and open FarFromDesk on your computer.\n'
                  '2. Link WhatsApp using the QR code in the app.\n'
                  '3. Choose your coding platform and coordinator session, then message yourself.\n\n'
-                 'Local voice tools and the multilingual model are included. '
+                 'Local voice tools are included. The multilingual model downloads once on first use and stays on your computer for offline transcription. '
                  'Codex/Claude accounts are separate and must have access to the selected runtime. '
                  'Mac supports native Desktop integrations (Python 3 required) and CLI sessions; '
                  'Windows/Linux support CLI sessions. Native permissions still apply.\n\n'
