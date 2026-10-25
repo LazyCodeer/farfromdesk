@@ -66,8 +66,8 @@ export async function transcribeLocal(data:Buffer,format:string,config:AudioConf
     if(bytes<=78||bytes>MAX_AUDIO_SECONDS*32000+78)throw new Error('Audio is empty or longer than five minutes.');
     const pcm=await readFile(wav);
     if(!hasAudibleSamples(pcm))throw new Error('No clear speech detected.');
-    // Use Whisper's bounded memory decoder. The Windows file decoder can hang
-    // while opening an otherwise valid FFmpeg WAV before model inference starts.
+    // Feed the already-validated PCM WAV through Whisper's memory decoder,
+    // keeping the decoder input identical across platforms.
     const transcription=exec(config.whisper,['-m',config.model,'-f','-','-l','auto','-otxt','-of',output,'-nt','-np','-t','4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal});
     // An early decoder exit is reported by the process promise, not an unhandled
     // EPIPE from the input stream. end() also guarantees the decoder receives EOF.
