@@ -1,10 +1,19 @@
 name: FarFromDesk desktop release
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target (all is required to publish)'
+        type: choice
+        default: linux
+        options: [linux, windows, macos-arm64, macos-x64, all]
+      publish:
+        description: 'Publish a complete private release from main'
+        type: boolean
+        default: false
   push:
-    branches: [main, codex/shared-desktop]
-  pull_request:
-    paths: ['desktop/**', 'src/**', 'install/**', 'script/**', 'package*.json', '.github/workflows/desktop.yml']
+    branches: [main]
+    paths: [release.json]
 permissions:
   contents: read
 concurrency:
@@ -13,7 +22,10 @@ concurrency:
 jobs:
   version:
     runs-on: ubuntu-24.04
+    timeout-minutes: 2
     outputs:
+      matrix: ${{ steps.version.outputs.matrix }}
+      publish: ${{ steps.version.outputs.publish }}
       version: ${{ steps.version.outputs.version }}
       app: ${{ steps.version.outputs.app }}
       build: ${{ steps.version.outputs.build }}
@@ -24,29 +36,21 @@ jobs:
         env:
           FFD_RUN: ${{ github.run_id }}
           FFD_NUMBER: ${{ github.run_number }}
-        run: |
-          python3 - <<'PYCODE'
-          import json,os,re
-          from pathlib import Path
-          d=json.loads(Path('release.json').read_text())
-          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',d['version'])
-          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
-              f.write(f"version={d['version']}-preview.{int(os.environ['FFD_RUN'])}\n")
-              f.write(f"app={d['version']}\n")
-              f.write(f"build={max(d['build'],2000+int(os.environ['FFD_NUMBER']))}\n")
-          PYCODE
-  desktop:
+          FFD_EVENT: ${{ github.event_name }}
+          FFD_REF: ${{ github.ref }}
+          FFD_TARGET: ${{ inputs.target }}
+          FFD_PUBLISH: ${{ inputs.publish }}
+        run: python3 script/desktop_ci_plan.py
+  checks:
     needs: version
+    uses: ./.github/workflows/desktop-checks.yml
+  desktop:
+    needs: [version, checks]
     strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {runner: macos-15-intel, target: macos, arch: x86_64}
-          - {runner: macos-15, target: macos, arch: arm64}
-          - {runner: ubuntu-22.04, target: linux, arch: x86_64}
-          - {runner: windows-2022, target: windows, arch: x86_64}
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 35
     env:
       WSB_TARGET_ARCH: ${{ matrix.arch }}
     steps:
@@ -70,7 +74,7 @@ jobs:
       - run: npm run check
       - run: python -m unittest discover -s script/tests
       - run: npm run test:portable
-      - if: runner.os == 'macOS'
+      - if: matrix.runner == 'macos-15'
         run: npm test
       - if: runner.os != 'Windows'
         run: python test/installers_test.py
@@ -82,10 +86,6 @@ jobs:
           if ($errors.Count) { throw ($errors | Out-String) }
           ./install/install.ps1 -DryRun
       - run: flutter pub get
-        working-directory: desktop
-      - run: flutter analyze
-        working-directory: desktop
-      - run: flutter test
         working-directory: desktop
       - run: flutter build ${{ matrix.target }} --release --build-name ${{ needs.version.outputs.app }} --build-number ${{ needs.version.outputs.build }} --dart-define=FFD_VERSION=${{ needs.version.outputs.version }}
         working-directory: desktop
@@ -132,10 +132,10 @@ jobs:
           retention-days: 3
           compression-level: 0
   publish:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: needs.version.outputs.publish == 'true' && github.ref == 'refs/heads/main'
     needs: [version, desktop]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

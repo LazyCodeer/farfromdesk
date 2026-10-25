@@ -1,46 +1,44 @@
-# Automated FarFromDesk releases
+# FarFromDesk releases and Actions cost controls
 
-## Push to main
+## Routine changes
 
-`.github/workflows/release.yml` runs after every push to `main`, or from Actions → Mac preview release → Run workflow. Pull requests never publish releases. A newer main push cancels an older unfinished release run.
+`.github/workflows/desktop-checks.yml` runs one Ubuntu job for code changes on main and pull requests. It checks TypeScript, portable routing/security regressions, publication/installer tests, and Flutter analysis/widget tests. It does not compile desktop apps or speech tools. Documentation-only changes skip desktop CI; website checks remain separate.
 
-1. Read `release.json` for the app version.
-2. Assign `v<version>-preview.<GitHub run ID>` and an app build number of at least `1000 + run number`.
-3. Build independently on `macos-15` (Apple Silicon) and `macos-15-intel` (Intel).
-4. Run TypeScript/backend/native tests, then build production app bundles with matching Node and speech runtimes.
-5. Validate architectures, signatures, ZIP extraction, bundled voice configuration, synthetic voice/silence/corruption, and DMG integrity.
-6. Upload four files per architecture as temporary workflow artifacts.
-7. Validate both manifests and all checksums against the triggering commit. Create or resume a private draft prerelease, upload the eight files, verify GitHub's sizes and SHA-256 digests, and publish it.
+The quick job has a ten-minute timeout and cancels superseded runs. Its real runtime depends on dependency-cache hits; no measured savings claim is made until it has run. macOS and Windows runners are never allocated for an ordinary code push.
 
-The publish job alone has `contents: write`; build jobs have read-only access. Actions are pinned to commit SHAs. The publisher refuses public repositories, mismatched commits/builds, incomplete asset sets, symlinks, corrupt files, or misleading signing metadata. A failed architecture prevents publication. Interrupted uploads remain a private draft and can be resumed by rerunning the same workflow. Published releases are immutable; a rerun leaves an already-completed release intact.
+## Prepare a release
 
-## Downloads
+Update `release.json` on main when a release is intended. That explicit change starts `.github/workflows/desktop.yml`, which automatically builds and publishes a complete private prerelease. Do not change release.json for routine fixes unless a release is wanted.
 
-Each architecture gets a ZIP and DMG containing `FarFromDesk.app`, a checksum file, and a source/version manifest. GitHub's additional source archives are not app installers. Private downloads require repository access. The README uses `/releases`, because prereleases are not resolved by `/releases/latest`.
+Alternatively, choose Actions → FarFromDesk desktop release → Run workflow:
 
-Historical `v0.6.2-preview.2` files retain the Sidekick name and bytes. New builds use FarFromDesk and the FFD icon.
+- Debugging: select just Linux, Windows, Apple Silicon, or Intel. Leave **publish** unchecked. The default is Linux only.
+- Release: select main, target **all**, and check **publish**.
 
-## Requirements
+The preflight rejects partial or non-main publication before native runners are allocated. Shared checks must pass before native compilation begins. Version suffixes use the GitHub run ID; build numbers are at least `2000 + run number`.
 
-GitHub Actions must be enabled and account billing/spending must allow hosted runners. macOS builds consume hosted runner minutes; the workflow does not alter billing settings. No personal access token is needed: publication uses the workflow-scoped GitHub token.
+All four release targets still perform native compilation, portable tests, bundled speech transcription/silence/corruption checks, architecture/archive validation and packaged UI startup. Apple Silicon runs the full backend suite once; shared Flutter analysis and widget tests run once on Ubuntu. A native failure cancels the remaining matrix jobs and prevents publication. Native jobs are capped at 35 minutes each; publication at 15 minutes. These are per-job bounds, not an account-wide spending cap.
 
-No Apple Developer ID signing identity or notarization credentials are configured. These are explicitly **ad-hoc signed, non-notarized private previews**. Native hardware smoke tests do not establish real-phone/provider compatibility or replace a full UI test. Developer ID signing, hardened-runtime review, notarization and stapling remain necessary for a normal public distribution workflow.
+## Reuse expensive work
 
-## Local fallback
+Compiled speech tools retain the pinned cache keyed by runner and speech-recipe/CPU-probe hashes. Application-only changes can reuse that cache; source checksum checks, speech tests and package integrity checks still run. Cache eviction or a recipe change requires compilation again. Node packages and the Flutter SDK use their existing dependency caches.
 
-```sh
-npm ci
-python3 script/release_macos.py --tag v0.6.2-preview.3 --arch arm64
-python3 script/release_macos.py --tag v0.6.2-preview.3 --arch x86_64
-```
+For a platform-specific failure, use a single-target manual build. For a failed publication job, rerun only failed jobs in the existing run while its artifacts remain available; do not dispatch another four-platform build. Existing artifacts expire after three days. Never combine binaries from different source commits to create a release.
 
-Use a clean committed checkout and a new preview number. Build outputs stay under ignored `build/releases/<tag>/<arch>/`. The script never restarts the installed app or bridge. Cross-architecture local smoke tests require a compatible execution environment such as Rosetta; report them separately from native hardware tests.
+## Publication and downloads
 
-## Maintaining the pipeline
+Only the publish job receives `contents: write`. Actions are pinned to commit SHAs. Publication requires all four source-matched manifests, six app archives, six checksums, and two identical version-stamped installers: 18 assets total. It verifies local and remote sizes/digests and repository privacy. Interrupted uploads remain a draft; published releases are immutable.
 
-- Update `release.json` for a new app version or local build baseline.
-- Keep runtime versions and source checksums pinned in `script/build_speech_runtime.py`.
-- Run `actionlint` and `python3 -m unittest discover -s script/tests` for pipeline changes.
-- Keep website verification at repository root in `.github/workflows/website.yml`; nested website workflows do not run.
-- Windows/Linux are planned and are not advertised as binaries until their build jobs and verification are implemented.
-- Repository visibility remains private until the owner explicitly changes it. A public release workflow needs a separate intentional policy update.
+Mac ZIP and DMG files contain FarFromDesk.app. Windows uses a ZIP, Linux a tar.gz. Private downloads require repository access. GitHub's source archives are not app installers. The README links to `/releases` because prereleases do not resolve through `/releases/latest`.
+
+The older Swift workflow, `.github/workflows/release.yml`, is manual-only and retained for legacy Mac maintenance. It is not the shared desktop release pipeline.
+
+## Billing and distribution limits
+
+GitHub must permit Actions spending. Every allocated job consumes its own runtime, including work performed before cancellation or failure. macOS is substantially more expensive than Linux; parallel workflow elapsed time is not the sum of billed runner usage. Check account usage before requesting repeated native builds. The workflows never raise billing limits or change repository visibility.
+
+No Developer ID/notarization or Windows signing credentials are configured. These remain private previews. Passing isolated native tests does not prove real-phone/provider-account compatibility on every platform. Windows/Linux currently support CLI sessions, not Desktop chat injection.
+
+## Validate pipeline changes locally
+
+Run `actionlint` and `python3 -m unittest discover -s script/tests`. Selection tests cover single-target defaults, full releases, unsupported inputs and rejection of partial/non-main publication. Keep account state, credentials and private recordings out of CI and release assets.
