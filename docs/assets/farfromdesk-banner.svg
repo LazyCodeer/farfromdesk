@@ -2,8 +2,7 @@
 <title id="title">FarFromDesk</title><desc id="desc">Your coding sessions, one WhatsApp message away. A conceptual illustration linking your phone to your coding sessions.</desc>
 <rect width="1200" height="560" rx="28" fill="#17181e"/>
 <circle cx="1070" cy="60" r="220" fill="#20212b"/>
-<rect x="64" y="62" width="60" height="60" rx="18" fill="#5968ec"/>
-<path d="M80 78h28v20H95l-9 8v-8h-6z" stroke="white" stroke-width="3" fill="none" stroke-linejoin="round"/>
+<g transform="translate(64 62) scale(.9375)"><rect width="64" height="64" rx="15" fill="#1c1d1a"/><path d="M20 14h24a7 7 0 0 1 7 7v15a7 7 0 0 1-7 7H27l-9 7v-7.4A7 7 0 0 1 13 36V21a7 7 0 0 1 7-7z" fill="none" stroke="#fcfbf8" stroke-width="3.6" stroke-linejoin="round"/><path d="M22.5 23.5l5.5 5-5.5 5" fill="none" stroke="#86c9ad" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 33.5h9" fill="none" stroke="#fcfbf8" stroke-width="3.6" stroke-linecap="round"/></g>
 <text x="144" y="105" fill="#f7f8fc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-weight="700" font-size="43">FarFromDesk</text>
 <text x="64" y="209" fill="#f7f8fc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-weight="700" font-size="48">Step away from your desk.</text>
 <text x="64" y="272" fill="#99a3ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-weight="700" font-size="48">Stay close to your work.</text>
@@ -13,10 +12,10 @@
 <text x="90" y="456" fill="#f7f8fc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="22">“How is the build going?”</text>
 <path d="M344 435h96m-9-7 9 7-9 7" stroke="#8e99ff" stroke-width="3" fill="none"/>
 <rect x="454" y="391" width="236" height="89" rx="18" fill="#5968ec"/>
-<text x="480" y="427" fill="#e5e8ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16">YOUR MAC</text>
+<text x="480" y="427" fill="#e5e8ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16">YOUR COMPUTER</text>
 <text x="480" y="456" fill="white" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="22">Routes your request.</text>
 <path d="M690 435h96m-9-7 9 7-9 7" stroke="#8e99ff" stroke-width="3" fill="none"/>
 <rect x="800" y="391" width="336" height="89" rx="18" fill="#242630" stroke="#3a3e50"/>
 <text x="826" y="427" fill="#b5bdff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="16">YOUR CODING SESSIONS</text>
 <text x="826" y="456" fill="#f7f8fc" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="22">Your agents reply.</text>
-<text x="64" y="527" fill="#858a9e" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="14">macOS · Codex &amp; Claude · Text &amp; local voice transcription · Private preview</text></svg>
+<text x="64" y="527" fill="#858a9e" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="14">macOS · Windows · Linux · Codex &amp; Claude · Text &amp; local voice transcription</text></svg>

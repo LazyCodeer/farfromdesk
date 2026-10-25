@@ -114,6 +114,51 @@ void main() {
   );
 
   testWidgets(
+    'Settings disclosures use rounded cards and expand without bright dividers',
+    (tester) async {
+      size(tester);
+      await tester.pumpWidget(FarFromDeskApp(gateway: ConnectionGateway()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      for (final title in [
+        'Keep your computer available',
+        'Your account & permissions',
+        'Voice notes',
+      ]) {
+        await tester.scrollUntilVisible(
+          find.text(title),
+          250,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.text(title));
+        await tester.pumpAndSettle();
+        final tile = tester.widget<ExpansionTile>(
+          find.ancestor(
+            of: find.text(title),
+            matching: find.byType(ExpansionTile),
+          ),
+        );
+        expect(tile.shape, isA<RoundedRectangleBorder>());
+        expect(tile.shape, tile.collapsedShape);
+        expect(tester.takeException(), isNull);
+      }
+      if (Platform.environment['FFD_CAPTURE_SETTINGS'] == '1') {
+        await Scrollable.ensureVisible(
+          tester.element(find.text('Access & availability')),
+          alignment: 0,
+        );
+        await tester.pumpAndSettle();
+        await expectLater(
+          find.byType(Scaffold),
+          matchesGoldenFile('../../.local/settings-cards.png'),
+        );
+      }
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Instructions render Markdown in a larger dialog with a close icon',
     (tester) async {
       size(tester);
@@ -491,7 +536,10 @@ void main() {
       await tester.tap(find.text('/sample/personal').last);
       await tester.pumpAndSettle();
       if (Platform.environment['FFD_CAPTURE_SETUP'] == '1') {
-        await expectLater(find.byType(Dialog), matchesGoldenFile('../../.local/workspace-setup.png'));
+        await expectLater(
+          find.byType(Dialog),
+          matchesGoldenFile('../../.local/workspace-setup.png'),
+        );
       }
       await tester.ensureVisible(find.text('Create coordinator'));
       await tester.tap(find.text('Create coordinator'));

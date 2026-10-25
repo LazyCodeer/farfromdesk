@@ -1276,6 +1276,38 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
+  Widget settingsDisclosure({
+    required Widget leading,
+    required Widget title,
+    required Widget subtitle,
+    required List<Widget> children,
+  }) {
+    final border = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(12),
+      side: const BorderSide(color: line),
+    );
+    return ExpansionTile(
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      backgroundColor: canvas.withValues(alpha: .5),
+      collapsedBackgroundColor: canvas.withValues(alpha: .5),
+      shape: border,
+      collapsedShape: border,
+      leading: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: accentWash,
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Center(child: leading),
+      ),
+      title: title,
+      subtitle: subtitle,
+      children: children,
+    );
+  }
+
   List<Map> get workspaceOptions =>
       List<Map>.from(selectedPlatform?['workspaces'] ?? []);
 
@@ -2767,16 +2799,13 @@ extension _BridgeScreens on _DeskState {
         'Access & availability',
         Column(
           children: [
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
+            settingsDisclosure(
               leading: const Icon(Icons.laptop_mac, color: accent, size: 19),
               title: const Text(
-                'Lid closed · OS requirements apply',
+                'Keep your computer available',
                 style: TextStyle(fontSize: 14),
               ),
-              subtitle: small(
-                'Keep-awake cannot override every sleep condition',
-              ),
+              subtitle: small('Lock screen, sleep and closed-lid behavior'),
               children: [
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
@@ -2786,16 +2815,15 @@ extension _BridgeScreens on _DeskState {
                 ),
               ],
             ),
-            const Divider(),
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
+            gap(12),
+            settingsDisclosure(
               leading: const Icon(
                 Icons.shield_outlined,
                 color: accent,
                 size: 19,
               ),
               title: const Text(
-                'Privacy & agent permissions',
+                'Your account & permissions',
                 style: TextStyle(fontSize: 14),
               ),
               subtitle: small(
@@ -2810,18 +2838,14 @@ extension _BridgeScreens on _DeskState {
                 ),
               ],
             ),
-            const Divider(),
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
+            gap(12),
+            settingsDisclosure(
               leading: const Icon(Icons.graphic_eq, color: accent, size: 19),
-              title: const Text(
-                'Local voice tools',
-                style: TextStyle(fontSize: 14),
-              ),
+              title: const Text('Voice notes', style: TextStyle(fontSize: 14)),
               subtitle: small(
                 status['voice']?['ready'] == true
                     ? 'Voice notes ready'
-                    : 'Configure FFmpeg, whisper-cli and a local model',
+                    : 'Choose local transcription tools',
               ),
               children: [
                 gap(12),

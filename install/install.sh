@@ -16,18 +16,23 @@ command -v curl >/dev/null || { echo 'curl is required.' >&2; exit 1; }
 temp=$(mktemp -d "${TMPDIR:-/tmp}/farfromdesk.XXXXXXXX")
 trap 'rm -rf "$temp"' EXIT HUP INT TERM
 download() {
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$1" --output "$2" || {
+  # stderr stays connected to the terminal even when invoked with curl | sh.
+  progress=--silent
+  [ ! -t 2 ] || progress=--progress-bar
+  curl --fail "$progress" --show-error --location --connect-timeout 20 --speed-limit 1024 --speed-time 60 --retry 2 --retry-delay 2 --retry-max-time 180 --proto '=https' --proto-redir '=https' "$1" --output "$2" || {
     echo 'Release download failed. The release may be unpublished or be temporarily unavailable. No app was installed.' >&2; exit 1;
   }
 }
-printf 'Downloading FarFromDesk %s for %s %s…\n' "$version" "$os" "$arch"
+printf '[1/4] Downloading FarFromDesk %s for %s %s…\n' "$version" "$os" "$arch"
 download "$base/$asset" "$temp/$asset"
+printf '[2/4] Verifying the download…\n'
 download "$base/$asset.sha256" "$temp/checksum"
 expected=$(awk 'NR==1 {print $1}' "$temp/checksum")
 case "$expected" in *[!a-fA-F0-9]*|'') echo 'Invalid release checksum.' >&2; exit 1;; esac
 [ "${#expected}" = 64 ] || { echo 'Invalid release checksum length.' >&2; exit 1; }
 if command -v shasum >/dev/null; then actual=$(shasum -a 256 "$temp/$asset" | awk '{print $1}'); else actual=$(sha256sum "$temp/$asset" | awk '{print $1}'); fi
 [ "$actual" = "$expected" ] || { echo 'Checksum mismatch. Installation stopped.' >&2; exit 1; }
+printf '[3/4] Unpacking the app and bundled voice tools…\n'
 mkdir "$temp/unpack"
 if [ "$os" = macos ]; then
   unzip -Z1 "$temp/$asset" > "$temp/entries"
@@ -38,6 +43,7 @@ fi
 if LC_ALL=C grep -E '(^/|(^|/)\.\.(/|$)|\\)' "$temp/entries" >/dev/null; then echo 'Unsafe archive path.' >&2; exit 1; fi
 if [ "$os" = macos ]; then
   /usr/bin/ditto -x -k "$temp/$asset" "$temp/unpack"
+  printf '[4/4] Installing in ~/Applications…\n'
   app="$HOME/Applications/FarFromDesk.app"
   [ -d "$temp/unpack/FarFromDesk.app/Contents/MacOS" ] || { echo 'Invalid application bundle.' >&2; exit 1; }
   mkdir -p "$HOME/Applications"
@@ -49,10 +55,11 @@ if [ "$os" = macos ]; then
   fi
   printf 'Installed %s\n' "$app"
   echo 'macOS signing and security checks remain enabled.'
-  [ "${FFD_NO_LAUNCH:-0}" = 1 ] || /usr/bin/open "$app"
+  if [ "${FFD_NO_LAUNCH:-0}" != 1 ]; then echo 'Opening FarFromDesk…'; /usr/bin/open "$app"; fi
 else
   tar -xzf "$temp/$asset" -C "$temp/unpack" --no-same-owner --no-same-permissions
   [ -x "$temp/unpack/FarFromDesk/farfromdesk" ] || { echo 'Invalid desktop bundle.' >&2; exit 1; }
+  printf '[4/4] Installing the app and application-menu shortcut…\n'
   root="$HOME/.local/opt/farfromdesk"; target="$root/$version"
   [ ! -e "$target" ] || { echo 'This version is already installed. Open it from your application menu.'; exit 0; }
   mkdir -p "$root" "$HOME/.local/share/applications"

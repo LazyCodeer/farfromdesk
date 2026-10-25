@@ -51,6 +51,13 @@ ThemeData bridgeTheme() => ThemeData(
     bodySmall: TextStyle(fontSize: 11, height: 1.5, color: muted),
     labelLarge: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
   ),
+  dividerColor: line,
+  expansionTileTheme: const ExpansionTileThemeData(
+    shape: Border(),
+    collapsedShape: Border(),
+    iconColor: accent,
+    collapsedIconColor: muted,
+  ),
   dividerTheme: const DividerThemeData(color: line, thickness: 1, space: 28),
   inputDecorationTheme: InputDecorationTheme(
     filled: true,

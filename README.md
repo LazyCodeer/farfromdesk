@@ -19,6 +19,23 @@
 
 Ask for updates, give your coding assistants instructions, and get their replies in WhatsApp. Your assistants keep their own context and tools. You choose which sessions to connect.
 
+## A look inside
+
+Connect your WhatsApp account and choose where replies appear. The phone number in this app screenshot is obscured.
+
+<img src="docs/assets/screenshots/whatsapp-connection.webp" alt="FarFromDesk Home with connected WhatsApp account and private reply destination choices; phone number obscured" width="960" />
+
+<details>
+<summary>Workspace setup and Settings</summary>
+
+These previews use sample data from the current interface.
+
+<img src="docs/assets/screenshots/workspace-setup.webp" alt="Create a coordinator by choosing the coding app, workspace and session name" width="720" />
+
+<img src="docs/assets/screenshots/settings.webp" alt="Settings with rounded cards for availability, account permissions and voice tools" width="960" />
+
+</details>
+
 ## Download FarFromDesk
 
 Visit the [latest release](https://github.com/LazyCodeer/farfromdesk/releases/latest) and choose the download for your computer below. Mac ZIP and DMG files contain **FarFromDesk.app**. GitHub's automatic “Source code” downloads are for contributors, not the installed app.
@@ -44,6 +61,8 @@ On macOS or Linux, this downloads the latest version-pinned installer, verifies 
 curl -fsSL https://ffd.codecylabs.com/install.sh | sh
 ```
 
+The terminal installer shows download progress, then verification, unpacking and installation stages.
+
 On Windows, download **install.ps1** from the latest release and run it in PowerShell, or use the ZIP download. You can inspect either installer before running it. No administrator access is required. Pause forwarding and quit an older FarFromDesk before replacing it; your pairing and saved requests stay outside the app installation.
 
 ## Get started in three steps
@@ -54,7 +73,7 @@ Open FarFromDesk and scan its QR code from **WhatsApp → Settings → Linked de
 
 ### 2. Choose your assistant
 
-Choose Codex or Claude and an available Desktop or CLI option. Connect an existing coordinating session or create one. Your app's normal sign-in, account limits, and permissions still apply.
+Choose Codex or Claude and an available Desktop or CLI option. Connect an existing coordinating session or create one in a detected workspace. For Claude Desktop, FarFromDesk uses a reachable chat in that workspace and account to initialize the new coordinator. Your app's normal sign-in, account limits, and permissions still apply.
 
 ### 3. Send a message
 

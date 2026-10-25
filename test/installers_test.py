@@ -20,9 +20,10 @@ class InstallerTests(unittest.TestCase):
     def test_verified_archive_installs_app_and_menu_with_spaces(self):
         result,home,_=self.fixture();self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue((home/'.local/opt/farfromdesk/0.0.0-fixture/farfromdesk').exists())
+        self.assertIn('[1/4] Downloading',result.stdout); self.assertIn('[2/4] Verifying',result.stdout); self.assertIn('[3/4] Unpacking',result.stdout); self.assertIn('[4/4] Installing',result.stdout)
         entry=(home/'.local/share/applications/farfromdesk.desktop').read_text();self.assertIn('Name=FarFromDesk',entry);self.assertIn('Exec="',entry)
     def test_checksum_mismatch_leaves_installation_absent(self):
-        result,home,_=self.fixture(corrupt=True);self.assertNotEqual(result.returncode,0);self.assertIn('Checksum mismatch',result.stderr);self.assertFalse((home/'.local/opt').exists())
+        result,home,_=self.fixture(corrupt=True);self.assertNotEqual(result.returncode,0);self.assertIn('Checksum mismatch',result.stderr);self.assertNotIn('[3/4]',result.stdout);self.assertFalse((home/'.local/opt').exists())
     def test_traversal_is_rejected_even_with_matching_checksum(self):
         result,home,root=self.fixture(traversal=True);self.assertNotEqual(result.returncode,0);self.assertIn('Unsafe archive',result.stderr);self.assertFalse((root/'escaped').exists());self.assertFalse((home/'.local/opt').exists())
 

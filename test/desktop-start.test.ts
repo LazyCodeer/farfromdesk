@@ -189,3 +189,13 @@ test('workspace launcher lookup includes later catalog pages',async()=>{
     assert.equal((await f.starts.parent(parent)).id,parent);
   }finally{f.close();}
 });
+
+
+test('creation rechecks the saved workspace account before sending',async()=>{
+  const f=fixture();try {
+    f.store.set(`session-route:${f.binding.id}`,JSON.stringify({accountScope:'original'}));
+    f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,accountScope:'changed'}]}) as any;
+    await assert.rejects(f.starts.create(f.binding,parent,'Test','No task.'),/account changed/);
+    assert.equal(f.sends(),0);assert.equal(f.starts.get(f.binding.id),null);
+  }finally{f.close();}
+});

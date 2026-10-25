@@ -63,7 +63,8 @@ export class DesktopStarts {
   }
   async create(b:Binding,parentId:string,title:string,instructions:string) {
     if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
-    const launcher=await this.parent(parentId);parentId=launcher.id;
+    const route=JSON.parse(this.store.get(`session-route:${b.id}`)??'null');
+    const launcher=await this.parent(parentId,route?.accountScope);parentId=launcher.id;
     if(realpathSync(b.cwd)!==b.cwd)throw new Error('Desktop project path changed.');
     const op:Start={supportDir:this.store.get(`master-support:${b.id}`),stage:'Sending creation request to Claude',bindingId:b.id,parentId,cwd:b.cwd,nonce:randomUUID(),status:'prepared',requireDetached:true,accountScope:launcher.accountScope};
     this.save(op);
