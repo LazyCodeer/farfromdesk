@@ -25,7 +25,6 @@ __pycache__/
 .DS_Store
 # Local design experiments and historical machine-specific reports
 /design-review/
-/website/
 /*VALIDATION.md
 /CLOSED-LID-RESEARCH.md
 /docs/build-32-verification.md

@@ -30,7 +30,7 @@ struct WhatsAppView: View {
                             .frame(width: 48, height: 48)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(bridge.status?.whatsapp.phoneNumber ?? "Your WhatsApp account").font(BridgeTypography.headline)
-                            Text("Linked WhatsApp account · Only this account can control Sidekick.").font(BridgeTypography.callout).foregroundStyle(BridgeStyle.secondary)
+                            Text("Linked WhatsApp account · Only this account can control FarFromDesk.").font(BridgeTypography.callout).foregroundStyle(BridgeStyle.secondary)
                         }
                         Spacer()
                         StatusLabel(text: "Connected")

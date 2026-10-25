@@ -15,9 +15,9 @@ struct ContentView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 22) {
-                SidekickMark().foregroundStyle(BridgeStyle.accent).frame(width: 27, height: 27)
+                FarFromDeskMark().foregroundStyle(BridgeStyle.accent).frame(width: 27, height: 27)
                     .frame(width: 42, height: 42)
-                    .accessibilityLabel("Sidekick")
+                    .accessibilityLabel("FarFromDesk")
                 VStack(spacing: 9) {
                     ForEach(NavigationPage.allCases) { item in
                         SidebarNavigationButton(item: item, selected: currentPage == item,
@@ -60,7 +60,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 14) {
-                    Text("Sidekick / \(currentPage.rawValue)").font(BridgeTypography.font(size: 14, weight: .semibold))
+                    Text("FarFromDesk / \(currentPage.rawValue)").font(BridgeTypography.font(size: 14, weight: .semibold))
                         .foregroundStyle(BridgeStyle.canvasInk)
                     HStack(spacing: 6) {
                         Circle().fill(bridge.connected ? BridgeStyle.canvasSuccess : BridgeStyle.canvasSecondary).frame(width: 6, height: 6)

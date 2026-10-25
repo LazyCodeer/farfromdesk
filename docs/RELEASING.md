@@ -1,67 +1,46 @@
-# Building and publishing Sidekick previews
+# Automated FarFromDesk releases
 
-Use the prerequisites in [Development](DEVELOPMENT.md). Commit reviewed changes before building. Normal pushes do not publish downloads or change repository visibility.
+## Push to main
 
-## Build both Mac variants
+`.github/workflows/release.yml` runs after every push to `main`, or from Actions → Mac preview release → Run workflow. Pull requests never publish releases. A newer main push cancels an older unfinished release run.
+
+1. Read `release.json` for the app version.
+2. Assign `v<version>-preview.<GitHub run ID>` and an app build number of at least `1000 + run number`.
+3. Build independently on `macos-15` (Apple Silicon) and `macos-15-intel` (Intel).
+4. Run TypeScript/backend/native tests, then build production app bundles with matching Node and speech runtimes.
+5. Validate architectures, signatures, ZIP extraction, bundled voice configuration, synthetic voice/silence/corruption, and DMG integrity.
+6. Upload four files per architecture as temporary workflow artifacts.
+7. Validate both manifests and all checksums against the triggering commit. Create or resume a private draft prerelease, upload the eight files, verify GitHub's sizes and SHA-256 digests, and publish it.
+
+The publish job alone has `contents: write`; build jobs have read-only access. Actions are pinned to commit SHAs. The publisher refuses public repositories, mismatched commits/builds, incomplete asset sets, symlinks, corrupt files, or misleading signing metadata. A failed architecture prevents publication. Interrupted uploads remain a private draft and can be resumed by rerunning the same workflow. Published releases are immutable; a rerun leaves an already-completed release intact.
+
+## Downloads
+
+Each architecture gets a ZIP and DMG containing `FarFromDesk.app`, a checksum file, and a source/version manifest. GitHub's additional source archives are not app installers. Private downloads require repository access. The README uses `/releases`, because prereleases are not resolved by `/releases/latest`.
+
+Historical `v0.6.2-preview.2` files retain the Sidekick name and bytes. New builds use FarFromDesk and the FFD icon.
+
+## Requirements
+
+GitHub Actions must be enabled and account billing/spending must allow hosted runners. macOS builds consume hosted runner minutes; the workflow does not alter billing settings. No personal access token is needed: publication uses the workflow-scoped GitHub token.
+
+No Apple Developer ID signing identity or notarization credentials are configured. These are explicitly **ad-hoc signed, non-notarized private previews**. Native hardware smoke tests do not establish real-phone/provider compatibility or replace a full UI test. Developer ID signing, hardened-runtime review, notarization and stapling remain necessary for a normal public distribution workflow.
+
+## Local fallback
 
 ```sh
-python3 script/release_macos.py --tag v0.6.2-preview.2 --arch arm64
-python3 script/release_macos.py --tag v0.6.2-preview.2 --arch x86_64
+npm ci
+python3 script/release_macos.py --tag v0.6.2-preview.3 --arch arm64
+python3 script/release_macos.py --tag v0.6.2-preview.3 --arch x86_64
 ```
 
-Run these sequentially; they share the source compilation and tests. Each architecture has separate Swift, speech, Node, app and archive staging. Node's official target-specific distribution is verified against its versioned SHA-256 checksums. The Intel speech runtime uses CPU inference; the Apple Silicon runtime enables Metal. Do not label an Intel cross-build as Intel hardware tested.
+Use a clean committed checkout and a new preview number. Build outputs stay under ignored `build/releases/<tag>/<arch>/`. The script never restarts the installed app or bridge. Cross-architecture local smoke tests require a compatible execution environment such as Rosetta; report them separately from native hardware tests.
 
-The script requires a clean tree and checks the source commit again before creating artifacts. It runs local checks, builds optimized Swift, installs production-only dependencies in an isolated directory, validates native binary architectures, verifies signatures before and after ZIP extraction, checks bundled speech configuration, and exercises synthetic audio/silence/corruption with the target speech tools. Intel smoke checks on Apple Silicon run through Rosetta and require Rosetta to already be available.
+## Maintaining the pipeline
 
-Output in `build/releases/<tag>/<architecture>/`:
-
-- `Sidekick-<version>-macOS-<architecture>.zip` — contains Sidekick.app.
-- `Sidekick-<version>-macOS-<architecture>.dmg` — contains the same app and an Applications shortcut.
-- `SHA256SUMS-<architecture>.txt` — checksums for the archives and manifest.
-- `release-manifest-<architecture>.json` — exact source commit, architecture, version and signing status.
-
-A `.app` is a directory bundle, so it is distributed inside ZIP/DMG rather than uploaded as a single GitHub file. Both formats preserve the same executable app. Existing artifacts are never overwritten; choose a new preview number for subsequent builds. Unpublished earlier candidate builds can remain local and are not automatically uploaded.
-
-## Publish the reviewed assets
-
-Check the manifest, source commit, checksums and repository visibility. Create a tag at that exact commit, push it, then create a private prerelease with all eight files. Do not upload build directories or model caches.
-
-```sh
-gh repo view LazyCodeer/sidekick --json visibility
-git tag v0.6.2-preview.2
-git push origin v0.6.2-preview.2
-gh release create v0.6.2-preview.2 --repo LazyCodeer/sidekick --verify-tag --prerelease \
-  --title "Sidekick 0.6.2 — Mac preview" \
-  --notes-file docs/releases/v0.6.2-preview.2.md \
-  build/releases/v0.6.2-preview.2/arm64/* \
-  build/releases/v0.6.2-preview.2/x86_64/*
-```
-
-The Releases page is the download page. GitHub's automatically added source archives are not app installers. Private assets require repository access. The README links to `/releases`, because prereleases do not use the stable `/releases/latest` shortcut. No tag or release is created by the build script itself.
-
-## Public distribution readiness
-
-Current preview bundles use ad-hoc signatures. No Developer ID signing identity or notarization credential is configured in this workflow. A notarized release pipeline still needs signing, hardened-runtime review, notarization and stapling. Do not describe this preview as ready for frictionless public installation or advise bypassing Gatekeeper.
-
-## Public release checklist
-
-The repository stays private until the owner explicitly changes that decision. Release creation is explicit; ordinary pushes do not publish downloads or change visibility.
-
-- [x] Select MIT for first-party source.
-- [ ] Resolve native helper redistribution provenance.
-- [ ] Inventory all third-party licenses and source/relink obligations for the exact shipped binaries.
-- [ ] Audit staged source, history and generated package for secrets and private data.
-- [ ] Verify a clean checkout can build with documented prerequisites.
-- [ ] Run fixture suites and opt-in local speech checks.
-- [ ] Run real-phone text, voice, attachment, approval and recovery flows for each advertised provider/mode.
-- [ ] Publish actual compatibility versions and known limitations.
-- [ ] Validate first install, update, pairing retention and uninstall on a separate supported Mac.
-- [ ] Measure cold/warm startup, idle memory, catalog discovery and transcription latency.
-- [ ] Prepare Developer ID signing, notarization and stapling; do not present ad-hoc signing as public distribution readiness.
-- [ ] Check background/login consent and native permission UX.
-- [ ] Review dependency inventory, complete Node notices and production packaging size.
-- [ ] Configure confidential security reporting and release support policy.
-- [ ] Connect only verified website/download links and publish checksums for final assets.
-- [ ] Obtain owner's decision to make the repository/release public.
-
-A local build and passing CI are development evidence, not completion of this checklist.
+- Update `release.json` for a new app version or local build baseline.
+- Keep runtime versions and source checksums pinned in `script/build_speech_runtime.py`.
+- Run `actionlint` and `python3 -m unittest discover -s script/tests` for pipeline changes.
+- Keep website verification at repository root in `.github/workflows/website.yml`; nested website workflows do not run.
+- Windows/Linux are planned and are not advertised as binaries until their build jobs and verification are implemented.
+- Repository visibility remains private until the owner explicitly changes it. A public release workflow needs a separate intentional policy update.

@@ -1,0 +1,5 @@
+GSAP and ScrollTrigger
+Copyright 2008-2026, GreenSock. All rights reserved.
+Subject to the Standard no-charge license at https://gsap.com/standard-license
+Upstream: https://gsap.com
+The distributed JavaScript retains upstream license notices.

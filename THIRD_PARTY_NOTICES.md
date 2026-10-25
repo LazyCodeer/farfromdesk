@@ -1,6 +1,6 @@
 # Third-party notices
 
-Sidekick includes and depends on third-party work. The first-party license does not replace upstream licenses. Verify the exact dependency versions and full distribution obligations before publishing binaries.
+FarFromDesk includes and depends on third-party work. The first-party license does not replace upstream licenses. Verify the exact dependency versions and full distribution obligations before publishing binaries.
 
 | Component | Source / notices |
 | --- | --- |
@@ -15,4 +15,4 @@ Sidekick includes and depends on third-party work. The first-party license does 
 
 Other npm dependencies are pinned in package-lock.json and carry their upstream package notices. The current development package includes node_modules; a public release should include a complete license inventory and review dev-dependency bundling.
 
-The banner in docs/assets is an original Sidekick product illustration. It depicts a conceptual flow, not a live customer chat or proof of integration success.
+The banner in docs/assets is an original FarFromDesk product illustration. It depicts a conceptual flow, not a live customer chat or proof of integration success.

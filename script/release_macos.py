@@ -35,6 +35,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag', required=True, help='Preview tag, e.g. v0.6.2-preview.1')
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], default='arm64')
+    parser.add_argument('--build-number', type=int)
     args = parser.parse_args()
     match = re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-preview\.([1-9][0-9]*)', args.tag)
     if not match:
@@ -56,8 +57,11 @@ def main():
     run(['swift', 'build', '--package-path', 'macos', '--configuration', 'release',
          '--triple', args.arch + '-apple-macosx14.0', '--scratch-path', str(ROOT / 'build' / ('swift-release-' + args.arch)),
          '-debug-info-format', 'none'])
-    run([os.environ.get('WSB_BUILD_PYTHON', 'python3.12'), 'script/package_macos.py', '--release', '--arch', args.arch])
-    app = ROOT / 'build' / ('release-' + args.arch) / 'Sidekick.app'
+    package_command = [os.environ.get('WSB_BUILD_PYTHON', 'python3.12'), 'script/package_macos.py', '--release', '--arch', args.arch]
+    if args.build_number is not None:
+        package_command += ['--build-number', str(args.build_number)]
+    run(package_command)
+    app = ROOT / 'build' / ('release-' + args.arch) / 'FarFromDesk.app'
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     if info['CFBundleShortVersionString'] != version:
         raise RuntimeError('Tag version does not match the app version; no archive created.')
@@ -80,11 +84,11 @@ def main():
     # Publish the directory only after both the archive and its extraction validate.
     with tempfile.TemporaryDirectory(prefix='sidekick-release-', dir=destination.parent) as temporary:
         stage = Path(temporary)
-        archive = stage / ('Sidekick-' + args.tag[1:] + '-macOS-' + args.arch + '.zip')
+        archive = stage / ('FarFromDesk-' + args.tag[1:] + '-macOS-' + args.arch + '.zip')
         run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(app), str(archive)])
         with tempfile.TemporaryDirectory(prefix='sidekick-extract-') as extraction:
             run(['ditto', '-x', '-k', str(archive), extraction])
-            restored = Path(extraction) / 'Sidekick.app'
+            restored = Path(extraction) / 'FarFromDesk.app'
             run(['codesign', '--verify', '--deep', '--strict', str(restored)])
             executable = restored / 'Contents/MacOS/SessionBridge'
             if not os.access(executable, os.X_OK):
@@ -101,11 +105,11 @@ def main():
                 'WSB_AUDIO_TEST_WHISPER': str(speech / 'whisper-cli'),
                 'WSB_AUDIO_TEST_MODEL': str(speech / 'ggml-base.bin')})
         # A read-only DMG gives users a visible .app and an Applications shortcut.
-        dmg = stage / ('Sidekick-' + args.tag[1:] + '-macOS-' + args.arch + '.dmg')
+        dmg = stage / ('FarFromDesk-' + args.tag[1:] + '-macOS-' + args.arch + '.dmg')
         with tempfile.TemporaryDirectory(prefix='sidekick-dmg-') as source:
-            run(['ditto', str(app), str(Path(source) / 'Sidekick.app')])
+            run(['ditto', str(app), str(Path(source) / 'FarFromDesk.app')])
             (Path(source) / 'Applications').symlink_to('/Applications')
-            run(['hdiutil', 'create', '-volname', 'Sidekick', '-srcfolder', source, '-format', 'UDZO', '-ov', str(dmg)])
+            run(['hdiutil', 'create', '-volname', 'FarFromDesk', '-srcfolder', source, '-format', 'UDZO', '-ov', str(dmg)])
         run(['hdiutil', 'verify', str(dmg)])
         manifest = stage / ('release-manifest-' + args.arch + '.json')
         manifest.write_text(json.dumps({

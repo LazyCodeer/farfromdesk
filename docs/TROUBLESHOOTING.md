@@ -19,4 +19,4 @@ Record the revision/app build, macOS, chosen provider and Desktop/CLI mode, timi
 
 ## Existing installations
 
-The rename to Sidekick intentionally preserves the old state directory and service identifiers. Do not delete them to fix a naming issue. Changing or deleting them can remove pairing and recovery information.
+The rename to FarFromDesk intentionally preserves the old state directory and service identifiers. Do not delete them to fix a naming issue. Changing or deleting them can remove pairing and recovery information.

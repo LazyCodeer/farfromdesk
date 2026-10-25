@@ -1,4 +1,4 @@
-# Testing Sidekick
+# Testing FarFromDesk
 
 ## Default checks
 
@@ -37,4 +37,4 @@ Exercise offline/reconnect, duplicate inbound events, unavailable apps, expired 
 
 ## CI scope
 
-The GitHub workflow runs backend and native fixture tests without signing credentials, private app accounts, live WhatsApp, or speech downloads. Opt-in speech and live checks are skipped there. CI passing is not a public-release certification. The explicit release script runs checks locally before building a preview archive.
+The Checks workflow runs backend and native fixtures without live accounts. The Mac preview release workflow additionally builds bundled speech tools and runs synthetic voice tests on both architectures. Live WhatsApp tests remain separate. CI passing is not a public-release certification. Publication guard tests use synthetic files and never upload a release.

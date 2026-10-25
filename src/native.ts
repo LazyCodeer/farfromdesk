@@ -135,7 +135,7 @@ export class NativeAgents {
   }
   async sendDesktopCreation(sessionId:string,file:string) {
     await this.desktopConfig();
-    const {stdout}=await exec(helper,['--config',this.configPath,'send-claude','--session',sessionId,'--sender','Sidekick owner-requested session setup','--file',file],{timeout:30000,maxBuffer:1024*1024});
+    const {stdout}=await exec(helper,['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{timeout:30000,maxBuffer:1024*1024});
     const receipt=JSON.parse(stdout);
     if(receipt.status!=='submitted'&&receipt.status!=='received')throw new Error('Desktop creation submission could not be confirmed. Do not resubmit.');
   }

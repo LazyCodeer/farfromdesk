@@ -26,7 +26,7 @@ struct MasterSetupView: View {
         let content: CGFloat = setupAction == "existing" ? 650 : (needsLauncher ? 560 : 450)
         return min(content + (failures.isEmpty ? 0 : 100), max(420, (NSScreen.main?.visibleFrame.height ?? 900) - 140))
     }
-    var automaticSessionName: String { "Sidekick · " + platformName }
+    var automaticSessionName: String { "FarFromDesk · " + platformName }
     var resolvedSessionName: String { automaticName ? automaticSessionName : customName.trimmingCharacters(in: .whitespacesAndNewlines) }
     var validSessionName: Bool { automaticName || (!resolvedSessionName.isEmpty && resolvedSessionName.utf16.count <= 80 && resolvedSessionName.rangeOfCharacter(from: .controlCharacters) == nil) }
     init(compact: Bool = false, provider: String = "codex", mode: String = "cli", action: String = "new", dialogOnly: Bool = false, name: String? = nil) {
@@ -300,7 +300,7 @@ struct MasterSetupView: View {
                     }
                 }.frame(height: 220)
                 if let session = chosenSession, !session.available {
-                    Label("This chat is saved. Sidekick has not confirmed a live connection yet.", systemImage: "info.circle")
+                    Label("This chat is saved. FarFromDesk has not confirmed a live connection yet.", systemImage: "info.circle")
                         .font(BridgeTypography.caption).foregroundStyle(Color.orange)
                     if selected == "claude" && selectedMode == "desktop", ClaudeDesktopLink.resume(session.desktopId) != nil {
                         HStack(spacing: 12) {
@@ -308,7 +308,7 @@ struct MasterSetupView: View {
                                 .disabled(openingSessionID != nil || creating || bridge.busy)
                             if openingSessionID != nil { ProgressView().controlSize(.small) }
                         }
-                        Text(openStatus ?? "Open this exact saved chat in Claude. Sidekick checks its connection before enabling it. Claude may ask you to sign in or approve project access.")
+                        Text(openStatus ?? "Open this exact saved chat in Claude. FarFromDesk checks its connection before enabling it. Claude may ask you to sign in or approve project access.")
                             .font(BridgeTypography.caption).foregroundStyle(BridgeStyle.secondary)
                     } else {
                         Text("Open this chat in its original app/account or CLI, then refresh. Archived chats and unavailable accounts may need attention there first.")

@@ -26,7 +26,7 @@ export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
   if(value!==undefined&&typeof value!=='string')throw new Error('Session name must be text.');
   const name=(value as string|undefined)?.trim()??'';
   if(name.length>80||/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name))throw new Error('Use a session name of up to 80 characters without control characters.');
-  return name||`Sidekick · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
+  return name||`FarFromDesk · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
 }
 export class Masters {
   runtimes=new Map<string,CodexSession>();
@@ -314,7 +314,7 @@ export class Masters {
   }
   async provisionWorker(b:Binding) {
     if(this.store.get(`execution-mode:${b.id}`)==='desktop') {
-      await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'Sidekick project','Use the incoming bridge CLI reply command for future requests.');return;
+      await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'FarFromDesk project','Use the incoming bridge CLI reply command for future requests.');return;
     }
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
@@ -328,7 +328,7 @@ export class Masters {
     if(!/^[0-9a-f-]{36}$/i.test(r.thread?.id??''))throw new Error('Native worker creation did not return an exact session ID.');
     this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(r.thread.id,b.id);
     this.store.set(`managed-codex:${b.id}`,'true');
-    await runtime.request('thread/name/set',{threadId:r.thread.id,name:this.store.get(`name:${b.id}`)??'Sidekick project'});
+    await runtime.request('thread/name/set',{threadId:r.thread.id,name:this.store.get(`name:${b.id}`)??'FarFromDesk project'});
   }
   stopWorker(id:string){this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
   async recoverWorker(b:Binding) {

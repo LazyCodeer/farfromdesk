@@ -236,10 +236,10 @@ test('custom and automatic names persist into setup, native creation and recover
  f.masters.desktop.parent=async()=>({id:nativeId,cwd:dir,available:true} as any);
  let title='';f.masters.desktop.create=async(b,parent,name)=>{title=name;};
  await f.masters.create('claude','31313131-3131-4131-a131-313131313131','desktop',nativeId);await settled(f);
- assert.equal(title,'Sidekick · Claude Desktop');assert.equal(f.masters.operation().name,title);
+ assert.equal(title,'FarFromDesk · Claude Desktop');assert.equal(f.masters.operation().name,title);
 });
 test('session name validation rejects nontext, oversized and hidden controls before provisioning',async()=>{
- assert.equal(masterName('codex','desktop',undefined),'Sidekick · Codex Desktop');
+ assert.equal(masterName('codex','desktop',undefined),'FarFromDesk · Codex Desktop');
  assert.equal(masterName('claude','cli','  Team helper  '),'Team helper');
  const f=fixture();f.masters.platforms=[{provider:'codex',available:true}];
  for(const name of [42,'x'.repeat(81),'bad\nname','bad\u202ename'])await assert.rejects(f.masters.create('codex','32323232-3232-4232-a232-323232323232','cli',undefined,name),/name/);

@@ -1,6 +1,6 @@
-# Contributing to Sidekick
+# Contributing to FarFromDesk
 
-Sidekick is licensed under MIT. The repository is currently private while the preview is prepared. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
+FarFromDesk is licensed under MIT. The repository is currently private while the preview is prepared. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
 
 ## Local workflow
 

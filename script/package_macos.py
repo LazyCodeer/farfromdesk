@@ -11,11 +11,17 @@ import argparse
 import tempfile
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--build-number', type=int)
 parser.add_argument('--arch', choices=['arm64', 'x86_64'], default='arm64')
-parser.add_argument('--release', action='store_true', help='Optimized Sidekick preview with production dependencies')
+parser.add_argument('--release', action='store_true', help='Optimized FarFromDesk preview with production dependencies')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 configuration = 'release' if args.release else 'debug'
+import json
+release_metadata = json.loads((root / 'release.json').read_text())
+build_number = args.build_number if args.build_number is not None else release_metadata['build']
+if not 1 <= build_number <= 2147483647:
+    raise RuntimeError('Invalid app build number')
 speech = root / ('build/speech-runtime' if args.arch == 'arm64' else 'build/speech-runtime-x86_64')
 if not (speech / 'manifest.json').is_file():
     raise RuntimeError('Build the speech runtime first: python3.12 script/build_speech_runtime.py')
@@ -26,7 +32,7 @@ if speech_manifest['architecture'] != ('arm64' if args.arch == 'arm64' else 'x64
 for name in ('ffmpeg', 'whisper-cli', 'ggml-base.bin'):
     if hashlib.sha256((speech / name).read_bytes()).hexdigest() != speech_manifest['sha256'][name]:
         raise RuntimeError('Bundled speech asset checksum mismatch: ' + name)
-output = root / "build" / ("release-" + args.arch) / "Sidekick.app" if args.release else root / "build" / "Session Bridge.app"
+output = root / "build" / ("release-" + args.arch) / "FarFromDesk.app" if args.release else root / "build" / "Session Bridge.app"
 if output.exists():
     shutil.rmtree(output)
 contents = output / "Contents"
@@ -96,12 +102,12 @@ for path in bridge.rglob("*"):
         raise RuntimeError(f"Refusing external symlink in bundle: {path.relative_to(bridge)}")
 plist = {
     "CFBundleExecutable": "SessionBridge", "CFBundleIdentifier": "app.sessionbridge.mac",
-    "CFBundleName": "Sidekick", "CFBundleDisplayName": "Sidekick",
-    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.6.2", "CFBundleVersion": "40",
+    "CFBundleName": "FarFromDesk", "CFBundleDisplayName": "FarFromDesk",
+    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": release_metadata["version"], "CFBundleVersion": str(build_number),
     "CFBundleIconFile": "SessionBridge",
     "LSMinimumSystemVersion": "14.0", "NSPrincipalClass": "NSApplication",
     "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
-    "NSHumanReadableCopyright": "Sidekick contributors — MIT License",
+    "NSHumanReadableCopyright": "FarFromDesk contributors — MIT License",
 }
 with (contents / "Info.plist").open("wb") as stream:
     plistlib.dump(plist, stream)

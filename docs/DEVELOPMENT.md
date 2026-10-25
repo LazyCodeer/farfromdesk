@@ -1,4 +1,4 @@
-# Developing Sidekick
+# Developing FarFromDesk
 
 ## Build from source
 
@@ -12,7 +12,7 @@
 - Internet access for initial dependency, speech source, and model downloads.
 
 ```sh
-git clone https://github.com/LazyCodeer/sidekick.git
+git clone https://github.com/LazyCodeer/farfromdesk.git
 cd sidekick
 npm ci
 npm run check
@@ -24,7 +24,7 @@ npm test
 
 Access to the private repository is required. Use `./script/install_macos.sh --replace` when updating an existing local installation. The installer backs up the previous app.
 
-The app displays **Sidekick**. Its bundle filename remains `Session Bridge.app`, and its executable, service identifiers, and state directory retain their original names for migration compatibility. Existing pairings and stored requests are not renamed or discarded.
+The app displays **FarFromDesk**. Its bundle filename remains `Session Bridge.app`, and its executable, service identifiers, and state directory retain their original names for migration compatibility. Existing pairings and stored requests are not renamed or discarded.
 
 The build prepares pinned FFmpeg/whisper.cpp sources and a checksum-verified multilingual base model, then bundles them for local transcription. Model downloads occur during the build, not when you send a voice note. The current package is ad-hoc signed for local development, not Developer ID signed or notarized. Do not disable macOS security controls to run an untrusted build.
 

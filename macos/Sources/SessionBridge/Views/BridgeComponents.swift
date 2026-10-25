@@ -176,20 +176,16 @@ private struct BridgeButtonBody: View {
     }
 }
 
-/// The same linked-chat mark used in the approved HTML review.
-struct SidekickMark: View {
+/// Shared FFD logo; the full product name remains visible in the window header.
+struct FarFromDeskMark: View {
     var body: some View {
-        GeometryReader { geometry in
-            Path { p in
-                p.move(to: CGPoint(x: 15, y: 4)); p.addLine(to: CGPoint(x: 8, y: 4))
-                p.addCurve(to: CGPoint(x: 8, y: 14), control1: CGPoint(x: 1.3, y: 4), control2: CGPoint(x: 1.3, y: 14))
-                p.addLine(to: CGPoint(x: 10, y: 14))
-                p.move(to: CGPoint(x: 9, y: 20)); p.addLine(to: CGPoint(x: 16, y: 20))
-                p.addCurve(to: CGPoint(x: 16, y: 10), control1: CGPoint(x: 22.7, y: 20), control2: CGPoint(x: 22.7, y: 10))
-                p.addLine(to: CGPoint(x: 14, y: 10))
-                p.move(to: CGPoint(x: 9, y: 12)); p.addLine(to: CGPoint(x: 15, y: 12))
-            }.applying(CGAffineTransform(scaleX: geometry.size.width / 24, y: geometry.size.height / 24))
-                .stroke(style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
+        Group {
+            if let url = Bundle.module.url(forResource: "ffd-icon", withExtension: "png", subdirectory: "Brand"),
+               let logo = NSImage(contentsOf: url) {
+                Image(nsImage: logo).resizable().scaledToFit()
+            } else {
+                Text("FFD").font(.system(size: 11, weight: .bold))
+            }
         }.accessibilityHidden(true)
     }
 }

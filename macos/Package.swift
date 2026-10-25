@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [.executable(name: "SessionBridge", targets: ["SessionBridge"])],
     targets: [
-        .executableTarget(name: "SessionBridge", resources: [.copy("Resources/Fonts")]),
+        .executableTarget(name: "SessionBridge", resources: [.copy("Resources/Fonts"), .copy("Resources/Brand")]),
         .testTarget(name: "SessionBridgeTests", dependencies: ["SessionBridge"])
     ],
     swiftLanguageModes: [.v5]

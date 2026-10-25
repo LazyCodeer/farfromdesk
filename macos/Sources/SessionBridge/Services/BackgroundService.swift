@@ -22,7 +22,7 @@ enum BackgroundService {
             let node = resources.appendingPathComponent("runtime/node")
             let bridge = resources.appendingPathComponent("bridge")
             guard fm.isExecutableFile(atPath: node.path), fm.fileExists(atPath: bridge.appendingPathComponent("dist/main.js").path) else {
-                throw BridgeFailure.message("The bundled bridge is missing. Rebuild or reinstall Sidekick.")
+                throw BridgeFailure.message("The bundled bridge is missing. Rebuild or reinstall FarFromDesk.")
             }
             let state = home.appendingPathComponent("Library/Application Support/WhatsApp Session Bridge")
             let logs = state.appendingPathComponent("logs")

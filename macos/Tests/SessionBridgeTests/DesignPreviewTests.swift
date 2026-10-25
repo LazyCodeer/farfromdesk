@@ -42,7 +42,7 @@ struct DesignPreviewTests {
         model.status = try JSONDecoder().decode(BridgeStatus.self, from: Data(fixture.utf8))
         try render(BridgePage { MasterSetupView(compact: true) }, model, .dark, directory.appendingPathComponent("assistant-connected.png"), width: 820, height: 390)
         var groupFixture = try JSONSerialization.jsonObject(with: Data(fixture.utf8)) as! [String: Any]
-        groupFixture["destination"] = ["kind": "group", "name": "Sidekick", "jid": "sample-group"]
+        groupFixture["destination"] = ["kind": "group", "name": "FarFromDesk", "jid": "sample-group"]
         model.status = try JSONDecoder().decode(BridgeStatus.self, from: JSONSerialization.data(withJSONObject: groupFixture))
         try render(WhatsAppView(autoDiscoverGroups: false), model, .dark, directory.appendingPathComponent("whatsapp-group.png"), height: 900)
         model.recoveredGroups = []
@@ -51,7 +51,7 @@ struct DesignPreviewTests {
         groupFixture["destination"] = ["kind": "self", "name": "Message yourself"]
         model.status = try JSONDecoder().decode(BridgeStatus.self, from: JSONSerialization.data(withJSONObject: groupFixture))
         try render(WhatsAppView(autoDiscoverGroups: false), model, .dark, directory.appendingPathComponent("whatsapp-voice-unavailable.png"))
-        model.recoveredGroups = [RecoveredGroups.Group(id: "sample-group", name: "Sidekick")]
+        model.recoveredGroups = [RecoveredGroups.Group(id: "sample-group", name: "FarFromDesk")]
         var attention = try JSONSerialization.jsonObject(with: Data(fixture.utf8)) as! [String: Any]
         attention["approvals"] = [["code": "sample", "alias": "codex-signin", "question": "Allow the agent to run the project test suite?", "kind": "approval"]]
         attention["jobs"] = [["id": "wa:review", "binding_id": "site", "status": "uncertain", "created_at": 1792873390671, "error": "Delivery could not be confirmed. Check this session before resending."]]

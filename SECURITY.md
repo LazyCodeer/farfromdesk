@@ -1,6 +1,6 @@
 # Security policy
 
-Sidekick can relay requests to agents with access to your files. Treat the Mac, WhatsApp linked device, selected sessions, and native account permissions as security-sensitive.
+FarFromDesk can relay requests to agents with access to your files. Treat the Mac, WhatsApp linked device, selected sessions, and native account permissions as security-sensitive.
 
 ## Reporting a vulnerability
 

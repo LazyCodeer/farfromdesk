@@ -76,7 +76,7 @@ export class Workers {
     if(this.workspaceGrant)return this.workspaceGrant;
     this.workspaceGrant=(async()=>{
       const master=this.router.coordinator!.master()!;
-      const answer=await this.router.approvals.ask(master,`Allow Sidekick to create new coding projects inside ${this.root}?\nThis approval applies to future owner-requested projects here. Codex uses workspace-write with native approvals; Claude CLI uses acceptEdits; Claude Desktop retains its own native permissions and may require initial folder approval. Commands or access requiring further native permission are sent here. This does not grant access to arbitrary folders.`);
+      const answer=await this.router.approvals.ask(master,`Allow FarFromDesk to create new coding projects inside ${this.root}?\nThis approval applies to future owner-requested projects here. Codex uses workspace-write with native approvals; Claude CLI uses acceptEdits; Claude Desktop retains its own native permissions and may require initial folder approval. Commands or access requiring further native permission are sent here. This does not grant access to arbitrary folders.`);
       if(this.closed)return null;
       this.router.coordinator!.ownerRequest(op.requestId);
       if(answer!=='approve')return null;

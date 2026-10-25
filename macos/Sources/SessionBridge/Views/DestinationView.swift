@@ -3,7 +3,7 @@ import SwiftUI
 struct DestinationView: View {
     @EnvironmentObject var bridge: BridgeModel
     var autoDiscover = true
-    @ViewState private var groupName = "Sidekick"
+    @ViewState private var groupName = "FarFromDesk"
     @ViewState private var confirmGroup = false
     @ViewState private var showGroupForm = false
     @ViewState private var groupMode: Bool? = nil

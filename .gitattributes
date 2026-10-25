@@ -1,2 +1,3 @@
 # Preserve upstream license text byte-for-byte.
 macos/Sources/SessionBridge/Resources/Fonts/*-OFL.txt -whitespace
+website/assets/fonts/*-OFL.txt -whitespace

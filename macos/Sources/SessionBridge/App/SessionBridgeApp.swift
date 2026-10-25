@@ -14,7 +14,7 @@ struct SessionBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var bridge = BridgeModel()
     var body: some Scene {
-        Window("Sidekick", id: "main") {
+        Window("FarFromDesk", id: "main") {
             ContentView().environmentObject(bridge).task { bridge.start() }
         }
         .defaultSize(width: 1100, height: 780)
@@ -27,7 +27,7 @@ struct SessionBridgeApp: App {
                     .disabled(!bridge.connected)
             }
         }
-        MenuBarExtra("Sidekick", systemImage: bridge.connected ? "message.badge.filled.fill" : "message") {
+        MenuBarExtra("FarFromDesk", systemImage: bridge.connected ? "message.badge.filled.fill" : "message") {
             MenuBarView().environmentObject(bridge)
         }
     }
@@ -38,7 +38,7 @@ struct MenuBarView: View {
     @Environment(\.openWindow) var openWindow
     var body: some View {
         Text(bridge.connected ? "WhatsApp connected" : "WhatsApp offline")
-        Button("Open Sidekick") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        Button("Open FarFromDesk") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Button("Refresh Status") { Task { await bridge.refresh() } }
         Divider()
         Text(bridge.status?.preferences?.backgroundEnabled == true ? "Background operation enabled" : "Background operation paused")

@@ -1,0 +1,110 @@
+name: Mac preview release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mac-preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      build: ${{ steps.version.outputs.build }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - id: version
+        name: Assign preview version
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          data = json.loads(Path('release.json').read_text())
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', data['version'])
+          run_id = int(os.environ['RUN_ID'])
+          build = max(int(data['build']), 1000 + int(os.environ['RUN_NUMBER']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"tag=v{data['version']}-preview.{run_id}\n")
+              out.write(f"build={build}\n")
+          PY
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      APP_BUILD: ${{ needs.prepare.outputs.build }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.20.0'
+          cache: npm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Check build tools and architecture
+        run: |
+          test "$(uname -m)" = "$TARGET_ARCH"
+          command -v cmake
+          xcrun swift --version
+          python3.12 --version
+      - run: npm ci
+      - name: Validate publication guards
+        run: python3 -m unittest discover -s script/tests
+      - name: Build and verify Mac download
+        run: python3 script/release_macos.py --tag "$RELEASE_TAG" --arch "$TARGET_ARCH" --build-number "$APP_BUILD"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: build/releases/${{ needs.prepare.outputs.tag }}/${{ matrix.arch }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: mac-arm64
+          path: build/publish/arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: mac-x86_64
+          path: build/publish/x86_64
+      - name: Publish verified private prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: python3 script/publish_release.py --assets build/publish --repo "$RELEASE_REPO" --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"

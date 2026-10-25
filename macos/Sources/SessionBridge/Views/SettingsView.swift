@@ -13,7 +13,7 @@ struct SettingsView: View {
     private var backgroundEnabled: Bool { bridge.status?.preferences?.backgroundEnabled == true }
     var body: some View {
         BridgePage {
-            PageHeading(eyebrow: "", title: "Settings", subtitle: "Decide when Sidekick runs and how this Mac stays available.")
+            PageHeading(eyebrow: "", title: "Settings", subtitle: "Decide when FarFromDesk runs and how this Mac stays available.")
             BridgeCard {
                 HStack {
                     SectionHeading(title: "On this Mac")
@@ -29,8 +29,8 @@ struct SettingsView: View {
                     Button("Start bridge", systemImage: "play") { Task { await bridge.startService() } }.disabled(bridge.busy)
                 }
                 Divider()
-                settingRow("power", "Open at login", "Launch Sidekick when you sign in to this Mac.") {
-                    Toggle("Open Sidekick at login", isOn: Binding(get: { loginEnabled }, set: { enabled in
+                settingRow("power", "Open at login", "Launch FarFromDesk when you sign in to this Mac.") {
+                    Toggle("Open FarFromDesk at login", isOn: Binding(get: { loginEnabled }, set: { enabled in
                         do {
                             if enabled { try SMAppService.mainApp.register() }
                             else { try SMAppService.mainApp.unregister() }
@@ -104,7 +104,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Apple’s supported setup: connect power, an external display, and an external keyboard and mouse. Allow the accessories in macOS, then close the lid.")
                         Link("Apple’s closed-lid requirements", destination: URL(string: "https://support.apple.com/102501")!)
-                        Text("Without an external display, Amphetamine offers a separate closed-display mode. It is third-party software and has not been verified on this Mac’s macOS version. Sidekick does not install or enable it.")
+                        Text("Without an external display, Amphetamine offers a separate closed-display mode. It is third-party software and has not been verified on this Mac’s macOS version. FarFromDesk does not install or enable it.")
                         Link("Amphetamine on the Mac App Store", destination: URL(string: "https://apps.apple.com/app/amphetamine/id937984704")!)
                         Text("Keep an operating laptop ventilated, never in a bag. Sleep prevention does not override manual sleep or low-battery protection. If this Mac sleeps or loses internet, WhatsApp cannot wake or reach it.")
                     }.font(BridgeTypography.callout).foregroundStyle(BridgeStyle.secondary).padding(.top, 12)
@@ -114,15 +114,15 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Only your linked WhatsApp account can control the bridge. Use Message yourself or a group containing only you. Revoke access in WhatsApp → Linked devices.")
                         Text("Your master coordinates only selected sessions, gives concise updates and explains blockers. Worker reports do not grant new permissions. Native agent approval rules still apply; the master cannot approve its own actions.")
-                        Text("Pausing the bridge does not stop work already running in an agent. Agents with full access can access your account’s files; Sidekick does not sandbox them.")
+                        Text("Pausing the bridge does not stop work already running in an agent. Agents with full access can access your account’s files; FarFromDesk does not sandbox them.")
                         Text("The app connects to the bridge on this Mac. Your local admin credential is never sent to a model.")
                     }.font(BridgeTypography.callout).foregroundStyle(BridgeStyle.secondary).padding(.top, 12)
                 } label: { disclosureLabel("lock.shield", "Privacy & agent permissions", "Your account, selected sessions and native approvals") }
             }
             HStack(spacing: 14) {
-                SidekickMark().frame(width: 28, height: 28).foregroundStyle(BridgeStyle.accent)
+                FarFromDeskMark().frame(width: 28, height: 28).foregroundStyle(BridgeStyle.accent)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Sidekick").font(BridgeTypography.font(size: 14, weight: .semibold))
+                    Text("FarFromDesk").font(BridgeTypography.font(size: 14, weight: .semibold))
                     Text("Version \(BridgeStyle.version) · Local preview").font(BridgeTypography.caption).foregroundStyle(BridgeStyle.secondary)
                 }
                 Spacer(minLength: 20)

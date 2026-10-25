@@ -1,4 +1,4 @@
-# Sidekick Mac app
+# FarFromDesk Mac app
 
 The native app is built with SwiftUI and targets macOS 14+. Release packaging supports Apple Silicon and Intel variants; the default local development build targets Apple Silicon. Intel hardware verification remains pending.
 
@@ -24,7 +24,7 @@ The app reads durable service state rather than assuming a UI action completed a
 
 ## Compatibility across the rename
 
-The displayed name is Sidekick. `Session Bridge.app`, executable `SessionBridge`, bundle ID `app.sessionbridge.mac`, launchd service labels, and `~/Library/Application Support/WhatsApp Session Bridge` remain stable. Legacy `Tether Projects` workspace and `.tether-*` startup receipts also remain stable so previously approved workspaces and recoverable operations keep working. Existing user-created native session and WhatsApp group names are not changed.
+The displayed name is FarFromDesk. `Session Bridge.app`, executable `SessionBridge`, bundle ID `app.sessionbridge.mac`, launchd service labels, and `~/Library/Application Support/WhatsApp Session Bridge` remain stable. Legacy `Tether Projects` workspace and `.tether-*` startup receipts also remain stable so previously approved workspaces and recoverable operations keep working. Existing user-created native session and WhatsApp group names are not changed.
 
 The UI installer does not restart an existing background bridge. Source changes to the backend require an intentional service reload after checking active requests. Updating the UI alone does not install new behavior into an already-running Node process.
 
