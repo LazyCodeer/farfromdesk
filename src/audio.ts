@@ -64,8 +64,16 @@ export async function transcribeLocal(data:Buffer,format:string,config:AudioConf
     await exec(config.ffmpeg,['-nostdin','-hide_banner','-loglevel','error','-protocol_whitelist','file,pipe','-f',format,'-i',input,'-vn','-ac','1','-ar','16000','-t','301','-c:a','pcm_s16le',wav],{timeout:45000,killSignal:'SIGKILL',maxBuffer:64000,signal});
     const bytes=(await stat(wav)).size;
     if(bytes<=78||bytes>MAX_AUDIO_SECONDS*32000+78)throw new Error('Audio is empty or longer than five minutes.');
-    if(!hasAudibleSamples(await readFile(wav)))throw new Error('No clear speech detected.');
-    await exec(config.whisper,['-m',config.model,'-f',wav,'-l','auto','-otxt','-of',output,'-nt','-np','-t','4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal});
+    const pcm=await readFile(wav);
+    if(!hasAudibleSamples(pcm))throw new Error('No clear speech detected.');
+    // Use Whisper's bounded memory decoder. The Windows file decoder can hang
+    // while opening an otherwise valid FFmpeg WAV before model inference starts.
+    const transcription=exec(config.whisper,['-m',config.model,'-f','-','-l','auto','-otxt','-of',output,'-nt','-np','-t','4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal});
+    // An early decoder exit is reported by the process promise, not an unhandled
+    // EPIPE from the input stream. end() also guarantees the decoder receives EOF.
+    transcription.child.stdin?.on('error',()=>{});
+    transcription.child.stdin?.end(pcm);
+    await transcription;
     const text=(await readFile(output+'.txt','utf8')).trim();
     if(!text||text.length>32000||/^(?:\[[^\]]*\]|\([^)]*\)|[\s.])+$/.test(text))throw new Error('No clear speech detected.');
     return text;

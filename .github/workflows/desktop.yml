@@ -89,10 +89,26 @@ jobs:
         working-directory: desktop
       - run: flutter build ${{ matrix.target }} --release --build-name ${{ needs.version.outputs.app }} --build-number ${{ needs.version.outputs.build }} --dart-define=FFD_VERSION=${{ needs.version.outputs.version }}
         working-directory: desktop
+      - name: Restore pinned speech build cache
+        id: speech-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          key: speech-v1-${{ matrix.runner }}-${{ hashFiles('script/build_speech_runtime.py', 'script/speech_cpu/**') }}
+          path: |
+            build/speech-toolchain*
+            build/speech-runtime*
       - name: Build bundled local speech
         env:
           FFD_MSYS_BASH: ${{ steps.msys.outputs.msys2-location }}/usr/bin/bash.exe
         run: python script/build_speech_runtime.py
+      - name: Save compiled pinned speech tools
+        if: steps.speech-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          key: ${{ steps.speech-cache.outputs.cache-primary-key }}
+          path: |
+            build/speech-toolchain*
+            build/speech-runtime*
       - run: npm run desktop:backend
       - run: node script/smoke_desktop_backend.mjs
       - run: node script/test_desktop_speech.mjs
