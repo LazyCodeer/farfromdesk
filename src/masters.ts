@@ -1,0 +1,350 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { randomUUID,createHash } from 'node:crypto';
+import { stateDir,baseUrl,codexBin,claudeBin } from './config.js';
+import type { Store,Binding,Provider } from './store.js';
+import type { Router } from './router.js';
+import { saveBindingCredentials } from './server.js';
+import { CodexSession } from './codex-session.js';
+import { ClaudeSession } from './claude-session.js';
+import { DesktopStarts } from './desktop-start.js';
+import { executionMode, type ExecutionMode } from './desktop-claude.js';
+import { masterPolicy } from './master-policy.js';
+
+const exec=promisify(execFile);
+const root=fileURLToPath(new URL('..',import.meta.url));
+const masterMode=(provider:Provider,value:unknown):ExecutionMode=>provider==='codex'&&value==='desktop'?'desktop':executionMode(provider,value);
+const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
+export function codexDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
+  return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
+}
+export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
+  if(value!==undefined&&typeof value!=='string')throw new Error('Session name must be text.');
+  const name=(value as string|undefined)?.trim()??'';
+  if(name.length>80||/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name))throw new Error('Use a session name of up to 80 characters without control characters.');
+  return name||`Sidekick · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
+}
+export class Masters {
+  runtimes=new Map<string,CodexSession>();
+  claudeRuntimes=new Map<string,ClaudeSession>();
+  desktop:DesktopStarts;
+  creating=false;
+  platforms:any[]=[];
+  private discovery?:Promise<any[]>;
+  private discoveryAt=0;
+  private catalogRevision=randomUUID();
+  private catalogDigest='';
+  constructor(private store:Store,private router:Router) {
+    this.desktop=new DesktopStarts(store,router.native);
+    const op=this.operation();if(op?.status==='creating')this.saveOperation({...op,status:'uncertain',error:'Service restarted during creation. Recover this session or create a replacement.'});
+  }
+  operation(id?:string){const current=JSON.parse(this.store.get('master-operation')??'null');return !id||current?.id===id?current:JSON.parse(this.store.get(`master-attempt:${id}`)??'null');}
+  private saveOperation(op:any,current=true){
+    this.store.db.exec('SAVEPOINT master_operation');
+    try {
+      this.store.set(`master-attempt:${op.id}`,JSON.stringify(op));
+      if(current)this.store.set('master-operation',JSON.stringify(op));
+      this.store.db.exec('RELEASE master_operation');
+    }catch(e){this.store.db.exec('ROLLBACK TO master_operation; RELEASE master_operation');throw e;}
+  }
+  private setAside(){
+    const op=this.operation();if(!op)return;
+    if(op.status==='uncertain') {
+      if(op.bindingId&&op.bindingId!==this.store.get('master')){this.store.enable(op.bindingId,false);this.stopWorker(op.bindingId);}
+      this.saveOperation({...op,status:'set-aside',updatedAt:Date.now()});
+    }else this.saveOperation(op);
+  }
+  private assertIdle(){if(this.creating||this.operation()?.status==='creating')throw new Error('Setup is already in progress.');}
+  private async catalog(provider:Provider,fresh=false){
+    const sessions:any[]=[];let cursor:string|undefined;const seen=new Set<string>();
+    do {const page=await this.router.native.catalog(provider,cursor,{fresh});sessions.push(...page.sessions);cursor=page.cursor??undefined;if(cursor){if(seen.has(cursor))throw new Error('Session pagination repeated. Refresh apps.');seen.add(cursor);}}while(cursor);
+    return sessions;
+  }
+  async discover(fresh=false){
+    if(!fresh&&this.platforms.length&&Date.now()-this.discoveryAt<15000)return this.platforms;
+    if(this.discovery)return this.discovery;
+    this.discovery=(async()=>{
+    const platforms:any[]=await Promise.all(([['codex',codexBin],['claude',claudeBin]] as const).map(async([provider,bin])=>{
+      try {await exec(bin,['--version'],{timeout:5000,maxBuffer:10000});return {provider,executionMode:'cli',available:true,label:provider==='codex'?'Codex · native CLI':'Claude Code · background CLI'};}
+      catch{return {provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'Native CLI unavailable. Claude Desktop uses its separate app session.'};}
+    }));
+    const fallback=(provider:Provider)=>this.platforms.filter(p=>p.provider===provider&&(provider==='claude'||p.executionMode==='cli')).flatMap(p=>(p.sessions??[]).map((s:any)=>({...s,provider,executionMode:p.executionMode})));
+    const errors=new Set<Provider>();
+    const load=(provider:Provider)=>this.catalog(provider,fresh).catch(()=>{errors.add(provider);return fallback(provider);});
+    const [claude,codex]=await Promise.all([load('claude'),load('codex')]);
+    const rows=(sessions:any[])=>sessions.map(s=>({id:s.id,desktopId:s.desktopId,name:s.name,cwd:s.cwd,status:s.status,updatedAt:s.updatedAt,available:s.available===true}));
+    for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):codex);
+    platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'Open a Claude Desktop Code chat to connect. Saved chats without a running local inbox cannot receive messages yet.'});
+    platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
+    for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
+    const digest=createHash('sha256').update(JSON.stringify(platforms)).digest('hex');
+    if(digest!==this.catalogDigest){this.catalogDigest=digest;this.catalogRevision=randomUUID();}
+    this.platforms=platforms;this.discoveryAt=Date.now();return platforms;
+    })();
+    try{return await this.discovery;}finally{this.discovery=undefined;}
+  }
+  options(knownRevision?:string){
+    const clean=(op:any)=>op?{...op,needsTrust:op.needsTrust||/workspace not trusted/i.test(op.error??''),error:op.error?this.setupError(op.error):undefined}:op;
+    const op=this.operation();
+    const attempts=this.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'master-attempt:%'").all().map((r:any)=>JSON.parse(r.value)).filter(a=>a.id!==op?.id&&['uncertain','set-aside'].includes(a.status)).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).map(clean);
+    const catalogUnchanged=knownRevision===this.catalogRevision;
+    return {platforms:catalogUnchanged?[]:this.platforms,catalogRevision:this.catalogRevision,catalogUnchanged,operation:clean(op),attempts,prompt:masterPolicy};
+  }
+  setupError(error:unknown) {
+    const message=error instanceof Error?error.message:String(error);
+    if(/^(Desktop (creation|start|setup|project)|Claude Desktop could not|The selected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
+    if(/Claude authentication expired|OAuth|Failed to authenticate/i.test(message))return 'Claude authentication expired. Sign in to the native Claude CLI, then recover this exact setup.';
+    if(/workspace not trusted|Claude needs you to trust/i.test(message))return 'Claude needs you to trust this master folder. Open Claude setup, accept its workspace trust prompt, then return here and retry this setup.';
+    return 'Native master setup could not be confirmed. Check the native app for details. You can recover this session, abandon it, or create a replacement.';
+  }
+  recordSetupFailure(error:unknown,id=this.operation()?.id) {
+    const op=this.operation(id);if(!op)return;
+    this.saveOperation({...op,status:'uncertain',updatedAt:Date.now(),needsTrust:/workspace not trusted/i.test(error instanceof Error?error.message:String(error)),error:this.setupError(error)},this.operation()?.id===id);
+  }
+  async recover(operationId?:string) {
+    this.assertIdle();
+    const op=this.operation(operationId);
+    if(!op||!['uncertain','set-aside'].includes(op.status)||!op.bindingId||(!op.nativeId&&!(op.executionMode==='desktop'&&op.provider!=='codex')))throw new Error('No exact created session is available to recover. Create a new session instead.');
+    const b=this.store.binding(op.bindingId);if(!b||(op.nativeId&&b.native_id!==op.nativeId))throw new Error('Creation identity is incomplete.');
+    this.setAside();this.creating=true;this.saveOperation({...op,status:'creating'});
+    void (async()=>{
+      if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b);
+      else if(b.provider==='codex') {
+        const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(b,m,p));
+        try {await runtime.initialize();const r=await runtime.request('thread/read',{threadId:b.native_id,includeTurns:false});
+          if(r.thread?.id!==b.native_id||typeof r.thread?.cwd!=='string'||realpathSync(r.thread.cwd)!==realpathSync(b.cwd))throw new Error('Native session identity does not match this setup.');
+        }finally{runtime.close();}
+        if(op.executionMode!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
+      }else if(op.needsTrust||/workspace not trusted/i.test(op.error??''))await this.provisionClaude(b);
+      else if(/Claude authentication expired/i.test(op.error??'')) {
+        const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
+        try{await runtime.initialize();await runtime.run('Connection recovery only. Return READY without tools. Do not repeat earlier work.');this.store.set(`managed-claude:${b.id}`,'true');}
+        catch(e){this.stopWorker(b.id);throw e;}
+      }else await this.router.native.validate(b.provider,b.native_id,b.cwd);
+      this.activate(this.store.binding(b.id)!,op.id);
+    })().catch(e=>this.recordSetupFailure(e,op.id)).finally(()=>{this.creating=false;});
+    return this.operation(op.id);
+  }
+  abandon(operationId?:string) {
+    this.assertIdle();const op=this.operation(operationId);
+    if(!op||!['uncertain','set-aside'].includes(op.status))throw new Error('Only an unconfirmed setup can be abandoned.');
+    if(op.bindingId&&op.bindingId!==this.store.get('master')){this.store.set(`desktop-abandoned:${op.bindingId}`,'true');this.store.enable(op.bindingId,false);this.stopWorker(op.bindingId);}
+    this.saveOperation({...op,status:'abandoned'},this.operation()?.id===op.id);
+    return this.operation(op.id);
+  }
+  activate(b:Binding,operationId?:string) {
+    if(operationId&&this.operation()?.id!==operationId)throw new Error('This setup was superseded.');
+    const old=this.store.binding(this.store.get('master')??'');
+    const replacing=old&&old.id!==b.id;
+    this.store.db.exec('BEGIN IMMEDIATE');
+    try {
+      let closedRequests=0;
+      if(replacing) {
+        const closed=this.store.db.prepare(`WITH RECURSIVE related(id) AS (
+          SELECT id FROM inbox WHERE binding_id=?
+          UNION SELECT i.id FROM inbox i JOIN settings s ON s.key='parent:'||i.id JOIN related r ON s.value=r.id
+        ) UPDATE inbox SET status='replaced',error=NULL,updated_at=?
+          WHERE id IN (SELECT id FROM related) AND status IN ('queued','dispatched','submitted','uncertain','failed') RETURNING id`).all(old.id,Date.now());
+        closedRequests=closed.length;
+        this.store.enable(old.id,false);
+        this.store.audit('master-replaced',old.id,JSON.stringify({replacement:b.id,closedRequests}));
+      }
+      this.store.enable(b.id,true);this.store.set('master',b.id);this.store.set('active',b.id);this.store.set(`name:${b.id}`,this.operation()?.name??this.store.get(`name:${b.id}`)??'WhatsApp master');
+      this.store.set(`native-master:${b.id}`,'true');
+      if(b.provider==='claude'){this.store.set('claude-execution-mode',this.store.get(`execution-mode:${b.id}`)??'cli');if(this.store.get(`execution-mode:${b.id}`)==='desktop')this.store.set('claude-desktop-parent',b.native_id);}
+      const enabled=this.router.coordinator?.enabled()??[];this.store.set('enabled-apps',JSON.stringify([...new Set([...enabled,b.provider])]));
+      this.saveOperation({...this.operation(),status:'ready',nativeId:b.native_id,needsTrust:false,error:undefined,closedRequests});
+      this.store.db.exec('COMMIT');
+    }catch(e){this.store.db.exec('ROLLBACK');throw e;}
+    if(replacing){this.router.approvals.cancel(old.id);this.runtimes.get(old.id)?.close();this.runtimes.delete(old.id);}
+  }
+
+  async approval(binding:Binding,method:string,params:any) {
+    if(!this.store.binding(binding.id)?.enabled)throw new Error('This master is inactive; approval denied.');
+    if(this.router.stopped)throw new Error('Background operation is paused; native approval denied.');
+    if(params?.threadId!==binding.native_id)throw new Error('Approval does not belong to this master.');
+    if(method==='item/commandExecution/requestApproval'||method==='item/fileChange/requestApproval') {
+      const answer=await this.router.approvals.ask(binding,`${method}\n${JSON.stringify(params).slice(0,12000)}`);
+      return {decision:answer==='approve'?'accept':'decline'};
+    }
+    if(method==='item/tool/requestUserInput') {
+      const answers:Record<string,any>={};
+      for(const q of (params.questions??[]).slice(0,3))answers[q.id]={answers:[await this.router.approvals.ask(binding,String(q.question),'question')]};
+      return {answers};
+    }
+    throw new Error('Unsupported native approval; finish it in the native interface.');
+  }
+  mcpConfig(b:Binding){return {command:process.execPath,args:[join(root,'dist/master-channel.js'),join(stateDir,'bindings',`${b.alias}.json`)],env:{WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port}};}
+  async useDesktop(sessionId:string,operationId:string){return this.useSession('claude','desktop',sessionId,operationId);}
+  async useSession(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string) {
+    if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
+    const mode=masterMode(provider,requestedMode),previous=this.operation(operationId);
+    if(previous){if(previous.selectedSessionId!==sessionId||previous.provider!==provider||previous.executionMode!==mode)throw new Error('Selection ID cannot change sessions or platforms.');return previous;}
+    this.assertIdle();this.creating=true;
+    try {
+      const session=provider==='claude'&&mode==='desktop'?await this.desktop.parent(sessionId):(await this.catalog(provider,true)).find(s=>s.id===sessionId&&(provider==='codex'||(s.executionMode??'cli')===mode));
+      if(!session?.cwd||(!(provider==='claude'&&mode==='desktop')&&session.available!==true))throw new Error('This saved session is not reachable. Open it in its native app or CLI, then refresh.');
+      if(!(provider==='claude'&&mode==='desktop'))await this.router.native.validate(provider,session.id,session.cwd);
+      let b=this.store.bindings().find(b=>b.provider===provider&&b.native_id===session.id);
+      if(b&&realpathSync(b.cwd)!==realpathSync(session.cwd))throw new Error('Selected project differs from the registered binding.');
+      if(b&&mode==='desktop'&&(this.store.get(`managed-worker:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true'))throw new Error('This session is managed by another runtime; choose its CLI mode.');
+      if(b&&this.router.busy.has(b.id))throw new Error('This session is processing a request. Wait until it finishes.');
+      this.setAside();
+      if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
+      this.stopWorker(b.id);this.store.set(`execution-mode:${b.id}`,mode);
+      if(provider==='codex'&&mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
+      this.saveOperation({id:operationId,provider,executionMode:mode,selectedSessionId:session.id,bindingId:b.id,nativeId:b.native_id,cwd:b.cwd,status:'creating'});
+      this.activate(b,operationId);this.store.set(`name:${b.id}`,session.name);
+      this.store.set('selected',JSON.stringify((JSON.parse(this.store.get('selected')??'[]') as string[]).filter(id=>id!==b!.id)));
+      return this.operation();
+    }finally{this.creating=false;}
+  }
+  async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown) {
+    if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+    const mode=masterMode(provider,requestedMode),name=masterName(provider,mode,requestedName),previous=this.operation(operationId);
+    if(previous){if(previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():''))throw new Error('Creation ID cannot change platform or desktop launcher.');return previous;}
+    this.assertIdle();
+    if(!this.platforms.find(p=>p.provider===provider&&(p.executionMode??'cli')===mode)?.available)throw new Error('The selected execution mode is not available.');
+    this.setAside();this.creating=true;
+    const op={id:operationId,provider,executionMode:mode,desktopParentId,status:'creating',name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
+    void (async()=>{
+      if(provider==='claude'&&mode==='desktop')await this.desktop.parent(desktopParentId);
+      await this.provision(provider,operationId,mode,desktopParentId);
+    })().catch(e=>this.recordSetupFailure(e,operationId)).finally(()=>{this.creating=false;});
+    return op;
+  }
+  async provision(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
+    const cwd=join(stateDir,'masters',operationId);mkdirSync(cwd,{recursive:true,mode:0o700});
+    const alias=`whatsapp-master-${operationId.slice(0,8)}`;
+    const registered=this.store.register(alias,provider,randomUUID(),cwd);
+    let b=registered.binding;this.store.set(`execution-mode:${b.id}`,mode);this.store.enable(b.id,false);saveBindingCredentials(b,registered.token);
+    this.saveOperation({...this.operation(),bindingId:b.id,cwd});
+    const name=this.operation().name??'WhatsApp master';this.store.set(`name:${b.id}`,name);
+    const instruction=masterPolicy+(mode==='desktop'?`\n\nUse the local bridge CLI for coordination: ${quote(process.execPath)} ${quote(join(root,'dist/cli.js'))} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command. Your native permissions still apply.`:'\n\nUse the session_bridge MCP tools for coordination and replies. Your native permissions still apply.');
+    for(const filename of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(cwd,filename),instruction,{mode:0o600});
+    for(const directory of ['.agents/skills/whatsapp-master','.claude/skills/whatsapp-master']) {
+      mkdirSync(join(cwd,directory),{recursive:true,mode:0o700});
+      writeFileSync(join(cwd,directory,'SKILL.md'),`---\nname: whatsapp-master\ndescription: Coordinate owner-selected coding sessions and send supportive, request-bound WhatsApp replies.\n---\n${instruction}`,{mode:0o600});
+    }
+    if(provider==='claude'&&mode==='desktop') {
+      await this.desktop.create(b,desktopParentId!,name,instruction);
+      b=this.store.binding(b.id)!;saveBindingCredentials(b,registered.token);
+    } else if(provider==='codex') {
+      const runtime=new CodexSession(codexBin,cwd,(method,params)=>this.approval(b,method,params));
+      this.runtimes.set(b.id,runtime);await runtime.initialize();
+      const created=await runtime.request('thread/start',{cwd,approvalPolicy:'on-request',sandbox:'read-only',developerInstructions:instruction,config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
+      if(!/^[0-9a-f-]{36}$/i.test(created?.thread?.id??''))throw new Error('Native creation did not return an exact session ID.');
+      this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(created.thread.id,b.id);
+      b=this.store.binding(b.id)!;saveBindingCredentials(b,registered.token);
+      this.saveOperation({...this.operation(),nativeId:b.native_id});
+      await runtime.request('thread/name/set',{threadId:b.native_id,name});
+      if(mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
+      else {runtime.close();this.runtimes.delete(b.id);}
+    } else {
+      this.saveOperation({...this.operation(),nativeId:b.native_id});
+      await this.provisionClaude(b);
+    }
+    this.activate(b,operationId);
+    await this.router.coordinator?.refresh().catch(()=>{});
+  }
+  async provisionClaude(b:Binding) {
+    // This is a new empty app-created directory authorized by the local setup action.
+    // Use Claude's supported headless interface; never edit Claude's trust database.
+    const mcp=join(b.cwd,'bridge-mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{session_bridge:this.mcpConfig(b)}}),{mode:0o600});
+    const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
+    try{await runtime.initialize();await runtime.run(masterPolicy+'\nReturn exactly READY without using tools. Wait for the owner’s first WhatsApp message.');this.store.set(`managed-claude:${b.id}`,'true');}
+    catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
+  }
+  async run(b:Binding,message:string,jobId:string) {
+    if(b.provider==='claude'&&(this.store.get(`managed-worker:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true')) {
+      let runtime=this.claudeRuntimes.get(b.id);
+      if(!runtime?.alive){runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);await runtime.initialize();}
+      const text=await runtime.run(message);
+      if(this.store.job(jobId)?.status==='replaced')return;
+      if(this.store.job(jobId)?.status!=='completed') {
+        if(!text.trim()&&this.router.hasPendingCreation?.(jobId))return;
+        if(!text.trim())throw new Error('Claude ended without a reply. Check its exact session.');
+        this.router.channelReply(b,text,this.router.hasPendingCreation?.(jobId)?'progress':'final',jobId,`native-final:${jobId}`);
+      }
+      return;
+    }
+    let runtime=this.runtimes.get(b.id);
+    if(!runtime?.alive) {
+      runtime=new CodexSession(codexBin,b.cwd,(method,params)=>this.approval(b,method,params));this.runtimes.set(b.id,runtime);
+      await runtime.initialize();
+      const worker=this.store.get(`managed-worker:${b.id}`)==='true';
+      await runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',...(worker?{}:{developerInstructions:masterPolicy,config:{'mcp_servers.session_bridge':this.mcpConfig(b)}})});
+    }
+    const active=runtime;
+    await new Promise<void>((resolve,reject)=>{
+      let text='';
+      const cleanup=()=>{active.off('notification',event);active.off('closed',closed);};
+      const closed=()=>{cleanup();reject(new Error('Native master disconnected during a request; check it before resending.'));};
+      const event=(method:string,p:any)=>{
+        if(p?.threadId!==b.native_id)return;
+        if(method==='item/completed'&&p.item?.type==='agentMessage'&&p.item.phase!=='commentary')text=p.item.text??'';
+        if(method==='turn/completed'){
+          cleanup();
+          if(p.turn?.status!=='completed'){reject(new Error(p.turn?.error?.message??'Native master did not finish this request.'));return;}
+          try {
+            if(this.store.job(jobId)?.status==='replaced'){resolve();return;}
+            if(this.store.job(jobId)?.status!=='completed') {
+              if(!text.trim()&&this.router.hasPendingCreation?.(jobId)){resolve();return;}
+              if(!text.trim())throw new Error('Native master ended without a reply. Check the session before sending again.');
+              this.router.channelReply(b,text,this.router.hasPendingCreation?.(jobId)?'progress':'final',jobId,`native-final:${jobId}`);
+            }
+            resolve();
+          }catch(e){reject(e);}
+        }
+      };
+      active.on('notification',event);active.on('closed',closed);
+      active.request('turn/start',{threadId:b.native_id,input:[{type:'text',text:message,text_elements:[]}]}).catch(e=>{cleanup();reject(e);});
+    });
+  }
+  private claudeWorker(b:Binding,resume:boolean) {
+    return new ClaudeSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
+      if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
+      const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
+      return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
+    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(b.cwd,'bridge-mcp.json'),allowedTools:['master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet'].map(t=>`mcp__session_bridge__${t}`).join(',')});
+  }
+  async provisionWorker(b:Binding) {
+    if(this.store.get(`execution-mode:${b.id}`)==='desktop') {
+      await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'Sidekick project','Use the incoming bridge CLI reply command for future requests.');return;
+    }
+    if(b.provider==='claude') {
+      const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
+      try{await runtime.initialize();await runtime.run('This newly created empty project is explicitly approved by the owner. Return exactly READY without using any tools. Wait for the actual task.');}
+      catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
+      return;
+    }
+    const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));
+    this.runtimes.set(b.id,runtime);await runtime.initialize();
+    const r=await runtime.request('thread/start',{cwd:b.cwd,approvalPolicy:'on-request',sandbox:'workspace-write',ephemeral:false});
+    if(!/^[0-9a-f-]{36}$/i.test(r.thread?.id??''))throw new Error('Native worker creation did not return an exact session ID.');
+    this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(r.thread.id,b.id);
+    this.store.set(`managed-codex:${b.id}`,'true');
+    await runtime.request('thread/name/set',{threadId:r.thread.id,name:this.store.get(`name:${b.id}`)??'Sidekick project'});
+  }
+  stopWorker(id:string){this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
+  async recoverWorker(b:Binding) {
+    this.stopWorker(b.id);
+    if(this.store.get(`execution-mode:${b.id}`)==='desktop'){await this.desktop.confirm(b);return;}
+    if(b.provider==='claude') {
+      const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
+      try{await runtime.initialize();await runtime.run('Resume this exact project for a connection check only. Return READY without using tools or repeating any prior work.');}
+      catch(e){this.stopWorker(b.id);throw e;}return;
+    }
+    const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));
+    try {
+      await runtime.initialize();const r=await runtime.request('thread/read',{threadId:b.native_id,includeTurns:false});
+      if(r.thread?.id!==b.native_id||realpathSync(r.thread.cwd)!==realpathSync(b.cwd))throw new Error('Native session identity differs; recovery stopped.');
+      this.store.set(`managed-codex:${b.id}`,'true');
+    }finally{runtime.close();}
+  }
+  close(){this.desktop.close();for(const r of this.runtimes.values())r.close();for(const r of this.claudeRuntimes.values())r.close();}
+}

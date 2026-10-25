@@ -1,0 +1,35 @@
+# Dependencies, builds and model downloads
+node_modules/
+dist/
+build/
+.build/
+.swiftpm/
+# Private runtime state and development tooling
+.local/
+.codex/
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+admin-token
+auth/
+credentials/
+__pycache__/
+*.pyc
+.DS_Store
+# Local design experiments and historical machine-specific reports
+/design-review/
+/website/
+/*VALIDATION.md
+/CLOSED-LID-RESEARCH.md
+/docs/build-32-verification.md
+/docs/native-workspace-validation.md
+/docs/coordinator-setup-design.md
+/docs/performance-baseline.md
+/docs/test-plan.md

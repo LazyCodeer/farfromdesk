@@ -1,0 +1,1 @@
+Synthetic English speech fixture generated locally with macOS say, then encoded to Ogg/Opus using the development FFmpeg. No user recording or private content. Text: “Please list my recent coding sessions. Show me the name of the project and tell me which country it belongs to.” The packaged decoder is tested against these fixed bytes; no encoder is required by the app.

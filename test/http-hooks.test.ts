@@ -1,0 +1,107 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync,rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:net';
+import { request as httpRequest } from 'node:http';
+
+test('local HTTP boundary, scoped replies and native hook contract',async()=>{
+  const temp=mkdtempSync(join(tmpdir(),'wsb-http-'));
+  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+  process.env.WSB_STATE_DIR=temp;process.env.WSB_PORT=String(port);
+  const [{Store},{Router},{Approvals},{serve,saveBindingCredentials},{handleHook,drainHooks}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/hooks.js')]);
+  const store=new Store(':memory:'),approvals=new Approvals(store);
+  const router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
+  const a=store.register('test-a','codex','11111111-1111-4111-a111-111111111111','/tmp'),b=store.register('test-b','claude','22222222-2222-4222-a222-222222222222','/tmp');
+  saveBindingCredentials(a.binding,a.token);saveBindingCredentials(b.binding,b.token);
+  let logoutCalls=0,pauseCalls=0;
+  const wa={status:'not paired',logout:async()=>{logoutCalls++;}} as any;
+  const services={masters:{options:()=>({})},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
+  const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
+  const url=`http://127.0.0.1:${port}`;
+  try {
+    for(const path of ['/','/app.js','/style.css']) {
+      const retired=await fetch(url+path);
+      assert.equal(retired.status,410);
+      assert.match((await retired.json()).error,/retired/);
+    }
+    assert.equal((await fetch(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token'}})).status,200);
+    assert.equal((await fetch(url+'/api/status')).status,401);
+    assert.equal((await fetch(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Origin:'https://evil.example'}})).status,403);
+    const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
+    assert.equal(wrongHost,403);
+    assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
+    for(const endpoint of ['/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout']) {
+      assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
+    }
+    store.enqueue('job-a',a.binding,'Task A');store.enqueue('job-b',b.binding,'Task B');
+    const reply=(d:any)=>fetch(url+'/api/session/reply',{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:JSON.stringify(d)});
+    assert.equal((await reply({text:'Done without request identity',kind:'final'})).status,400);
+    assert.equal(store.job('job-a')?.status,'queued');
+    assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,0);
+    assert.equal((await reply({text:'Done',requestId:'job-b',kind:'final'})).status,400);
+    assert.equal((await reply({text:'',requestId:'job-a',kind:'final'})).status,400);
+    assert.equal((await reply({text:'My exact response',requestId:'job-a',kind:'final',eventId:'same'})).status,200);
+    assert.equal(store.job('job-a')?.status,'completed');
+    await handleHook('codex',{session_id:'unregistered',hook_event_name:'Stop',last_assistant_message:'Must not leave'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);
+    await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);
+    await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,2);
+    const permission=handleHook('codex',{session_id:a.binding.native_id,hook_event_name:'PermissionRequest',tool_name:'Bash',tool_input:{command:'echo test'}});
+    for(let i=0;i<50&&!approvals.pending.size;i++)await new Promise(r=>setTimeout(r,10));
+    assert.equal(approvals.pending.size,1);approvals.answer([...approvals.pending.keys()][0],'deny','approval');
+    assert.deepEqual(await permission,{hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'deny'}}});
+    const post=(path:string,data:any,token=a.token,id=a.binding.id)=>fetch(url+path,{method:'POST',headers:{Authorization:`Bearer ${token}`,'X-Binding-Id':id,'Content-Type':'application/json'},body:JSON.stringify(data)});
+    store.enqueue('review-me',b.binding,'Review test');store.jobState('review-me','submitted');
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'submitted',confirmed:true})).status,403);
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'submitted'},'test-admin-token')).status,400);
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'uncertain',confirmed:true},'test-admin-token')).status,400);
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'submitted',confirmed:true},'test-admin-token')).status,200);
+    assert.equal(store.job('review-me')?.status,'reviewed');
+    assert.equal((await post('/api/request-cleanup',{enabled:true,afterHours:1},'test-admin-token')).status,400);
+    assert.equal((await post('/api/request-cleanup',{enabled:false,afterHours:72},'test-admin-token')).status,200);
+    assert.equal(store.get('cleanup-hours'),'72');assert.equal(store.get('cleanup-enabled'),'false');
+    const bulkIds=['http-bulk-a','http-bulk-b'];
+    for(const id of bulkIds){store.enqueue(id,b.binding,'Harmless test');store.jobState(id,'uncertain');}
+    const requests=bulkIds.map(id=>{const j=store.job(id)!;return {requestId:id,expectedStatus:j.status,expectedUpdatedAt:j.updated_at};});
+    assert.equal((await post('/api/request-review-bulk',{requests},'test-admin-token')).status,400);
+    const bulk=await post('/api/request-review-bulk',{requests,confirmed:true},'test-admin-token');assert.equal(bulk.status,200);assert.equal((await bulk.json()).closed,2);
+    store.set('whatsapp-owner','123@s.whatsapp.net');
+    const doc={bindingId:a.binding.id,requestId:'job-a',filename:'review.html',base64:Buffer.from('<html>Review</html>').toString('base64')};
+    assert.equal((await post('/api/artifacts/prepare',doc)).status,403);
+    assert.equal((await post('/api/audio-config',{})).status,403);
+    const prep=await post('/api/artifacts/prepare',doc,'test-admin-token');assert.equal(prep.status,200);
+    const artifactId=(await prep.json()).artifactId;
+    assert.equal((await post('/api/session/document',{requestId:'job-b',artifactId})).status,400);
+    assert.equal((await post('/api/session/document',{requestId:'job-b',artifactId},b.token,b.binding.id)).status,400);
+    assert.equal((await post('/api/session/document',{requestId:'job-a',artifactId:'/etc/passwd'})).status,400);
+    const sent=await post('/api/session/document',{requestId:'job-a',artifactId,caption:'Review'});assert.equal(sent.status,200);
+    const delivery=await sent.json();assert.equal(delivery.status,'queued');
+    const again=await post('/api/session/document',{requestId:'job-a',artifactId,caption:'Review'});assert.equal((await again.json()).id,delivery.id);
+    const deliveryUrl=url+'/api/session/delivery?id='+delivery.id;
+    assert.equal((await fetch(deliveryUrl,{headers:{Authorization:`Bearer ${b.token}`,'X-Binding-Id':b.binding.id}})).status,400);
+    assert.equal((await fetch(deliveryUrl,{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,200);
+    assert.equal((await post('/api/logout',{},'test-admin-token')).status,400);assert.equal(logoutCalls,0);
+    assert.equal((await post('/api/logout',{confirmed:true},'test-admin-token')).status,200);assert.equal(logoutCalls,1);assert.equal(pauseCalls,1);assert.equal(wa.status,'logged out');
+    wa.logout=async()=>{throw new Error('Simulated unlink failure');};
+    assert.equal((await post('/api/logout',{confirmed:true},'test-admin-token')).status,400);assert.equal(pauseCalls,2);
+    const {Coordinator}=await import('../src/coordinator.js');
+    store.set('master',a.binding.id);store.enqueue('wa:connect-owner',a.binding,'Work on the exact Claude session');
+    router.native.catalog=async()=>({sessions:[{id:b.binding.native_id,provider:'claude',name:'API project',cwd:'/tmp',status:'running',available:true}],cursor:null}) as any;
+    router.native.validate=async()=>{};
+    router.coordinator=new Coordinator(store,router.native,router,()=>{});
+    const connect={requestId:'wa:connect-owner',targets:[`claude:${b.binding.native_id}`]};
+    assert.equal((await post('/api/master/connect',connect,b.token,b.binding.id)).status,403);
+    for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/connect',connect,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/connect',{...connect,requestId:'report:fake'})).status,400);
+    const connected=await post('/api/master/connect',connect);assert.equal(connected.status,200);
+    assert.equal((await connected.json()).sessions[0].id,b.binding.id);
+    const list=await fetch(url+'/api/master/sessions?search=API',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}});
+    assert.equal(list.status,200);const listed=await list.json();assert.equal(listed.sessions[0].target,`claude:${b.binding.native_id}`);assert.equal(listed.page,0);
+    assert.equal((await fetch(url+'/api/master/sessions?page=-1',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,400);
+    const replacement=store.register('other-master','codex','33333333-3333-4333-a333-333333333333','/tmp');store.set('master',replacement.binding.id);
+    assert.equal((await post('/api/master/connect',connect)).status,403);
+    store.enable(a.binding.id,false);assert.equal((await post('/api/session/document',{requestId:'job-a',artifactId})).status,401);
+  } finally {router.stopped=true;approvals.cancel();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));store.close();rmSync(temp,{recursive:true});}
+});

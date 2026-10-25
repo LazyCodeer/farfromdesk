@@ -1,0 +1,3 @@
+#!/bin/sh
+# Use the system Python without shell profiles or a private user skill path.
+exec /usr/bin/python3 "$(dirname "$0")/desktop_sync.py" "$@"

@@ -1,0 +1,36 @@
+{
+  "name": "sidekick",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "bridge": "node dist/cli.js",
+    "test": "tsx --test test/*.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "^9.14.0",
+    "qrcode": "^1.5.4",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/qrcode": "^1.5.6",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "description": "Your coding sessions, one WhatsApp message away.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LazyCodeer/sidekick.git"
+  }
+}
