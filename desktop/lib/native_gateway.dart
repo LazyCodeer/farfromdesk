@@ -117,6 +117,56 @@ class NativeGateway extends Gateway {
     }
   }
 
+  @override
+  bool get canInstallUpdate => Platform.isMacOS;
+  bool _installing = false;
+  @override
+  Future<void> installUpdate(AppRelease release, void Function(Map<String, dynamic>) progress) async {
+    if (!Platform.isMacOS || _installing) throw StateError('An update is already running or unavailable.');
+    if (!trustedReleaseUrl(release.download) || !release.download.path.endsWith('.zip')) {
+      throw StateError('A verified ZIP update is required. Check for updates again.');
+    }
+    _installing = true;
+    Timer? poll;
+    try {
+      final app = p.normalize(p.join(p.dirname(Platform.resolvedExecutable), '..', '..'));
+      final root = p.join(app, 'Contents', 'Resources', 'backend');
+      final directory = Directory(p.join(state, 'app-update'));
+      await directory.create(recursive: true);
+      if (await Directory(p.join(directory.path, 'lock')).exists()) {
+        throw StateError('An update is already in progress. Check its status before retrying.');
+      }
+      final attempt = await Directory(p.join(directory.path, 'attempt-')).createTemp();
+      final runner = File(p.join(attempt.path, 'app-updater.mjs'));
+      await File(p.join(root, 'dist', 'app-updater.js')).copy(runner.path);
+      final request = File(p.join(attempt.path, 'request.json'));
+      await request.writeAsString(jsonEncode({
+        'app': app, 'state': state, 'port': port,
+        'version': release.version, 'current': installedVersion, 'uiPid': pid,
+      }), flush: true);
+      final status = File(p.join(directory.path, 'status.json'));
+      if (await status.exists()) await status.delete();
+      final helper = await Process.start(p.join(root, 'runtime', 'node'), [runner.path, '--run', request.path]);
+      // No shell; the independent helper stays alive while it restarts this UI.
+      unawaited(helper.stdout.drain<void>());
+      final errors = helper.stderr.transform(utf8.decoder).join();
+      Future<Map<String, dynamic>?> readProgress() async {
+        try {
+          final value = jsonDecode(await status.readAsString()) as Map<String, dynamic>;
+          if (value['pid'] == helper.pid) { progress(value); return value; }
+        } catch (_) {}
+        return null;
+      }
+      poll = Timer.periodic(const Duration(milliseconds: 700), (_) => readProgress());
+      final code = await helper.exitCode;
+      final latest = await readProgress();
+      final detail = await errors;
+      if (code != 0 || latest?['phase'] != 'complete') {
+        throw StateError(latest?['message']?.toString() ?? (detail.isEmpty ? 'The update helper stopped before installation.' : detail.trim()));
+      }
+    } finally { poll?.cancel(); _installing = false; }
+  }
+
   Future<void> start() async {
     launchAtStartup.setup(
       appName: 'FarFromDesk',
@@ -130,10 +180,10 @@ class NativeGateway extends Gateway {
             ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend'))
             : p.join(executableDir, 'backend'));
     final buildFile = File(p.join(root, 'build.json'));
-    final expectedCommit = await buildFile.exists()
-        ? (jsonDecode(await buildFile.readAsString())
-              as Map<String, dynamic>)['sourceCommit']
-        : null;
+    final expectedBuild = await buildFile.exists()
+        ? jsonDecode(await buildFile.readAsString()) as Map<String, dynamic>
+        : <String, dynamic>{};
+    final expectedCommit = expectedBuild['sourceCommit'];
     Future<bool> connected() async {
       final file = File(p.join(state, 'admin-token'));
       if (!await file.exists()) return false;
@@ -146,7 +196,7 @@ class NativeGateway extends Gateway {
           );
         }
         if (expectedCommit != null &&
-            result['sourceCommit'] != expectedCommit) {
+            (result['sourceCommit'] != expectedCommit || (expectedBuild['buildId'] != null && result['buildId'] != expectedBuild['buildId']))) {
           throw StateError(
             'Another FarFromDesk version is still running. Pause background forwarding and quit that version before starting this update.',
           );

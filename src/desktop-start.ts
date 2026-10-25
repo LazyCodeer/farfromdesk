@@ -1,10 +1,12 @@
+import { CoordinatorRegistry } from './coordinator-registry.js';
 import { randomUUID } from 'node:crypto';
 import { constants,openSync,closeSync,fstatSync,readFileSync,writeFileSync,realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store,Binding } from './store.js';
+import { sameProject, type Session } from './session-catalog.js';
 import type { NativeAgents } from './native.js';
 
-type Start={bindingId:string;parentId:string;cwd:string;nonce:string;status:'prepared'|'submitted'|'uncertain'|'ready';nativeId?:string};
+type Start={requireDetached?:boolean;accountScope?:string;createdId?:string;detachSubmitted?:boolean;proposalId?:string;bindingId:string;parentId:string;cwd:string;nonce:string;status:'prepared'|'submitted'|'uncertain'|'ready'|'needs_action';nativeId?:string};
 export function readStartReceipt(path:string):any {
   let fd:number;
   try{fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);}catch(e:any){if(e.code==='ENOENT')return null;throw new Error('Desktop setup receipt is not a regular local file.');}
@@ -16,21 +18,31 @@ export function readStartReceipt(path:string):any {
 }
 export function desktopStartPrompt(op:Start,title:string,instructions:string) {
   const ready=join(op.cwd,'.tether-desktop-ready.json'),receipt=join(op.cwd,'.tether-desktop-created.json');
-  const args={initiation:'user_asked',title:title.slice(0,59),context:'fresh',target:'local',cwd:op.cwd,use_worktree:false,
-    prompt:`Initialize this owner-requested FarFromDesk session. Read CLAUDE.md in this project. ${instructions}\nAfter you have started, write exactly ${JSON.stringify({nonce:op.nonce,ready:true})} to ${JSON.stringify(ready)} using your normal file tool. Do not execute the user's project task yet. End your turn and wait for its separately correlated WhatsApp request.`,
+  const args={title:title.slice(0,59),context:'fresh',target:'local',cwd:op.cwd,use_worktree:false,
+    prompt:`Initialize this owner-requested FarFromDesk session. Read CLAUDE.md in this project. ${instructions}\nAfter you have started, use get_session to identify your own exact native session ID, then write ${JSON.stringify({nonce:op.nonce,ready:true,sessionId:'YOUR_EXACT_NATIVE_SESSION_ID'})} to ${JSON.stringify(ready)} using your normal file tool. Do not execute the user's project task yet. End your turn and wait for its separately correlated WhatsApp request.`,
     background:'The owner explicitly requested a separate Claude Desktop session through their local FarFromDesk application. This is initialization only, inside a newly created empty project folder approved for this purpose. Preserve native permissions and any folder-access prompts. Keep existing conversations intact. Do not use standalone Claude CLI, copy credentials, alter permission settings, or contact other sessions. The bridge verifies the returned identity and a separate startup acknowledgment before connecting this session.'};
-  return `The owner selected this exact Claude Desktop session to create a new desktop session. Use normal native permissions.\nCall mcp__ccd_session__start_session once with these arguments:\n${JSON.stringify(args)}\nUse the exact session_id returned by that tool, never a task_id, name, placeholder, or your own ID. Write ${JSON.stringify({nonce:op.nonce,sessionId:'EXACT_RETURNED_SESSION_ID'})} to ${JSON.stringify(receipt)}. Do not repeat creation if the call is uncertain. If it returns a proposal card, is unavailable, or requires folder approval, write ${JSON.stringify({nonce:op.nonce,error:'Explain the actual native blocker briefly here'})} there instead. Do not change permission modes or bypass a refusal. A successful start is not proof of the child's acknowledgment. No other work is requested. Operation ${op.bindingId}.`;
+  return `This is an owner-authorized creation request relayed through FarFromDesk, not locally typed user input. Preserve its provenance and your native rules. Choose initiation only as permitted by your native tool; if this turn cannot start a session, report the required owner action instead.\nCall mcp__ccd_session__start_session once with these arguments:\n${JSON.stringify(args)}\nUse the exact session_id returned by that tool, never a task_id, name, placeholder, or your own ID. Immediately write ${JSON.stringify({nonce:op.nonce,sessionId:'EXACT_RETURNED_SESSION_ID',detached:false})} to ${JSON.stringify(receipt)} before any further step. Then use mcp__ccd_session_mgmt__detach_session on that exact child and verify detached=true and the project folder using get_session. Only after verification update the same receipt with detached:true. Do not restart the child task; initialization only, then wait. Do not repeat creation if the call is uncertain. If it returns a proposal card, write ${JSON.stringify({nonce:op.nonce,proposalId:'EXACT_RETURNED_TASK_ID',needsOwnerAction:true})} to ${JSON.stringify(receipt)} and wait for the owner; do not start or recreate that proposal yourself. If the tool is unavailable or requires folder approval, write ${JSON.stringify({nonce:op.nonce,error:'Explain the actual native blocker briefly here'})} there instead. Do not change permission modes or bypass a refusal. A successful start is not proof of the child's acknowledgment. No other work is requested. Operation ${op.bindingId}.`;
 }
 export class DesktopStarts {
   private stopped=false;
   constructor(private store:Store,private native:NativeAgents,private timeoutMs=90000) {}
   get(id:string):Start|null{return JSON.parse(this.store.get(`desktop-start:${id}`)??'null');}
   save(op:Start){this.store.set(`desktop-start:${op.bindingId}`,JSON.stringify(op));}
-  async parent(id:unknown) {
+  private connectedCandidates(sessions:Session[]) {
+    const bindings=[...new CoordinatorRegistry(this.store).entries().map(r=>this.store.binding(r.bindingId)),...JSON.parse(this.store.get('selected')??'[]').map((key:string)=>this.store.binding(key))].filter(Boolean);
+    return sessions.filter(s=>s.executionMode==='desktop'&&s.available===true&&bindings.some((b:any)=>b.enabled&&b.provider==='claude'&&b.native_id===s.id&&sameProject(b.cwd,s.cwd)&&this.store.get(`execution-mode:${b.id}`)==='desktop'));
+  }
+  readiness(sessions:Session[],parentId?:string) {
+    const candidates=parentId?sessions.filter(s=>s.id===parentId&&s.executionMode==='desktop'&&s.available===true):this.connectedCandidates(sessions);
+    if(!candidates.length)return {state:'needs-launcher',message:'New Desktop sessions need a connected chat with a reachable inbox. Choosing Desktop alone does not establish that connection.'};
+    if(new Set(candidates.map(s=>s.accountScope??'unknown')).size>1)return {state:'account-choice',message:'Connected Desktop chats use different accounts. Choose the launcher account before creating a session.'};
+    const live=candidates.some(s=>!s.activation);
+    return {state:live?'ready':'needs-opening',message:live?'Coordinator is reachable. Native session creation may require an owner action.':'Your connected Desktop launcher must reopen successfully before a new session can start.'};
+  }
+  async parent(id:unknown,accountScope?:string) {
     const c=await this.native.catalog('claude',undefined,{fresh:true});
     if(id===undefined||id===null||id==='') {
-      const bindings=[this.store.binding(this.store.get('master')??''),...JSON.parse(this.store.get('selected')??'[]').map((key:string)=>this.store.binding(key))].filter(Boolean);
-      const candidates=c.sessions.filter(s=>s.executionMode==='desktop'&&s.available===true&&bindings.some((b:any)=>b.enabled&&b.provider==='claude'&&b.native_id===s.id&&b.cwd===s.cwd&&this.store.get(`execution-mode:${b.id}`)==='desktop'));
+      const candidates=this.connectedCandidates(c.sessions);
       const scopes=new Set(candidates.map(s=>s.accountScope??'unknown'));
       if(!candidates.length)throw new Error('No owner-connected Claude Desktop launcher is available. Connect one Desktop chat once, or choose Claude CLI. This Claude command cannot start a new Desktop chat with a prompt on its own.');
       if(scopes.size>1)throw new Error('Connected Claude Desktop chats belong to different accounts. Select the launcher account before creating a new chat.');
@@ -38,13 +50,14 @@ export class DesktopStarts {
     }
     const s=c.sessions.find((s:any)=>s.id===id&&s.executionMode==='desktop'&&s.available===true);
     if(!s)throw new Error('The selected Claude Desktop session has no reachable inbox. Open it in Claude and check its Peer address in /status.');
+    if(accountScope&&s.accountScope!==accountScope)throw new Error('Claude Desktop launcher account changed. Select the original account before recovery.');
     return s.activation==='desktop-open'?await this.native.activation.ready(s):s;
   }
   async create(b:Binding,parentId:string,title:string,instructions:string) {
     if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
     const launcher=await this.parent(parentId);parentId=launcher.id;
     if(realpathSync(b.cwd)!==b.cwd)throw new Error('Desktop project path changed.');
-    const op:Start={bindingId:b.id,parentId,cwd:b.cwd,nonce:randomUUID(),status:'prepared'};
+    const op:Start={bindingId:b.id,parentId,cwd:b.cwd,nonce:randomUUID(),status:'prepared',requireDetached:true,accountScope:launcher.accountScope};
     this.save(op);
     const file=join(b.cwd,'.tether-desktop-start.txt');
     writeFileSync(file,desktopStartPrompt(op,title,instructions),{mode:0o600,flag:'wx'});
@@ -54,7 +67,7 @@ export class DesktopStarts {
     this.save({...op,status:'submitted'});
     return this.confirm(b);
   }
-  async confirm(b:Binding) {
+  async confirm(b:Binding,recover=false) {
     const op=this.get(b.id);if(!op)throw new Error('No desktop creation receipt exists.');
     const until=Date.now()+this.timeoutMs;
     do {
@@ -63,16 +76,35 @@ export class DesktopStarts {
       const created=readStartReceipt(join(op.cwd,'.tether-desktop-created.json'));
       if(created) {
         if(created.nonce!==op.nonce)throw new Error('Desktop setup receipt belongs to a different operation.');
-        if(created.error)throw new Error('Claude Desktop could not start this session. Check its native start_session result or folder-access prompt.');
-        if(typeof created.sessionId!=='string'||!/^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(created.sessionId)||created.sessionId===op.parentId)throw new Error('Desktop setup did not return a new exact session identity.');
-
         const ready=readStartReceipt(join(op.cwd,'.tether-desktop-ready.json'));
         if(ready&&ready.nonce!==op.nonce)throw new Error('Desktop startup acknowledgment belongs to a different operation.');
+        if(created.proposalId) {
+          if(typeof created.proposalId!=='string'||!/^task_[a-zA-Z0-9_-]{1,80}$/.test(created.proposalId)||(op.proposalId&&op.proposalId!==created.proposalId))throw new Error('Desktop proposal identity is invalid or changed.');
+          op.proposalId=created.proposalId;
+          if(!created.sessionId&&ready?.ready===true&&typeof ready.sessionId==='string')created.sessionId=ready.sessionId;
+          if(!created.sessionId){this.save({...op,status:'needs_action'});throw new Error(`Desktop start needs owner action: start the existing proposal ${op.proposalId} in the selected Claude coordinator, then recover this setup. No child has been confirmed.`);}
+        }
+        if(created.error&&!created.sessionId)throw new Error('Claude Desktop could not start this session. Check its native start_session result or folder-access prompt.');
+        if(typeof created.sessionId!=='string'||!/^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(created.sessionId)||created.sessionId===op.parentId)throw new Error('Desktop setup did not return a new exact session identity.');
+
+        if(op.createdId&&op.createdId!==created.sessionId)throw new Error('Desktop child identity changed during recovery.');
+        op.createdId=created.sessionId;this.save(op);
         if(ready?.ready===true) {
-          const catalog=await this.native.catalog('claude');
-          const match=catalog.sessions.find((s:any)=>s.desktopId===created.sessionId||s.id===created.sessionId);
+          const catalog=await this.native.catalog('claude',undefined,{fresh:true});
+          const match=catalog.sessions.find((s:any)=>s.executionMode==='desktop'&&(s.desktopId===created.sessionId||s.id===created.sessionId));
+          if(op.requireDetached&&match?.detached!==true) {
+            if(recover&&match&&!op.detachSubmitted) {
+              // Recover only the confirmed child; record before sending to avoid duplicate actions.
+              const file=join(op.cwd,'.tether-desktop-detach.txt');
+              writeFileSync(file,`Owner-authorized recovery of an existing FarFromDesk child. Preserve native permissions. Do not create any session or start/restart a task. Inspect exact child ${JSON.stringify(created.sessionId)} with get_session, confirm cwd ${JSON.stringify(op.cwd)}, and only if still attached use mcp__ccd_session_mgmt__detach_session on that exact ID. Verify detached=true. Operation ${op.bindingId}. If not allowed, report the native blocker.`,{mode:0o600,flag:'wx'});
+              op.detachSubmitted=true;this.save(op);
+              await this.native.sendDesktopCreation(op.parentId,file);
+            }
+            if(Date.now()<until)await new Promise(r=>setTimeout(r,1000));
+            continue;
+          }
           if(!match)throw new Error('Desktop session ID has not appeared in the native catalog. Recover this same setup.');
-          const s=await this.parent(match.id);
+          const s=await this.parent(match.id,op.accountScope);
           if(s.id===op.parentId||(op.nativeId&&op.nativeId!==s.id))throw new Error('Desktop setup identity changed or points to its parent.');
           if(realpathSync(s.cwd)!==op.cwd)throw new Error('Created Claude Desktop session has a different project folder.');
           const collision=this.store.bindings().find(x=>x.provider==='claude'&&x.native_id===s.id&&x.id!==b.id);
@@ -84,7 +116,7 @@ export class DesktopStarts {
       if(Date.now()<until)await new Promise(r=>setTimeout(r,1000));
     }while(Date.now()<until);
     this.save({...op,status:'uncertain'});
-    throw new Error('Desktop start has no verified child acknowledgment yet. Recover this setup; do not create another. Check the selected desktop session for a held message or folder prompt.');
+    throw new Error((op.requireDetached&&op.createdId?'Desktop child exists; detachment or startup acknowledgment is not verified. ':'')+'Desktop start has no verified child acknowledgment yet. Recover this setup; do not create another. Check the selected desktop session for a held message or folder prompt.');
   }
   close(){this.stopped=true;}
 }

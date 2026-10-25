@@ -144,8 +144,8 @@ export class Store {
     // Stable message IDs are recorded before network I/O. Retries reuse them.
     const chunks = toWhatsApp(text).match(/[\s\S]{1,3500}/gu) ?? [];
     const insert = this.db.prepare('INSERT OR IGNORE INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,request_id,reply_kind,turn_id) VALUES(?,?,?,?,?,?,?,?,?,?)');
-    const label=binding?(this.get(`name:${binding.id}`)??binding.alias).slice(0,90):'';
-    const coordinator=!!binding&&binding.id===this.get('master');
+    const label=binding?`${binding.provider==='claude'?'Claude':'Codex'} ${this.get(`execution-mode:${binding.id}`)==='desktop'?'Desktop':'CLI'} · ${this.get(`name:${binding.id}`)??binding.alias}`.slice(0,130):'';
+    const coordinator=!!binding&&(binding.id===this.get('master')||this.get(`role-kind:${binding.id}`)==='master');
     this.db.exec('SAVEPOINT reply_output');
     try {
       const now=Date.now();

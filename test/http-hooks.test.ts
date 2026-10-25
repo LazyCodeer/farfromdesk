@@ -32,9 +32,13 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
     assert.equal(wrongHost,403);
     assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
-    for(const endpoint of ['/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown']) {
+    for(const endpoint of ['/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown','/api/update-shutdown']) {
       assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
     }
+    router.busy.add(a.binding.id);
+    const updateBlocked=await fetch(url+'/api/update-shutdown',{method:'POST',headers:{Authorization:'Bearer test-admin-token','Content-Type':'application/json'},body:'{}'});
+    assert.equal(updateBlocked.status,400);assert.equal(router.stopped,false);
+    router.busy.delete(a.binding.id);
     store.enqueue('job-a',a.binding,'Task A');store.enqueue('job-b',b.binding,'Task B');
     const reply=(d:any)=>fetch(url+'/api/session/reply',{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:JSON.stringify(d)});
     assert.equal((await reply({text:'Done without request identity',kind:'final'})).status,400);
@@ -90,21 +94,28 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     assert.equal((await post('/api/logout',{confirmed:true},'test-admin-token')).status,400);assert.equal(pauseCalls,2);
     const {Coordinator}=await import('../src/coordinator.js');
     store.set('master',a.binding.id);store.enqueue('wa:connect-owner',a.binding,'Work on the exact Claude session');
-    router.native.catalog=async()=>({sessions:[{id:b.binding.native_id,provider:'claude',name:'API project',cwd:'/tmp',status:'running',available:true}],cursor:null}) as any;
+    const ownWorker=store.register('same-connection-worker','codex','77777777-7777-4777-a777-777777777777','/tmp');
+    router.native.catalog=async()=>({sessions:[{id:ownWorker.binding.native_id,provider:'codex',name:'API project',cwd:'/tmp',status:'running',available:true}],cursor:null}) as any;
     router.native.validate=async()=>{};
     router.coordinator=new Coordinator(store,router.native,router,()=>{});
-    const connect={requestId:'wa:connect-owner',targets:[`claude:${b.binding.native_id}`]};
+    const connect={requestId:'wa:connect-owner',targets:[`codex:${ownWorker.binding.native_id}`]};
     assert.equal((await post('/api/master/connect',connect,b.token,b.binding.id)).status,403);
     for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);
     assert.equal((await post('/api/master/connect',connect,'test-admin-token')).status,403);
     assert.equal((await post('/api/master/connect',{...connect,requestId:'report:fake'})).status,400);
     const connected=await post('/api/master/connect',connect);assert.equal(connected.status,200);
-    assert.equal((await connected.json()).sessions[0].id,b.binding.id);
+    assert.equal((await connected.json()).sessions[0].id,ownWorker.binding.id);
     const list=await fetch(url+'/api/master/sessions?search=API',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}});
-    assert.equal(list.status,200);const listed=await list.json();assert.equal(listed.sessions[0].target,`claude:cli:${b.binding.native_id}`);assert.equal(listed.page,0);
+    assert.equal(list.status,200);const listed=await list.json();assert.equal(listed.sessions[0].target,`codex:cli:${ownWorker.binding.native_id}`);assert.equal(listed.page,0);
     assert.equal((await fetch(url+'/api/master/sessions?page=-1',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,400);
-    const replacement=store.register('other-master','codex','33333333-3333-4333-a333-333333333333','/tmp');store.set('master',replacement.binding.id);
+    const replacement=store.register('other-master','codex','33333333-3333-4333-a333-333333333333','/tmp');router.coordinator.registry.register(replacement.binding);
     assert.equal((await post('/api/master/connect',connect)).status,403);
     store.enable(a.binding.id,false);assert.equal((await post('/api/session/document',{requestId:'job-a',artifactId})).status,401);
+    const pendingBefore=store.pendingJobs().map(j=>j.id);
+    let shutdownRequested=false;server.once('ffd-shutdown',()=>{shutdownRequested=true;});
+    const updateReady=await fetch(url+'/api/update-shutdown',{method:'POST',headers:{Authorization:'Bearer test-admin-token','Content-Type':'application/json'},body:'{}'});
+    assert.equal(updateReady.status,200);assert.equal(router.stopped,true);
+    await new Promise(r=>setImmediate(r));assert.equal(shutdownRequested,true);
+    assert.deepEqual(store.pendingJobs().map(j=>j.id),pendingBefore);
   } finally {router.stopped=true;approvals.cancel();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));store.close();rmSync(temp,{recursive:true});}
 });

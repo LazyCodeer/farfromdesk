@@ -12,11 +12,11 @@ function fixture() {
   const cwd=realpathSync(mkdtempSync(join(tmpdir(),'tether-desktop-test-'))),store=new Store(':memory:');
   const binding=store.register('new-desktop','claude','33333333-3333-4333-a333-333333333333',cwd).binding;
   let sends=0;
-  const native={catalog:async()=>({sessions:[{id:parent,cwd,executionMode:'desktop',available:true},{id:child,cwd,executionMode:'desktop',available:true}]}),sendDesktopCreation:async(_id:string,file:string)=>{
-    sends++;assert.equal(_id,parent);const text=readFileSync(file,'utf8');assert.match(text,/mcp__ccd_session__start_session/);assert.match(text,/"initiation":"user_asked"/);assert.match(text,/"use_worktree":false/);assert.doesNotMatch(text,/"permission_mode"/);
+  const native={catalog:async()=>({sessions:[{id:parent,cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd,executionMode:'desktop',available:true,detached:true}]}),sendDesktopCreation:async(_id:string,file:string)=>{
+    sends++;assert.equal(_id,parent);const text=readFileSync(file,'utf8');assert.match(text,/mcp__ccd_session__start_session/);assert.doesNotMatch(text,/"initiation":"user_asked"/);assert.match(text,/detach_session/);assert.match(text,/"use_worktree":false/);assert.doesNotMatch(text,/"permission_mode"/);
   }};
   const starts=new DesktopStarts(store,native as any,0);
-  const receipts=(ready=true,id=child)=>{const op=starts.get(binding.id)!;writeFileSync(join(cwd,'.tether-desktop-created.json'),JSON.stringify({nonce:op.nonce,sessionId:id}));if(ready)writeFileSync(join(cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:op.nonce,ready:true}));};
+  const receipts=(ready=true,id=child)=>{const op=starts.get(binding.id)!;writeFileSync(join(cwd,'.tether-desktop-created.json'),JSON.stringify({nonce:op.nonce,sessionId:id,detached:true}));if(ready)writeFileSync(join(cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:op.nonce,ready:true}));};
   return {cwd,store,binding,native,starts,receipts,sends:()=>sends,close:()=>{starts.close();store.close();rmSync(cwd,{recursive:true,force:true});}};
 }
 test('desktop classification requires app ancestry; bundled executable in terminal is not Desktop',()=>{
@@ -39,7 +39,7 @@ test('CLI session, missing launcher and wrong child folder cannot satisfy deskto
     await assert.rejects(f.starts.parent(undefined),/No owner-connected/);
     f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'cli',available:true}]});
     await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/reachable/);assert.equal(f.sends(),0);
-    f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true},{id:child,cwd:'/',executionMode:'desktop',available:true}]});
+    f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:'/',executionMode:'desktop',available:true,detached:true}]});
     await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/acknowledgment/);f.receipts();await assert.rejects(f.starts.confirm(f.binding),/different project/);
   }finally{f.close();}
 });
@@ -80,7 +80,7 @@ test('saved Desktop catalog spans accounts and projects, preserves unavailable r
 test('native Desktop local_ identity resolves to its separate messaging UUID before binding',async()=>{
   const f=fixture();try {
     const desktopId='local_aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
-    f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true},{id:child,desktopId,cwd:f.cwd,executionMode:'desktop',available:true}]});
+    f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,desktopId,cwd:f.cwd,executionMode:'desktop',available:true,detached:true}]});
     await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/acknowledgment/);
     f.receipts(true,desktopId);await f.starts.confirm(f.binding);assert.equal(f.store.binding(f.binding.id)?.native_id,child);
   }finally{f.close();}
@@ -95,7 +95,63 @@ test('new Desktop sessions reuse only owner-connected launchers and stop for acc
   f.store.enable(launcher.id,false);await assert.rejects(f.starts.parent(undefined),/No owner-connected/);
   f.store.enable(launcher.id,true);
   const second=f.store.register('second','claude',child,f.cwd).binding;f.store.set(`execution-mode:${second.id}`,'desktop');f.store.set('selected',JSON.stringify([launcher.id,second.id]));
-  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,accountScope:'a'},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,accountScope:'b'}]}) as any;
+  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true,accountScope:'a'},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:true,accountScope:'b'}]}) as any;
   await assert.rejects(f.starts.parent(undefined),/different accounts/);assert.equal(f.sends(),0);
+ }finally{f.close();}
+});
+
+
+test('launcher account is checked before activating a saved Desktop chat',async()=>{
+ const f=fixture();try {
+  let opens=0;(f.native as any).activation={ready:async(s:any)=>{opens++;return s;}};
+  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true,accountScope:'other',activation:'desktop-open'}]}) as any;
+  await assert.rejects(f.starts.parent(parent,'owner'),/account changed/);assert.equal(opens,0);assert.equal(f.sends(),0);
+ }finally{f.close();}
+});
+
+
+test('Desktop runtime detection does not claim new-session readiness without a launcher',async()=>{
+ const f=fixture();try {
+  const rows=(await f.native.catalog()).sessions as any;
+  assert.equal(f.starts.readiness(rows).state,'needs-launcher');
+  assert.equal(f.starts.readiness(rows,parent).state,'ready');
+  rows[0].activation='desktop-open';assert.equal(f.starts.readiness(rows,parent).state,'needs-opening');
+ }finally{f.close();}
+});
+
+test('created child waits for verified native detachment and never repeats creation',async()=>{
+ const f=fixture();try {
+  await assert.rejects(f.starts.create(f.binding,parent,'Test','Initialize only'),/acknowledgment/);
+  f.receipts();
+  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:false}]});
+  await assert.rejects(f.starts.confirm(f.binding),/detachment/);
+  assert.notEqual(f.store.binding(f.binding.id)?.native_id,child);assert.equal(f.sends(),1);
+  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:true}]});
+  await f.starts.confirm(f.binding);assert.equal(f.store.binding(f.binding.id)?.native_id,child);assert.equal(f.sends(),1);
+ }finally{f.close();}
+});
+
+test('detach recovery submits only an exact-child detach instruction once',async()=>{
+ const f=fixture();try {
+  await assert.rejects(f.starts.create(f.binding,parent,'Test','Initialize only'),/acknowledgment/);f.receipts();
+  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:false}]});
+  let detaches=0;
+  f.native.sendDesktopCreation=async(id,file)=>{detaches++;assert.equal(id,parent);const prompt=readFileSync(file,'utf8');assert.match(prompt,/Do not create any session/);assert.ok(prompt.includes(child));assert.doesNotMatch(prompt,/mcp__ccd_session__start_session/);};
+  await assert.rejects(f.starts.confirm(f.binding,true),/detachment/);
+  await assert.rejects(f.starts.confirm(f.binding,true),/detachment/);
+  assert.equal(detaches,1);assert.equal(f.sends(),1);
+ }finally{f.close();}
+});
+
+test('native proposal is durable needs-action; owner-started child resumes without recreating',async()=>{
+ const f=fixture();try {
+  await assert.rejects(f.starts.create(f.binding,parent,'Test','Initialize only'),/acknowledgment/);
+  const op=f.starts.get(f.binding.id)!;
+  writeFileSync(join(f.cwd,'.tether-desktop-created.json'),JSON.stringify({nonce:op.nonce,proposalId:'task_probe',needsOwnerAction:true}));
+  await assert.rejects(f.starts.confirm(f.binding),/needs owner action/);
+  assert.equal(f.starts.get(f.binding.id)?.status,'needs_action');assert.equal(f.starts.get(f.binding.id)?.proposalId,'task_probe');
+  await assert.rejects(f.starts.create(f.binding,parent,'Test','Again'),/already/);assert.equal(f.sends(),1);
+  writeFileSync(join(f.cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:op.nonce,ready:true,sessionId:child}));
+  await f.starts.confirm(f.binding,true);assert.equal(f.store.binding(f.binding.id)?.native_id,child);assert.equal(f.sends(),1);
  }finally{f.close();}
 });

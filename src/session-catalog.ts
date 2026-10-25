@@ -1,10 +1,14 @@
 import { readdir, open, lstat } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { basename, join, isAbsolute } from 'node:path';
 import type { Provider } from './store.js';
 import { createHash } from 'node:crypto';
 
-export type Session = {liveDiscoveryComplete?:boolean;activation?:'cli-resume'|'desktop-open';live?:boolean;desktopId?:string;accountScope?:string;executionMode?:'desktop'|'cli';id:string;provider:Provider;name:string;cwd:string;status:string;updatedAt?:number;available?:boolean};
+export type Session = {detached?:boolean;liveDiscoveryComplete?:boolean;activation?:'cli-resume'|'desktop-open';live?:boolean;desktopId?:string;accountScope?:string;executionMode?:'desktop'|'cli';id:string;provider:Provider;name:string;cwd:string;status:string;updatedAt?:number;available?:boolean};
+export function sameProject(a:string,b:string) {
+  if(a===b)return true;
+  try{return realpathSync(a)===realpathSync(b);}catch{return false;}
+}
 export function activityTime(value:unknown):number|undefined {
   const n=typeof value==='number'?value:typeof value==='string'?Date.parse(value):NaN;
   return Number.isFinite(n)&&n>0?(n<1e12?n*1000:n):undefined;
@@ -90,7 +94,7 @@ export async function claudeDesktopHistory(root:string):Promise<Session[]> {
         const row=JSON.parse(await handle.readFile('utf8'));
         if(row.sessionId!==file.name.slice(0,-5)||typeof row.cwd!=='string'||!isAbsolute(row.cwd))continue;
         const nativeId=typeof row.cliSessionId==='string'&&uuid.test(row.cliSessionId)?row.cliSessionId:undefined;
-        const session:Session={id:nativeId??row.sessionId,desktopId:row.sessionId,provider:'claude',executionMode:'desktop',accountScope:createHash('sha256').update(account.name+'\0'+org.name).digest('hex').slice(0,20),
+        const session:Session={id:nativeId??row.sessionId,desktopId:row.sessionId,detached:row.lineageDetached===true,provider:'claude',executionMode:'desktop',accountScope:createHash('sha256').update(account.name+'\0'+org.name).digest('hex').slice(0,20),
           name:typeof row.title==='string'&&row.title.trim()?row.title.slice(0,160):`${basename(row.cwd)} · ${row.sessionId.slice(-8)}`,
           cwd:typeof row.worktreePath==='string'&&row.worktreePath.startsWith('/')?row.worktreePath:row.cwd,
           live:false,activation:nativeId&&row.isArchived!==true?'desktop-open':undefined,available:false,status:row.isArchived===true?'Archived in Claude Desktop':nativeId?'Saved in Claude Desktop · open in its account to connect':'Not initialized in Claude Desktop',

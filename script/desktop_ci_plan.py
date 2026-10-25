@@ -1,4 +1,4 @@
-"""Select hosted build jobs before allocating expensive native runners."""
+"""Select native jobs and an immutable version before allocating build runners."""
 import json
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ TARGETS = {
 
 def plan(event, ref, target='', publish='false'):
     if event == 'push' and ref == 'refs/heads/main':
-        # The workflow push filter permits only an explicit release.json change.
+        # App/build changes on main publish only after all native checks pass.
         target, publish = 'all', 'true'
     elif event != 'workflow_dispatch':
         raise ValueError('Native builds require a release push or manual dispatch')
@@ -28,6 +28,37 @@ def plan(event, ref, target='', publish='false'):
     return {'matrix': {'include': selected}, 'publish': should_publish}
 
 
+def release_identity(minimum, releases, commit):
+    """Reserve the next stable patch, or resume this exact commit's draft."""
+    stable = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
+    if not stable.fullmatch(minimum) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('Stable version and exact source commit required')
+    if not isinstance(releases, list):
+        raise ValueError('Release history must be a list')
+    candidates = []
+    for release in releases:
+        if not isinstance(release, dict):
+            raise ValueError('Invalid release history entry')
+        tag = release.get('tag_name', '')
+        version = tag.removeprefix('v')
+        if not stable.fullmatch(version) or release.get('prerelease') is not False:
+            continue
+        if not isinstance(release.get('draft'), bool):
+            raise ValueError('Release draft status is missing')
+        candidates.append((tuple(map(int, version.split('.'))), release))
+    matching = [(v, r) for v, r in candidates if r.get('target_commitish') == commit]
+    if matching:
+        number, release = max(matching, key=lambda item: item[0])
+        return '.'.join(map(str, number)), not release['draft']
+    floor = tuple(map(int, minimum.split('.')))
+    if not candidates:
+        return minimum, False
+    latest = max(v for v, _ in candidates)
+    # Old drafts count as allocated versions; never overwrite another commit.
+    next_version = max(floor, (latest[0], latest[1], latest[2] + 1))
+    return '.'.join(map(str, next_version)), False
+
+
 if __name__ == '__main__':
     result = plan(os.environ['FFD_EVENT'], os.environ['FFD_REF'],
                   os.environ.get('FFD_TARGET', ''), os.environ.get('FFD_PUBLISH', 'false'))
@@ -37,8 +68,14 @@ if __name__ == '__main__':
     run_id, number = int(os.environ['FFD_RUN']), int(os.environ['FFD_NUMBER'])
     if run_id <= 0 or number <= 0:
         raise ValueError('Invalid workflow identity')
-    result.update(version=release['version'],
-                  app=release['version'], build=max(release['build'], 2000 + number))
+    version, skip = release['version'], False
+    history = os.environ.get('FFD_RELEASE_HISTORY')
+    if result['publish']:
+        if not history:
+            raise ValueError('Publication requires the current release history')
+        version, skip = release_identity(version, json.loads(Path(history).read_text()), os.environ.get('FFD_SHA', ''))
+    result.update(version=version, skip=skip,
+                  app=version, build=max(release['build'], 2000 + number))
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8', newline='\n') as stream:
         for key, value in result.items():
             stream.write(f'{key}={json.dumps(value) if isinstance(value, (dict, bool)) else value}\n')

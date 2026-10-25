@@ -9,7 +9,7 @@ import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { saveBindingCredentials } from './server.js';
 import type { SessionRoute } from './connections.js';
 
-type Creation={route?:SessionRoute;executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain';bindingId?:string;cwd?:string;error?:string};
+type Creation={route?:SessionRoute;executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'checking'|'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain'|'blocked'|'needs_action';originRequestId?:string;stage?:'preflight'|'workspace'|'native'|'dispatch';bindingId?:string;cwd?:string;error?:string};
 type Workspace={path:string;dev:number;ino:number;approvedAt:number};
 export class Workers {
   tasks=new Map<string,Promise<void>>();
@@ -17,19 +17,20 @@ export class Workers {
   private workspaceGrant?:Promise<Workspace|null>;
   constructor(private store:Store,private router:Router,private masters:Masters,readonly root=join(homedir(),'Tether Projects'),private saveCredentials=saveBindingCredentials) {
     for(const op of this.operations()) {
+      if(op.status==='checking')this.save({...op,status:'blocked',error:'Session preflight was interrupted before creation. Recover this same operation.'});
       if(op.status==='creating')this.save({...op,status:'uncertain',error:'The bridge restarted during native creation. Check this exact session before trying again.'});
       if(op.status==='awaiting_approval')this.save({...op,status:'needs_approval',error:'Approval was interrupted. Repeat the creation request with the same event ID to ask again.'});
     }
   }
   operations(){return this.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'worker-create:%'").all().map((r:any)=>JSON.parse(r.value) as Creation);}
-  pending(requestId:string){return this.operations().some(o=>o.requestId===requestId&&['awaiting_approval','needs_approval','creating'].includes(o.status));}
+  pending(requestId:string){return this.operations().some(o=>o.requestId===requestId&&['checking','awaiting_approval','needs_approval','creating'].includes(o.status));}
   get(id:string){return JSON.parse(this.store.get(`worker-create:${id}`)??'null') as Creation|null;}
   save(op:Creation){this.store.set(`worker-create:${op.id}`,JSON.stringify(op));}
   view(id?:string){return this.operations().filter(o=>!id||o.id===id).map(({text,...op})=>{
     const taskRequestId=op.bindingId?`master:${op.requestId}:create-${op.id}:${op.bindingId}`:undefined;
     const task=taskRequestId?this.store.job(taskRequestId):undefined;
     const execution=task?(['uncertain','failed'].includes(task.status)?'blocked':task.status==='completed'?'answered':task.status==='submitted'?'awaiting_reply':task.status==='dispatched'?'submitting':task.status):'not_started';
-    return {...op,taskRequestId,taskStatus:task?.status,execution,outcome:task?.outcome,currentError:task?.error??(task?null:op.error),lastError:task?.last_error??op.error};
+    return {...op,canRecover:['blocked','uncertain','needs_action'].includes(op.status),taskRequestId,taskStatus:task?.status,execution,outcome:task?.outcome,currentError:task?.error??(task?null:op.error),lastError:task?.last_error??op.error};
   });}
   revoke() {
     this.store.set('worker-workspace','null');
@@ -60,36 +61,43 @@ export class Workers {
     let op=this.get(id);
     const preference=JSON.parse(this.store.get(`platform-preference:${input.provider}`)??'null');
     const savedMode=preference?.executionMode;
-    if(requestedMode===undefined&&!op&&!savedMode)throw new Error(`Choose ${input.provider} Desktop or CLI for this new session. No default connection has been selected for this platform.`);
-    const mode=executionMode(input.provider,requestedMode??(op?(op.executionMode??'cli'):savedMode));
-    const desktopParentId=op?.desktopParentId??(input.provider==='claude'&&mode==='desktop'?preference?.desktopParentId:undefined);
+    if(requestedMode===undefined&&!op&&!savedMode&&!this.router.coordinator!.scope.getStore())throw new Error(`Choose ${input.provider} Desktop or CLI for this new session. No default connection has been selected for this platform.`);
+    const own=this.router.coordinator!.scope.getStore()?this.router.coordinator!.registry.entry(parent.binding_id):undefined;
+    const mode=executionMode(input.provider,requestedMode??(op?(op.executionMode??'cli'):own?.provider===input.provider?own.executionMode:savedMode));
+    if(this.router.coordinator!.scope.getStore()&&(own?.provider!==input.provider||own.executionMode!==mode))throw new Error('Delegate creation to the coordinator for that connection.');
+    const desktopParentId=op?.desktopParentId??(own?.provider==='claude'&&own.executionMode==='desktop'?this.store.binding(parent.binding_id)?.native_id:undefined)??(input.provider==='claude'&&mode==='desktop'?preference?.desktopParentId:undefined);
     if(op) {
       if((op.executionMode??'cli')!==mode||op.provider!==input.provider||op.name!==input.name||op.text!==input.text)throw new Error('A creation event ID cannot be reused for a different task.');
       if(op.status!=='needs_approval'||this.tasks.has(id))return this.view(id)[0];
     }else {
       const route=await this.masters.connections.prepare({provider:input.provider,cwd:join(this.root,`project-${id}`)},mode,mode==='cli');
-      if(preference?.executionMode===mode&&mode==='cli'&&(route.accountKey!==preference.route?.accountKey||route.profileId!==preference.route?.profileId))throw new Error('The preferred CLI account or provider changed. Review Coding platforms in Home before creating this session.');
+      if(own&&(route.profileId!==own.profileId&&own.profileId!==undefined||own.accountKey&&route.accountKey!==own.accountKey))throw new Error('Coordinator connection identity changed. Review its account before creating work.');
+      if(!own&&preference?.executionMode===mode&&mode==='cli'&&(route.accountKey!==preference.route?.accountKey||route.profileId!==preference.route?.profileId))throw new Error('The preferred CLI account or provider changed. Review Coding platforms in Home before creating this session.');
       // Recheck after the bounded account probe; an owner request may have closed meanwhile.
       this.router.coordinator!.ownerRequest(input.requestId);
       const concurrent=this.get(id);if(concurrent)return this.start(input);
-      op={route,executionMode:mode,desktopParentId,requestId:input.requestId,provider:input.provider,name:input.name,text:input.text,eventId:input.eventId,id,masterId:parent.binding_id,status:'awaiting_approval'};
+      op={route,executionMode:mode,desktopParentId,requestId:input.requestId,provider:input.provider,name:input.name,text:input.text,eventId:input.eventId,id,originRequestId:input.requestId,stage:'preflight',masterId:parent.binding_id,status:'checking'};
     }
     this.save(op);
-    const destination=parent.destination??this.store.get('whatsapp-owner')!;
-    const task=this.store.destinationContext.run(destination,()=>this.create(op!)).catch(e=>{
+    return this.runCreation(op,parent.destination??this.store.get('whatsapp-owner')!);
+  }
+  private runCreation(op:Creation,destination:string) {
+    const task=this.store.destinationContext.run(destination,()=>this.create(op)).catch(e=>{
       if(this.closed)return;
-      const current=this.get(id)!;this.save({...current,status:'uncertain',error:e instanceof Error?e.message:'Native creation could not be confirmed.'});
-      if(current.bindingId&&!this.store.job(`master:${current.requestId}:create-${id}:${current.bindingId}`))this.masters.stopWorker(current.bindingId);
-      this.store.output(undefined,`New ${input.provider} session could not be confirmed. ${this.get(id)!.error}\nReference: ${id}`,`worker-create:${id}:uncertain`,destination);
-      this.reportFailure(this.get(id)!);
-    }).finally(()=>this.tasks.delete(id));
-    this.tasks.set(id,task);return this.view(id)[0];
+      const current=this.get(op.id)!;
+      const status=/^Desktop start needs owner action/.test(e instanceof Error?e.message:String(e))?'needs_action':!current.bindingId&&!current.cwd&&current.stage!=='native'&&current.stage!=='dispatch'?'blocked':'uncertain';
+      this.save({...current,status,error:e instanceof Error?e.message:'Native creation could not be confirmed.'});
+      if(current.bindingId&&!this.store.job(`master:${current.requestId}:create-${op.id}:${current.bindingId}`))this.masters.stopWorker(current.bindingId);
+      this.store.output(undefined,`New ${op.provider} session ${status==='blocked'?'has not started':'could not be confirmed'}. ${this.get(op.id)!.error}\nRecover this same operation after resolving the blocker. Reference: ${op.id}`,`worker-create:${op.id}:${status}:${op.requestId}`,destination);
+      this.reportFailure(this.get(op.id)!);
+    }).finally(()=>this.tasks.delete(op.id));
+    this.tasks.set(op.id,task);return this.view(op.id)[0];
   }
   private async approveWorkspace(op:Creation):Promise<Workspace|null> {
     const existing=this.workspace();if(existing)return existing;
     if(this.workspaceGrant)return this.workspaceGrant;
     this.workspaceGrant=(async()=>{
-      const master=this.router.coordinator!.master()!;
+      const master=this.router.coordinator!.requestMaster(op.requestId)!;
       const answer=await this.router.approvals.ask(master,`Allow FarFromDesk to create new coding projects inside ${this.root}?\nThis approval applies to future owner-requested projects here. Codex uses workspace-write with native approvals; Claude CLI uses acceptEdits; Claude Desktop retains its own native permissions and may require initial folder approval. Commands or access requiring further native permission are sent here. This does not grant access to arbitrary folders.`);
       if(this.closed)return null;
       this.router.coordinator!.ownerRequest(op.requestId);
@@ -103,9 +111,10 @@ export class Workers {
   }
   async create(op:Creation) {
     if(op.provider==='claude'&&op.executionMode==='desktop') {
-      const launcher=await this.masters.desktop.parent(op.desktopParentId);
-      op={...op,desktopParentId:launcher.id};this.save(op);
+      const launcher=await this.masters.desktop.parent(op.desktopParentId,op.route?.accountScope);
+      op={...op,desktopParentId:launcher.id,route:op.route?{...op.route,accountScope:launcher.accountScope}:undefined};this.save(op);
     }
+    op={...op,stage:'workspace',status:'awaiting_approval'};this.save(op);
     const w=await this.approveWorkspace(op);
     if(this.closed)return;
     if(!w){this.save({...op,status:'denied'});this.store.output(undefined,'Project creation was not approved. No session was created.',`worker-create:${op.id}:denied`);this.reportFailure(this.get(op.id)!);return;}
@@ -123,6 +132,7 @@ export class Workers {
     this.store.set(`name:${b.id}`,op.name);this.store.set(`managed-worker:${b.id}`,'true');
     const instructions='This is a dedicated owner-requested coding project. Preserve native permissions. Work only on the requested project. Report progress and final results on the exact incoming bridge request. Do not contact other sessions or approve your own permissions.';
     writeFileSync(join(cwd,'AGENTS.md'),instructions,{mode:0o600});writeFileSync(join(cwd,'CLAUDE.md'),instructions,{mode:0o600});
+    op={...op,stage:'native'};this.save(op);
     await this.masters.provisionWorker(b);
     if(this.closed)return;
     b=this.store.binding(b.id)!;this.saveCredentials(b,r.token);
@@ -132,6 +142,7 @@ export class Workers {
     this.store.enable(b.id,true);
     const previous=JSON.parse(this.store.get('selected')??'[]') as string[];
     this.store.set('selected',JSON.stringify([...new Set([...previous,b.id])]));
+    op={...op,stage:'dispatch'};this.save(op);
     this.router.coordinator!.dispatch(op.requestId,[b.id],op.text,`create-${op.id}`);
     this.save({...op,status:'ready'});
     this.store.output(undefined,`Created “${op.name}” in ${op.provider} and queued your task. Your other sessions remain connected.`, `worker-create:${op.id}:ready`);
@@ -139,14 +150,18 @@ export class Workers {
   async recover(requestId:string,id:string) {
     if(this.closed||this.router.stopped)throw new Error('Background operation is paused.');
     const parent=this.router.coordinator!.ownerRequest(requestId),op=this.get(id);
-    if(!op||op.status!=='uncertain'||!op.bindingId)throw new Error('No exact uncertain session is available to recover. Check creation status first.');
+    if(op&&this.router.coordinator!.scope.getStore()&&op.masterId!==parent.binding_id)throw new Error('Creation belongs to another coordinator.');
+    if(!op)throw new Error('No exact creation operation is available to recover. Check creation status first.');
     if(this.tasks.has(id))return this.view(id)[0];
+    if(!['blocked','uncertain','needs_action'].includes(op.status))throw new Error('No blocked or uncertain session is available to recover. Check creation status first.');
+    if(!this.router.coordinator!.enabled().includes(op.provider))throw new Error('This platform is paused.');
+    if(!op.bindingId)return this.recoverPreflight(op,requestId,parent);
     let b=this.store.binding(op.bindingId);if(!b)throw new Error('The original binding is missing; recovery stopped.');
     if(!this.router.coordinator!.enabled().includes(b.provider))throw new Error('This platform is paused.');
     this.ensureRun(b);
     const existing=this.store.job(`master:${op.requestId}:create-${op.id}:${b.id}`);
     if(existing){this.save({...op,status:'ready',error:undefined});return {...this.view(id)[0],existingTaskStatus:existing.status,note:'The original task already exists. It was not resubmitted.'};}
-    const next={...op,requestId,masterId:parent.binding_id,status:'creating' as const,error:undefined};this.save(next);
+    const next={...op,originRequestId:op.originRequestId??op.requestId,requestId,masterId:parent.binding_id,status:'creating' as const,error:undefined};this.save(next);
     const destination=parent.destination??this.store.get('whatsapp-owner')!;
     const task=this.store.destinationContext.run(destination,async()=>{
       await this.masters.recoverWorker(b!);b=this.store.binding(op.bindingId!)!;
@@ -157,14 +172,45 @@ export class Workers {
       this.store.set('selected',JSON.stringify([...new Set([...selected,b.id])]));
       this.router.coordinator!.dispatch(requestId,[b.id],op.text,`create-${op.id}`);
       this.save({...next,status:'ready'});this.store.output(undefined,`Recovered “${op.name}” in the same native session and queued the original task.`,`worker-create:${op.id}:recovered:${requestId}`);
-    }).catch(e=>{if(this.closed)return;this.save({...next,status:'uncertain',error:e instanceof Error?e.message:'Exact-session recovery failed.'});this.store.output(undefined,`Recovery is still blocked: ${this.get(id)!.error}`,`worker-create:${id}:recovery-error:${requestId}`,destination);this.reportFailure(this.get(id)!);}).finally(()=>this.tasks.delete(id));
+    }).catch(e=>{if(this.closed)return;this.save({...next,status:/^Desktop start needs owner action/.test(e instanceof Error?e.message:String(e))?'needs_action':'uncertain',error:e instanceof Error?e.message:'Exact-session recovery failed.'});this.store.output(undefined,`Recovery is still blocked: ${this.get(id)!.error}`,`worker-create:${id}:recovery-error:${requestId}`,destination);this.reportFailure(this.get(id)!);}).finally(()=>this.tasks.delete(id));
     this.tasks.set(id,task);return this.view(id)[0];
   }
+  private recoverPreflight(op:Creation,requestId:string,parent:{binding_id:string;destination?:string|null}) {
+    // Legacy missing-launcher failures have no stage. No directory or binding can
+    // exist on this branch: otherwise a side effect needs exact-child recovery.
+    const cwd=join(this.root,`project-${op.id}`);
+    if(op.cwd||op.stage==='native'||op.stage==='dispatch'||existsSync(cwd)||this.store.bindings().some(b=>b.cwd===cwd))
+      throw new Error('Creation may already have local state. Automatic pre-start recovery stopped; inspect this exact operation.');
+    const next:Creation={...op,originRequestId:op.originRequestId??op.requestId,requestId,masterId:parent.binding_id,stage:'preflight',status:'checking',error:undefined};
+    const destination=parent.destination??this.store.get('whatsapp-owner')!;
+    // Claim the operation before the account check so simultaneous recovery calls
+    // cannot create two children. Runtime/profile are frozen, never preferences.
+    this.save(next);
+    const task=this.store.destinationContext.run(destination,async()=>{
+      const mode=op.executionMode??'cli';
+      if(!op.route)throw new Error('Original connection identity is unavailable. Review this operation before recovery.');
+      const route=await this.masters.connections.prepare({provider:op.provider,cwd},mode,mode==='cli',op.route.accountScope);
+      if(route.profileId!==op.route.profileId||route.accountKey!==op.route.accountKey)throw new Error('Original account or profile changed. Recovery stopped without switching connections.');
+      this.router.coordinator!.ownerRequest(requestId);
+      if(this.closed||this.router.stopped||!this.router.coordinator!.enabled().includes(op.provider))throw new Error('Background operation or platform is paused.');
+      const preference=JSON.parse(this.store.get(`platform-preference:${op.provider}`)??'null');
+      const desktopParentId=op.desktopParentId??(mode==='desktop'&&preference?.executionMode===mode?preference.desktopParentId:undefined);
+      await this.create({...next,desktopParentId});
+    }).catch(e=>{
+      if(this.closed)return;
+      const current=this.get(op.id)!;
+      this.save({...current,status:current.bindingId||current.cwd?'uncertain':'blocked',error:e instanceof Error?e.message:'Pre-start recovery failed.'});
+      if(current.bindingId&&!this.store.job(`master:${current.requestId}:create-${op.id}:${current.bindingId}`))this.masters.stopWorker(current.bindingId);
+      this.store.output(undefined,`Recovery is still blocked: ${this.get(op.id)!.error}\nReference: ${op.id}`,`worker-create:${op.id}:recovery-error:${requestId}`,destination);this.reportFailure(this.get(op.id)!);
+    }).finally(()=>this.tasks.delete(op.id));
+    this.tasks.set(op.id,task);return this.view(op.id)[0];
+  }
   private reportFailure(op:Creation) {
-    const master=this.router.coordinator!.master(),parent=this.store.job(op.requestId);
+    const master=this.router.coordinator!.requestMaster(op.requestId),parent=this.store.job(op.requestId);
     if(!master||master.id!==op.masterId||!parent||parent.status==='replaced')return;
-    this.store.set(`report-parent:report:creation:${op.id}:${op.status}`,op.requestId);
-    this.store.enqueue(`report:creation:${op.id}:${op.status}`,master,`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. Close the original owner request as blocked if no further work is possible; do not create a replacement or duplicate the notification.`,parent.destination??null);
+    const reportId=`report:creation:${op.id}:${op.status}:${op.requestId}`;
+    this.store.set(`report-parent:${reportId}`,op.requestId);
+    this.store.enqueue(reportId,master,`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. Close the original owner request as blocked if no further work is possible; do not create a replacement or duplicate the notification.`,parent.destination??null);
     this.router.pump();
   }
   close(){this.closed=true;}

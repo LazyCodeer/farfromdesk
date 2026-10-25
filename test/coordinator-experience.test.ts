@@ -33,7 +33,7 @@ test('receipt is durable before dispatch, stays system-only and does not finish 
     assert.notEqual(j.status,'completed');assert.equal(j.first_reply_at,null);assert.equal(j.final_reply_at,null);
     const row=f.store.db.prepare('SELECT * FROM outbox').get() as any;
     assert.equal(row.request_id,j.id);assert.equal(row.destination,'owner@s.whatsapp.net');assert.equal(row.reply_kind,'system');
-    assert.match(row.body,/Got your message/);assert.match(row.body,/\*Session: master\*/);assert.match(row.body,/— FarFromDesk$/);
+    assert.match(row.body,/Got your message/);assert.match(row.body,/\*Session: Codex CLI · master\*/);assert.match(row.body,/— FarFromDesk$/);
     await f.router.receive({id:'wa:hello',text:'Check my project'});
     assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM outbox').get() as any).n,1);
   }finally{f.close();}

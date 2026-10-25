@@ -43,6 +43,7 @@ async function settled(f:ReturnType<typeof fixture>){for(let i=0;i<100&&f.master
 
 test('native creation persists exact identity, scoped tools and friendly instructions without replacing early',async()=>{
   const f=fixture();const old=f.store.register('old-master','codex','11111111-1111-4111-a111-111111111111','/tmp').binding;f.store.set('master',old.id);
+  f.masters.connections.save(old,await f.masters.connections.prepare(old,'cli',true));
   await f.masters.discover();assert.equal(f.masters.platforms.find(p=>p.provider==='claude').available,false);
   const id='22222222-2222-4222-a222-222222222222';await f.masters.create('codex',id);
   assert.equal(f.store.get('master'),old.id);await f.masters.create('codex',id);await settled(f);
@@ -61,6 +62,7 @@ test('replacement closes the old master queue and descendants only after creatio
   f.store.enqueue('delegated',worker,'work');f.store.set('parent:delegated','wa:done');
   f.store.enqueue('unrelated',worker,'other work');
   f.router.busy.add(b.id);
+  f.masters.connections.save(b,await f.masters.connections.prepare(b,'cli',true));
   await f.masters.discover();await f.masters.create('codex','33333333-3333-4333-a333-333333333333');
   assert.equal(f.store.job('wa:queued')?.status,'queued');assert.equal(f.store.get('master'),b.id);
   await settled(f);assert.equal(f.masters.operation().status,'ready');
@@ -85,7 +87,7 @@ test('Claude trust failure preserves old requests, hides command text, and retri
   await f.masters.recover();await settled(f);
   assert.equal(f.masters.operation().status,'ready');assert.equal(f.masters.operation().bindingId,op.bindingId);
   assert.equal(f.masters.operation().nativeId,op.nativeId);assert.equal(f.store.bindings().length,2);assert.equal(attempts,2);
-  assert.equal(f.store.job('wa:waiting')?.status,'replaced');f.close();
+  assert.equal(f.store.job('wa:waiting')?.status,'queued');assert.equal(f.store.get('master'),old.id);f.close();
 });
 test('activation rollback preserves the previous master and queue',()=>{
   const f=fixture(),old=f.store.register('old-master','codex','11111111-1111-4111-a111-111111111111','/tmp').binding;
@@ -170,17 +172,17 @@ test('overlapping app refreshes publish each execution mode only once',async()=>
  assert.equal(reads,2);assert.equal(f.masters.platforms.length,4);assert.equal(new Set(f.masters.platforms.map(p=>p.provider+':'+p.executionMode)).size,4);
 });
 
-test('failed setup is set aside automatically; stable old ID never creates again',async()=>{
+test('another platform can set up independently; stable failed ID never creates again',async()=>{
  const f=fixture();f.masters.platforms=[{provider:'claude',available:true},{provider:'codex',available:true}];
  f.masters.provisionClaude=async()=>{throw new Error('Workspace not trusted');};
  const first='abababab-abab-4bab-abab-abababababab',next='cdcdcdcd-cdcd-4dcd-adcd-cdcdcdcdcdcd';
  await f.masters.create('claude',first);await settled(f);const failed=f.masters.operation();
  await f.masters.create('codex',next);await settled(f);
- assert.equal(f.masters.operation().status,'ready');assert.equal(f.masters.operation(first).status,'set-aside');
+ assert.equal(f.masters.operation().status,'ready');assert.equal(f.masters.operation(first).status,'uncertain');
  assert.equal(f.masters.options().attempts[0].id,first);assert.match(f.masters.options().attempts[0].error,/trust/);
  const count=f.store.bindings().length;await f.masters.create('claude',first);assert.equal(f.store.bindings().length,count);assert.equal(f.masters.operation().id,next);
  f.masters.provisionClaude=async()=>{};await f.masters.recover(first);await settled(f);
- assert.equal(f.store.get('master'),failed.bindingId);assert.equal(f.masters.operation().status,'ready');
+ assert.notEqual(f.store.get('master'),failed.bindingId);assert.equal(f.masters.operation().status,'ready');
 });
 test('abandon targets only the earlier failed attempt and keeps current master',async()=>{
  const f=fixture();f.masters.platforms=[{provider:'claude',available:true},{provider:'codex',available:true}];
@@ -220,7 +222,7 @@ test('recovery holds setup lock and stale activation cannot replace current mast
  const f=fixture(),b=f.store.register('pending','claude',nativeId,dir).binding;
  f.store.set('master-operation',JSON.stringify({id:'pending',provider:'claude',executionMode:'desktop',bindingId:b.id,status:'uncertain'}));
  let release!:()=>void;f.masters.desktop.confirm=async()=>new Promise<void>(r=>{release=r;});
- const recovery=f.masters.recover();await assert.rejects(f.masters.create('codex','20202020-2020-4020-a020-202020202020'),/in progress/);
+ const recovery=f.masters.recover();await assert.rejects(f.masters.create('claude','20202020-2020-4020-a020-202020202020','desktop'),/in progress/);
  release();await recovery;await settled(f);assert.throws(()=>f.masters.activate(b,'older-operation'),/superseded/);
 });
 
@@ -228,6 +230,20 @@ test('Codex Desktop discovery supports the ChatGPT bundle and user Applications 
  assert.equal(codexDesktopInstalled('/sample',p=>p==='/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework'),true);
  assert.equal(codexDesktopInstalled('/sample',p=>p==='/sample/Applications/Codex.app'),true);
  assert.equal(codexDesktopInstalled('/sample',p=>p==='/Applications/ChatGPT.app'),false);
+});
+
+test('different platform setups finish independently without replacing the other coordinator',async()=>{
+ const f=fixture();f.masters.platforms=[{provider:'claude',available:true},{provider:'codex',available:true}];
+ let release!:()=>void;const waiting=new Promise<void>(r=>{release=r;});
+ f.masters.provisionClaude=async()=>waiting;
+ const claudeId='abab1212-1212-4212-a212-121212121212',codexId='cdcd3434-3434-4434-a434-343434343434';
+ await f.masters.create('claude',claudeId);
+ await f.masters.create('codex',codexId);await settled(f);
+ assert.equal(f.masters.operation(codexId).status,'ready');assert.equal(f.masters.operation(claudeId).status,'creating');
+ const codexBinding=f.store.get('master');release();
+ for(let i=0;i<100&&f.masters.operation(claudeId).status==='creating';i++)await new Promise(r=>setTimeout(r,10));
+ assert.equal(f.masters.operation(claudeId).status,'ready');assert.equal(f.store.get('master'),codexBinding);
+ assert.equal(f.masters.registry.entries().length,2);assert.ok(f.masters.registry.entries().every(r=>f.store.binding(r.bindingId)?.enabled));
 });
 
 test('custom and automatic names persist into setup, native creation and recovery',async()=>{

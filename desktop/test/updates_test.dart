@@ -91,6 +91,11 @@ void main() {
       '0.7.0-preview.10',
     );
   });
+  test('local builds do not offer same-base public releases or previews', () {
+    expect(selectRelease([release('0.7.1')], '0.7.1-local.2022', 'macos', 'arm64'), isNull);
+    expect(selectRelease([release('0.8.0-preview.1')], '0.7.1-local.2022', 'macos', 'arm64'), isNull);
+    expect(selectRelease([release('0.7.2')], '0.7.1-local.2022', 'macos', 'arm64')!.version, '0.7.2');
+  });
   test('download must match the exact official versioned asset URL', () {
     final data = release('0.8.0');
     (data['assets'] as List)[0]['browser_download_url'] =

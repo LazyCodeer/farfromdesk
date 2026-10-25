@@ -85,7 +85,7 @@ export function syncNamedAgents(store:Store,roots=agentRoots()) {
 }
 export function assignNamedAgent(store:Store,b:Binding,name:string,roots=agentRoots()) {
   const agent=agentDefinition(store,name);
-  if(agent.kind==='master'&&b.id!==store.get('master'))throw new Error('The coordinator role can only be assigned to the selected coordinator.');
+  if(agent.kind==='master'&&b.id!==store.get('master')&&store.get(`role-kind:${b.id}`)!=='master')throw new Error('The coordinator role can only be assigned to the selected coordinator.');
   const installation=installNamedAgent(store,agent,roots);
   store.set(`named-agent:${b.id}`,agent.name);
   return {bindingId:b.id,agentName:agent.name,applies:'next-request',installation};

@@ -82,7 +82,10 @@ AppRelease? selectRelease(
   String platform,
   String architecture,
 ) {
-  final installed = ReleaseVersion.parse(current);
+  final parsed = ReleaseVersion.parse(current);
+  final installed = parsed?.pre.firstOrNull == 'local'
+      ? ReleaseVersion(parsed!.core, [])
+      : parsed;
   if (installed == null || data is! List) {
     throw const FormatException('Invalid release information');
   }
@@ -112,7 +115,7 @@ AppRelease? selectRelease(
       '/$releaseRepository/releases/tag/$tag',
     );
     final extensions = platform == 'macos'
-        ? ['dmg', 'zip']
+        ? ['zip']
         : platform == 'windows'
         ? ['zip']
         : ['tar.gz'];

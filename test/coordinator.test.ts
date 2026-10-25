@@ -166,3 +166,14 @@ test('Claude title index enriches existing history and refreshes without loading
     writeFileSync(join(dir,'sessions-index.json'),index('Renamed migration'));rows=await claudeHistory(root);assert.equal(rows[0].name,'Renamed migration');
   }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+
+test('shared native IDs remain visible per runtime and legacy ambiguous targets are rejected',async()=>{
+ const base=session(4,'claude');const f=fixture([{...base,executionMode:'desktop'},{...base,executionMode:'cli'}]);try {
+  await f.c.refresh();assert.equal(f.c.sessions.length,2);
+  await assert.rejects(f.c.connect('wa:owner',[`claude:${base.id}`]),/more than one runtime/);
+  await assert.rejects(f.c.connect('wa:owner',[`claude:desktop:${base.id}`,`claude:cli:${base.id}`]),/one runtime/);
+  assert.equal(f.c.selected().length,0);
+  await f.c.connect('wa:owner',[`claude:desktop:${base.id}`]);assert.equal(f.c.selected().length,1);
+ }finally{f.close();}
+});

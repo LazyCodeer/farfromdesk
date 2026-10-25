@@ -1,11 +1,8 @@
 name: Desktop quick checks
 on:
   workflow_call:
-  push:
-    branches: [main]
-    paths: ['desktop/**', 'src/**', 'native/**', 'test/**', 'install/**', 'script/**', 'package*.json', 'tsconfig.json', '.github/workflows/desktop*.yml']
   pull_request:
-    paths: ['desktop/**', 'src/**', 'native/**', 'test/**', 'install/**', 'script/**', 'package*.json', 'tsconfig.json', '.github/workflows/desktop*.yml']
+    paths: ['desktop/**', 'src/**', 'native/**', 'skills/**', 'test/**', 'install/**', 'script/**', 'package*.json', 'tsconfig.json', '.github/workflows/desktop*.yml']
 permissions:
   contents: read
 concurrency:

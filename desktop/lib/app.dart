@@ -52,6 +52,8 @@ class _DeskState extends State<Desk> {
   Timer? timer, updateTimer;
   UpdateCheck update = const UpdateCheck();
   bool checkingUpdates = false;
+  bool installingUpdate = false;
+  Map<String, dynamic> updateProgress = {};
   Gateway get api => widget.gateway;
   List<dynamic> get platforms => status['masterSetup']?['platforms'] ?? [];
   Map<String, dynamic> get preferences =>
@@ -135,12 +137,16 @@ class _DeskState extends State<Desk> {
                 'Installed: $installedVersion · Download: ${(release.bytes / (1024 * 1024)).ceil()} MB',
               ),
               const SizedBox(height: 18),
-              const Text(
-                'Download the update now and install it when your current work is finished. Your requests and WhatsApp pairing are stored separately from the app.',
+              Text(
+                api.canInstallUpdate
+                    ? 'FarFromDesk will download and verify the update, install it, and restart. Your requests and WhatsApp pairing stay saved.'
+                    : 'Download the update and install it after your current work finishes.',
               ),
               const SizedBox(height: 10),
-              const Text(
-                'Before replacing the app, pause background forwarding in Settings and quit FarFromDesk. Downloading does not stop your sessions.',
+              Text(
+                api.canInstallUpdate
+                    ? 'If work or a permission request is active, installation will pause before restarting. Your coding apps stay open.'
+                    : 'Pause background forwarding and quit FarFromDesk before replacing it.',
               ),
               if (update.problem != null) ...[
                 const SizedBox(height: 10),
@@ -164,13 +170,57 @@ class _DeskState extends State<Desk> {
           FilledButton(
             onPressed: () {
               Navigator.pop(context);
-              act(() => api.openReleasePage(release.download));
+              if (api.canInstallUpdate) {
+                startUpdate(release);
+              } else {
+                act(() => api.openReleasePage(release.download));
+              }
             },
-            child: const Text('Download update'),
+            child: Text(api.canInstallUpdate ? 'Update and restart' : 'Download update'),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> startUpdate(AppRelease release) async {
+    if (installingUpdate) return;
+    setState(() { installingUpdate = true; updateProgress = {'message': 'Preparing update…'}; });
+    StateSetter? redraw;
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(builder: (context, setDialogState) {
+        redraw = setDialogState;
+        final failed = updateProgress['phase'] == 'error';
+        final total = (updateProgress['total'] as num?)?.toDouble();
+        final received = (updateProgress['received'] as num?)?.toDouble() ?? 0;
+        return PopScope(canPop: !installingUpdate, child: AlertDialog(
+          title: Text(failed ? 'Update could not finish' : 'Updating FarFromDesk'),
+          content: SizedBox(width: 420, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(updateProgress['message']?.toString() ?? 'Preparing update…'),
+            if (!failed) ...[
+              const SizedBox(height: 18),
+              LinearProgressIndicator(value: total != null && total > 0 ? (received / total).clamp(0.0, 1.0) : null),
+              if (total != null) ...[const SizedBox(height: 8), Text('${(received / 1048576).toStringAsFixed(1)} / ${(total / 1048576).ceil()} MB')],
+            ],
+          ])),
+          actions: [if (!installingUpdate) TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
+        ));
+      }),
+    ).whenComplete(() => redraw = null));
+    try {
+      await api.installUpdate(release, (value) {
+        if (!mounted) return;
+        setState(() => updateProgress = value);
+        redraw?.call(() {});
+      });
+    } catch (e) {
+      if (mounted) setState(() => updateProgress = {'phase': 'error', 'message': clean(e)});
+    } finally {
+      if (mounted) setState(() => installingUpdate = false);
+      redraw?.call(() {});
+    }
   }
 
   Future<void> refresh() async {
@@ -374,34 +424,60 @@ class _DeskState extends State<Desk> {
   Widget build(BuildContext context) => buildDesk(context);
 
   List<Widget> setupOperation() {
-    final op = status['masterSetup']?['operation'];
-    if (op == null || op['status'] == 'ready') return [];
+    final current = status['masterSetup']?['operation'];
+    final entries = <Map>[
+      if (current is Map) current,
+      ...List<Map>.from(status['masterSetup']?['attempts'] ?? []),
+    ];
+    final seen = <String>{};
+    final operations = entries
+        .where((op) => op['status'] != 'ready' && seen.add('${op['id']}'))
+        .toList();
     return [
-      const Divider(height: 32),
-      Text(
-        'Setup: ${op['status']}',
-        style: const TextStyle(fontWeight: FontWeight.w600),
-      ),
-      if (op['error'] != null) note(op['error']),
-      if (['uncertain', 'set-aside'].contains(op['status'])) ...[
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 10,
-          children: [
-            button(
-              'Recover exact session',
-              () => post('/api/master-recover', {'operationId': op['id']}),
-            ),
-            button('Abandon setup', () async {
-              if (await confirm(
-                'Abandon this setup?',
-                'This closes the setup attempt. It does not delete the native conversation.',
-              )) {
-                await post('/api/master-abandon', {'operationId': op['id']});
-              }
-            }),
-          ],
+      for (final op in operations) ...[
+        const Divider(height: 32),
+        Text(
+          op['status'] == 'needs_action'
+              ? 'Setup needs your action in Claude'
+              : 'Setup: ${op['status']}',
+          style: const TextStyle(fontWeight: FontWeight.w600),
         ),
+        note(
+          '${op['provider'] ?? ''} ${op['executionMode'] ?? ''} · ${op['name'] ?? 'Coordinator setup'}',
+        ),
+        if (op['error'] != null) note(op['error']),
+        if ([
+          'uncertain',
+          'set-aside',
+          'needs_action',
+        ].contains(op['status'])) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              if (op['status'] == 'needs_action')
+                button(
+                  'Open Claude proposal',
+                  () => post('/api/master-open-proposal', {
+                    'operationId': op['id'],
+                  }),
+                ),
+              button(
+                'Recover exact session',
+                () => post('/api/master-recover', {'operationId': op['id']}),
+              ),
+              button('Abandon setup', () async {
+                if (await confirm(
+                  'Abandon this setup?',
+                  'This closes the setup attempt. It does not delete the native conversation.',
+                )) {
+                  await post('/api/master-abandon', {'operationId': op['id']});
+                }
+              }),
+            ],
+          ),
+        ],
       ],
     ];
   }

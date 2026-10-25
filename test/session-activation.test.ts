@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,rmSync,realpathSync } from 'node:fs';
+import { mkdtempSync,rmSync,realpathSync,symlinkSync,mkdirSync,unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -43,4 +43,16 @@ test('rejected open command remains held and never falls back to CLI',async()=>{
     await assert.rejects(activation.ready(f.saved),/no CLI fallback/);
     await assert.rejects(activation.ready(f.saved),/inbox is not live/);assert.equal(opens,1);
   }finally{f.close();}
+});
+
+
+test('existing project aliases reopen correctly, but a retargeted alias stops activation',async()=>{
+ const f=fixture();try {
+  const project=join(f.cwd,'project'),alias=join(f.cwd,'alias'),other=join(f.cwd,'other');mkdirSync(project);mkdirSync(other);symlinkSync(project,alias);
+  const saved={...f.saved,cwd:alias};let live=false,opens=0;
+  const activation=new SessionActivation(f.store,async()=>[{...saved,cwd:project,...(live?{activation:undefined,live:true}:{})}],async()=>{opens++;live=true;},0);
+  assert.equal((await activation.ready(saved)).cwd,project);assert.equal(opens,1);
+  unlinkSync(alias);symlinkSync(other,alias);
+  await assert.rejects(activation.ready(saved),/account or project changed/);assert.equal(opens,1);
+ }finally{f.close();}
 });

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { CoordinatorRegistry } from './coordinator-registry.js';
 import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -35,23 +37,30 @@ export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
 }
 export class Masters {
   connections:Connections;
+  registry:CoordinatorRegistry;
   runtimes=new Map<string,CodexSession>();
   claudeRuntimes=new Map<string,ClaudeSession|ClaudeSDKSession>();
   runtimeRoles=new Map<string,string>();
   desktop:DesktopStarts;
-  creating=false;
+  private setupContext=new AsyncLocalStorage<{id:string;connection:string}>();
+  private setupLocks=new Map<string,string>();
+  get creating(){const c=this.setupContext.getStore();return c?this.setupLocks.has(c.connection):this.setupLocks.size>0;}
+  set creating(value:boolean){const c=this.setupContext.getStore();if(value)this.setupLocks.set(c?.connection??'legacy',c?.id??'legacy');else if(this.setupLocks.get(c?.connection??'legacy')===(c?.id??'legacy'))this.setupLocks.delete(c?.connection??'legacy');}
   platforms:any[]=[];
   private discovery?:Promise<any[]>;
   private discoveryAt=0;
   private catalogRevision=randomUUID();
   private catalogDigest='';
   constructor(private store:Store,private router:Router) {
+    this.registry=router.coordinator?.registry??new CoordinatorRegistry(store);
     this.connections=router.native.connections??new Connections(store);
     router.native.connectionChanged=b=>this.stopWorker(b.id);
     this.desktop=new DesktopStarts(store,router.native);
-    const op=this.operation();if(op?.status==='creating')this.saveOperation({...op,status:'uncertain',error:'Service restarted during creation. Recover this session or create a replacement.'});
+    const operations=this.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'master-attempt:%'").all() as {value:string}[];
+    const current=this.operation();if(current&&!operations.some(r=>JSON.parse(r.value).id===current.id))operations.push({value:JSON.stringify(current)});
+    for(const row of operations){const op=JSON.parse(row.value);if(op?.status==='creating')this.saveOperation({...op,status:'uncertain',error:'Service restarted during creation. Recover this session or create a replacement.'},current?.id===op.id);}
   }
-  operation(id?:string){const current=JSON.parse(this.store.get('master-operation')??'null');return !id||current?.id===id?current:JSON.parse(this.store.get(`master-attempt:${id}`)??'null');}
+  operation(id?:string){id??=this.setupContext.getStore()?.id;const current=JSON.parse(this.store.get('master-operation')??'null');return !id||current?.id===id?current:JSON.parse(this.store.get(`master-attempt:${id}`)??'null');}
   private saveOperation(op:any,current=true){
     this.store.db.exec('SAVEPOINT master_operation');
     try {
@@ -63,7 +72,7 @@ export class Masters {
   private setAside(){
     const op=this.operation();if(!op)return;
     if(op.status==='uncertain') {
-      if(op.bindingId&&op.bindingId!==this.store.get('master')){this.store.enable(op.bindingId,false);this.stopWorker(op.bindingId);}
+      if(op.bindingId&&!this.registry.isCoordinator(op.bindingId)){this.store.enable(op.bindingId,false);this.stopWorker(op.bindingId);}
       this.saveOperation({...op,status:'set-aside',updatedAt:Date.now()});
     }else this.saveOperation(op);
   }
@@ -100,7 +109,13 @@ export class Masters {
         if(connection.state!=='verified')platform.reason=connection.label;
       }
       if(platform.provider==='codex'&&platform.executionMode==='desktop')platform.reason='Existing chats use the native desktop queue and that chat’s account. New chats create a history record, then use Desktop for requests. CLI authentication is not used for model execution.';
-      if(platform.provider==='claude'&&platform.executionMode==='desktop')platform.launcherId=this.store.get('claude-desktop-parent');
+      if(platform.provider==='claude'&&platform.executionMode==='desktop') {
+        const preference=JSON.parse(this.store.get('platform-preference:claude')??'null');
+        const coordinators=this.registry.entries().filter(r=>r.provider==='claude'&&r.executionMode==='desktop'&&this.store.binding(r.bindingId)?.enabled);
+        platform.coordinatorId=coordinators.length===1?coordinators[0].bindingId:undefined;
+        platform.launcherId=platform.coordinatorId?this.store.binding(platform.coordinatorId)?.native_id:preference?.desktopParentId;
+        platform.creationReadiness=this.desktop.readiness(claude,platform.launcherId);
+      }
     }));
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
     const digest=createHash('sha256').update(JSON.stringify(platforms)).digest('hex');
@@ -110,9 +125,9 @@ export class Masters {
     try{return await this.discovery;}finally{this.discovery=undefined;}
   }
   options(knownRevision?:string){
-    const clean=(op:any)=>op?{...op,needsTrust:op.needsTrust||/workspace not trusted/i.test(op.error??''),error:op.error?this.setupError(op.error):undefined}:op;
+    const clean=(op:any)=>op?{...op,proposalId:op.bindingId?this.desktop.get(op.bindingId)?.proposalId:undefined,needsTrust:op.needsTrust||/workspace not trusted/i.test(op.error??''),error:op.error?this.setupError(op.error):undefined}:op;
     const op=this.operation();
-    const attempts=this.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'master-attempt:%'").all().map((r:any)=>JSON.parse(r.value)).filter(a=>a.id!==op?.id&&['uncertain','set-aside'].includes(a.status)).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).map(clean);
+    const attempts=this.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'master-attempt:%'").all().map((r:any)=>JSON.parse(r.value)).filter(a=>a.id!==op?.id&&['creating','uncertain','set-aside','needs_action'].includes(a.status)).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).map(clean);
     const catalogUnchanged=knownRevision===this.catalogRevision;
     const selectedMaster=this.store.binding(this.store.get('master')??'');
     return {platforms:catalogUnchanged?[]:this.platforms,catalogRevision:this.catalogRevision,catalogUnchanged,operation:clean(op),attempts,prompt:selectedMaster?roleConfig(this.store,selectedMaster,'master').instructions:masterPolicy,roleDelivery:coordinatorRoleStatus(this.store)};
@@ -140,7 +155,7 @@ export class Masters {
   }
   setupError(error:unknown) {
     const message=error instanceof Error?error.message:String(error);
-    if(/^(Desktop (creation|start|setup|project)|Claude Desktop could not|The selected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
+    if(/^(Desktop (creation|start|setup|project)|Claude Desktop could not|The selected Claude Desktop|No owner-connected|Connected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
     if(/^(CLI account|CLI signed out|Connection changed|Review this existing|Custom provider|Configured|Session connection)/.test(message))return message.slice(0,400);
     if(/Claude authentication expired|OAuth|Failed to authenticate/i.test(message))return 'Claude authentication expired. Sign in to the selected Claude app or CLI, then recover this exact setup.';
     if(/workspace not trusted|Claude needs you to trust/i.test(message))return 'Claude needs you to trust this master folder. Open Claude setup, accept its workspace trust prompt, then return here and retry this setup.';
@@ -148,17 +163,21 @@ export class Masters {
   }
   recordSetupFailure(error:unknown,id=this.operation()?.id) {
     const op=this.operation(id);if(!op)return;
-    this.saveOperation({...op,status:'uncertain',updatedAt:Date.now(),needsTrust:/workspace not trusted/i.test(error instanceof Error?error.message:String(error)),error:this.setupError(error)},this.operation()?.id===id);
+    this.saveOperation({...op,status:/^Desktop start needs owner action/.test(error instanceof Error?error.message:String(error))?'needs_action':'uncertain',updatedAt:Date.now(),needsTrust:/workspace not trusted/i.test(error instanceof Error?error.message:String(error)),error:this.setupError(error)},this.operation()?.id===id);
   }
   async recover(operationId?:string) {
+    const op=this.operation(operationId);if(!op)throw new Error('No exact setup to recover.');
+    return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.recoverScoped(op.id));
+  }
+  private async recoverScoped(operationId?:string) {
     this.assertIdle();
     const op=this.operation(operationId);
-    if(!op||!['uncertain','set-aside'].includes(op.status)||!op.bindingId||(!op.nativeId&&!(op.executionMode==='desktop'&&op.provider!=='codex')))throw new Error('No exact created session is available to recover. Create a new session instead.');
+    if(!op||!['uncertain','set-aside','needs_action'].includes(op.status)||!op.bindingId||(!op.nativeId&&!(op.executionMode==='desktop'&&op.provider!=='codex')))throw new Error('No exact created session is available to recover. Create a new session instead.');
     const b=this.store.binding(op.bindingId);if(!b||(op.nativeId&&b.native_id!==op.nativeId))throw new Error('Creation identity is incomplete.');
     this.setAside();this.creating=true;this.saveOperation({...op,status:'creating'});
     void (async()=>{
       await this.connections.assert(b);
-      if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b);
+      if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b,true);
       else if(b.provider==='codex') {
         const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(b,m,p));
         try {await runtime.initialize();const r=await runtime.request('thread/read',{threadId:b.native_id,includeTurns:false});
@@ -176,15 +195,19 @@ export class Masters {
     return this.operation(op.id);
   }
   abandon(operationId?:string) {
+    const op=this.operation(operationId);if(!op)throw new Error('No exact setup to abandon.');
+    return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.abandonScoped(op.id));
+  }
+  private abandonScoped(operationId?:string) {
     this.assertIdle();const op=this.operation(operationId);
-    if(!op||!['uncertain','set-aside'].includes(op.status))throw new Error('Only an unconfirmed setup can be abandoned.');
-    if(op.bindingId&&op.bindingId!==this.store.get('master')){this.store.set(`desktop-abandoned:${op.bindingId}`,'true');this.store.enable(op.bindingId,false);this.stopWorker(op.bindingId);}
+    if(!op||!['uncertain','set-aside','needs_action'].includes(op.status))throw new Error('Only an unconfirmed setup can be abandoned.');
+    if(op.bindingId&&!this.registry.isCoordinator(op.bindingId)){this.store.set(`desktop-abandoned:${op.bindingId}`,'true');this.store.enable(op.bindingId,false);this.stopWorker(op.bindingId);}
     this.saveOperation({...op,status:'abandoned'},this.operation()?.id===op.id);
     return this.operation(op.id);
   }
   activate(b:Binding,operationId?:string) {
     if(operationId&&this.operation()?.id!==operationId)throw new Error('This setup was superseded.');
-    const old=this.store.binding(this.store.get('master')??'');
+    const old=this.registry.bindingFor(b);
     const replacing=old&&old.id!==b.id;
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
@@ -199,14 +222,14 @@ export class Masters {
         this.store.enable(old.id,false);
         this.store.audit('master-replaced',old.id,JSON.stringify({replacement:b.id,closedRequests}));
       }
-      this.store.enable(b.id,true);this.store.set('master',b.id);this.store.set('active',b.id);this.store.set(`name:${b.id}`,this.operation()?.name??this.store.get(`name:${b.id}`)??'WhatsApp master');
+      this.store.enable(b.id,true);this.registry.register(b);this.store.set(`name:${b.id}`,this.operation()?.name??this.store.get(`name:${b.id}`)??'WhatsApp master');
       this.store.set(`native-master:${b.id}`,'true');
       if(b.provider==='claude'){this.store.set('claude-execution-mode',this.store.get(`execution-mode:${b.id}`)??'cli');if(this.store.get(`execution-mode:${b.id}`)==='desktop')this.store.set('claude-desktop-parent',b.native_id);}
       const enabled=this.router.coordinator?.enabled()??[];this.store.set('enabled-apps',JSON.stringify([...new Set([...enabled,b.provider])]));
       this.saveOperation({...this.operation(),status:'ready',nativeId:b.native_id,needsTrust:false,error:undefined,closedRequests});
       this.store.db.exec('COMMIT');
     }catch(e){this.store.db.exec('ROLLBACK');throw e;}
-    if(replacing){this.router.approvals.cancel(old.id);this.runtimes.get(old.id)?.close();this.runtimes.delete(old.id);}
+    if(replacing){this.router.approvals.cancel(old.id);this.stopWorker(old.id);}
   }
 
   async approval(binding:Binding,method:string,params:any) {
@@ -227,6 +250,9 @@ export class Masters {
   mcpConfig(b:Binding){return {command:process.execPath,args:[join(root,'dist/master-channel.js'),join(stateDir,'bindings',`${b.alias}.json`)],env:{WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port}};}
   async useDesktop(sessionId:string,operationId:string){return this.useSession('claude','desktop',sessionId,operationId);}
   async useSession(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string,connectionRevision?:string) {
+    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.useSessionScoped(provider,requestedMode,sessionId,operationId,connectionRevision));
+  }
+  private async useSessionScoped(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string,connectionRevision?:string) {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
     requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),previous=this.operation(operationId);
@@ -243,6 +269,7 @@ export class Masters {
       const managed=mode==='cli'&&(provider==='codex'||portableAgents);
       const route=await this.connections.prepare({provider,cwd:session.cwd},mode,managed,session.accountScope,connectionRevision);
       const priorRoute=b?this.connections.route(b):undefined;
+      if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountKey!==route.accountKey||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
       if(b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
       this.setAside();
       if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
@@ -256,6 +283,9 @@ export class Masters {
     }finally{this.creating=false;}
   }
   async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string):Promise<any> {
+    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision));
+  }
+  private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string):Promise<any> {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
     requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),name=masterName(provider,mode,requestedName),previous=this.operation(operationId);
@@ -269,6 +299,7 @@ export class Masters {
     const op={id:operationId,provider,executionMode:mode,desktopParentId,route,status:'creating',name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
     void (async()=>{
       const launcher=provider==='claude'&&mode==='desktop'?await this.desktop.parent(desktopParentId):undefined;
+      if(launcher)this.saveOperation({...this.operation(),route:{...route,accountScope:launcher.accountScope},resolvedDesktopParentId:launcher.id});
       await this.provision(provider,operationId,mode,launcher?.id??desktopParentId);
     })().catch(e=>this.recordSetupFailure(e,operationId)).finally(()=>{this.creating=false;});
     return op;
@@ -373,7 +404,7 @@ export class Masters {
     });
   }
   private claudeWorker(b:Binding,resume:boolean) {
-    if(portableAgents||(this.store.get(`managed-claude:${b.id}`)==='true'&&b.id!==this.store.get('master')&&this.store.get(`managed-worker:${b.id}`)!=='true'))return new ClaudeSDKSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
+    if(portableAgents||(this.store.get(`managed-claude:${b.id}`)==='true'&&!this.registry.isCoordinator(b.id)&&this.store.get(`managed-worker:${b.id}`)!=='true'))return new ClaudeSDKSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
@@ -416,7 +447,7 @@ export class Masters {
     // A failed configuration read occurs before thread/start. Recovering this
     // exact binding can safely make its first native session; it is not a replay.
     if(b.provider==='codex'&&this.store.get(`worker-preflight:${b.id}`)==='blocked'){await this.provisionWorker(b);return;}
-    if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop'){await this.desktop.confirm(b);return;}
+    if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop'){await this.desktop.confirm(b,true);return;}
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
       try{await runtime.initialize();await runtime.run('Resume this exact project for a connection check only. Return READY without using tools or repeating any prior work.');}

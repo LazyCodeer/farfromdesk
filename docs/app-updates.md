@@ -1,29 +1,33 @@
-# Desktop update notifications
+# In-app updates
 
-The next desktop build shows a compact **Update available** button in the top-right bar. The left side shows only FarFromDesk; the refresh icon and connection/page labels have been removed. It appears on Home, Activity and Settings only when a newer compatible release is known. The dialog shows the release version, installed version, download size, release notes, Later and Download update. Download opens the exact official asset URL in the default browser. It never runs an installer or stops the backend.
+macOS now offers **Update and restart**. One explicit click downloads the official architecture-specific ZIP, displays byte progress, verifies the checksum and app, checks for active work, quits FarFromDesk, replaces its bundle and reopens it. No browser download, DMG mounting or drag-to-Applications step is needed. The backend rejects the restart if native dispatch, approvals or session creation are active. Queued requests do not prevent an update; their ledger and pairing stay outside the app.
 
-Settings also includes **Check for updates**. Checks are independent of the three-second local status polling, group/session discovery and backend connectivity. The native checker runs on app startup and subsequently at most once per six hours, with a one-minute limit for manual rechecks. Concurrent checks share one request. A small cache in the existing application state directory avoids repeated requests after reopening. The UI timer and HTTP client close when the app window is disposed. Native smoke tests skip external update checks.
+The helper uses the bundled Node runtime and runs independently while restarting the UI. It preserves one previous app at `.FarFromDesk-previous.app` beside the installed app and saves a request database snapshot in the private `app-update` state directory before replacement. It never requests sudo or silently elevates permissions. An unwritable installation location produces an actionable error before shutdown. If replacing the bundle or submitting its launch fails, the previous app is restored; an unconfirmed startup after launch retains the previous bundle and database snapshot for diagnosis without restoring a potentially stale database over new requests.
 
-## Distribution prerequisite
+## Validation and trust
 
-The current feed is the public GitHub Releases API for `LazyCodeer/farfromdesk`, queried anonymously. No user messages, machine IDs, local tokens or provider credentials are sent. **The repository currently remains private**, so ordinary installations cannot discover its private releases. A 404, rate limit, timeout or malformed feed is shown as unavailable in Settings, never as proof that the app is up to date. A previous verified update can remain visible while the network is unavailable.
+The helper re-fetches the exact public GitHub release, accepts only uploaded ZIP/checksum assets from `LazyCodeer/farfromdesk`, bounds metadata/download/unpacked sizes and free-space requirements, streams SHA-256 verification and restricts redirects to HTTPS GitHub asset hosts. ZIP paths are checked and macOS sandboxing confines extraction writes to staging; bundle links cannot escape. Code signatures, bundle identifier, architecture and release version are checked. A team-signed installed app requires the same team for its update. Existing ad-hoc releases rely on the official HTTPS release/checksum channel; this does not turn them into notarized or independently signed update feeds. No quarantine, Gatekeeper or trust settings are changed.
 
-Before distributing this feature publicly, provide anonymously accessible releases (either make the intended release repository public with explicit owner authorization, or configure a separate public distribution source in a future build). This change does not change repository visibility, publish installers, deploy the website or make the planned curl install URL live. Already installed older app builds need one manual update to acquire the notification feature.
+The authenticated update-shutdown endpoint is administrator-only. The installed UI checks both source revision and build identity when connecting, so an older backend from the same commit cannot be mistaken for the new build. Successful installation requires the restarted backend to report the expected revision and release identity.
 
-## Version and asset rules
+## Version and platform behavior
 
-- `FFD_VERSION` is supplied by the release build. Development builds default to 0.7.0.
-- Versions use semantic ordering; preview.10 follows preview.9. Equal/older versions are ignored; build metadata alone is not an upgrade.
-- Stable installations ignore prereleases. Preview installations can see newer previews and stable releases.
-- Only non-draft releases with an uploaded asset and matching checksum asset for the running platform/architecture qualify. A source ZIP alone does not qualify.
-- Apple Silicon and Intel Macs receive their respective DMG (or ZIP fallback); Windows x64 receives ZIP, Linux x64 receives tar.gz. Unsupported architectures do not receive another architecture's installer.
-- Download URLs must exactly match the official repository/tag/asset identity. No executable is downloaded or run during checking. The browser download is manual; checksum presence is not a claim that this notifier has downloaded and verified installer bytes.
-- Requests time out after 12 seconds, redirects are disabled for metadata, and metadata is limited to 512 KiB. Only the newest 20 visible release entries are considered; the UI says “No newer compatible release found,” not that all possible historic releases were scanned.
+Checks retain the existing six-hour cache, manual rate limit and small public GitHub metadata request. No provider credentials, messages or machine identifiers are sent. Offline/error responses are not reported as proof that the app is up to date.
 
-## Installing while work is pending
+Local versions such as `0.7.1-local.2023` treat `0.7.1` as their public baseline: they do not offer the same public version or previews, and can upgrade to a newer stable core version. Preview builds retain semantic ordering. macOS uses ZIP for automatic installation. Windows and Linux still use their explicit manual download flow; unattended installation on those platforms is not implemented here.
 
-Downloading does not stop sessions or change queued requests. Before replacing the app, finish current work, pause background forwarding in Settings and quit FarFromDesk. Request data and WhatsApp pairing remain in the application state directory. This notification feature does not implement silent updates, automatic installation/restart or a migration/rollback updater.
+Already-installed builds containing only the download notifier need one update to acquire this functionality. A future published compatible release is required to exercise a real production upgrade. Local checks use mocked HTTP, disposable files/app bundles, real macOS sandboxed ZIP extraction and native packaged-app smoke testing; they do not invent a release or downgrade the user's app.
 
-## Validation
+## Short installation command
 
-Unit tests cover version ordering, platform/CPU selection, drafts, checksum presence, malicious download URLs, private/rate-limited feeds, malformed/oversized responses, parallel checks, persisted cache and failed refresh retention. Widget tests verify banner position across all three pages at the minimum window size, Later, deliberate download opening and absence of backend mutation from the update flow. Release checks use fake HTTP responses in tests; no production release is invented.
+The live website redirects `/install.sh` to the official latest release installer:
+
+```sh
+curl -fsSL https://ffd.codecylabs.com/install.sh | sh
+```
+
+This is for first installation or manual recovery. The installer retains its internal platform, architecture and checksum checks. Normal subsequent macOS updates use the app button.
+
+## Local verification — 26 October 2026
+
+Installed as build 2023. Seven updater/API tests, 18 Flutter tests and Flutter analysis passed. The packaged native smoke test passed. The installed app reconnected to WhatsApp with voice ready; all 13 bindings, 9 pending requests and preferences were preserved. No newer public release was installed to simulate success; the production download-to-restart upgrade awaits a newer published release.

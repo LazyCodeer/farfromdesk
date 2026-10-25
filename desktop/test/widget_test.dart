@@ -135,7 +135,7 @@ void main() {
     },
   );
   testWidgets(
-    'Update banner stays in the top bar on every page and downloads only after a click',
+    'Update banner stays in the top bar and automatic installation requires a click',
     (tester) async {
       tester.view.physicalSize = const Size(900, 640);
       tester.view.devicePixelRatio = 1;
@@ -168,9 +168,13 @@ void main() {
       expect(api.opened, isEmpty);
       await tester.tap(find.text('Update available'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Download update'));
+      await tester.tap(find.text('Update and restart'));
       await tester.pumpAndSettle();
-      expect(api.opened.single.path, endsWith('.dmg'));
+      expect(api.opened, isEmpty);
+      expect(api.installs, 1);
+      expect(find.text('Update could not finish'), findsOneWidget);
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
       expect(api.calls, isEmpty);
       await tester.pumpWidget(const SizedBox());
       expect(api.closed, true);
@@ -262,8 +266,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Where should replies appear?'), findsOneWidget);
-      await tester.ensureVisible(find.text('Change platform or master'));
-      await tester.tap(find.text('Change platform or master'));
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
       expect(find.text('Choose an existing session'), findsOneWidget);
       await tester.tap(find.text('Create new session'));
@@ -311,8 +315,8 @@ void main() {
       final api = ConnectionGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Change platform or master'));
-      await tester.tap(find.text('Change platform or master'));
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Create new session'));
       await tester.pumpAndSettle();
@@ -325,7 +329,7 @@ void main() {
       expect(
         tester
             .widget<FilledButton>(
-              find.widgetWithText(FilledButton, 'Create replacement'),
+              find.widgetWithText(FilledButton, 'Create coordinator'),
             )
             .onPressed,
         isNull,
@@ -340,11 +344,11 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(find.text('Start from a desktop session'), findsOneWidget);
+      expect(find.text('Initial Claude coordinator setup'), findsOneWidget);
       expect(
         tester
             .widget<FilledButton>(
-              find.widgetWithText(FilledButton, 'Create replacement'),
+              find.widgetWithText(FilledButton, 'Create coordinator'),
             )
             .onPressed,
         isNull,
@@ -353,8 +357,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Personal desktop chat').last);
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Create replacement'));
-      await tester.tap(find.text('Create replacement'));
+      await tester.ensureVisible(find.text('Create coordinator'));
+      await tester.tap(find.text('Create coordinator'));
       await tester.pumpAndSettle();
       expect(api.submitted?['provider'], 'claude');
       expect(api.submitted?['executionMode'], 'desktop');
@@ -417,6 +421,28 @@ void main() {
           matchesGoldenFile('../../.local/platform-preferences.png'),
         );
       }
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'Multiple coordinators change default without replacing a session',
+    (tester) async {
+      size(tester);
+      final api = MultiCoordinatorGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Your coordinators'));
+      await tester.pumpAndSettle();
+      expect(find.text('Claude project coordinator'), findsOneWidget);
+      expect(find.text('Codex project coordinator'), findsOneWidget);
+      await tester.ensureVisible(find.text('Make default'));
+      await tester.tap(find.text('Make default'));
+      await tester.pumpAndSettle();
+      expect(api.defaultId, 'claude-coordinator');
+      expect(api.changes, 1);
+      expect(find.text('Codex project coordinator'), findsOneWidget);
+      expect(find.text('Claude project coordinator'), findsOneWidget);
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -492,13 +518,22 @@ class AuditGateway extends PreviewGateway {
 class UpdateGateway extends PreviewGateway {
   UpdateGateway() : super(fixture: 'connected');
   final opened = <Uri>[];
+  int installs = 0;
+  @override
+  bool get canInstallUpdate => true;
+  @override
+  Future<void> installUpdate(AppRelease release, void Function(Map<String, dynamic>) progress) async {
+    installs++;
+    progress({'phase': 'downloading', 'message': 'Downloading update…', 'received': 1, 'total': 10});
+    throw StateError('Test download interrupted; app retained.');
+  }
   bool closed = false;
   @override
   Future<UpdateCheck> checkUpdates({bool manual = false}) async => UpdateCheck(
     release: AppRelease(
       '0.8.0',
       Uri.parse(
-        'https://github.com/LazyCodeer/farfromdesk/releases/download/v0.8.0/FarFromDesk-0.8.0-macos-arm64.dmg',
+        'https://github.com/LazyCodeer/farfromdesk/releases/download/v0.8.0/FarFromDesk-0.8.0-macos-arm64.zip',
       ),
       Uri.parse(
         'https://github.com/LazyCodeer/farfromdesk/releases/tag/v0.8.0',
@@ -619,5 +654,41 @@ class ConnectionGateway extends PreviewGateway {
   ) async {
     if (path == '/api/master-create') submitted = Map.from(data);
     return super.post(path, data);
+  }
+}
+
+class MultiCoordinatorGateway extends ConnectionGateway {
+  String defaultId = 'codex-coordinator';
+  int changes = 0;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['coordinators'] = [
+      for (final provider in ['codex', 'claude'])
+        {
+          'bindingId': '$provider-coordinator',
+          'provider': provider,
+          'executionMode': 'desktop',
+          'name': provider == 'codex'
+              ? 'Codex project coordinator'
+              : 'Claude project coordinator',
+          'enabled': true,
+          'isDefault': defaultId == '$provider-coordinator',
+        },
+    ];
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/coordinators/default') {
+      defaultId = data['bindingId'];
+      changes++;
+      return {};
+    }
+    throw StateError('Unexpected action: $path');
   }
 }

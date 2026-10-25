@@ -40,6 +40,8 @@ app = stage/('FarFromDesk.app' if os_name=='macos' else 'FarFromDesk')
 shutil.copytree(source,app,symlinks=True)
 destination = app/'Contents/Resources/backend' if os_name=='macos' else app/'backend'
 shutil.copytree(backend,destination,symlinks=True)
+meta_file=destination/'build.json'
+meta=json.loads(meta_file.read_text());meta['buildId']=args.version;meta_file.write_text(json.dumps(meta))
 shutil.copytree(ROOT/'build/speech',destination.parent/'speech',symlinks=False)
 # Remove package-install metadata that is not needed at runtime.
 for name in ['package-lock.json']:

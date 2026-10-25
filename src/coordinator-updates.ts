@@ -19,7 +19,11 @@ export function initializeCoordinatorUpdates(store:Store,now=Date.now()) {
 }
 export function queueCoordinatorUpdates(store:Store,router:Router,now=Date.now()) {
   initializeCoordinatorUpdates(store,now);
-  const master=router.coordinator?.master();
+  const entries=router.coordinator?.registry.entries()??[];
+  return entries.reduce((count,e)=>count+queueConnectionUpdates(store,router,e.bindingId,now),0);
+}
+function queueConnectionUpdates(store:Store,router:Router,bindingId:string,now:number) {
+  const master=store.binding(bindingId);
   if(router.stopped||!master||store.get('coordinator-updates-enabled')==='false')return 0;
   const since=Number(store.get('coordinator-summary-since'));
   if(!Number.isFinite(since))return 0;
@@ -66,7 +70,7 @@ export function cancelObsoleteCoordinatorUpdates(store:Store) {
     let valid=false;
     try {
       const data=JSON.parse(store.get(`coordinator-summary-data:${row.source.replace(/:\d+$/,'')}`)??'null') as Snapshot;
-      valid=!!data&&store.get('coordinator-updates-enabled')!=='false'&&data.masterId===store.get('master')&&data.masterId===row.binding_id&&data.destination===row.destination&&!!store.binding(row.binding_id)?.enabled&&data.parents.length>0&&data.jobs.length>0;
+      valid=!!data&&store.get('coordinator-updates-enabled')!=='false'&&(data.masterId===store.get('master')||store.get(`role-kind:${data.masterId}`)==='master')&&data.masterId===row.binding_id&&data.destination===row.destination&&!!store.binding(row.binding_id)?.enabled&&data.parents.length>0&&data.jobs.length>0;
       if(valid)valid=data.parents.every(p=>{const j=store.job(p.id);return j?.binding_id===data.masterId&&j.destination===data.destination&&open.includes(j.status)&&j.status===p.status;})&&data.jobs.every(p=>{const j=store.job(p.id);return !!j&&active.includes(j.status)&&j.status===p.status&&(j.updated_at??j.created_at)===p.updatedAt&&!!store.binding(p.bindingId)?.enabled;});
       if(valid&&store.db.prepare("SELECT 1 FROM outbox WHERE destination=? AND rowid>? AND source NOT LIKE 'coordinator-summary:%' AND status IN ('queued','sent') LIMIT 1").get(row.destination,row.rowid))valid=false;
     }catch{valid=false;}

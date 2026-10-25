@@ -7,7 +7,7 @@ from pathlib import Path
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from desktop_ci_plan import plan, TARGETS
+from desktop_ci_plan import plan, TARGETS, release_identity
 
 
 class DesktopBuildSelectionTests(unittest.TestCase):
@@ -45,11 +45,48 @@ class DesktopBuildSelectionTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp:
             output=Path(tmp)/'output'
+            history=Path(tmp)/'releases.json';history.write_text('[]')
             subprocess.run([sys.executable, str(root/'script/desktop_ci_plan.py')], cwd=root,
                 env={**os.environ, 'FFD_EVENT':'push','FFD_REF':'refs/heads/main',
-                     'FFD_RUN':'1234','FFD_NUMBER':'99','GITHUB_OUTPUT':str(output)},check=True)
+                     'FFD_RUN':'1234','FFD_NUMBER':'99','FFD_RELEASE_HISTORY':str(history),'FFD_SHA':'a'*40,'GITHUB_OUTPUT':str(output)},check=True)
             values=dict(line.split('=',1) for line in output.read_text().splitlines())
             release=json.loads((root/'release.json').read_text())
             self.assertEqual(values['version'],release['version'])
             self.assertNotIn('preview', values['version'])
             self.assertGreaterEqual(int(values['build']),release['build'])
+
+
+class AutomaticReleaseVersionTests(unittest.TestCase):
+    def row(self, version, sha='b'*40, draft=False):
+        return {'tag_name': 'v'+version, 'target_commitish': sha, 'draft': draft, 'prerelease': False}
+
+    def test_new_app_push_increments_public_patch_without_manifest_edit(self):
+        self.assertEqual(release_identity('0.7.1', [self.row('0.7.1')], 'a'*40), ('0.7.2', False))
+        self.assertEqual(release_identity('0.8.0', [self.row('0.7.1')], 'a'*40), ('0.8.0', False))
+
+    def test_matching_published_commit_skips_rebuilding_immutable_assets(self):
+        self.assertEqual(release_identity('0.7.1', [self.row('0.7.2', 'a'*40)], 'a'*40), ('0.7.2', True))
+
+    def test_failed_draft_resumes_exact_identity_and_other_drafts_are_reserved(self):
+        self.assertEqual(release_identity('0.7.1', [self.row('0.7.2', 'a'*40, True)], 'a'*40), ('0.7.2', False))
+        self.assertEqual(release_identity('0.7.1', [self.row('0.7.2', draft=True)], 'a'*40), ('0.7.3', False))
+
+    def test_previews_and_source_only_tags_do_not_set_stable_version(self):
+        rows=[self.row('0.7.1'), self.row('9.0.0-preview.1')]
+        self.assertEqual(release_identity('0.7.1', rows, 'a'*40), ('0.7.2', False))
+
+    def test_broken_history_and_invalid_versions_fail_closed(self):
+        for args in [('bad', [], 'a'*40), ('0.7.1', {}, 'a'*40), ('0.7.1', [], 'main'), ('0.7.1', [None], 'a'*40)]:
+            with self.assertRaises(ValueError): release_identity(*args)
+
+    def test_workflows_have_one_push_check_path_and_never_publish_from_prs(self):
+        root=Path(__file__).resolve().parents[2]
+        workflow=(root/'.github/workflows/desktop.yml').read_text()
+        checks=(root/'.github/workflows/desktop-checks.yml').read_text()
+        self.assertIn("'src/**'", workflow)
+        self.assertIn("'desktop/**'", workflow)
+        self.assertIn('Read release history', workflow)
+        self.assertIn('Require the current main commit', workflow)
+        self.assertNotIn('  pull_request:', workflow)
+        self.assertNotIn('  push:', checks)
+        self.assertIn('  pull_request:', checks)

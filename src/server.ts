@@ -1,3 +1,4 @@
+import { openClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
@@ -18,7 +19,8 @@ import { roleConfig, updateRole, companionStyles } from './roles.js';
 import { fileTypes, MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_OUTGOING_DOCUMENT_BYTES, MAX_INLINE_BYTES } from './file-types.js';
 import { PREPARATION_TIMEOUT_MS } from './disk-artifacts.js';
 
-const sourceCommit=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8')).sourceCommit??null;}catch{return null;}})();
+const buildMeta=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8'));}catch{return {};}})();
+const sourceCommit=buildMeta.sourceCommit??null;
 const equal=(a:string,b:string)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
 export function trustedRequest(req:IncomingMessage) {
   const allowed=[`127.0.0.1:${port}`,`localhost:${port}`];
@@ -65,24 +67,29 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/session/instructions'&&req.method==='GET'&&binding) {json(res,200,roleConfig(store,binding));return;}
       if(path==='/api/session/attachments'&&req.method==='GET'&&binding) {json(res,200,{attachments:router.attachments.references(binding,url.searchParams.get('requestId')??'',true)});return;}
       if(path.startsWith('/api/master/')) {
-        if(!binding||binding.id!==router.coordinator?.master()?.id){json(res,403,{error:'Only the WhatsApp master can use this endpoint'});return;}
+        if(!binding||!router.coordinator?.isCoordinator(binding.id)){json(res,403,{error:'Only the WhatsApp master can use this endpoint'});return;}
+        return await router.coordinator!.scope.run(binding.id,async()=>{
+        if(path==='/api/master/coordinators'&&req.method==='GET'){json(res,200,{coordinators:router.coordinator!.registry.view()});return;}
+        if(path==='/api/master/delegate'&&req.method==='POST'){const d=await body(req);json(res,200,router.coordinator!.delegate(d.requestId,d.coordinatorId,d.text,d.eventId));return;}
         if(path==='/api/master/agents'&&req.method==='GET') {json(res,200,{agents:listNamedAgents(store).map(({instructions,...a})=>a)});return;}
-        if(path==='/api/master/define-agent'&&req.method==='POST') {const d=await body(req);router.coordinator.ownerRequest(d.requestId);json(res,200,defineNamedAgent(store,d));return;}
+        if(path==='/api/master/define-agent'&&req.method==='POST') {const d=await body(req);router.coordinator!.ownerRequest(d.requestId);json(res,200,defineNamedAgent(store,d));return;}
         if(path==='/api/master/assign-agent'&&req.method==='POST') {
-          const d=await body(req);router.coordinator.ownerRequest(d.requestId);
+          const d=await body(req);router.coordinator!.ownerRequest(d.requestId);
           const b=store.binding(d.bindingId);
-          if(!b||!b.enabled||b.id!==binding.id&&!router.coordinator.selected().some(s=>s.id===b.id))throw new Error('Choose the coordinator or an already selected worker.');
+          if(!b||!b.enabled||b.id!==binding.id&&!router.coordinator!.selected().some(s=>s.id===b.id))throw new Error('Choose the coordinator or an already selected worker.');
           json(res,200,assignNamedAgent(store,b,d.name));return;
         }
-        if(path==='/api/master/sessions'&&req.method==='GET') {const p=url.searchParams.get('page')??'0';json(res,200,{text:await router.coordinator.list(url.searchParams.get('search')??'',p==='more'||p==='back'?p:Number(p)),...router.coordinator.pageDetails()});return;}
-        if(path==='/api/master/connect'&&req.method==='POST') {const d=await body(req);json(res,200,{sessions:await router.coordinator.connect(d.requestId,d.targets)});return;}
+        if(path==='/api/master/sessions'&&req.method==='GET') {const p=url.searchParams.get('page')??'0';json(res,200,{text:await router.coordinator!.list(url.searchParams.get('search')??'',p==='more'||p==='back'?p:Number(p)),...router.coordinator!.pageDetails()});return;}
+        if(path==='/api/master/connect'&&req.method==='POST') {const d=await body(req);json(res,200,{sessions:await router.coordinator!.connect(d.requestId,d.targets)});return;}
         if(path==='/api/master/create-worker'&&req.method==='POST') {if(!services?.workers)throw new Error('Worker creation is unavailable.');json(res,200,{operation:await services.workers.start(await body(req))});return;}
-        if(path==='/api/master/worker-status'&&req.method==='GET') {if(!services?.workers)throw new Error('Worker creation is unavailable.');json(res,200,{operations:services.workers.view(url.searchParams.get('id')??undefined)});return;}
+        if(path==='/api/master/worker-status'&&req.method==='GET') {if(!services?.workers)throw new Error('Worker creation is unavailable.');json(res,200,{operations:services.workers.view(url.searchParams.get('id')??undefined).filter(o=>o.masterId===binding.id)});return;}
         if(path==='/api/master/recover-worker'&&req.method==='POST') {if(!services?.workers)throw new Error('Worker creation is unavailable.');const d=await body(req);json(res,200,{operation:await services.workers.recover(d.requestId,d.id)});return;}
-        if(path==='/api/master/selected'&&req.method==='GET') {json(res,200,{sessions:router.coordinator.selected().map(b=>({id:b.id,alias:b.alias,name:router.coordinator!.name(b),provider:b.provider,executionMode:store.get(`execution-mode:${b.id}`),connection:router.native.connections?.route(b)?.label}))});return;}
-        if(path==='/api/master/dispatch'&&req.method==='POST') {const d=await body(req);if(!Array.isArray(d.targets)||typeof d.text!=='string'||!d.text.trim()||d.text.length>32000||typeof d.eventId!=='string'||d.attachmentIds!==undefined&&!Array.isArray(d.attachmentIds))throw new Error('Targets, nonempty text, event ID and optional attachment IDs required');json(res,200,{jobs:router.coordinator.dispatch(d.requestId,d.targets,d.text,d.eventId,d.attachmentIds)});return;}
-        if(path==='/api/master/quiet'&&req.method==='POST') {const d=await body(req);json(res,200,router.coordinator.quiet(d.requestId,d.resolveOutcome));return;}
+        if(path==='/api/master/selected'&&req.method==='GET') {json(res,200,{sessions:router.coordinator!.selected().map(b=>({id:b.id,alias:b.alias,name:router.coordinator!.name(b),provider:b.provider,executionMode:store.get(`execution-mode:${b.id}`),connection:router.native.connections?.route(b)?.label}))});return;}
+        if(path==='/api/master/dispatch'&&req.method==='POST') {const d=await body(req);if(!Array.isArray(d.targets)||typeof d.text!=='string'||!d.text.trim()||d.text.length>32000||typeof d.eventId!=='string'||d.attachmentIds!==undefined&&!Array.isArray(d.attachmentIds))throw new Error('Targets, nonempty text, event ID and optional attachment IDs required');json(res,200,{jobs:router.coordinator!.dispatch(d.requestId,d.targets,d.text,d.eventId,d.attachmentIds)});return;}
+        if(path==='/api/master/quiet'&&req.method==='POST') {const d=await body(req);json(res,200,router.coordinator!.quiet(d.requestId,d.resolveOutcome));return;}
         if(path==='/api/master/resolve'&&req.method==='POST') {const d=await body(req);router.resolveOwner(d.requestId,d.outcome);json(res,200,{ok:true});return;}
+        json(res,404,{error:'Unknown coordinator endpoint'});
+        });
       }
       if(path==='/api/session/reply'&&req.method==='POST') {
         const d=await body(req),b=binding??store.binding(d.bindingId);
@@ -122,7 +129,13 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/media/cleanup'&&req.method==='POST') {await body(req);json(res,200,{incoming:router.attachments.cleanup(),outgoing:artifacts.cleanup()});return;}
       if(path==='/api/hook-update'&&req.method==='GET') {json(res,200,store.hookUpdate(url.searchParams.get('id')??'')??{text:'This local update has expired.'});return;}
       if(path==='/api/request-events'&&req.method==='GET') {const id=url.searchParams.get('id')??'';json(res,200,{events:store.events(id),deliveries:store.deliveries(id)});return;}
-      if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,pid:process.pid,platform:process.platform});return;}
+      if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
+      if(path==='/api/update-shutdown'&&req.method==='POST') {
+        await body(req);
+        if(router.busy.size||router.approvals.pending.size||services?.masters.creating||services?.workers?.operations().some(o=>['checking','creating','awaiting_approval'].includes(o.status)))throw new Error('Finish the active request or session setup before restarting for an update. The downloaded update can be retried afterward.');
+        router.stopped=true;
+        json(res,200,{ok:true});setImmediate(()=>server.emit('ffd-shutdown'));return;
+      }
       if(path==='/api/shutdown'&&req.method==='POST'){await body(req);json(res,200,{ok:true});setImmediate(()=>server.emit('ffd-shutdown'));return;}
       if(path==='/api/desktop/connect-sessions'&&req.method==='POST'){const d=await body(req);if(!router.coordinator||!Array.isArray(d.targets)||!d.targets.length||d.targets.length>50)throw new Error('Choose 1–50 exact sessions.');await router.coordinator.refresh();const chosen=d.targets.map((target:string)=>{const s=router.coordinator!.sessions.find(s=>`${s.provider}:${s.executionMode??'cli'}:${s.id}`===target||`${s.provider}:${s.id}`===target);if(!s||s.available===false)throw new Error('Refresh and choose an available exact session.');return s;});json(res,200,{sessions:(await router.coordinator.connectSessions(chosen,true,()=>{},d.reviewConnections===true)).map(cleanBinding)});return;}
       if(path==='/api/request-review-bulk'&&req.method==='POST') {
@@ -165,6 +178,15 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');
         json(res,200,await services.masters.useSession(d.provider,d.executionMode,d.sessionId,d.operationId,d.connectionRevision));return;
       }
+      if(path==='/api/master-open-proposal'&&req.method==='POST') {
+        const d=await body(req),op=services?.masters.operation(d.operationId),start=op?.bindingId?services?.masters.desktop.get(op.bindingId):undefined;
+        if(!start?.proposalId)throw new Error('No saved Claude proposal exists for this setup.');
+        const catalog=await router.native.catalog('claude',undefined,{fresh:true});
+        const parent=catalog.sessions.find(s=>s.id===start.parentId&&s.executionMode==='desktop');
+        if(!parent||(start.accountScope&&parent.accountScope!==start.accountScope))throw new Error('The original Claude coordinator account is unavailable.');
+        await openClaudeDesktop(parent);json(res,200,{opened:true});return;
+      }
+      if(path==='/api/coordinators/default'&&req.method==='POST'){const d=await body(req);if(!router.coordinator)throw new Error('Coordinators unavailable.');router.coordinator.registry.setDefault(d.bindingId);json(res,200,{ok:true});return;}
       if(path==='/api/platform-preference'&&req.method==='POST') {
         const d=await body(req);if(!services)throw new Error('Platform discovery is unavailable.');
         json(res,200,{platformPreferences:await services.masters.setPlatformPreference(d.provider,d.executionMode,d.desktopParentId,d.connectionRevision)});return;
@@ -182,7 +204,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/master-abandon'&&req.method==='POST') {const d=await body(req);if(!services)throw new Error('Update the service.');json(res,200,services.masters.abandon(d.operationId));return;}
       if(path==='/api/status'&&req.method==='GET') {
         const c=router.coordinator;
-        json(res,200,{unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        json(res,200,{unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');
@@ -213,7 +235,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/master-setup'&&req.method==='POST') {
         const d=await body(req),b=store.binding(d.bindingId);if(!b||b.provider!=='codex')throw new Error('Register an actual Codex master chat first');
-        store.set('master',b.id);store.set('active',b.id);store.set(`name:${b.id}`,'WhatsApp master');json(res,200,{ok:true});return;
+        router.coordinator?.registry.register(b);router.coordinator?.registry.setDefault(b.id);store.set(`name:${b.id}`,'WhatsApp master');json(res,200,{ok:true});return;
       }
       if(path==='/api/logout'&&req.method==='POST') {
         const d=await body(req);if(d.confirmed!==true)throw new Error('Confirm logout first.');

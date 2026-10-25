@@ -27,7 +27,8 @@ export class Router {
       b=this.need(match[1]);text=match[2]?.trim()??'';
     } else if(m.quotedId) {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
-    } else b=this.coordinator?this.coordinator.master():this.store.binding(this.store.get('active')??'');
+      this.checkQuotedPlatform(text,b);
+    } else b=this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??'');
     if(!b)throw new Error('Choose an exact session before sending an attachment.');
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
@@ -93,6 +94,7 @@ export class Router {
         if(m.quotedId) {
           b=this.store.quotedBinding(m.quotedId);
           if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME message.');
+          this.checkQuotedPlatform(text,b);
         } else if(this.coordinator){this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return {status:'queued',requestId:m.id};}
         else b=this.store.binding(this.store.get('active')??'');
         if(!b)throw new Error('Choose a session with /use NAME or quote an agent reply. Send /sessions to see your sessions.');
@@ -107,8 +109,9 @@ export class Router {
       WHERE s.value=? AND i.status NOT IN ('completed','reviewed','auto_closed','replaced') LIMIT 1`).get(id);
   }
   resolveOwner(id:string,outcome:RequestOutcome,acknowledgingReport?:string) {
-    const job=this.store.job(id),master=this.coordinator?.master();
-    if(!job||!/^(wa|local):/.test(id)||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
+    const job=this.store.job(id),master=this.coordinator?.requestMaster(id);
+    if(this.coordinator?.scope.getStore()&&master?.id!==this.coordinator.scope.getStore())throw new Error('Request belongs to another coordinator.');
+    if(!job||!/^(wa|local|master):/.test(id)||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
     if(!['done','blocked','reviewed','cancelled'].includes(outcome))throw new Error('An explicit outcome is required.');
     if(job.status==='completed'){if(job.outcome!==outcome)throw new Error('This request already has a different outcome.');return;}
     const children=this.store.db.prepare(`SELECT i.id,i.binding_id FROM inbox i JOIN settings s ON s.key='parent:'||i.id WHERE s.value=?`).all(id) as {id:string;binding_id:string}[];
@@ -116,6 +119,7 @@ export class Router {
     const pendingReports=this.store.db.prepare(`SELECT i.id FROM inbox i LEFT JOIN settings s ON s.key='report-parent:'||i.id LEFT JOIN settings legacy ON legacy.key='parent:'||substr(i.id,8) WHERE i.id LIKE 'report:%' AND COALESCE(s.value,legacy.value)=? AND i.status NOT IN ('completed','reviewed','auto_closed','replaced')`).all(id) as {id:string}[];
     if(this.hasPendingCreation?.(id)||this.unfinishedChildren(id)||pendingReports.some(r=>r.id!==acknowledgingReport)||[...this.approvals.pending.values()].some(p=>related.has(p.binding.id)))throw new Error('Finish or review delegated work, reports and pending approvals before resolving the owner request.');
     this.store.jobState(id,'completed',null,outcome);this.store.event(id,'owner_resolved',{outcome});
+    if(id.startsWith('master:')&&master)this.coordinator?.workerReply(master,`Delegated work resolved: ${outcome}.`,id,true,'final');
   }
   requestProtected(id:string,bindingId:string) {
     if(this.busy.has(bindingId)||this.store.hasDispatched(bindingId)||[...this.approvals.pending.values()].some(p=>p.binding.id===bindingId))return true;
@@ -179,6 +183,11 @@ export class Router {
     } catch(e) {this.store.db.exec('ROLLBACK');throw e;}
     return {ok:true};
   }
+  private checkQuotedPlatform(text:string,b:Binding) {
+    const target=this.coordinator?.explicitDestination(text);if(!target||target.id===b.id)return;
+    const route=this.native.connections?.route(b);
+    if(!this.coordinator!.registry.matches(target.id,{provider:b.provider,executionMode:route?.executionMode??this.store.get(`execution-mode:${b.id}`),accountScope:route?.accountScope}))throw new Error('The quoted session and named platform conflict. Choose one destination.');
+  }
   need(id:string){const b=this.store.binding(id);if(!b?.enabled)throw new Error('Session is missing or paused. Send /sessions.');return b;}
   queue(id:string,b:Binding,text:string) {
     if(text.length>32000)throw new Error('Message exceeds 32,000 characters.');
@@ -186,7 +195,7 @@ export class Router {
     try {
       const exists=!!this.store.job(id);
       this.store.enqueue(id,b,text);
-      if(!exists&&b.id===this.coordinator?.master()?.id)queueOwnerReceipt(this.store,id,b);
+      if(!exists&&this.coordinator?.isCoordinator(b.id))queueOwnerReceipt(this.store,id,b);
       this.store.db.exec('RELEASE queue_owner');
     }catch(e){this.store.db.exec('ROLLBACK TO queue_owner; RELEASE queue_owner');throw e;}
   }
@@ -196,7 +205,9 @@ export class Router {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.store.queued(b.id);if(!job)continue;
       this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
-      void this.native.run(b,job.body,job.id).then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
+      const run=()=>this.native.run(b,job.body,job.id);
+      const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
+      void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
         this.store.jobState(job.id,'uncertain',(e as Error).message);
         this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null);

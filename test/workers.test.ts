@@ -86,7 +86,7 @@ test('symlink workspace and stale master authorization cannot acquire workspace 
   const f=fixture();
   try {
     mkdirSync(join(f.dir,'outside'));symlinkSync(join(f.dir,'outside'),f.root);
-    const op=await f.workers.start(f.request);approve(f);await settled(f);assert.equal(f.workers.get(op.id)?.status,'uncertain');assert.equal(f.counts().creations,0);
+    const op=await f.workers.start(f.request);approve(f);await settled(f);assert.equal(f.workers.get(op.id)?.status,'blocked');assert.equal(f.counts().creations,0);
     assert.equal(f.store.get('worker-workspace'),undefined);
   }finally{f.close();}
   const g=fixture();
@@ -201,4 +201,54 @@ test('new workers reject changed preferred CLI accounts before approval or creat
     await assert.rejects(f.workers.start(f.request),/preferred CLI account or provider changed/);
     assert.equal(f.workers.operations().length,0);assert.equal(f.approvals.pending.size,0);assert.equal(f.counts().creations,0);
   }finally{f.close();}
+});
+
+
+test('missing Desktop launcher is blocked before approval and the same operation recovers once',async()=>{
+ const f=fixture();try {
+  f.prefer('claude','desktop');let available=false,launches=0;
+  (f.masters as any).desktop={parent:async()=>{launches++;if(!available)throw new Error('No owner-connected Claude Desktop launcher is available.');return {id:uuid,accountScope:'owner'};}};
+  const request={...f.request,provider:'claude' as const};
+  const op=await f.workers.start(request);await settled(f);
+  assert.equal(f.workers.get(op.id)?.status,'blocked');assert.equal(f.workers.view(op.id)[0].execution,'not_started');
+  assert.equal(f.workers.get(op.id)?.bindingId,undefined);assert.equal(f.approvals.pending.size,0);assert.equal(existsSync(f.root),false);
+  f.store.jobState(request.requestId,'completed',null,'blocked');f.store.enqueue('wa:recover',f.master,'Recover original creation');available=true;
+  const [a,b]=await Promise.all([f.workers.recover('wa:recover',op.id),f.workers.recover('wa:recover',op.id)]);
+  assert.equal(a.id,op.id);assert.equal(b.id,op.id);
+  for(let i=0;i<30&&!f.approvals.pending.size;i++)await new Promise(r=>setTimeout(r,5));
+  approve(f);await settled(f);
+  const result=f.workers.get(op.id)!;assert.equal(result.status,'ready');assert.equal(result.originRequestId,request.requestId);assert.equal(result.eventId,request.eventId);
+  assert.equal(f.counts().creations,1);assert.equal(launches,2);assert.equal(f.workers.operations().length,1);
+  assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,1);
+ }finally{f.close();}
+});
+
+test('legacy no-binding uncertainty recovers without changing the operation ID or runtime',async()=>{
+ const f=fixture();try {
+  const route=await f.masters.connections.prepare({provider:'codex',cwd:f.root},'cli',true);
+  f.workers.save({...f.request,id:'legacy',masterId:f.master.id,route,executionMode:'cli',status:'uncertain',error:'Preflight failure'});
+  f.prefer('codex','desktop');f.store.enqueue('wa:recover',f.master,'Recover');
+  await f.workers.recover('wa:recover','legacy');
+  for(let i=0;i<30&&!f.approvals.pending.size;i++)await new Promise(r=>setTimeout(r,5));
+  approve(f);await settled(f);assert.equal(f.workers.get('legacy')?.status,'ready');assert.equal(f.workers.get('legacy')?.executionMode,'cli');assert.equal(f.counts().creations,1);
+ }finally{f.close();}
+});
+
+test('pre-start recovery refuses changed accounts and leftover local state',async()=>{
+ const f=fixture();try {
+  const route=await f.masters.connections.prepare({provider:'codex',cwd:f.root},'cli',true);
+  f.workers.save({...f.request,id:'blocked',masterId:f.master.id,route,executionMode:'cli',status:'blocked'});f.store.enqueue('wa:recover',f.master,'Recover');
+  f.masters.connections=new Connections(f.store,async()=>({state:'verified',label:'Other account',accountKey:'other'}));
+  await f.workers.recover('wa:recover','blocked');await settled(f);assert.equal(f.workers.get('blocked')?.status,'blocked');assert.match(f.workers.get('blocked')?.error??'',/account or profile changed/);assert.equal(f.counts().creations,0);assert.equal(f.approvals.pending.size,0);
+  mkdirSync(join(f.root,'project-blocked'),{recursive:true});await assert.rejects(f.workers.recover('wa:recover','blocked'),/local state/);assert.equal(f.counts().creations,0);
+ }finally{f.close();}
+});
+
+test('pre-start recovery revalidates the current owner request after account lookup',async()=>{
+ const f=fixture();try {
+  const route=await f.masters.connections.prepare({provider:'codex',cwd:f.root},'cli',true);
+  f.workers.save({...f.request,id:'cancelled',masterId:f.master.id,route,executionMode:'cli',status:'blocked'});f.store.enqueue('wa:recover',f.master,'Recover');
+  f.masters.connections=new Connections(f.store,async()=>{f.store.jobState('wa:recover','replaced');return {state:'verified',label:'Test account',accountKey:'test-account'};});
+  await f.workers.recover('wa:recover','cancelled');await settled(f);assert.equal(f.workers.get('cancelled')?.status,'blocked');assert.equal(f.counts().creations,0);assert.equal(f.approvals.pending.size,0);
+ }finally{f.close();}
 });

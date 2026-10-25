@@ -604,7 +604,7 @@ extension _BridgeScreens on _DeskState {
       codingPlatformsCard(),
       card(
         master != null
-            ? assistantSummary(master)
+            ? coordinatorSummary()
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -870,7 +870,7 @@ extension _BridgeScreens on _DeskState {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         small(
-          'Choose which detected app to use for new sessions on each platform. Your coordinator and existing sessions stay connected.',
+          'Choose your preferred runtime when a request names only Claude or Codex. Manage each connected coordinator below.',
         ),
         gap(18),
         for (final provider in ['codex', 'claude']) ...[
@@ -962,6 +962,16 @@ extension _BridgeScreens on _DeskState {
                 small(
                   preferredPlatform(provider)?['connectionLabel'] ?? 'No preference saved. Choose Desktop or CLI independently of your coordinator.',
                 ),
+                if (preferredPlatform(provider)?['executionMode'] == 'desktop')
+                  for (final option in platforms.where(
+                    (p) =>
+                        p['provider'] == provider &&
+                        p['executionMode'] == 'desktop',
+                  ))
+                    if (option['creationReadiness']?['message'] != null) ...[
+                      gap(8),
+                      small(option['creationReadiness']['message']),
+                    ],
               ],
             ),
           ),
@@ -979,6 +989,117 @@ extension _BridgeScreens on _DeskState {
       'executionMode': mode,
       'connectionRevision': option['connection']?['revision'],
     });
+  }
+
+  Widget coordinatorSummary() {
+    final entries = List<Map>.from(status['coordinators'] ?? []);
+    if (entries.isEmpty) return assistantSummary(status['master']);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Your coordinators',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        gap(8),
+        small(
+          'Name a platform in WhatsApp, or use the default for general requests. Existing sessions stay connected.',
+        ),
+        gap(16),
+        for (final entry in entries) ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: canvas,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: line),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      entry['provider'] == 'claude'
+                          ? Icons.auto_awesome_outlined
+                          : Icons.terminal,
+                      color: accent,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            entry['name'] ?? 'Coordinator',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          gap(4),
+                          small(
+                            '${entry['provider'] == 'claude' ? 'Claude' : 'Codex'} ${entry['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}',
+                          ),
+                        ],
+                      ),
+                    ),
+                    tag(
+                      entry['enabled'] == true
+                          ? (entry['isDefault'] == true
+                                ? 'Default'
+                                : 'Connected')
+                          : 'Paused',
+                      good: entry['enabled'] == true,
+                    ),
+                  ],
+                ),
+                gap(12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    if (entry['isDefault'] != true && entry['enabled'] == true)
+                      button(
+                        'Make default',
+                        () => post('/api/coordinators/default', {
+                          'bindingId': entry['bindingId'],
+                        }),
+                      ),
+                    button(
+                      'Change coordinator',
+                      () => openMaster(
+                        '${entry['provider']}:${entry['executionMode']}',
+                      ),
+                    ),
+                    button(
+                      entry['enabled'] == true ? 'Pause' : 'Resume',
+                      () => post('/api/action', {
+                        'command':
+                            "/${entry['enabled'] == true ? 'pause' : 'resume'} ${entry['bindingId']}",
+                      }),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          gap(10),
+        ],
+        Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          children: [
+            button(
+              'Add platform coordinator',
+              () => openMaster(),
+              primary: true,
+              icon: Icons.add,
+            ),
+            button('View instructions', showInstructions),
+          ],
+        ),
+        ...setupOperation(),
+      ],
+    );
   }
 
   Widget assistantSummary(dynamic master) => Column(
@@ -1069,7 +1190,7 @@ extension _BridgeScreens on _DeskState {
           ),
           const SizedBox(width: 20),
           button(
-            'Change platform or master',
+            'Manage coordinators',
             openMaster,
             primary: true,
             icon: Icons.sync,
@@ -1263,8 +1384,16 @@ extension _BridgeScreens on _DeskState {
         ),
         gap(14),
         if (setupAction == 'new') ...[
-          if (platform == 'claude:desktop') ...[
-            const Text('Start from a desktop session'),
+          if (platform == 'claude:desktop' &&
+              selectedPlatform?['coordinatorId'] != null) ...[
+            small(
+              'Your connected Claude coordinator initializes this session.',
+            ),
+            gap(12),
+          ],
+          if (platform == 'claude:desktop' &&
+              selectedPlatform?['coordinatorId'] == null) ...[
+            const Text('Initial Claude coordinator setup'),
             gap(8),
             DropdownButtonFormField<String>(
               initialValue: desktopLauncher,
@@ -1452,7 +1581,7 @@ extension _BridgeScreens on _DeskState {
           gap(10),
           small(
             selectedNativeId.isEmpty
-                ? 'Select a session to use as your master.'
+                ? 'Select the coordinator for this connection.'
                 : 'Finish active native turns before resuming this exact conversation.',
           ),
           gap(8),
@@ -1483,7 +1612,9 @@ extension _BridgeScreens on _DeskState {
     final can =
         preferences['backgroundEnabled'] == true &&
         selectedPlatform?['available'] == true &&
-        status['masterSetup']?['operation']?['status'] != 'creating';
+        !(status['masterSetup']?['operation']?['status'] == 'creating' &&
+            '${status['masterSetup']?['operation']?['provider']}:${status['masterSetup']?['operation']?['executionMode']}' ==
+                platform);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1492,12 +1623,14 @@ extension _BridgeScreens on _DeskState {
             const Spacer(),
             button(
               setupAction == 'new'
-                  ? (status['master'] == null
-                        ? 'Create master'
-                        : 'Create replacement')
-                  : (status['master'] == null
-                        ? 'Use selected session'
-                        : 'Use as master'),
+                  ? (List<Map>.from(status['coordinators'] ?? []).any(
+                          (c) =>
+                              '${c['provider']}:${c['executionMode']}' ==
+                              platform,
+                        )
+                        ? 'Create replacement'
+                        : 'Create coordinator')
+                  : 'Use selected session',
               submitMaster,
               primary: true,
               enabled:
@@ -1516,7 +1649,7 @@ extension _BridgeScreens on _DeskState {
         small(
           status['master'] == null
               ? 'Your chosen app’s sign-in and permissions apply.'
-              : 'Switches only after setup succeeds. Previous master requests will then close.',
+              : 'Only replaces a coordinator on the same connection. Other platforms and their requests stay active.',
         ),
       ],
     );
@@ -1570,10 +1703,13 @@ extension _BridgeScreens on _DeskState {
     modalUpdate?.call(() {});
   }
 
-  Future<void> openMaster() async {
+  Future<void> openMaster([String? requestedPlatform]) async {
     editSetup(() {
       platform =
-          '${status['master']['provider']}:${status['master']['executionMode']}';
+          requestedPlatform ??
+          (status['master'] == null
+              ? platform
+              : '${status['master']['provider']}:${status['master']['executionMode']}');
       setupAction = 'existing';
       selectedNativeId = '';
       search.clear();
@@ -2139,7 +2275,7 @@ extension _BridgeScreens on _DeskState {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          '${binding?['name'] ?? binding?['alias'] ?? 'Coding session'} · ${requestKind(job)}',
+                          '${binding?['provider'] ?? ''} ${binding?['executionMode'] ?? ''} · ${binding?['name'] ?? binding?['alias'] ?? 'Coding session'} · ${requestKind(job)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontSize: 11, color: muted),
