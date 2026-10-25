@@ -24,6 +24,35 @@ void main() {
   }
 
   testWidgets(
+    'Instructions render Markdown in a larger dialog with a close icon',
+    (tester) async {
+      size(tester);
+      await tester.pumpWidget(FarFromDeskApp(gateway: InstructionsGateway()));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('View instructions'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('View instructions'));
+      await tester.pumpAndSettle();
+      expect(find.text('Coordinator instructions'), findsOneWidget);
+      expect(find.text('Version secret-version'), findsNothing);
+      expect(find.text('internal-agent-name'), findsNothing);
+      expect(find.text('Done'), findsNothing);
+      expect(find.textContaining('# Sample heading'), findsNothing);
+      expect(find.textContaining('Sample heading'), findsOneWidget);
+      expect(tester.getSize(find.byType(Dialog)).width, greaterThan(560));
+      expect(find.byTooltip('Close instructions'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byTooltip('Close instructions'));
+      await tester.pumpAndSettle();
+      expect(find.byType(Dialog), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Activity presents request summaries and supports search and recovery guidance',
     (tester) async {
       size(tester);
@@ -522,11 +551,20 @@ class UpdateGateway extends PreviewGateway {
   @override
   bool get canInstallUpdate => true;
   @override
-  Future<void> installUpdate(AppRelease release, void Function(Map<String, dynamic>) progress) async {
+  Future<void> installUpdate(
+    AppRelease release,
+    void Function(Map<String, dynamic>) progress,
+  ) async {
     installs++;
-    progress({'phase': 'downloading', 'message': 'Downloading update…', 'received': 1, 'total': 10});
+    progress({
+      'phase': 'downloading',
+      'message': 'Downloading update…',
+      'received': 1,
+      'total': 10,
+    });
     throw StateError('Test download interrupted; app retained.');
   }
+
   bool closed = false;
   @override
   Future<UpdateCheck> checkUpdates({bool manual = false}) async => UpdateCheck(
@@ -690,5 +728,21 @@ class MultiCoordinatorGateway extends ConnectionGateway {
       return {};
     }
     throw StateError('Unexpected action: $path');
+  }
+}
+
+class InstructionsGateway extends MultiCoordinatorGateway {
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['masterSetup'] = Map<String, dynamic>.from(data['masterSetup']);
+    data['masterSetup']['prompt'] =
+        '# Sample heading\n\nA **clear instruction**.\n\n- A useful step';
+    data['masterSetup']['roleDelivery'] = {
+      'state': 'sent',
+      'policyVersion': 'secret-version',
+      'agentName': 'internal-agent-name',
+    };
+    return data;
   }
 }

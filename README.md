@@ -41,7 +41,7 @@ Mac supports the existing Desktop integrations (which require Python 3) and CLI 
 On macOS or Linux, this downloads the latest version-pinned installer, verifies the app archive checksum, and installs for your user account:
 
 ```sh
-curl -fsSL --proto '=https' --proto-redir '=https' https://github.com/LazyCodeer/farfromdesk/releases/latest/download/install.sh -o /tmp/farfromdesk-install.sh && sh /tmp/farfromdesk-install.sh
+curl -fsSL https://ffd.codecylabs.com/install.sh | sh
 ```
 
 On Windows, download **install.ps1** from the latest release and run it in PowerShell, or use the ZIP download. You can inspect either installer before running it. No administrator access is required. Pause forwarding and quit an older FarFromDesk before replacing it; your pairing and saved requests stay outside the app installation.
@@ -95,6 +95,8 @@ FarFromDesk connects to the assistants you already use. It does not replace thei
 
 On Mac, FarFromDesk has **Codex Desktop**, **Codex CLI**, **Claude Desktop**, and **Claude CLI** options. Windows and Linux currently offer the CLI options. Availability depends on your installed version, sign-in, account, and whether the selected session can be reached.
 
+Each Desktop or CLI connection can have its own coordinator, with one default for new messages. Some new Claude Desktop chats require you to start a proposal in Claude; FarFromDesk verifies the child before dispatching its task. Existing-chat messaging is separate from this creation step. Follow the app’s recovery guidance instead of repeatedly creating replacements.
+
 A chat visible in history may need to be opened before FarFromDesk can connect. A Desktop login does not automatically sign you into the CLI. Not every version and account combination has completed a real-phone test.
 
 ## Private by design, with you in control
@@ -116,7 +118,7 @@ FarFromDesk uses an unofficial WhatsApp connection and is not affiliated with Wh
 
 **Can I use more than one session?** Yes. Selecting a new session adds it to the connected set. Quote a reply to address that particular session.
 
-**Where do updates appear?** New app downloads and release notes appear in [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases). FarFromDesk checks for newer compatible releases automatically and shows **Update available** in the top-right bar. You can also check in Settings. Clicking the banner lets you read the release notes and download the version for your computer; installation remains manual. Checks run on launch and at most every six hours; no model credentials are sent to GitHub.
+**Where do updates appear?** New app downloads and release notes appear in [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases). FarFromDesk checks for newer compatible releases automatically and shows **Update available** in the top-right bar. You can also check in Settings. On macOS, **Update and restart** downloads and verifies the compatible release, then replaces and relaunches the app when active work permits. Windows and Linux open the download for manual installation. Checks run on launch and at most every six hours; no model credentials are sent to GitHub.
 
 **Need help?** See [Troubleshooting](docs/TROUBLESHOOTING.md). For a bug report, include your app version, platform, and sanitized steps. Never share pairing QR codes, credentials, or private recordings. Report sensitive issues using [our security policy](SECURITY.md).
 

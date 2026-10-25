@@ -19,3 +19,7 @@ The planner reads current GitHub release history before allocating native runner
 Quick checks, platform tests, native startup and bundled-speech checks must pass before publication. All four manifests/checksums must agree on version and source commit. Assets are uploaded into a draft, verified remotely, and only then published as the latest stable release. A failed target cannot create a partial public release.
 
 Cache reuse, cancellation and three-day artifact retention remain enabled. This task does not enable a self-hosted runner, change GitHub billing, or deploy the website.
+
+## Native smoke time limits
+
+The native UI smoke has a 90-second startup window, five-second HTTP deadlines, a three-minute overall watchdog and a four-minute workflow step limit. It prints the phase being tested and terminates its disposable GUI process group during cleanup. A stalled native app fails the release gate instead of holding an entire runner until the 35-minute job limit. The regression tests cover stalled HTTP headers/body and a process that ignores SIGTERM; native startup still has to pass on every platform.

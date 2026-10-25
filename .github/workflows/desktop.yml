@@ -128,8 +128,10 @@ jobs:
       - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
       - if: runner.os == 'Linux'
         run: xvfb-run -a node script/smoke_desktop_app.mjs
+        timeout-minutes: 4
       - if: runner.os != 'Linux'
         run: node script/smoke_desktop_app.mjs
+        timeout-minutes: 4
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: farfromdesk-${{ matrix.runner }}

@@ -1204,57 +1204,84 @@ extension _BridgeScreens on _DeskState {
     final delivery = status['masterSetup']?['roleDelivery'];
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Coordinator instructions'),
-        content: SizedBox(
-          width: 560,
-          height: 360,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (delivery != null) ...[
-                if (delivery['agentName'] != null) ...[
-                  Text(
-                    delivery['agentName'].toString(),
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+      builder: (context) => Dialog(
+        insetPadding: const EdgeInsets.all(32),
+        child: SizedBox(
+          width: (MediaQuery.sizeOf(context).width - 64).clamp(0.0, 900.0),
+          height: (MediaQuery.sizeOf(context).height - 64).clamp(0.0, 760.0),
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Coordinator instructions',
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Close instructions',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                if (delivery != null) ...[
+                  const SizedBox(height: 8),
+                  small(
+                    delivery['state'] == 'sent'
+                        ? 'Applied to this session. Later messages use a short reference.'
+                        : delivery['state'] == 'unselected'
+                        ? 'Select a coordinator session to apply these instructions.'
+                        : 'Ready to apply with your next message.',
                   ),
-                  const SizedBox(height: 6),
                 ],
-                Text(
-                  'Version ${delivery['policyVersion']}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
+                const SizedBox(height: 20),
+                const Divider(height: 1),
+                const SizedBox(height: 20),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: MarkdownBody(
+                      data:
+                          status['masterSetup']?['prompt'] ??
+                          'Instructions unavailable.',
+                      selectable: true,
+                      imageBuilder: (uri, title, alt) =>
+                          const SizedBox.shrink(),
+                      styleSheet:
+                          MarkdownStyleSheet.fromTheme(Theme.of(context))
+                              .copyWith(
+                                p: const TextStyle(fontSize: 14, height: 1.65),
+                                h1: const TextStyle(
+                                  fontSize: 25,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.3,
+                                ),
+                                h2: const TextStyle(
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w600,
+                                  height: 1.4,
+                                ),
+                                h3: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                blockSpacing: 18,
+                                listBullet: const TextStyle(
+                                  fontSize: 14,
+                                  height: 1.65,
+                                ),
+                              ),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 6),
-                small(
-                  delivery['state'] == 'sent'
-                      ? 'Sent to this session. Later messages use a short role reference.'
-                      : delivery['state'] == 'unselected'
-                      ? 'Select a coordinator session to apply these instructions.'
-                      : 'Ready for the next request. This version has not been sent to the session yet.',
-                ),
-                const SizedBox(height: 16),
               ],
-              Expanded(
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    status['masterSetup']?['prompt'] ??
-                        'Instructions unavailable.',
-                    style: const TextStyle(fontSize: 13, height: 1.5),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
       ),
     );
   }

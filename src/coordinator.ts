@@ -83,12 +83,12 @@ export class Coordinator {
       const rows=sessions.map((s,i)=>({s,i})).filter(({s})=>s.provider===p);
       return `${p==='codex'?'Codex':'Claude Code'}\n${rows.map(({s,i})=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,90)}\n   ${(s.executionMode??'cli')==='desktop'?'Desktop':'CLI'}${s.accountScope?' · account '+s.accountScope.slice(0,6):''} · ${s.updatedAt?new Date(s.updatedAt).toISOString().replace('T',' ').slice(0,16)+' UTC':'Activity time unavailable'}${selected.has(targetOf(s))?' · connected':''}${s.available===false?' · '+s.status.replace(/[\r\n]/g,' ').slice(0,100):''}`).join('\n\n')||'No sessions on this page.'}`;
     }).join('\n\n');
-    return `${exhausted?'No older matches. Showing the last page.\n\n':''}${sessions.length?`Your coding sessions${browse.search?` matching “${browse.search}”`:''} · page ${browse.page+1} (recent first, up to 5 per connection):\n\n${groups}\n\nReply with numbers to connect them; existing connections stay. Say “check more” for older sessions, “previous page” to go back, or /sessions NAME to search.`:'No matching sessions. Try another name or enable the platform in the app.'}${warnings?'\n\n'+warnings:''}`;
+    return `${exhausted?'No older matches. Showing the last page.\n\n':''}${sessions.length?`Your coding sessions${browse.search?` matching “${browse.search}”`:''} · page ${browse.page+1} (recent first, up to 5 per connection):\n\n${groups}\n\nTell me the session name you want, or reply with its number. Say “show more” for older sessions, “previous page” to go back, or “find sessions named …” to search.`:'No matching sessions. Try another name or enable the platform in the app.'}${warnings?'\n\n'+warnings:''}`;
   }
   async select(input:string) {
     const snapshot:Session[]=JSON.parse(this.store.get(this.scopeKey('selection-snapshot'))??'[]');
     const picks=input.trim().split(/[\s,]+/).map(Number);
-    if(!snapshot.length||!picks.length||picks.some(n=>!Number.isInteger(n)||n<1||n>snapshot.length))throw new Error('Send /sessions, then choose numbers from that list.');
+    if(!snapshot.length||!picks.length||picks.some(n=>!Number.isInteger(n)||n<1||n>snapshot.length))throw new Error('Ask me to show your recent sessions, then choose a name or number from that list.');
     const chosen=await this.connectSessions([...new Set(picks)].map(n=>snapshot[n-1]),true);
     this.store.set(this.scopeKey('selection-awaiting'),'false');
     return `Connected:\n${chosen.map(b=>`• ${this.name(b)} (${b.provider})`).join('\n')}\n\n${this.selected().length} sessions connected. Existing connections stay active. Tell me what you want done or ask for an update.`;

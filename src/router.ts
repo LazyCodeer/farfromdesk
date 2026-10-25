@@ -8,8 +8,15 @@ import { updateRole, turnEnvelope } from './roles.js';
 import { errorCode, type ReplyContext, type RequestOutcome } from './request-events.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
-export type Incoming = {id:string;text:string;quotedId?:string};
-export const help = `Commands\n/sessions [NAME] — five recent sessions per platform, or search\n/sessions more — older sessions\n/sessions back — previous page\n/use NAME — set direct-session focus\n/to NAME message — send to one connected session\n/status — bridge and queue\n/style NAME friendly|cheerful|professional|coding — reply tone\n/workspace — approved project location\n/workspace revoke — pause created workers and revoke workspace access\n/stop NAME — interrupt bridge-run work\n/pause NAME — stop forwarding\n/resume NAME — enable forwarding\n/approve CODE or /deny CODE\n/answer CODE your answer\nReview unfinished requests in the app’s Activity page.\n\nTell the master which session to work on; it connects that exact session automatically. Connections accumulate across platforms. Ambiguous names get a choice of matches. Quote an agent reply to address that exact session.`;
+export type Incoming = {id:string;text:string;quotedId?:string;source?:'text'|'voice'};
+export const help = `Just tell me what you need.
+
+• Show my recent sessions.
+• Find the website session.
+• Use Checkout fix and tell me its progress.
+• Claude, create a session for this task.
+
+Reply to a permission message with “Yes, allow it” or “No, deny it”. Reply to a session’s message to continue in that session. You don’t need commands or session IDs.`;
 export class Router {
   coordinator?:Coordinator;
   hasPendingCreation?:(requestId:string)=>boolean;
@@ -58,9 +65,11 @@ export class Router {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
-    // Commands are deterministic. Their text is never interpreted by a routing model.
+    // Exact typed decisions are resolved before ordinary model routing.
     try {
-      const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show my sessions|list all sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
+      const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
+      if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show (?:me )?(?:my )?(?:recent )?sessions|list (?:my |all |recent )?sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
       if(this.coordinator&&!m.quotedId&&browsing) {
         queueOwnerReceipt(this.store,m.id,this.coordinator.master(),true);
         let search=text.replace(/^\/sessions\s*/i,'');
@@ -88,16 +97,16 @@ export class Router {
         else if(cmd==='approve'||cmd==='deny') {this.approvals.answer(args,cmd,'approval');this.store.output(undefined,'Decision delivered.',`command:${m.id}`);}
         else if(cmd==='answer') {const [code,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /answer CODE your answer');this.approvals.answer(code,words.join(' '),'question');this.store.output(undefined,'Answer delivered.',`command:${m.id}`);}
         else if(cmd==='retry') {throw new Error('Uncertain native submissions are never resent automatically. Check the exact native session and delivery receipt before deciding to send a new request.');}
-        else throw new Error('Unknown command. Send /help.');
+        else throw new Error('Tell me what you need in ordinary words. For example: “Show my recent sessions”.');
       } else {
         let b:Binding|undefined;
         if(m.quotedId) {
           b=this.store.quotedBinding(m.quotedId);
-          if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME message.');
+          if(!b)throw new Error('That reply does not identify a connected session. Tell me the session name and what you need.');
           this.checkQuotedPlatform(text,b);
         } else if(this.coordinator){this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return {status:'queued',requestId:m.id};}
         else b=this.store.binding(this.store.get('active')??'');
-        if(!b)throw new Error('Choose a session with /use NAME or quote an agent reply. Send /sessions to see your sessions.');
+        if(!b)throw new Error('Choose a coordinator in the app, then ask me to show your recent sessions.');
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
@@ -188,7 +197,7 @@ export class Router {
     const route=this.native.connections?.route(b);
     if(!this.coordinator!.registry.matches(target.id,{provider:b.provider,executionMode:route?.executionMode??this.store.get(`execution-mode:${b.id}`),accountScope:route?.accountScope}))throw new Error('The quoted session and named platform conflict. Choose one destination.');
   }
-  need(id:string){const b=this.store.binding(id);if(!b?.enabled)throw new Error('Session is missing or paused. Send /sessions.');return b;}
+  need(id:string){const b=this.store.binding(id);if(!b?.enabled)throw new Error('That session is missing or paused. Ask me to show your recent sessions, or resume it in the app.');return b;}
   queue(id:string,b:Binding,text:string) {
     if(text.length>32000)throw new Error('Message exceeds 32,000 characters.');
     this.store.db.exec('SAVEPOINT queue_owner');
