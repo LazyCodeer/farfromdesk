@@ -45,3 +45,11 @@ No app build, restart, real WhatsApp message, private screenshot, native session
 - Let's Encrypt certificate issued for farfromdesk.codecylabs.com; expires 23 January 2027. Nginx HTTPS configuration tested and reloaded. All 26 deployment files byte-match over TLS with certificate verification enabled. HTTP returns 301 to HTTPS; unknown HTTPS path returns 404.
 - Added isolated FarFromDesk renewal service/timer; existing company renewal service remains unchanged.
 - This desktop's resolver/browser initially retained NXDOMAIN; local preview visual checks remain the browser evidence until that cache expires. No certificate-verification bypass was used.
+
+- Certificate renewal dry-run succeeded, including the Nginx validation/reload deploy hook. Timer is active.
+- Local DNS issue isolated to the Wi-Fi/router resolver returning cached NXDOMAIN (negative TTL about 28 minutes); 1.1.1.1 and 8.8.8.8 resolve correctly. Owner advised mobile data or browser Secure DNS.
+
+
+## Short URL deployment — 25 October 2026
+
+Owner changed DNS to ffd.codecylabs.com; full product name remains FarFromDesk. Release 20261025-ffd-03 uses the new canonical/OG/schema/sitemap origin. All five site tests pass. All 26 deployed files byte-match over normal DNS and verified HTTPS; HTTP redirects with 301 and unknown paths return 404. Company/portfolio remain HTTPS 200. New hostname certificate issued and renewal dry-run including Nginx reload passed; dedicated timer remains active. Live browser successfully opened https://ffd.codecylabs.com/, confirmed canonical and loaded images. Screenshot: ignored review/ffd-live.png.

@@ -9,6 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/LazyCodeer/farfromdesk/releases"><strong>Download for Mac</strong></a> ·
+  <a href="https://ffd.codecylabs.com">Website</a> ·
   <a href="#get-started-in-three-steps">Get started</a> ·
   <a href="#what-you-can-do">Features</a> ·
   <a href="#questions">Questions</a>
@@ -30,7 +31,7 @@ Open the DMG and drag **FarFromDesk.app** to Applications, or unzip the ZIP and 
 
 **Access:** The repository and its downloads are private. You must be signed into a GitHub account with access.
 
-**Preview status:** Intel is cross-built and still needs testing on an Intel Mac. These previews are not Apple-notarized. macOS may block it. It is intended for invited testers; a notarized release is still needed for a normal public install experience. Do not disable your Mac's security protections to run it.
+**Preview status:** Intel previews still need full app testing on a physical Intel Mac. These previews are not Apple-notarized. macOS may block it. It is intended for invited testers; a notarized release is still needed for a normal public install experience. Do not disable your Mac's security protections to run it.
 
 ## Windows and Linux
 
