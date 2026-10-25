@@ -37,7 +37,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REPO: ${{ github.repository }}
-        run: gh api --paginate --slurp "repos/$RELEASE_REPO/releases?per_page=100" --jq 'add' > "$RUNNER_TEMP/releases.json"
+        run: |
+          gh api --paginate --slurp "repos/$RELEASE_REPO/releases?per_page=100" > "$RUNNER_TEMP/release-pages.json"
+          jq 'add' "$RUNNER_TEMP/release-pages.json" > "$RUNNER_TEMP/releases.json"
       - id: version
         env:
           FFD_RUN: ${{ github.run_id }}
