@@ -76,5 +76,8 @@ manifest={'schema':1,'version':args.version,'platform':os_name,'architecture':ar
 (out/f'manifest-{os_name}-{arch}.json').write_text(json.dumps(manifest,indent=2)+'\n')
 install=out/'install';shutil.copytree(ROOT/'install',install,dirs_exist_ok=True)
 for f in install.iterdir():
-    if f.is_file(): f.write_text(f.read_text().replace('0.7.0-preview.1',args.version))
+    if f.is_file():
+        # Identical installer assets across Windows and Unix are required by the publisher.
+        text=f.read_text().replace('0.7.0-preview.1',args.version)
+        with f.open('w',encoding='utf-8',newline='\n') as stream: stream.write(text)
 print(archive)
