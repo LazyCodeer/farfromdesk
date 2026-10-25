@@ -24,7 +24,7 @@ Real bundled speech checks use a fixed public English Ogg/Opus fixture, assert a
 - Publication/packaging tests: 16 passed; Unix installer fixtures: three passed.
 - Flutter analysis passed; three widget tests passed.
 - Run [40175498121](https://github.com/LazyCodeer/farfromdesk/actions/runs/40175498121) passed Apple Silicon and Linux native startup, packaging and speech. Intel completed compilation, speech, packaging and startup. Windows compiled and started its staged backend, but its unoptimized speech test exceeded the three-minute outer limit. That run is **not a release candidate**. CPU selection and phase timing were added for the subsequent run; consult its result before considering Windows verified.
-- The Apple Silicon package from commit `7a8d7381389b599f23d44e0abd135341d41ce740` was downloaded, its ZIP/DMG hashes and signature verified, and the real packaged GUI launched successfully on the owner's Mac with disposable state. The paired installation was not used in that test.
+- The Apple Silicon package from commit `7a8d7381389b599f23d44e0abd135341d41ce740` was downloaded, its ZIP/DMG hashes and signature verified, and the real packaged process launched with a healthy backend on the owner's Mac with disposable state. Later review found a missing native login-startup handler that could prevent Home from rendering. That handler was added, and the gate now requires a UI-ready marker after startup registration is read and Home renders. The earlier process-level check alone is not evidence of a usable Home screen. The paired installation was not used in that test.
 
 ## Remaining manual gates
 

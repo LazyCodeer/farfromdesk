@@ -66,6 +66,8 @@ class _DeskState extends State<Desk> {
       await refresh();
       if (mounted) setState(() => ready = true);
       timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
+      await WidgetsBinding.instance.endOfFrame;
+      if (mounted && error == null) await api.reportReady();
     } catch (e) {
       if (mounted) setState(() => error = clean(e));
     }

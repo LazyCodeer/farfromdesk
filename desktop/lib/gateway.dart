@@ -5,6 +5,7 @@ abstract class Gateway {
   Future<Map<String, dynamic>> readDocument(String path);
   Future<bool> startupEnabled();
   Future<void> setStartup(bool enabled);
+  Future<void> reportReady() async {}
   String get platform;
   bool get preview => false;
   int get initialScreen => 0;

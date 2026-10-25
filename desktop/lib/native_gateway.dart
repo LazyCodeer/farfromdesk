@@ -160,6 +160,14 @@ class NativeGateway extends Gateway {
   }
 
   @override
+  Future<void> reportReady() async {
+    // Disposable native smoke runs use a fixed marker inside their own state.
+    if (Platform.environment['FFD_SMOKE_TEST'] == '1') {
+      await File(p.join(state, 'smoke-ui-ready')).writeAsString('ready');
+    }
+  }
+
+  @override
   Future<bool> startupEnabled() => launchAtStartup.isEnabled();
   @override
   Future<void> setStartup(bool enabled) async {
