@@ -14,12 +14,12 @@ class InstallerTests(unittest.TestCase):
         (bin/'uname').write_text('#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
         (bin/'curl').write_text('#!/bin/sh\nfor arg in "$@"; do case "$arg" in *.sha256) source="$FFD_TEST_CHECKSUM";; https://*.tar.gz) source="$FFD_TEST_ARCHIVE";; esac; done\nfor last do :; done\ncp "$source" "$last"\n')
         for p in bin.iterdir():p.chmod(0o755)
-        env={**os.environ,'PATH':str(bin)+os.pathsep+os.environ['PATH'],'HOME':str(home),'FFD_TEST_ARCHIVE':str(archive),'FFD_TEST_CHECKSUM':str(checksum),'FFD_NO_LAUNCH':'1'}
+        env={**os.environ,'PATH':str(bin)+os.pathsep+os.environ['PATH'],'HOME':str(home),'FFD_TEST_ARCHIVE':str(archive),'FFD_TEST_CHECKSUM':str(checksum),'FFD_NO_LAUNCH':'1','FFD_VERSION':'0.0.0-fixture'}
         result=subprocess.run(['sh',str(ROOT/'install/install.sh')],env=env,text=True,capture_output=True)
         return result,home,root
     def test_verified_archive_installs_app_and_menu_with_spaces(self):
         result,home,_=self.fixture();self.assertEqual(result.returncode,0,result.stderr)
-        self.assertTrue((home/'.local/opt/farfromdesk/0.1.0-preview.1/farfromdesk').exists())
+        self.assertTrue((home/'.local/opt/farfromdesk/0.0.0-fixture/farfromdesk').exists())
         entry=(home/'.local/share/applications/farfromdesk.desktop').read_text();self.assertIn('Name=FarFromDesk',entry);self.assertIn('Exec="',entry)
     def test_checksum_mismatch_leaves_installation_absent(self):
         result,home,_=self.fixture(corrupt=True);self.assertNotEqual(result.returncode,0);self.assertIn('Checksum mismatch',result.stderr);self.assertFalse((home/'.local/opt').exists())

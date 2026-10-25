@@ -66,6 +66,7 @@ jobs:
         run: python script/build_speech_runtime.py
       - run: npm run desktop:backend
       - run: node script/smoke_desktop_backend.mjs
+      - run: node script/test_desktop_speech.mjs
       - run: python script/package_desktop.py --version 0.7.0-preview.${{ github.run_id }}
       - if: runner.os == 'Linux'
         run: xvfb-run -a node script/smoke_desktop_app.mjs
