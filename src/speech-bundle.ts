@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync, accessSync, constants, lstatSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Store } from './store.js';
@@ -14,6 +15,21 @@ export function speechAssetHash(path:string) {
     while((size=readSync(fd,buffer,0,buffer.length,null))>0)hash.update(buffer.subarray(0,size));
     return hash.digest('hex');
   }finally{closeSync(fd);}
+}
+// Probe only integrity-checked bundled code; unsupported CPUs retain the baseline.
+export function selectSpeechVariant(directory:string,data:any,arch:string=process.arch,
+  probe:(path:string)=>string=(path)=>{const r=spawnSync(path,[],{encoding:'utf8',timeout:5000,maxBuffer:1024,windowsHide:true});return r.status===0?r.stdout.trim():'';}) {
+  const ext=process.platform==='win32'?'.exe':'';
+  if(!data.cpuSelection)return join(directory,'whisper-cli'+ext);
+  if(arch!=='x64'||data.cpuSelection.probe!=='speech-cpu'+ext||data.cpuSelection.avx2!=='whisper-avx2'+ext)
+    throw new Error('Unsupported bundled CPU selection.');
+  for(const name of ['speech-cpu'+ext,'whisper-avx2'+ext]) {
+    const path=join(directory,name);
+    if(!lstatSync(path).isFile()||speechAssetHash(path)!==data.sha256?.[name])throw new Error('Bundled CPU tools failed integrity validation.');
+    accessSync(path,constants.X_OK);
+  }
+  const result=probe(join(directory,'speech-cpu'+ext));
+  return join(directory,(result==='avx2'?'whisper-avx2':'whisper-cli')+ext);
 }
 export const defaultSpeechBundle=fileURLToPath(new URL('../../speech/',import.meta.url));
 export function installBundledAudio(store:Store,directory=defaultSpeechBundle) {
@@ -37,6 +53,7 @@ export function installBundledAudio(store:Store,directory=defaultSpeechBundle) {
     if(typeof expected!=='string'||speechAssetHash(path)!==expected)throw new Error('Bundled voice assets failed integrity validation. Reinstall the app.');
   }
   for(const tool of [config.ffmpeg,config.whisper])accessSync(tool,constants.X_OK);
+  config.whisper=selectSpeechVariant(directory,data);
   store.set('audio-config',JSON.stringify(config));store.set('audio-origin','bundled');
   return {configured:true,preserved:false};
 }

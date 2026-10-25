@@ -109,7 +109,7 @@ export class NativeAgents {
     const message=[origin,
       ...(b.id===this.store.get('master')?[masterPolicy,`For CLI coordination use ${quote(process.execPath)} ${quote(cli)} master --binding ${quote(b.alias)} followed by sessions, connect, selected, dispatch or quiet.`]:[]),
       `This message is addressed only to your existing ${b.provider} session ${b.native_id}. Bridge request: ${jobId}.`,
-      `Use your normal instructions, tools and permissions. Read the whatsapp-session skill.`,
+      `Use your normal instructions, tools and permissions. Use the session-scoped reply tools or exact command supplied below; no extra registration is needed.`,
       ...((portableAgents||this.store.get(`native-master:${b.id}`)==='true')&&this.store.get(`execution-mode:${b.id}`)!=='desktop'&&(this.store.get(`managed-codex:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true')?
         [`Use the preinstalled session_bridge MCP tools. Send your response with whatsapp_reply using requestId=${jobId}, your text, and kind=progress or final.`]:
         [`Write your own response to WhatsApp with this command, sending the reply on stdin using a quoted heredoc (rtk proxy prefix where required):`,response]),

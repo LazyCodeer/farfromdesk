@@ -105,10 +105,33 @@ def main():
     if ARCH == 'arm64':
         cmake_args.append('-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16')
     else:
-        cmake_args.extend(['-DGGML_AVX=OFF', '-DGGML_AVX2=OFF', '-DGGML_FMA=OFF', '-DGGML_F16C=OFF'])
+        cmake_args.extend(['-DGGML_AVX=OFF', '-DGGML_AVX2=OFF', '-DGGML_FMA=OFF', '-DGGML_F16C=OFF', '-DGGML_SSE42=OFF', '-DGGML_BMI2=OFF'])
     run(cmake_args)
     run(['cmake', '--build', str(whisper_build), '--target', 'whisper-cli', '--config', 'Release', '-j', '4'])
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    extra_tools = []
+    # Keep a conservative executable for older CPUs; select the fast build only
+    # after a separate baseline probe confirms CPU and OS register support.
+    if ARCH == 'x86_64':
+        fast_build = WORK / 'whisper-avx2-build'
+        fast_args = [str(fast_build) if a == str(whisper_build) else a for a in cmake_args]
+        fast_args = [a.replace('=OFF', '=ON') if a.startswith(('-DGGML_AVX=', '-DGGML_AVX2=', '-DGGML_FMA=', '-DGGML_F16C=')) else a for a in fast_args]
+        fast_args.extend(['-DGGML_SSE42=ON', '-DGGML_BMI2=ON'])
+        run(fast_args)
+        run(['cmake', '--build', str(fast_build), '--target', 'whisper-cli', '--config', 'Release', '-j', '4'])
+        fast_bin = fast_build / ('bin/Release/whisper-cli.exe' if SYSTEM == 'Windows' else 'bin/whisper-cli')
+        shutil.copy2(fast_bin, OUTPUT / ('whisper-avx2' + SUFFIX))
+        probe_build = WORK / 'cpu-probe-build'
+        probe_args = ['cmake', '-S', str(ROOT / 'script/speech_cpu'), '-B', str(probe_build), '-DCMAKE_BUILD_TYPE=Release']
+        if SYSTEM == 'Windows': probe_args.extend(['-A', 'x64'])
+        if SYSTEM == 'Darwin': probe_args.extend(['-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0', '-DCMAKE_OSX_ARCHITECTURES=x86_64'])
+        run(probe_args)
+        run(['cmake', '--build', str(probe_build), '--config', 'Release'])
+        probe = probe_build / ('Release/speech-cpu.exe' if SYSTEM == 'Windows' else 'speech-cpu')
+        shutil.copy2(probe, OUTPUT / ('speech-cpu' + SUFFIX))
+        extra_tools = ['whisper-avx2' + SUFFIX, 'speech-cpu' + SUFFIX]
+        if SYSTEM == 'Darwin':
+            for name in extra_tools: run(['codesign', '--force', '--sign', '-', str(OUTPUT / name)])
     whisper_bin = whisper_build / ('bin/Release/whisper-cli.exe' if SYSTEM == 'Windows' else 'bin/whisper-cli')
     for src, name in [(ffmpeg / ('ffmpeg' + SUFFIX), 'ffmpeg' + SUFFIX), (whisper_bin, 'whisper-cli' + SUFFIX)]:
         shutil.copy2(src, OUTPUT / name)
@@ -135,15 +158,17 @@ def main():
     for name in SOURCES:
         shutil.copy2(WORK / name, licenses / name)
     shutil.copy2(__file__, licenses / 'build_speech_runtime.py')
-    (licenses / 'build-options.json').write_text(json.dumps({'ffmpeg': ffmpeg_args, 'whisper': cmake_args}, indent=2).replace(str(ROOT), '${PROJECT_ROOT}'))
+    shutil.copytree(ROOT / 'script/speech_cpu', licenses / 'speech_cpu', dirs_exist_ok=True)
+    (licenses / 'build-options.json').write_text(json.dumps({'ffmpeg': ffmpeg_args, 'whisper': cmake_args, **({'whisperAVX2': fast_args, 'cpuProbe': probe_args} if extra_tools else {})}, indent=2).replace(str(ROOT), '${PROJECT_ROOT}'))
     manifest = {'schema': 1, 'architecture': 'arm64' if ARCH == 'arm64' else 'x64', 'minimumMacOS': '14.0',
         'platform': {'Darwin':'darwin','Linux':'linux','Windows':'win32'}[SYSTEM],
         'ffmpeg': 'ffmpeg' + SUFFIX, 'whisper': 'whisper-cli' + SUFFIX, 'model': 'ggml-base.bin',
         'versions': {'ffmpeg': '9.0.2', 'whisper': '1.9.2', 'model': 'multilingual-base'},
-        'sha256': {name: digest(OUTPUT / name) for name in ['ffmpeg' + SUFFIX, 'whisper-cli' + SUFFIX, 'ggml-base.bin']}}
+        'sha256': {name: digest(OUTPUT / name) for name in ['ffmpeg' + SUFFIX, 'whisper-cli' + SUFFIX, 'ggml-base.bin'] + extra_tools}}
+    if extra_tools: manifest['cpuSelection'] = {'probe': 'speech-cpu' + SUFFIX, 'avx2': 'whisper-avx2' + SUFFIX}
     (OUTPUT / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     for path in OUTPUT.rglob('*'):
-        path.chmod(0o755 if path.is_dir() or path.name in ['ffmpeg' + SUFFIX, 'whisper-cli' + SUFFIX] else 0o644)
+        path.chmod(0o755 if path.is_dir() or path.name in ['ffmpeg' + SUFFIX, 'whisper-cli' + SUFFIX] + extra_tools else 0o644)
     print('Self-contained speech runtime:', OUTPUT)
 
 if __name__ == '__main__':

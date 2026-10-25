@@ -13,7 +13,10 @@ test('installed local speech engine decodes Ogg/Opus and rejects silence/corrupt
     // The shipping FFmpeg deliberately only decodes. Use a fixed synthetic Ogg
     // fixture so testing doesn't require shipping an encoder or lavfi filters.
     const ogg=process.env.WSB_AUDIO_TEST_SAMPLE??fileURLToPath(new URL('./fixtures/local-english.ogg',import.meta.url));
+    const started=performance.now();
+    console.log('Local speech fixture: Ogg/Opus transcription started');
     const text=await transcribeLocal(readFileSync(ogg),'ogg',config,root);assert.match(text,/country/i);
+    console.log(`Local speech fixture: plausible transcript in ${Math.round(performance.now()-started)} ms`);
     const silence=Buffer.alloc(44+16000*2*2);
     silence.write('RIFF');silence.writeUInt32LE(silence.length-8,4);silence.write('WAVEfmt ',8);
     silence.writeUInt32LE(16,16);silence.writeUInt16LE(1,20);silence.writeUInt16LE(1,22);

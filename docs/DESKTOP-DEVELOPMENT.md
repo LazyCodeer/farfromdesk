@@ -4,7 +4,7 @@
 
 The user's current choice is an installed desktop app, bootstrapped by a shell command on macOS/Linux and PowerShell on Windows. Flutter 3.47.7 provides the shared desktop UI; the existing TypeScript backend retains WhatsApp, routing, durable state and request-bound permissions. Flutter does not require rewriting that backend in Dart. No Homebrew formula, Electron shell or separately maintained Linux/Windows UI is needed.
 
-This is an isolated private working snapshot in `sidekick-windows`, based on Sidekick commit `98cb52e2dde6b04f20f839a68768d26d624b82e7`. The directory name is historical. It has no Git remote and has not been published. The original macOS checkout, releases and running bridge were not changed. The main chat owns repository integration, remote rename and publishing. Shared logo files came from the website chat's FarFromDesk asset directory.
+The shared desktop implementation is integrated in `LazyCodeer/farfromdesk`. Its source snapshot was reconciled against commit `98cb52e2dde6b04f20f839a68768d26d624b82e7`, preserving subsequent backend work. The repository and preview releases remain private.
 
 ## Layout
 
@@ -18,7 +18,7 @@ This is an isolated private working snapshot in `sidekick-windows`, based on Sid
 - `src/service-lock.ts`: prevents two new backends from recovering the same store.
 - `install/`: Unix and PowerShell installers.
 - `script/prepare_desktop_backend.mjs`, `script/package_desktop.py`: backend staging, bundled Node runtime and native archives.
-- `.github/workflows/desktop.yml`: platform build/test/artifact recipe. Does not publish releases.
+- `.github/workflows/desktop.yml`: four-target build, test, packaging and private-preview publication pipeline. Publication runs only on main after every target passes.
 
 The older `macos/` Swift client and `native/` Mac transport are retained as integration inputs. The integrated Flutter app retains the existing Mac native adapter on macOS; Windows and Linux use the portable CLI adapter and do not advertise unverified Desktop delivery.
 
@@ -82,7 +82,7 @@ python3 script/package_desktop.py --version 0.7.0-preview.1
 
 Use `python` on Windows. Outputs are in `build/desktop-release/`, with a platform/architecture filename and a matching `.sha256`. The current recipe targets macOS arm64/x64, Windows x64 and Linux glibc x64. Linux arm64, Windows arm64, Alpine/musl and arbitrary old OS versions are not supported by this preview.
 
-The backend staging script installs production dependencies on that OS and copies its Node executable; users do not need to install Node. CI pins Node 22.23.4. The Mac packaging script uses ad-hoc signing only for development. Developer ID signing/notarization and Windows signing are separate release gates. The installers never remove quarantine or disable execution protections.
+The backend staging script installs production dependencies on that OS and copies its Node executable; users do not need to install Node. CI pins Node 22.20.0. The Mac packaging script uses ad-hoc signing only for development. Developer ID signing/notarization and Windows signing are separate release gates. The installers never remove quarantine or disable execution protections.
 
 ## Installer publication contract
 
@@ -126,15 +126,17 @@ To uninstall, turn off startup and forwarding in Settings, close the app, then r
 - Login startup uses the user's platform startup registration through `launch_at_startup`.
 - Idle-sleep prevention uses caffeinate, a Windows power assertion, or systemd-inhibit. Failures are surfaced in Settings. Display locking and logout policies remain with the OS.
 - The old Mac client must not run concurrently during migration. The new UI refuses to attach to a backend lacking the expected health protocol rather than killing or replacing it.
-- CLI resumption requires the user to finish a currently running native turn first. Public history metadata is not a universal cross-process lock. Native Desktop injection is not claimed.
+- CLI resumption requires the user to finish a currently running native turn first. Public history metadata is not a universal cross-process lock. Windows/Linux Desktop injection is not claimed; the existing Mac native adapter is retained.
 - Existing permissions are not silently widened. Codex defaults to read-only for resumed unmanaged conversations; bridge-created workers use their explicitly approved workspace. Claude uses `default` permissions and user/project/local settings, with permission requests routed through existing request-bound approvals.
 - The integrated packages build and include FFmpeg, whisper.cpp and the multilingual base model for each target. Their manifest and hashes are verified at startup; existing valid custom settings are preserved.
 
 ## Verification and remaining release gates
 
-Implemented and locally checked on macOS: TypeScript compilation; full backend regression suite (138 pass, one skip); portable path/executable/identity/locking/SDK callback tests; shell installer fixture tests; Flutter analysis and three widget interaction/layout tests; production backend dependency staging and an isolated authenticated-API/shutdown smoke test. See [Desktop validation](DESKTOP-VALIDATION.md) for final counts/artifacts.
+See [Desktop validation](DESKTOP-VALIDATION.md) for evidence and remaining limits. Every target runs TypeScript checks, portable regressions, Flutter analysis/widget tests, native compilation, bundled speech tests, packaging integrity checks and real packaged GUI startup with isolated state. Mac runners also run the full backend suite. Windows validates its PowerShell installer; Unix runners execute installer fixture tests.
 
-This host has Flutter but **no full Xcode**, and no Windows or Linux desktop execution environment. The native Flutter app, startup registration, keep-awake implementations on Windows/Linux, provider account/folder flows and real-phone end-to-end behavior have not been tested on those OSes. CI is source-only until the main repository owner integrates and runs it. Signed downloadable native packages and deployed installer URLs remain release gates, not completed work.
+Pushes to main build all four targets and publish one private prerelease only when all succeed. Version suffixes use the GitHub run ID. Each release includes six app archives, six checksums, four provenance manifests and two version-stamped installers. The publisher checks exact source commit, all four platforms, asset hashes and repository privacy before publication. PR and feature-branch builds do not publish.
+
+This host lacks full Xcode, so Mac native compilation uses GitHub-hosted runners. Signing/notarization credentials, real-phone/provider account verification on each OS and public installer hosting remain separate gates. CI never receives pairing or provider-account credentials.
 
 ## References
 

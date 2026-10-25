@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { Store } from '../src/store.js';
-import { installBundledAudio,audioReadiness } from '../src/speech-bundle.js';
+import { installBundledAudio,audioReadiness,selectSpeechVariant } from '../src/speech-bundle.js';
 
+const suffix=process.platform==='win32'?'.exe':'';
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),'speech-bundle-')),store=new Store(':memory:');
-  const manifest:any={schema:1,architecture:process.arch,ffmpeg:'ffmpeg',whisper:'whisper-cli',model:'ggml-base.bin',sha256:{}};
-  for(const file of ['ffmpeg','whisper-cli','ggml-base.bin']){const data=Buffer.from('fixture '+file);writeFileSync(join(dir,file),data,{mode:0o700});manifest.sha256[file]=createHash('sha256').update(data).digest('hex');}
+  const manifest:any={schema:1,architecture:process.arch,ffmpeg:'ffmpeg'+suffix,whisper:'whisper-cli'+suffix,model:'ggml-base.bin',sha256:{}};
+  for(const file of ['ffmpeg'+suffix,'whisper-cli'+suffix,'ggml-base.bin']){const data=Buffer.from('fixture '+file);writeFileSync(join(dir,file),data,{mode:0o700});manifest.sha256[file]=createHash('sha256').update(data).digest('hex');}
   writeFileSync(join(dir,'manifest.json'),JSON.stringify(manifest));
   return {dir,store,manifest,close:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -42,9 +43,29 @@ test('missing, corrupt, wrong-architecture and traversal manifests cannot enable
 });
 test('existing valid custom configuration is preserved; stale paths recover from the bundle',()=>{
   const f=fixture();try {
-    const custom={ffmpeg:join(f.dir,'ffmpeg'),whisper:join(f.dir,'whisper-cli'),model:join(f.dir,'ggml-base.bin')};
+    const custom={ffmpeg:join(f.dir,'ffmpeg'+suffix),whisper:join(f.dir,'whisper-cli'+suffix),model:join(f.dir,'ggml-base.bin')};
     f.store.set('audio-config',JSON.stringify(custom));assert.equal(installBundledAudio(f.store,f.dir).preserved,true);assert.equal(f.store.get('audio-origin'),undefined);
     f.store.set('audio-config',JSON.stringify({...custom,model:'/missing-model'}));assert.equal(installBundledAudio(f.store,f.dir).preserved,false);
     assert.equal(audioReadiness(f.store).ready,true);
+  }finally{f.close();}
+});
+
+test('CPU selection checks helper integrity before execution and keeps unsupported CPUs on baseline',()=>{
+  const f=fixture();let calls=0;
+  const ext=process.platform==='win32'?'.exe':'';
+  try {
+    for(const name of ['speech-cpu'+ext,'whisper-avx2'+ext]) {
+      const bytes=Buffer.from('fixture '+name);writeFileSync(join(f.dir,name),bytes,{mode:0o700});
+      f.manifest.sha256[name]=createHash('sha256').update(bytes).digest('hex');
+    }
+    f.manifest.cpuSelection={probe:'speech-cpu'+ext,avx2:'whisper-avx2'+ext};
+    const probe=(result:string)=>(path:string)=>{calls++;assert.equal(path,join(f.dir,'speech-cpu'+ext));return result;};
+    assert.equal(selectSpeechVariant(f.dir,f.manifest,'x64',probe('avx2')),join(f.dir,'whisper-avx2'+ext));
+    for(const result of ['baseline','','unexpected'])assert.equal(selectSpeechVariant(f.dir,f.manifest,'x64',probe(result)),join(f.dir,'whisper-cli'+ext));
+    assert.throws(()=>selectSpeechVariant(f.dir,f.manifest,'arm64',probe('avx2')));
+    f.manifest.cpuSelection.probe='../private';assert.throws(()=>selectSpeechVariant(f.dir,f.manifest,'x64',probe('avx2')));
+    f.manifest.cpuSelection.probe='speech-cpu'+ext;
+    writeFileSync(join(f.dir,'whisper-avx2'+ext),'tampered');
+    assert.throws(()=>selectSpeechVariant(f.dir,f.manifest,'x64',probe('avx2')));assert.equal(calls,4);
   }finally{f.close();}
 });

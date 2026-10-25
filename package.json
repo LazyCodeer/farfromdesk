@@ -13,7 +13,7 @@
     "bridge": "node dist/cli.js",
     "test": "tsx --test test/*.test.ts",
     "check": "tsc --noEmit",
-    "test:portable": "tsx --test test/portable.test.ts test/coordinator.test.ts",
+    "test:portable": "tsx --test test/portable.test.ts test/coordinator.test.ts test/speech-bundle.test.ts",
     "desktop:backend": "npm run build && node script/prepare_desktop_backend.mjs",
     "desktop:preview": "cd desktop && flutter run -d chrome -t lib/preview.dart"
   },

@@ -16,7 +16,8 @@ if os_name=='macos':
 else: native=source/('farfromdesk.exe' if os_name=='windows' else 'farfromdesk')
 if not source.is_dir() or not (backend/'dist/main.js').is_file(): raise SystemExit('Build Flutter and prepare the backend on this OS first.')
 # Validate the actual executable format before giving an archive an architecture name.
-for binary in [native, backend/'runtime'/('node.exe' if os_name=='windows' else 'node'), *[ROOT/'build/speech'/(name+('.exe' if os_name=='windows' else '')) for name in ['ffmpeg','whisper-cli']]]:
+extra_speech=[p for p in (ROOT/'build/speech').iterdir() if p.name in ['whisper-avx2','whisper-avx2.exe','speech-cpu','speech-cpu.exe']]
+for binary in [*extra_speech,native, backend/'runtime'/('node.exe' if os_name=='windows' else 'node'), *[ROOT/'build/speech'/(name+('.exe' if os_name=='windows' else '')) for name in ['ffmpeg','whisper-cli']]]:
     if os_name=='macos':
         targets=subprocess.check_output(['lipo','-archs',str(binary)],text=True).split()
         if ('arm64' if arch=='arm64' else 'x86_64') not in targets: raise SystemExit('Wrong executable architecture: '+str(binary))

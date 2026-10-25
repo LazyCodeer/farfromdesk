@@ -96,6 +96,7 @@ jobs:
       - run: npm run desktop:backend
       - run: node script/smoke_desktop_backend.mjs
       - run: node script/test_desktop_speech.mjs
+        timeout-minutes: 5
       - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
       - if: runner.os == 'Linux'
         run: xvfb-run -a node script/smoke_desktop_app.mjs

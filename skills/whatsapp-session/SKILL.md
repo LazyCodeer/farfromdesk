@@ -9,6 +9,8 @@ Bridge CLI: `{{NODE}} {{BRIDGE_CLI}}`. Quote both paths when running commands. P
 
 ## Register this session
 
+On Windows and Linux, connect an exact saved CLI session using the app; Desktop injection is unavailable. Managed CLI sessions already have session-scoped MCP tools and do not need additional registration. The manual Desktop procedure below applies only to the Mac native adapter.
+
 1. Find this chat's exact native ID from trusted runtime context (`CODEX_THREAD_ID` for Codex), or Claude's own session status. If unavailable, use the CLI's `sessions claude` or `sessions codex` listing and match the native chat. Do not select merely by working directory, recency, or a similar title; ask if identification remains ambiguous.
 2. Run `register PROVIDER NAME EXACT-SESSION-ID /absolute/project MODE` with quoted arguments. Choose a unique short name. Use `desktop` for both Codex and Claude. This uses desktop-sync to send to the exact existing chat without starting, resuming or replacing it. Existing externally managed Claude chats must be running; bridge-created managed workers can resume their exact identity automatically. Optional `channel` mode is available for Claude.
 3. For Claude channel mode, generate configuration with `channel-config NAME`. The user must relaunch that same session with the channel enabled using `claude-channel NAME`. Do not terminate an active session to do this automatically. Custom channel support depends on the installed Claude version/account. Report failure instead of copying its history into another agent.
