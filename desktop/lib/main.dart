@@ -6,7 +6,7 @@ import 'package:window_manager/window_manager.dart';
 import 'native_gateway.dart';
 import 'app.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
   await windowManager.waitUntilReadyToShow(
@@ -21,7 +21,13 @@ Future<void> main() async {
     },
   );
   final gateway = NativeGateway();
-  runApp(FarFromDeskApp(gateway: gateway, initialize: gateway.start));
+  runApp(FarFromDeskApp(gateway: gateway, initialize: () async {
+    await gateway.start();
+    // Explicit migration/install opt-in; ordinary launches never change startup.
+    if (arguments.contains('--enable-login-startup')) {
+      await gateway.setStartup(true);
+    }
+  }));
   windowManager.addListener(_Lifecycle(gateway));
   await windowManager.setPreventClose(true);
 }

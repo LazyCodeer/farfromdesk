@@ -123,7 +123,7 @@ To uninstall, turn off startup and forwarding in Settings, close the app, then r
 - macOS retains `~/Library/Application Support/WhatsApp Session Bridge` for compatibility; Windows uses LocalAppData/FarFromDesk and Linux XDG_DATA_HOME/farfromdesk.
 - The renderer receives no long-lived credentials in a URL. Native Dart reads the private local token and uses authenticated loopback requests. No browser dashboard is exposed.
 - App close leaves the backend running only when forwarding is enabled. When forwarding is paused, close requests a graceful backend shutdown. No service is installed as root/SYSTEM.
-- Login startup uses the user's platform startup registration through `launch_at_startup`.
+- Login startup uses the user's platform startup registration through `launch_at_startup`. An explicit `--enable-login-startup` launch argument can preserve an already-authorized startup preference during migration; ordinary launches never enable it. OS approval errors remain visible.
 - Idle-sleep prevention uses caffeinate, a Windows power assertion, or systemd-inhibit. Failures are surfaced in Settings. Display locking and logout policies remain with the OS.
 - The old Mac client must not run concurrently during migration. The new UI refuses to attach to a backend lacking the expected health protocol rather than killing or replacing it.
 - CLI resumption requires the user to finish a currently running native turn first. Public history metadata is not a universal cross-process lock. Windows/Linux Desktop injection is not claimed; the existing Mac native adapter is retained.
