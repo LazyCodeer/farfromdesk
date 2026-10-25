@@ -1,6 +1,6 @@
 # Sidekick Mac app
 
-The native app is built with SwiftUI and targets macOS 14+. The packaged speech toolchain currently requires Apple Silicon.
+The native app is built with SwiftUI and targets macOS 14+. Release packaging supports Apple Silicon and Intel variants; the default local development build targets Apple Silicon. Intel hardware verification remains pending.
 
 ## Build and install
 

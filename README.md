@@ -14,21 +14,21 @@
   <a href="#questions">Questions</a>
 </p>
 
-<p align="center"><strong>Private preview</strong> · macOS 14+ · Apple Silicon</p>
+<p align="center"><strong>Private preview</strong> · macOS 14+ · Apple Silicon & Intel previews</p>
 
 Ask for updates, give your coding assistants instructions, and get their replies in WhatsApp. Your assistants keep their own context and tools. You choose which sessions to connect.
 
 ## Download Sidekick
 
-Visit [GitHub Releases](https://github.com/LazyCodeer/sidekick/releases), open the newest Sidekick preview, and expand **Assets**. Download the **Sidekick … macOS arm64.zip** app file. The “Source code” files GitHub adds automatically are not the app.
+Visit [GitHub Releases](https://github.com/LazyCodeer/sidekick/releases), open the newest Sidekick preview, and expand **Assets**. Choose **arm64** for Apple Silicon (M-series) or **x86_64** for Intel. Download the **DMG** for drag-and-drop installation or the **ZIP** containing the same app. The “Source code” files GitHub adds automatically are not the app.
 
-Requires macOS 14 or later on Apple Silicon, a compatible signed-in coding app, and Python 3 for the native desktop helper.
+Requires macOS 14 or later, a compatible signed-in coding app, and Python 3 for the native desktop helper.
 
-Unzip the download and move **Sidekick.app** into Applications. Open it to begin setup. The download includes the local voice transcription tools and model.
+Open the DMG and drag **Sidekick.app** to Applications, or unzip the ZIP and move the app there. Open it to begin setup. The download includes the local voice transcription tools and model.
 
 **Access:** The repository and its downloads are private. You must be signed into a GitHub account with access.
 
-**Preview status:** This first preview is not Apple-notarized. macOS may block it. It is intended for invited testers; a notarized release is still needed for a normal public install experience. Do not disable your Mac's security protections to run it.
+**Preview status:** Intel is cross-built and still needs testing on an Intel Mac. These previews are not Apple-notarized. macOS may block it. It is intended for invited testers; a notarized release is still needed for a normal public install experience. Do not disable your Mac's security protections to run it.
 
 ## Windows and Linux
 

@@ -1,40 +1,43 @@
-# Building and publishing a Sidekick preview
+# Building and publishing Sidekick previews
 
-## Repeatable private release process
+Use the prerequisites in [Development](DEVELOPMENT.md). Commit reviewed changes before building. Normal pushes do not publish downloads or change repository visibility.
 
-Use an Apple Silicon Mac with the prerequisites in [Development](DEVELOPMENT.md). Update the app version/build in `script/package_macos.py` when needed, then commit and push the reviewed source to `main`.
+## Build both Mac variants
 
 ```sh
-python3 script/release_macos.py --tag v0.6.2-preview.1
+python3 script/release_macos.py --tag v0.6.2-preview.2 --arch arm64
+python3 script/release_macos.py --tag v0.6.2-preview.2 --arch x86_64
 ```
 
-Use a new preview number for each release. The script requires a clean working tree, runs TypeScript/backend/native checks, builds the bundled speech runtime, builds Swift in release mode, and installs production-only npm dependencies in a temporary directory. It does not restart the installed app or bridge.
+Run these sequentially; they share the source compilation and tests. Each architecture has separate Swift, speech, Node, app and archive staging. Node's official target-specific distribution is verified against its versioned SHA-256 checksums. The Intel speech runtime uses CPU inference; the Apple Silicon runtime enables Metal. Do not label an Intel cross-build as Intel hardware tested.
 
-Output goes to `build/releases/<tag>/`:
+The script requires a clean tree and checks the source commit again before creating artifacts. It runs local checks, builds optimized Swift, installs production-only dependencies in an isolated directory, validates native binary architectures, verifies signatures before and after ZIP extraction, checks bundled speech configuration, and exercises synthetic audio/silence/corruption with the target speech tools. Intel smoke checks on Apple Silicon run through Rosetta and require Rosetta to already be available.
 
-- `Sidekick-<version>-macOS-arm64.zip` — the actual app download, containing Sidekick.app.
-- `SHA256SUMS.txt` — SHA-256 checksums.
-- `release-manifest.json` — source commit, version/build, architecture, signing status and archive size/hash.
+Output in `build/releases/<tag>/<architecture>/`:
 
-The recipe verifies bundle signatures before and after ZIP extraction, confirms the app executable is present, and smoke-tests the bundled Node executable. It does not assert notarization or a real-phone test. Existing output is never overwritten.
+- `Sidekick-<version>-macOS-<architecture>.zip` — contains Sidekick.app.
+- `Sidekick-<version>-macOS-<architecture>.dmg` — contains the same app and an Applications shortcut.
+- `SHA256SUMS-<architecture>.txt` — checksums for the archives and manifest.
+- `release-manifest-<architecture>.json` — exact source commit, architecture, version and signing status.
 
-Check the generated manifest, asset contents, checksums and source commit. Create a tag at that exact commit, push it, and use GitHub's **Releases → Draft a new release** with that tag. Attach the three generated files and user-facing release notes; select **pre-release**. Keep the repository private.
+A `.app` is a directory bundle, so it is distributed inside ZIP/DMG rather than uploaded as a single GitHub file. Both formats preserve the same executable app. Existing artifacts are never overwritten; choose a new preview number for subsequent builds. Unpublished earlier candidate builds can remain local and are not automatically uploaded.
 
-Maintainers can use the GitHub CLI after verifying repository visibility and the reviewed tag:
+## Publish the reviewed assets
+
+Check the manifest, source commit, checksums and repository visibility. Create a tag at that exact commit, push it, then create a private prerelease with all eight files. Do not upload build directories or model caches.
 
 ```sh
 gh repo view LazyCodeer/sidekick --json visibility
-git tag v0.6.2-preview.1
-git push origin v0.6.2-preview.1
-gh release create v0.6.2-preview.1 --repo LazyCodeer/sidekick --verify-tag --prerelease \
-  --title "Sidekick 0.6.2 — Private preview 1" \
-  --notes-file docs/releases/v0.6.2-preview.1.md \
-  build/releases/v0.6.2-preview.1/Sidekick-0.6.2-preview.1-macOS-arm64.zip \
-  build/releases/v0.6.2-preview.1/SHA256SUMS.txt \
-  build/releases/v0.6.2-preview.1/release-manifest.json
+git tag v0.6.2-preview.2
+git push origin v0.6.2-preview.2
+gh release create v0.6.2-preview.2 --repo LazyCodeer/sidekick --verify-tag --prerelease \
+  --title "Sidekick 0.6.2 — Mac preview" \
+  --notes-file docs/releases/v0.6.2-preview.2.md \
+  build/releases/v0.6.2-preview.2/arm64/* \
+  build/releases/v0.6.2-preview.2/x86_64/*
 ```
 
-The GitHub Releases page is the download page; there is no tracked binary folder in the repository. GitHub also adds source archives automatically—those are not the app. Private release assets require repository access. Prereleases do not resolve through GitHub's stable `/releases/latest` shortcut, so the README links to `/releases`.
+The Releases page is the download page. GitHub's automatically added source archives are not app installers. Private assets require repository access. The README links to `/releases`, because prereleases do not use the stable `/releases/latest` shortcut. No tag or release is created by the build script itself.
 
 ## Public distribution readiness
 

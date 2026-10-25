@@ -11,8 +11,11 @@ import tarfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / 'build/speech-toolchain'
-OUTPUT = ROOT / 'build/speech-runtime'
+ARCH = os.environ.get('WSB_TARGET_ARCH', 'arm64')
+if ARCH not in ('arm64', 'x86_64'):
+    raise RuntimeError('Unsupported speech architecture')
+WORK = ROOT / ('build/speech-toolchain' if ARCH == 'arm64' else 'build/speech-toolchain-x86_64')
+OUTPUT = ROOT / ('build/speech-runtime' if ARCH == 'arm64' else 'build/speech-runtime-x86_64')
 MODEL_HASH = '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe'
 SOURCES = {
     'ffmpeg-9.0.2.tar.xz': ('https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz', '8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e'),
@@ -52,10 +55,13 @@ def extract(archive, name):
     return folders[0]
 
 def main():
-    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
-        raise RuntimeError('This speech runtime build currently targets Apple Silicon Macs only.')
+    if platform.system() != 'Darwin':
+        raise RuntimeError('This speech runtime build requires macOS.')
     WORK.mkdir(parents=True, exist_ok=True)
     for name, (url, sha) in SOURCES.items():
+        cached = ROOT / 'build/speech-toolchain' / name
+        if not (WORK / name).exists() and cached.is_file() and digest(cached) == sha:
+            shutil.copy2(cached, WORK / name)
         download(url, WORK / name, sha)
     ffmpeg = extract(WORK / 'ffmpeg-9.0.2.tar.xz', 'ffmpeg-source')
     whisper = extract(WORK / 'whisper-1.9.2.tar.gz', 'whisper-source')
@@ -69,18 +75,24 @@ def main():
         '--enable-decoder=opus,vorbis,mp3,mp3float,aac,aac_fixed,alac,flac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,amrnb,amrwb',
         '--enable-encoder=pcm_s16le', '--enable-muxer=wav',
         '--enable-filter=aresample,aformat,anull,atrim,abuffer,abuffersink,format',
-        '--cc=clang', '--arch=arm64', '--target-os=darwin',
-        '--extra-cflags=-mmacosx-version-min=14.0', '--extra-ldflags=-mmacosx-version-min=14.0',
+        '--cc=clang', '--arch=' + ARCH, '--target-os=darwin',
+        '--extra-cflags=-arch ' + ARCH + ' -mmacosx-version-min=14.0', '--extra-ldflags=-arch ' + ARCH + ' -mmacosx-version-min=14.0',
     ]
+    if ARCH == 'x86_64':
+        ffmpeg_args.extend(['--enable-cross-compile', '--disable-x86asm'])
     if not (ffmpeg / 'ffmpeg').exists():
         run(ffmpeg_args, ffmpeg)
         run(['make', '-j', '4', 'ffmpeg'], ffmpeg)
     whisper_build = WORK / 'whisper-build'
     cmake_args = ['cmake', '-S', str(whisper), '-B', str(whisper_build),
         '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0',
-        '-DCMAKE_OSX_ARCHITECTURES=arm64', '-DBUILD_SHARED_LIBS=OFF',
-        '-DGGML_BACKEND_DL=OFF', '-DGGML_NATIVE=OFF', '-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16', '-DGGML_METAL=ON', '-DGGML_METAL_EMBED_LIBRARY=ON',
+        '-DCMAKE_OSX_ARCHITECTURES=' + ARCH, '-DBUILD_SHARED_LIBS=OFF',
+        '-DGGML_BACKEND_DL=OFF', '-DGGML_NATIVE=OFF', '-DGGML_METAL=' + ('ON' if ARCH == 'arm64' else 'OFF'), '-DGGML_METAL_EMBED_LIBRARY=ON',
         '-DGGML_BLAS=OFF', '-DWHISPER_BUILD_TESTS=OFF', '-DWHISPER_BUILD_SERVER=OFF']
+    if ARCH == 'arm64':
+        cmake_args.append('-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16')
+    else:
+        cmake_args.extend(['-DGGML_AVX=OFF', '-DGGML_AVX2=OFF', '-DGGML_FMA=OFF', '-DGGML_F16C=OFF'])
     run(cmake_args)
     run(['cmake', '--build', str(whisper_build), '--target', 'whisper-cli', '-j', '4'])
     OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -109,7 +121,7 @@ def main():
         shutil.copy2(WORK / name, licenses / name)
     shutil.copy2(__file__, licenses / 'build_speech_runtime.py')
     (licenses / 'build-options.json').write_text(json.dumps({'ffmpeg': ffmpeg_args, 'whisper': cmake_args}, indent=2).replace(str(ROOT), '${PROJECT_ROOT}'))
-    manifest = {'schema': 1, 'architecture': 'arm64', 'minimumMacOS': '14.0',
+    manifest = {'schema': 1, 'architecture': 'arm64' if ARCH == 'arm64' else 'x64', 'minimumMacOS': '14.0',
         'ffmpeg': 'ffmpeg', 'whisper': 'whisper-cli', 'model': 'ggml-base.bin',
         'versions': {'ffmpeg': '9.0.2', 'whisper': '1.9.2', 'model': 'multilingual-base'},
         'sha256': {name: digest(OUTPUT / name) for name in ['ffmpeg', 'whisper-cli', 'ggml-base.bin']}}

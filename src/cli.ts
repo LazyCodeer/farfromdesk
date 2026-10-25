@@ -87,7 +87,7 @@ async function main() {
     const out=await r.json() as any;if(!r.ok)throw new Error(out.error);console.log(JSON.stringify(out,null,2));
   }
   else if(command==='open') {
-    const app=[join(homedir(),'Applications/Sidekick.app'),'/Applications/Sidekick.app',join(homedir(),'Applications/Session Bridge.app'),'/Applications/Session Bridge.app',join(root,'build/release/Sidekick.app'),join(root,'build/Session Bridge.app')].find(existsSync);
+    const app=[join(homedir(),'Applications/Sidekick.app'),'/Applications/Sidekick.app',join(homedir(),'Applications/Session Bridge.app'),'/Applications/Session Bridge.app',join(root,'build/release-arm64/Sidekick.app'),join(root,'build/release-x86_64/Sidekick.app'),join(root,'build/Session Bridge.app')].find(existsSync);
     if(!app)throw new Error('Install Sidekick.app first. The browser dashboard has been retired.');
     execFileSync('/usr/bin/open',[app],{stdio:'ignore'});
   }

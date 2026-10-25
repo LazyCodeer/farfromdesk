@@ -4,7 +4,7 @@
 
 ### Requirements
 
-- Apple Silicon Mac running macOS 14 or later for the bundled app/speech build.
+- Mac running macOS 14 or later. The default local build targets Apple Silicon; the release script supports separate Apple Silicon and Intel targets.
 - Xcode or Command Line Tools with a Swift 6 toolchain.
 - Node.js **22.13+** and npm.
 - Python **3.12+**, CMake, and the standard macOS build tools.
