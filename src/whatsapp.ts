@@ -103,8 +103,7 @@ export class WhatsApp {
   async recoverGroups() {
     if(!this.sock||this.status!=='connected')throw new Error('Connect WhatsApp first.');
     const groups=await this.sock.groupFetchAllParticipating();
-    const op=JSON.parse(this.store.get('group-operation')??'null');
-    const matches=Object.values(groups).filter(g=>ownerOnlyGroup(g,this.owners)&&(this.store.get(`owned-group:${g.id}`)||(op&&g.subject===op.name)));
+    const matches=Object.values(groups).filter(g=>ownerOnlyGroup(g,this.owners));
     for(const g of matches)this.store.set(`owned-group:${g.id}`,g.subject);
     return matches.map(g=>({id:g.id,name:g.subject}));
   }

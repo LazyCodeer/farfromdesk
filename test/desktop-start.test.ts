@@ -155,3 +155,37 @@ test('native proposal is durable needs-action; owner-started child resumes witho
   await f.starts.confirm(f.binding,true);assert.equal(f.store.binding(f.binding.id)?.native_id,child);assert.equal(f.sends(),1);
  }finally{f.close();}
 });
+
+
+test('workspace receipt files are isolated per operation and recovery never resends creation',async()=>{
+  const f=fixture();try {
+    const support=join(f.cwd,'.farfromdesk','coordinators','attempt');mkdirSync(support,{recursive:true});
+    f.store.set(`master-support:${f.binding.id}`,support);
+    writeFileSync(join(f.cwd,'.tether-desktop-created.json'),JSON.stringify({nonce:'old',sessionId:parent}));
+    await assert.rejects(f.starts.create(f.binding,parent,'Workspace coordinator','No task.'),/acknowledgment/);
+    const op=f.starts.get(f.binding.id)!;
+    assert.equal(op.supportDir,support);
+    const prompt=readFileSync(join(support,'.tether-desktop-start.txt'),'utf8');
+    assert.match(prompt,/Respect existing project instructions/);assert.doesNotMatch(prompt,/newly created empty/);
+    writeFileSync(join(support,'.tether-desktop-created.json'),JSON.stringify({nonce:op.nonce,sessionId:child,detached:true}));
+    writeFileSync(join(support,'.tether-desktop-ready.json'),JSON.stringify({nonce:op.nonce,ready:true,sessionId:child}));
+    await f.starts.confirm(f.binding,true);assert.equal(f.sends(),1);assert.equal(f.starts.get(f.binding.id)?.status,'ready');
+  }finally{f.close();}
+});
+
+test('native cross-workspace refusal is surfaced immediately without retrying',async()=>{
+  const f=fixture();try {
+    await assert.rejects(f.starts.create(f.binding,parent,'Test','No task.'),/acknowledgment/);
+    const op=f.starts.get(f.binding.id)!;
+    writeFileSync(join(f.cwd,'.tether-desktop-created.json'),JSON.stringify({nonce:op.nonce,error:'user_asked starts cannot be requested by another session message outside this project'}));
+    await assert.rejects(f.starts.confirm(f.binding),/native rules require a direct owner request/);assert.equal(f.sends(),1);
+  }finally{f.close();}
+});
+
+
+test('workspace launcher lookup includes later catalog pages',async()=>{
+  const f=fixture();try {
+    f.native.catalog=(async(_provider:any,cursor:any)=>cursor?{sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true}]}:{sessions:[],cursor:'page-two'}) as any;
+    assert.equal((await f.starts.parent(parent)).id,parent);
+  }finally{f.close();}
+});

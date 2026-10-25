@@ -197,7 +197,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/master-create'&&req.method==='POST') {
         const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');
-        json(res,200,await services.masters.create(d.provider,d.operationId,d.executionMode,d.desktopParentId,d.name,d.connectionRevision));return;
+        json(res,200,await services.masters.create(d.provider,d.operationId,d.executionMode,d.desktopParentId,d.name,d.connectionRevision,d.workspaceId));return;
       }
       if(path==='/api/master-options'&&req.method==='GET') {if(!services)throw new Error('Update the background service.');await services.masters.discover(url.searchParams.get('fresh')==='1');json(res,200,services.masters.options());return;}
       if(path==='/api/master-recover'&&req.method==='POST') {const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');json(res,200,await services.masters.recover(d.operationId));return;}

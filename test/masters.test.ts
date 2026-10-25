@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,writeFileSync,rmSync,readFileSync } from 'node:fs';
+import { mkdtempSync,writeFileSync,rmSync,readFileSync,realpathSync,symlinkSync,existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -22,7 +22,7 @@ else {send({id:m.id,result:{}});if(m.method==='turn/start'){send({method:'item/c
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=join(dir,'state');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
 const { Connections }=await import('../src/connections.js');
-const { Masters,codexDesktopInstalled,masterName }=await import('../src/masters.js');
+const { Masters,codexDesktopInstalled,masterName,masterWorkspaces }=await import('../src/masters.js');
 const { Coordinator }=await import('../src/coordinator.js');
 const { CodexSession }=await import('../src/codex-session.js');
 test.after(()=>rmSync(dir,{recursive:true,force:true}));
@@ -316,4 +316,53 @@ test('Claude Desktop preference saves without any launcher lookup and preserves 
   const preference=f.masters.platformPreferences().find(p=>p.provider==='claude');
   assert.equal(preference?.desktopParentId,nativeId);assert.equal(preference?.launcherName,'Previously chosen');
   assert.equal(f.store.get('master'),undefined);assert.equal(f.store.bindings().length,0);
+});
+
+
+test('workspace discovery deduplicates real paths and keeps separate accounts',()=>{
+  const cwd=realpathSync(mkdtempSync(join(dir,'workspace-'))),link=join(dir,'workspace-link');symlinkSync(cwd,link);
+  const rows=masterWorkspaces('claude','desktop',[
+    {id:'old',cwd:link,accountScope:'one',available:false,updatedAt:3},
+    {id:'live',cwd,accountScope:'one',available:true,updatedAt:2},
+    {id:'other-account',cwd,accountScope:'two',available:true,updatedAt:1},
+    {id:'missing',cwd:join(cwd,'missing'),available:true},
+  ]);
+  assert.equal(rows.length,2);assert.equal(rows[0].cwd,cwd);assert.equal(rows[0].launcherId,'live');
+  assert.notEqual(rows[0].id,rows[1].id);
+});
+
+test('Codex creates in the chosen real workspace without replacing project instructions',async()=>{
+  const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'codex-workspace-')));
+  for(const name of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(cwd,name),'Owner instructions');
+  f.router.native.catalog=async()=>({sessions:[{id:nativeId,cwd,available:true}]}) as any;
+  await f.masters.discover();const workspace=f.masters.platforms.find(p=>p.provider==='codex'&&p.executionMode==='cli').workspaces[0];
+  const id='aabbccdd-2222-4222-a222-222222222222';
+  await f.masters.create('codex',id,'cli',undefined,undefined,undefined,workspace.id);await settled(f);
+  assert.equal(f.masters.operation().status,'ready');assert.equal(f.masters.operation().cwd,cwd);
+  const b=f.store.binding(f.masters.operation().bindingId)!;
+  assert.equal(b.cwd,cwd);assert.equal(b.native_id,nativeId);
+  for(const name of ['AGENTS.md','CLAUDE.md','MASTER.md'])assert.equal(readFileSync(join(cwd,name),'utf8'),'Owner instructions');
+  const support=f.store.get(`master-support:${b.id}`)!;
+  assert.ok(support.startsWith(join(cwd,'.farfromdesk','coordinators')));assert.ok(existsSync(join(support,'CLAUDE.md')));
+  await f.masters.create('codex',id,'cli',undefined,undefined,undefined,workspace.id);
+  assert.equal(f.store.bindings().length,1);
+  await assert.rejects(f.masters.create('codex',id,'cli',undefined,undefined,undefined,'changed'),/cannot change/);
+});
+
+test('Claude workspace creation chooses the matching account and folder without asking for a session',async()=>{
+  const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'claude-workspace-')));
+  const sessions=[{id:'same-workspace',cwd,executionMode:'desktop',accountScope:'personal',available:true},
+    {id:'other',cwd:realpathSync(dir),executionMode:'desktop',accountScope:'work',available:true,updatedAt:999}];
+  f.router.native.catalog=async()=>({sessions}) as any;
+  f.masters.platforms=[{provider:'claude',executionMode:'desktop',available:true}];
+  let starts=0;f.masters.desktop.create=async(b,parent)=>{starts++;assert.equal(parent,'same-workspace');assert.equal(b.cwd,cwd);f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(nativeId,b.id);};
+  const workspace=masterWorkspaces('claude','desktop',sessions).find(w=>w.cwd===cwd)!;
+  const id='bbccddee-2222-4222-a222-222222222222';
+  await f.masters.create('claude',id,'desktop',undefined,undefined,undefined,workspace.id);await settled(f);
+  assert.equal(f.masters.operation().status,'ready');assert.equal(starts,1);
+  assert.equal(f.masters.operation().resolvedDesktopParentId,'same-workspace');
+  assert.equal(f.masters.operation().route.accountScope,'personal');
+  sessions[0].accountScope='changed';
+  await assert.rejects(f.masters.create('claude','ccddeeaa-2222-4222-a222-222222222222','desktop',undefined,undefined,undefined,workspace.id),/no longer available/);
+  assert.equal(starts,1);
 });

@@ -73,10 +73,15 @@ test('pausing during a membership check leaves outbound delivery queued',async()
   f.wa.sock={end:()=>{},groupMetadata:async()=>{f.wa.close();return {participants:[{id:owner}]};},sendMessage:async()=>{sent++;}} as any;
   await f.wa.flush();assert.equal(sent,0);assert.equal(f.store.db.prepare('SELECT status FROM outbox').get()?.status,'queued');f.close();
 });
-test('group recovery only lists registered or matching owner-only groups',async()=>{
+test('group recovery includes existing personal groups but excludes other members',async()=>{
   const f=fixture();f.store.set('group-operation',JSON.stringify({id:'attempt',name:'Bridge',status:'uncertain'}));
-  f.wa.sock={end:()=>{},groupFetchAllParticipating:async()=>({a:{id:group,subject:'Bridge',participants:[{id:owner}]},b:{id:'999@g.us',subject:'Bridge',participants:[{id:owner},{id:'999@s.whatsapp.net'}]}}),groupMetadata:async()=>({participants:[{id:owner}]})} as any;
-  assert.deepEqual(await f.wa.recoverGroups(),[{id:group,name:'Bridge'}]);await f.wa.selectDestination(group);
+  f.wa.sock={end:()=>{},groupFetchAllParticipating:async()=>({a:{id:group,subject:'Bridge',participants:[{id:owner}]},c:{id:'777@g.us',subject:'My notes',participants:[{id:owner}]},b:{id:'999@g.us',subject:'Bridge',participants:[{id:owner},{id:'999@s.whatsapp.net'}]}}),groupMetadata:async()=>({participants:[{id:owner}]})} as any;
+  assert.deepEqual(await f.wa.recoverGroups(),[{id:group,name:'Bridge'},{id:'777@g.us',name:'My notes'}]);
+  assert.equal(f.store.get('owned-group:777@g.us'),'My notes');
+  f.wa.sock!.groupMetadata=async()=>({participants:[{id:owner},{id:'999@s.whatsapp.net'}]}) as any;
+  await assert.rejects(f.wa.selectDestination('777@g.us'));
+  f.wa.sock!.groupMetadata=async()=>({participants:[{id:owner}]}) as any;
+  await f.wa.selectDestination(group);
   assert.equal(JSON.parse(f.store.get('group-operation')!).status,'created');f.close();
 });
 

@@ -24,6 +24,96 @@ void main() {
   }
 
   testWidgets(
+    'Selected private group loads on startup, retries failures, and switches',
+    (tester) async {
+      size(tester);
+      final api = GroupsGateway()..fail = true;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(api.loads, 1);
+      expect(find.textContaining('Could not load groups.'), findsOneWidget);
+      expect(
+        find.text('No groups with only you as a member were found.'),
+        findsNothing,
+      );
+      expect(find.text('Review in Activity'), findsNothing);
+      api.fail = false;
+      await tester.ensureVisible(find.text('Refresh groups'));
+      await tester.tap(find.text('Refresh groups'));
+      await tester.pumpAndSettle();
+      expect(api.loads, 2);
+      expect(find.text('In use'), findsOneWidget);
+      expect(find.text('My notes'), findsOneWidget);
+      await tester.ensureVisible(find.text('Use this group'));
+      await tester.tap(find.text('Use this group'));
+      await tester.pumpAndSettle();
+      expect(api.destination, 'notes@g.us');
+      expect(find.text('In use'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Creation dialog refreshes native progress and clears the spinner on failure',
+    (tester) async {
+      size(tester);
+      final api = SetupProgressGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
+      api.creating = true;
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      final dialog = find.byType(Dialog);
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.text('Waiting for Claude to start the session'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('claude desktop ·'), findsNothing);
+      api.creating = false;
+      api.failed = true;
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.text('Native approval required'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.text('Recover exact session'),
+        ),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Instructions render Markdown in a larger dialog with a close icon',
     (tester) async {
       size(tester);
@@ -338,7 +428,7 @@ void main() {
     },
   );
   testWidgets(
-    'Platform selection keeps CLI account status separate and requires a desktop launcher',
+    'Platform selection keeps CLI account status separate and requires a workspace',
     (tester) async {
       size(tester);
       final api = ConnectionGateway();
@@ -350,7 +440,14 @@ void main() {
       await tester.tap(find.text('Create new session'));
       await tester.pumpAndSettle();
       expect(find.text('Test CLI account'), findsOneWidget);
-      await tester.tap(find.byType(DropdownButton<String>).last);
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(Dialog),
+              matching: find.byType(DropdownButton<String>),
+            )
+            .first,
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.text('Claude CLI').last);
       await tester.pumpAndSettle();
@@ -363,7 +460,14 @@ void main() {
             .onPressed,
         isNull,
       );
-      await tester.tap(find.byType(DropdownButton<String>).last);
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(Dialog),
+              matching: find.byType(DropdownButton<String>),
+            )
+            .first,
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
@@ -373,7 +477,7 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(find.text('Initial Claude coordinator setup'), findsOneWidget);
+      expect(find.text('Workspace'), findsOneWidget);
       expect(
         tester
             .widget<FilledButton>(
@@ -384,14 +488,18 @@ void main() {
       );
       await tester.tap(find.byType(DropdownButtonFormField<String>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Personal desktop chat').last);
+      await tester.tap(find.text('/sample/personal').last);
       await tester.pumpAndSettle();
+      if (Platform.environment['FFD_CAPTURE_SETUP'] == '1') {
+        await expectLater(find.byType(Dialog), matchesGoldenFile('../../.local/workspace-setup.png'));
+      }
       await tester.ensureVisible(find.text('Create coordinator'));
       await tester.tap(find.text('Create coordinator'));
       await tester.pumpAndSettle();
       expect(api.submitted?['provider'], 'claude');
       expect(api.submitted?['executionMode'], 'desktop');
-      expect(api.submitted?['desktopParentId'], 'desktop-personal');
+      expect(api.submitted?['workspaceId'], 'workspace-personal');
+      expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
@@ -666,6 +774,15 @@ class ConnectionGateway extends PreviewGateway {
         'revision': desktop ? 'desktop-revision' : 'cli-revision',
       };
       if (desktop) {
+        p['workspaces'] = [
+          for (final name in ['personal', 'work'])
+            {
+              'id': 'workspace-$name',
+              'cwd': '/sample/$name',
+              'name': name,
+              'available': true,
+            },
+        ];
         p['sessions'] = [
           {
             'id': 'desktop-personal',
@@ -743,6 +860,68 @@ class InstructionsGateway extends MultiCoordinatorGateway {
       'policyVersion': 'secret-version',
       'agentName': 'internal-agent-name',
     };
+    return data;
+  }
+}
+
+class GroupsGateway extends ConnectionGateway {
+  bool fail = false;
+  int loads = 0;
+  String destination = 'bridge@g.us';
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    if (path == '/api/group-recover') {
+      loads++;
+      if (fail) throw StateError('Connection interrupted');
+      return {
+        'groups': [
+          {'id': 'bridge@g.us', 'name': 'Session Bridge'},
+          {'id': 'notes@g.us', 'name': 'My notes'},
+        ],
+      };
+    }
+    final data = await super.get(path);
+    data['destination'] = {
+      'jid': destination,
+      'kind': 'group',
+      'name': destination == 'bridge@g.us' ? 'Session Bridge' : 'My notes',
+    };
+    data['pendingJobs'] = [
+      {'id': 'pending', 'status': 'uncertain'},
+    ];
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/destination') {
+      destination = data['jid'];
+      return {};
+    }
+    return super.post(path, data);
+  }
+}
+
+class SetupProgressGateway extends ConnectionGateway {
+  bool creating = false, failed = false;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['masterSetup'] = Map<String, dynamic>.from(data['masterSetup']);
+    if (creating || failed) {
+      data['masterSetup']['operation'] = {
+        'id': 'setup-test',
+        'provider': 'claude',
+        'executionMode': 'desktop',
+        'name': 'FarFromDesk · Claude Desktop',
+        'status': creating ? 'creating' : 'uncertain',
+        'stage': 'Waiting for Claude to start the session',
+        if (failed) 'error': 'Native approval required',
+      };
+    }
     return data;
   }
 }

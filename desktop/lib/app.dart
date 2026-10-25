@@ -40,10 +40,12 @@ class _DeskState extends State<Desk> {
   String platform = 'codex:cli',
       setupAction = 'new',
       selectedNativeId = '',
+      selectedWorkspaceId = '',
       activityFilter = 'All',
       activityQuery = '';
   bool automaticName = true, showGroups = false, loadingGroups = false;
   List<Map> groups = [];
+  String? groupsError;
   int visibleSessions = 30;
   final customName = TextEditingController();
   StateSetter? modalUpdate;
@@ -76,7 +78,10 @@ class _DeskState extends State<Desk> {
       await widget.initialize?.call();
       startup = await api.startupEnabled();
       await refresh();
-      if (mounted) setState(() => ready = true);
+      if (mounted) {
+        setState(() => ready = true);
+        if (showGroups) unawaited(loadGroups());
+      }
       timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
       await WidgetsBinding.instance.endOfFrame;
       if (mounted && error == null) await api.reportReady();
@@ -177,7 +182,9 @@ class _DeskState extends State<Desk> {
                 act(() => api.openReleasePage(release.download));
               }
             },
-            child: Text(api.canInstallUpdate ? 'Update and restart' : 'Download update'),
+            child: Text(
+              api.canInstallUpdate ? 'Update and restart' : 'Download update',
+            ),
           ),
         ],
       ),
@@ -186,30 +193,68 @@ class _DeskState extends State<Desk> {
 
   Future<void> startUpdate(AppRelease release) async {
     if (installingUpdate) return;
-    setState(() { installingUpdate = true; updateProgress = {'message': 'Preparing update…'}; });
+    setState(() {
+      installingUpdate = true;
+      updateProgress = {'message': 'Preparing update…'};
+    });
     StateSetter? redraw;
-    unawaited(showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => StatefulBuilder(builder: (context, setDialogState) {
-        redraw = setDialogState;
-        final failed = updateProgress['phase'] == 'error';
-        final total = (updateProgress['total'] as num?)?.toDouble();
-        final received = (updateProgress['received'] as num?)?.toDouble() ?? 0;
-        return PopScope(canPop: !installingUpdate, child: AlertDialog(
-          title: Text(failed ? 'Update could not finish' : 'Updating FarFromDesk'),
-          content: SizedBox(width: 420, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(updateProgress['message']?.toString() ?? 'Preparing update…'),
-            if (!failed) ...[
-              const SizedBox(height: 18),
-              LinearProgressIndicator(value: total != null && total > 0 ? (received / total).clamp(0.0, 1.0) : null),
-              if (total != null) ...[const SizedBox(height: 8), Text('${(received / 1048576).toStringAsFixed(1)} / ${(total / 1048576).ceil()} MB')],
-            ],
-          ])),
-          actions: [if (!installingUpdate) TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
-        ));
-      }),
-    ).whenComplete(() => redraw = null));
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            redraw = setDialogState;
+            final failed = updateProgress['phase'] == 'error';
+            final total = (updateProgress['total'] as num?)?.toDouble();
+            final received =
+                (updateProgress['received'] as num?)?.toDouble() ?? 0;
+            return PopScope(
+              canPop: !installingUpdate,
+              child: AlertDialog(
+                title: Text(
+                  failed ? 'Update could not finish' : 'Updating FarFromDesk',
+                ),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        updateProgress['message']?.toString() ??
+                            'Preparing update…',
+                      ),
+                      if (!failed) ...[
+                        const SizedBox(height: 18),
+                        LinearProgressIndicator(
+                          value: total != null && total > 0
+                              ? (received / total).clamp(0.0, 1.0)
+                              : null,
+                        ),
+                        if (total != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            '${(received / 1048576).toStringAsFixed(1)} / ${(total / 1048576).ceil()} MB',
+                          ),
+                        ],
+                      ],
+                    ],
+                  ),
+                ),
+                actions: [
+                  if (!installingUpdate)
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('Close'),
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
+      ).whenComplete(() => redraw = null),
+    );
     try {
       await api.installUpdate(release, (value) {
         if (!mounted) return;
@@ -217,7 +262,11 @@ class _DeskState extends State<Desk> {
         redraw?.call(() {});
       });
     } catch (e) {
-      if (mounted) setState(() => updateProgress = {'phase': 'error', 'message': clean(e)});
+      if (mounted) {
+        setState(
+          () => updateProgress = {'phase': 'error', 'message': clean(e)},
+        );
+      }
     } finally {
       if (mounted) setState(() => installingUpdate = false);
       redraw?.call(() {});
@@ -235,6 +284,7 @@ class _DeskState extends State<Desk> {
           if (!ready) showGroups = next['destination']?['kind'] == 'group';
           error = null;
         });
+        modalUpdate?.call(() {});
       }
     } catch (e) {
       if (mounted) setState(() => error = clean(e));
@@ -437,15 +487,34 @@ class _DeskState extends State<Desk> {
     return [
       for (final op in operations) ...[
         const Divider(height: 32),
-        Text(
-          op['status'] == 'needs_action'
-              ? 'Setup needs your action in Claude'
-              : 'Setup: ${op['status']}',
-          style: const TextStyle(fontWeight: FontWeight.w600),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (op['status'] == 'creating') ...[
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+            ],
+            Flexible(
+              child: Text(
+                op['status'] == 'creating'
+                    ? (op['stage'] ?? 'Preparing your session…')
+                    : op['status'] == 'needs_action'
+                    ? 'Waiting for your action in Claude'
+                    : 'Setup not completed',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
         ),
-        note(
-          '${op['provider'] ?? ''} ${op['executionMode'] ?? ''} · ${op['name'] ?? 'Coordinator setup'}',
-        ),
+        note(op['name'] ?? 'Coordinator setup'),
+        if (op['status'] == 'creating')
+          note(
+            'You can close this window. Progress will stay visible on Home.',
+          ),
         if (op['error'] != null) note(op['error']),
         if ([
           'uncertain',

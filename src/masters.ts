@@ -3,8 +3,8 @@ import { CoordinatorRegistry } from './coordinator-registry.js';
 import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync,writeFileSync,realpathSync,existsSync,statSync } from 'node:fs';
+import { join,basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
@@ -34,6 +34,23 @@ export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
   const name=(value as string|undefined)?.trim()??'';
   if(name.length>80||/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name))throw new Error('Use a session name of up to 80 characters without control characters.');
   return name||`FarFromDesk · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
+}
+// Workspace identity includes runtime and account; folder names are display only.
+export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[]) {
+  const choices=new Map<string,any>();
+  for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
+    if(typeof s.cwd!=='string'||!s.cwd)continue;
+    try {
+      const cwd=realpathSync(s.cwd);if(!statSync(cwd).isDirectory())continue;
+      const accountScope=s.accountScope??null;
+      const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,accountScope])).digest('hex');
+      const available=provider!=='claude'||mode!=='desktop'||s.available===true;
+      const existing=choices.get(id);
+      if(!existing||(!existing.available&&available))choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,launcherId:provider==='claude'&&mode==='desktop'?s.id:undefined});
+    }catch{/* A moved or inaccessible folder is not a creation target. */}
+  }
+  const result=[...choices.values()];
+  return result.map(w=>({...w,label:result.filter(other=>other.cwd===w.cwd).length>1?`${w.cwd} · account ${String(w.accountScope??'unknown').slice(0,8)}`:w.cwd}));
 }
 export class Masters {
   connections:Connections;
@@ -117,6 +134,7 @@ export class Masters {
         platform.creationReadiness=this.desktop.readiness(claude,platform.launcherId);
       }
     }));
+    for(const platform of platforms)platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[]);
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
     const digest=createHash('sha256').update(JSON.stringify(platforms)).digest('hex');
     if(digest!==this.catalogDigest){this.catalogDigest=digest;this.catalogRevision=randomUUID();}
@@ -125,7 +143,7 @@ export class Masters {
     try{return await this.discovery;}finally{this.discovery=undefined;}
   }
   options(knownRevision?:string){
-    const clean=(op:any)=>op?{...op,proposalId:op.bindingId?this.desktop.get(op.bindingId)?.proposalId:undefined,needsTrust:op.needsTrust||/workspace not trusted/i.test(op.error??''),error:op.error?this.setupError(op.error):undefined}:op;
+    const clean=(op:any)=>op?{...op,stage:op.bindingId?(this.desktop.get(op.bindingId)?.stage??op.stage):op.stage,proposalId:op.bindingId?this.desktop.get(op.bindingId)?.proposalId:undefined,needsTrust:op.needsTrust||/workspace not trusted/i.test(op.error??''),error:op.error?this.setupError(op.error):undefined}:op;
     const op=this.operation();
     const attempts=this.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'master-attempt:%'").all().map((r:any)=>JSON.parse(r.value)).filter(a=>a.id!==op?.id&&['creating','uncertain','set-aside','needs_action'].includes(a.status)).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).map(clean);
     const catalogUnchanged=knownRevision===this.catalogRevision;
@@ -282,43 +300,60 @@ export class Masters {
       return this.operation();
     }finally{this.creating=false;}
   }
-  async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string):Promise<any> {
-    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision));
+  async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string):Promise<any> {
+    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId));
   }
-  private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string):Promise<any> {
+  private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string):Promise<any> {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
     requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),name=masterName(provider,mode,requestedName),previous=this.operation(operationId);
-    if(previous){if(previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():''))throw new Error('Creation ID cannot change platform or desktop launcher.');return previous;}
+    if(previous){if(previous.workspaceId!==workspaceId||previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():''))throw new Error('Creation ID cannot change platform, workspace or desktop launcher.');return previous;}
     this.assertIdle();
     if(!this.platforms.find(p=>p.provider===provider&&(p.executionMode??'cli')===mode)?.available)throw new Error('The selected execution mode is not available.');
-    const route=await this.connections.prepare({provider,cwd:join(stateDir,'masters',operationId)},mode,mode==='cli',undefined,connectionRevision);
-    if(this.operation(operationId))return this.create(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision);
+    let workspace:any;
+    if(workspaceId!==undefined) {
+      if(typeof workspaceId!=='string'||!workspaceId)throw new Error('Choose a detected workspace.');
+      const sessions=await this.catalog(provider,true);
+      workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode)).find(w=>w.id===workspaceId);
+      if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
+      if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
+    }
+    const route=await this.connections.prepare({provider,cwd:workspace?.cwd??join(stateDir,'masters',operationId)},mode,mode==='cli',workspace?.accountScope??undefined,connectionRevision);
+    if(this.operation(operationId))return this.create(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId);
     this.assertIdle();
     this.setAside();this.creating=true;
-    const op={id:operationId,provider,executionMode:mode,desktopParentId,route,status:'creating',name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
+    const op={id:operationId,provider,executionMode:mode,desktopParentId,workspaceId,workspaceCwd:workspace?.cwd,route,status:'creating',stage:'Preparing workspace',startedAt:Date.now(),name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
     void (async()=>{
-      const launcher=provider==='claude'&&mode==='desktop'?await this.desktop.parent(desktopParentId):undefined;
+      const launcher=provider==='claude'&&mode==='desktop'?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined):undefined;
       if(launcher)this.saveOperation({...this.operation(),route:{...route,accountScope:launcher.accountScope},resolvedDesktopParentId:launcher.id});
       await this.provision(provider,operationId,mode,launcher?.id??desktopParentId);
     })().catch(e=>this.recordSetupFailure(e,operationId)).finally(()=>{this.creating=false;});
     return op;
   }
   async provision(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
-    const cwd=join(stateDir,'masters',operationId);mkdirSync(cwd,{recursive:true,mode:0o700});
+    const selected=this.operation()?.workspaceCwd;
+    let cwd=selected?realpathSync(selected):join(stateDir,'masters',operationId);
+    if(selected&&cwd!==selected)throw new Error('Selected workspace path changed. Choose it again.');
+    mkdirSync(cwd,{recursive:true,mode:0o700});cwd=realpathSync(cwd);
+    // Existing project instructions must never be replaced by bridge setup.
+    const support=selected?join(cwd,'.farfromdesk','coordinators',operationId):cwd;
+    mkdirSync(support,{recursive:true,mode:0o700});
+    if(realpathSync(support)!==support)throw new Error('Workspace setup directory must not be a symbolic link.');
+    if(selected)writeFileSync(join(support,'.gitignore'),'*\n',{mode:0o600,flag:'wx'});
     const alias=`whatsapp-master-${operationId.slice(0,8)}`;
     const registered=this.store.register(alias,provider,randomUUID(),cwd);
     let b=registered.binding;this.store.set(`execution-mode:${b.id}`,mode);this.store.enable(b.id,false);saveBindingCredentials(b,registered.token);
     const route=this.operation()?.route??await this.connections.prepare(b,mode,mode==='cli');this.connections.save(b,route);
     await this.connections.assert(b);
-    this.saveOperation({...this.operation(),bindingId:b.id,cwd});
+    this.store.set(`master-support:${b.id}`,support);
+    this.saveOperation({...this.operation(),bindingId:b.id,cwd,stage:'Starting native session'});
     const name=this.operation().name??'WhatsApp master';this.store.set(`name:${b.id}`,name);
     this.store.set(`role-kind:${b.id}`,'master');
     const instruction=roleConfig(this.store,b,'master').instructions+(mode==='desktop'?`\n\nUse the local bridge CLI for coordination: ${quote(process.execPath)} ${quote(join(root,'dist/cli.js'))} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command. Your native permissions still apply.`:'\n\nUse the session_bridge MCP tools for coordination and replies. Your native permissions still apply.');
-    for(const filename of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(cwd,filename),instruction,{mode:0o600});
+    for(const filename of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(support,filename),instruction,{mode:0o600,flag:selected?'wx':'w'});
     for(const directory of ['.agents/skills/whatsapp-master','.claude/skills/whatsapp-master']) {
-      mkdirSync(join(cwd,directory),{recursive:true,mode:0o700});
-      writeFileSync(join(cwd,directory,'SKILL.md'),`---\nname: whatsapp-master\ndescription: Coordinate owner-selected coding sessions and send supportive, request-bound WhatsApp replies.\n---\n${instruction}`,{mode:0o600});
+      mkdirSync(join(support,directory),{recursive:true,mode:0o700});
+      writeFileSync(join(support,directory,'SKILL.md'),`---\nname: whatsapp-master\ndescription: Coordinate owner-selected coding sessions and send supportive, request-bound WhatsApp replies.\n---\n${instruction}`,{mode:0o600});
     }
     if(provider==='claude'&&mode==='desktop') {
       await this.desktop.create(b,desktopParentId!,name,instruction);
@@ -342,9 +377,9 @@ export class Masters {
     await this.router.coordinator?.refresh().catch(()=>{});
   }
   async provisionClaude(b:Binding) {
-    // This is a new empty app-created directory authorized by the local setup action.
+    // Keep generated configuration separate from the selected project's instructions.
     // Use Claude's supported headless interface; never edit Claude's trust database.
-    const mcp=join(b.cwd,'bridge-mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{session_bridge:this.mcpConfig(b)}}),{mode:0o600});
+    const mcp=join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{session_bridge:this.mcpConfig(b)}}),{mode:0o600});
     const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
     try{await runtime.initialize();await runtime.run('Return exactly READY without using tools. Wait for the owner’s first WhatsApp message.');this.store.set(`managed-claude:${b.id}`,'true');}
     catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
@@ -413,7 +448,7 @@ export class Masters {
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:roleConfig(this.store,b).instructions,...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(b.cwd,'bridge-mcp.json'),allowedTools:['master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
+    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:roleConfig(this.store,b).instructions,...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
   }
   async provisionWorker(b:Binding) {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));

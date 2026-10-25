@@ -282,30 +282,6 @@ extension _BridgeScreens on _DeskState {
                               ],
                             ),
                           ),
-                        if (pending > 0 && section != 1)
-                          Container(
-                            color: sand,
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.schedule,
-                                  color: warning,
-                                  size: 18,
-                                ),
-                                const SizedBox(width: 12),
-                                Text('$pending unfinished requests'),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: small('Waiting for a reply or review'),
-                                ),
-                                TextButton(
-                                  onPressed: () => go(1),
-                                  child: const Text('Review in Activity'),
-                                ),
-                              ],
-                            ),
-                          ),
                         Expanded(
                           child: SingleChildScrollView(
                             padding: const EdgeInsets.fromLTRB(26, 22, 26, 36),
@@ -789,8 +765,10 @@ extension _BridgeScreens on _DeskState {
           gap(),
           if (loadingGroups)
             const LinearProgressIndicator()
-          else if (groups.isEmpty) ...[
-            small('No existing owner-only bridge group was found.'),
+          else if (groupsError != null) ...[
+            Text(groupsError!, style: const TextStyle(color: warning)),
+          ] else if (groups.isEmpty) ...[
+            small('No groups with only you as a member were found.'),
             gap(),
             button('Set up a private group…', createGroup),
           ] else
@@ -836,12 +814,24 @@ extension _BridgeScreens on _DeskState {
     ),
   );
   Future<void> loadGroups() async {
-    changeView(() => loadingGroups = true);
-    await act(() async {
-      final d = await api.get('/api/group-recover');
-      groups = List<Map>.from(d['groups'] ?? []);
+    if (loadingGroups || !mounted) return;
+    changeView(() {
+      loadingGroups = true;
+      groupsError = null;
     });
-    if (mounted) changeView(() => loadingGroups = false);
+    try {
+      final d = await api.get('/api/group-recover');
+      if (mounted) changeView(() => groups = List<Map>.from(d['groups'] ?? []));
+    } catch (e) {
+      if (mounted) {
+        changeView(
+          () => groupsError =
+              'Could not load groups. ${clean(e)} Try Refresh groups.',
+        );
+      }
+    } finally {
+      if (mounted) changeView(() => loadingGroups = false);
+    }
   }
 
   Future<void> createGroup() async {
@@ -1286,15 +1276,17 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
-  String? get desktopLauncher {
-    final id = selectedNativeId.isNotEmpty
-        ? selectedNativeId
-        : selectedPlatform?['launcherId'];
-    return (selectedPlatform?['sessions'] ?? []).cast<Map>().any(
-          (s) => s['id'] == id && s['available'] == true,
-        )
-        ? id as String?
-        : null;
+  List<Map> get workspaceOptions =>
+      List<Map>.from(selectedPlatform?['workspaces'] ?? []);
+
+  Map? get selectedWorkspace {
+    for (final workspace in workspaceOptions) {
+      if (workspace['id'] == selectedWorkspaceId &&
+          workspace['available'] == true) {
+        return workspace;
+      }
+    }
+    return null;
   }
 
   Widget masterForm() {
@@ -1346,6 +1338,7 @@ extension _BridgeScreens on _DeskState {
                             editSetup(() {
                               platform = value;
                               selectedNativeId = '';
+                              selectedWorkspaceId = '';
                               visibleSessions = 30;
                               search.clear();
                             });
@@ -1411,45 +1404,43 @@ extension _BridgeScreens on _DeskState {
         ),
         gap(14),
         if (setupAction == 'new') ...[
-          if (platform == 'claude:desktop' &&
-              selectedPlatform?['coordinatorId'] != null) ...[
+          const Text('Workspace'),
+          gap(8),
+          DropdownButtonFormField<String>(
+            key: ValueKey(
+              'workspace-$platform-${selectedWorkspace?['id'] ?? 'none'}',
+            ),
+            initialValue: selectedWorkspace?['id'] as String?,
+            isExpanded: true,
+            decoration: const InputDecoration(hintText: 'Choose a workspace'),
+            items: [
+              for (final w in workspaceOptions)
+                DropdownMenuItem(
+                  value: w['id'].toString(),
+                  enabled: w['available'] == true,
+                  child: Text(
+                    (w['label'] ?? w['cwd']).toString(),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) => editSetup(() => selectedWorkspaceId = value ?? ''),
+          ),
+          gap(8),
+          small(
+            workspaceOptions.isEmpty
+                ? 'Open a project in this app, then reopen this dialog to discover its workspace.'
+                : 'The new session starts in this workspace. Existing project instructions and the app’s own permissions apply.',
+          ),
+          if (platform == 'claude:desktop') ...[
+            gap(6),
             small(
-              'Your connected Claude coordinator initializes this session.',
+              'Claude uses a reachable chat in this workspace and its account to create the session. Native approval may still be required.',
             ),
-            gap(12),
           ],
-          if (platform == 'claude:desktop' &&
-              selectedPlatform?['coordinatorId'] == null) ...[
-            const Text('Initial Claude coordinator setup'),
-            gap(8),
-            DropdownButtonFormField<String>(
-              initialValue: desktopLauncher,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                hintText: 'Choose the Claude account and session to use',
-              ),
-              items: [
-                for (final s
-                    in (selectedPlatform?['sessions'] ?? []).cast<Map>())
-                  if (s['available'] == true)
-                    DropdownMenuItem(
-                      value: s['id'].toString(),
-                      child: Text(
-                        s['name'] ?? s['id'],
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-              ],
-              onChanged: busy
-                  ? null
-                  : (value) => editSetup(() => selectedNativeId = value ?? ''),
-            ),
-            gap(8),
-            small(
-              'The new chat uses this desktop session’s account. Your CLI login is separate.',
-            ),
-            gap(16),
-          ],
+          gap(16),
           Row(
             children: [
               const Text(
@@ -1664,8 +1655,7 @@ extension _BridgeScreens on _DeskState {
                   can &&
                   (setupAction == 'new'
                       ? (selectedPlatform?['canCreate'] != false &&
-                            (platform != 'claude:desktop' ||
-                                desktopLauncher != null) &&
+                            selectedWorkspace != null &&
                             (automaticName ||
                                 customName.text.trim().isNotEmpty))
                       : existing),
@@ -1701,9 +1691,7 @@ extension _BridgeScreens on _DeskState {
         'provider': parts[0],
         'executionMode': parts[1],
         'connectionRevision': selectedPlatform?['connection']?['revision'],
-        'desktopParentId': platform == 'claude:desktop'
-            ? desktopLauncher
-            : null,
+        'workspaceId': selectedWorkspace?['id'],
         'name': automaticName
             ? 'FarFromDesk · $platformName'
             : customName.text.trim(),
@@ -1739,6 +1727,7 @@ extension _BridgeScreens on _DeskState {
               : '${status['master']['provider']}:${status['master']['executionMode']}');
       setupAction = 'existing';
       selectedNativeId = '';
+      selectedWorkspaceId = '';
       search.clear();
       visibleSessions = 30;
     });

@@ -92,6 +92,14 @@ class PreviewGateway extends Gateway {
             'provider': provider,
             'executionMode': 'cli',
             'available': true,
+            'workspaces': [
+              {
+                'id': '$provider-sample-workspace',
+                'cwd': '/sample/projects/project-1',
+                'name': 'project-1',
+                'available': true,
+              },
+            ],
             'sessions': List.generate(
               63,
               (i) => {
