@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, copyFileSync, rmSync, existsSync } from 'node:fs';
+import { cpSync, mkdirSync, copyFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const root=resolve(import.meta.dirname,'..'),target=join(root,'build','desktop-backend');
@@ -23,3 +23,7 @@ const speechSource=join(root,'build',process.arch==='arm64'?'speech-runtime':'sp
 if(!existsSync(join(speechSource,'manifest.json')))throw new Error('Build the bundled speech runtime before packaging the desktop backend.');
 rmSync(join(root,'build','speech'),{recursive:true,force:true});
 cpSync(speechSource,join(root,'build','speech'),{recursive:true});
+
+const revision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'});
+if(revision.status!==0)throw new Error('A committed source revision is required.');
+writeFileSync(join(target,'build.json'),JSON.stringify({sourceCommit:revision.stdout.trim()}));

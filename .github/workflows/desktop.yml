@@ -1,8 +1,8 @@
-name: Shared desktop verification
+name: FarFromDesk desktop release
 on:
   workflow_dispatch:
   push:
-    branches: [codex/shared-desktop]
+    branches: [main, codex/shared-desktop]
   pull_request:
     paths: ['desktop/**', 'src/**', 'install/**', 'script/**', 'package*.json', '.github/workflows/desktop.yml']
 permissions:
@@ -11,7 +11,32 @@ concurrency:
   group: shared-desktop-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      app: ${{ steps.version.outputs.app }}
+      build: ${{ steps.version.outputs.build }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - id: version
+        env:
+          FFD_RUN: ${{ github.run_id }}
+          FFD_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PYCODE'
+          import json,os,re
+          from pathlib import Path
+          d=json.loads(Path('release.json').read_text())
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',d['version'])
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f"version={d['version']}-preview.{int(os.environ['FFD_RUN'])}\n")
+              f.write(f"app={d['version']}\n")
+              f.write(f"build={max(d['build'],2000+int(os.environ['FFD_NUMBER']))}\n")
+          PYCODE
   desktop:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +59,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with: {flutter-version: '3.47.7', channel: stable, cache: true}
       - if: runner.os == 'Windows'
+        id: msys
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
         with:
           msystem: UCRT64
@@ -42,6 +68,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev xvfb libgl1-mesa-dri
       - run: npm ci
       - run: npm run check
+      - run: python -m unittest discover -s script/tests
       - run: npm run test:portable
       - if: runner.os == 'macOS'
         run: npm test
@@ -60,14 +87,16 @@ jobs:
         working-directory: desktop
       - run: flutter test
         working-directory: desktop
-      - run: flutter build ${{ matrix.target }} --release
+      - run: flutter build ${{ matrix.target }} --release --build-name ${{ needs.version.outputs.app }} --build-number ${{ needs.version.outputs.build }} --dart-define=FFD_VERSION=${{ needs.version.outputs.version }}
         working-directory: desktop
       - name: Build bundled local speech
+        env:
+          FFD_MSYS_BASH: ${{ steps.msys.outputs.msys2-location }}/usr/bin/bash.exe
         run: python script/build_speech_runtime.py
       - run: npm run desktop:backend
       - run: node script/smoke_desktop_backend.mjs
       - run: node script/test_desktop_speech.mjs
-      - run: python script/package_desktop.py --version 0.7.0-preview.${{ github.run_id }}
+      - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
       - if: runner.os == 'Linux'
         run: xvfb-run -a node script/smoke_desktop_app.mjs
       - if: runner.os != 'Linux'
@@ -76,6 +105,7 @@ jobs:
         with:
           name: farfromdesk-${{ matrix.runner }}
           path: |
+            build/desktop-release/*.dmg
             build/desktop-release/*.zip
             build/desktop-release/*.tar.gz
             build/desktop-release/*.sha256
@@ -84,3 +114,24 @@ jobs:
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [version, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: farfromdesk-*
+          path: build/publish
+      - name: Publish all verified desktop targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: python3 script/publish_desktop_release.py --assets build/publish --repo "$RELEASE_REPO" --version "$RELEASE_VERSION" --commit "$SOURCE_COMMIT"

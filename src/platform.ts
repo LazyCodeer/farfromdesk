@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32, posix } from 'node:path';
 
@@ -14,8 +14,13 @@ export function nativeCommand(binary: string, args: string[], platform = process
   if (platform !== 'win32') {
     if(binary.includes('/'))return {binary,args};
     const home=env.HOME||homedir();
-    for(const root of [...(env.PATH||'').split(':').filter(Boolean),posix.join(home,'.local/bin'),'/opt/homebrew/bin','/usr/local/bin']) {
+    const nvm=posix.join(home,'.nvm/versions/node');
+    let versions:string[]=[];try{versions=readdirSync(nvm).filter(v=>/^v[0-9.]+$/.test(v)).sort((a,b)=>b.localeCompare(a,undefined,{numeric:true})).map(v=>posix.join(nvm,v,'bin'));}catch{}
+    for(const root of [...(env.PATH||'').split(':').filter(p=>posix.isAbsolute(p)),posix.join(home,'.local/bin'),'/opt/homebrew/bin','/usr/local/bin',...versions]) {
       const candidate=posix.join(root,binary);if(exists(candidate))return {binary:candidate,args};
+    }
+    if(platform==='darwin'&&binary==='codex')for(const folder of ['/Applications',posix.join(home,'Applications')])for(const app of ['Codex','ChatGPT'])for(const sub of ['codex','codex-cli/codex']){
+      const candidate=posix.join(folder,app+'.app','Contents/Resources',sub);if(exists(candidate))return {binary:candidate,args};
     }
     return {binary,args};
   }

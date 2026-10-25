@@ -2,13 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { defaultStateDirectory } from './platform.js';
+import { defaultStateDirectory, nativeCommand } from './platform.js';
 
 export const stateDir = process.env.WSB_STATE_DIR ?? defaultStateDirectory();
 export const port = Number(process.env.WSB_PORT ?? 47831);
 export const baseUrl = `http://127.0.0.1:${port}`;
-export const codexBin = process.env.WSB_CODEX_BIN ?? 'codex';
-export const claudeBin = process.env.WSB_CLAUDE_BIN ?? 'claude';
+export const codexBin = process.env.WSB_CODEX_BIN ?? (process.platform==='win32'?'codex':nativeCommand('codex',[]).binary);
+export const claudeBin = process.env.WSB_CLAUDE_BIN ?? (process.platform==='win32'?'claude':nativeCommand('claude',[]).binary);
 export function initializeState() {
   if(process.platform !== 'win32') process.umask(0o077);
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });

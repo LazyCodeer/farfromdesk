@@ -2092,7 +2092,7 @@ extension _BridgeScreens on _DeskState {
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                 ),
                 gap(5),
-                small('Version 0.7.0 · Shared desktop preview'),
+                small("Version ${const String.fromEnvironment('FFD_VERSION', defaultValue: '0.7.0')}" ),
               ],
             ),
             const Spacer(),

@@ -48,6 +48,11 @@ class NativeGateway extends Gateway {
       appPath: Platform.resolvedExecutable,
       packageName: 'com.codecylabs.farfromdesk',
     );
+    final executableDir = p.dirname(Platform.resolvedExecutable);
+    final root = Platform.environment['FFD_BACKEND_ROOT'] ??
+        (Platform.isMacOS ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend')) : p.join(executableDir, 'backend'));
+    final buildFile = File(p.join(root, 'build.json'));
+    final expectedCommit = await buildFile.exists() ? (jsonDecode(await buildFile.readAsString()) as Map<String, dynamic>)['sourceCommit'] : null;
     Future<bool> connected() async {
       final file = File(p.join(state, 'admin-token'));
       if (!await file.exists()) return false;
@@ -58,6 +63,9 @@ class NativeGateway extends Gateway {
           throw StateError(
             'A different backend is running. Update it before starting FarFromDesk.',
           );
+        }
+        if (expectedCommit != null && result['sourceCommit'] != expectedCommit) {
+          throw StateError('Another FarFromDesk version is still running. Pause background forwarding and quit that version before starting this update.');
         }
         return true;
       } on SocketException {
@@ -70,12 +78,6 @@ class NativeGateway extends Gateway {
     }
 
     if (await connected()) return;
-    final executableDir = p.dirname(Platform.resolvedExecutable);
-    final root =
-        Platform.environment['FFD_BACKEND_ROOT'] ??
-        (Platform.isMacOS
-            ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend'))
-            : p.join(executableDir, 'backend'));
     final node =
         Platform.environment['FFD_NODE_BIN'] ??
         p.join(root, 'runtime', Platform.isWindows ? 'node.exe' : 'node');
@@ -94,6 +96,7 @@ class NativeGateway extends Gateway {
         'WSB_STATE_DIR': state,
         'WSB_PORT': '$port',
         'FFD_PORTABLE_AGENTS': Platform.isMacOS ? '0' : '1',
+        if (Platform.isMacOS) 'WSB_DESKTOP_SYNC_BIN': p.join(root, 'native', 'desktop-sync'),
       },
       mode: ProcessStartMode.detached,
     );

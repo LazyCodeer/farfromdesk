@@ -7,6 +7,9 @@ import { defaultStateDirectory,nativeCommand } from '../src/platform.js';
 import { exactSession } from '../src/portable-native.js';
 import { acquireServiceLock } from '../src/service-lock.js';
 import { ClaudeSDKSession } from '../src/claude-sdk-session.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 
 test('platform paths preserve the Mac installation and use private per-user locations',()=>{
   assert.equal(defaultStateDirectory('darwin','/Users/test',{}),'/Users/test/Library/Application Support/WhatsApp Session Bridge');
@@ -42,6 +45,21 @@ test('a second backend cannot acquire the same live state directory',()=>{
     assert.throws(()=>acquireServiceLock(root),/already running/);
     release();const next=acquireServiceLock(root);next();
   }finally{rmSync(root,{recursive:true,force:true});}
+});
+test('a crashed backend releases its service lock without stale-PID cleanup',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'ffd-crash-lock-'));
+  const module=new URL('../src/service-lock.ts',import.meta.url).href;
+  const child=spawn(process.execPath,['--import','tsx','--input-type=module','-e',
+    'const {acquireServiceLock}=await import(process.argv[1]);acquireServiceLock(process.argv[2]);process.stdout.write("locked");setInterval(()=>{},1000);',module,root],
+    {cwd:fileURLToPath(new URL('..',import.meta.url)),stdio:['ignore','pipe','pipe']});
+  const ended=once(child,'exit');
+  try {
+    await Promise.race([once(child.stdout,'data'),ended.then(()=>{throw new Error('Child exited before locking');}),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('Child lock timed out')),10000).unref())]);
+    assert.throws(()=>acquireServiceLock(root),/already running/);
+    child.kill('SIGKILL');await ended;
+    const release=acquireServiceLock(root);release();
+  }finally{if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await ended;}rmSync(root,{recursive:true,force:true});}
 });
 test('public Claude SDK transport retains exact resume identity and forwards native permission decisions',async()=>{
   const calls:any[]=[];let closed=0;

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import QRCode from 'qrcode';
 import { stateDir, port } from './config.js';
@@ -14,6 +14,7 @@ import { Artifacts } from './artifacts.js';
 import { validateAudioConfig } from './audio.js';
 import { audioReadiness } from './speech-bundle.js';
 
+const sourceCommit=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8')).sourceCommit??null;}catch{return null;}})();
 const equal=(a:string,b:string)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
 export function trustedRequest(req:IncomingMessage) {
   const allowed=[`127.0.0.1:${port}`,`localhost:${port}`];
@@ -83,7 +84,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{answer});return;
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}
-      if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,pid:process.pid,platform:process.platform});return;}
+      if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/shutdown'&&req.method==='POST'){await body(req);json(res,200,{ok:true});setImmediate(()=>server.emit('ffd-shutdown'));return;}
       if(path==='/api/desktop/connect-sessions'&&req.method==='POST'){const d=await body(req);if(!router.coordinator||!Array.isArray(d.targets)||!d.targets.length||d.targets.length>50)throw new Error('Choose 1–50 exact sessions.');await router.coordinator.refresh();const chosen=d.targets.map((target:string)=>{const s=router.coordinator!.sessions.find(s=>`${s.provider}:${s.id}`===target);if(!s||s.available===false)throw new Error('Refresh and choose an available exact session.');return s;});json(res,200,{sessions:(await router.coordinator.connectSessions(chosen,true)).map(cleanBinding)});return;}
       if(path==='/api/request-review-bulk'&&req.method==='POST') {

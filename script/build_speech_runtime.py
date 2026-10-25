@@ -45,7 +45,7 @@ def download(url, path, expected):
 def run(args, cwd=None, unix=False):
     if SYSTEM == 'Windows' and unix:
         bash = os.environ.get('FFD_MSYS_BASH', r'C:\msys64\usr\bin\bash.exe')
-        args = [bash, '-lc', 'export PATH=/ucrt64/bin:/usr/bin; exec "$@"', 'ffd-speech', *args]
+        args = [bash, '--noprofile', '--norc', '-c', 'export PATH=/ucrt64/bin:/usr/bin; exec "$@"', 'ffd-speech', *args]
     subprocess.run(args, cwd=cwd, check=True)
 
 def extract(archive, name):

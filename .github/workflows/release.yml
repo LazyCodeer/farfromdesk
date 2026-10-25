@@ -1,7 +1,5 @@
-name: Mac preview release
+name: Legacy Swift Mac preview
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
