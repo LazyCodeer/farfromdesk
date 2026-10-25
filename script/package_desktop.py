@@ -1,5 +1,6 @@
 """Package an already-built native Flutter target. Run on that target's OS."""
 import argparse, hashlib, json, pathlib, platform, shutil, subprocess, tarfile, zipfile, tempfile, struct
+from release_installers import write_installer
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--version', default=json.loads((ROOT/'release.json').read_text())['version']+'-preview.1')
@@ -78,6 +79,5 @@ install=out/'install';shutil.copytree(ROOT/'install',install,dirs_exist_ok=True)
 for f in install.iterdir():
     if f.is_file():
         # Identical installer assets across Windows and Unix are required by the publisher.
-        text=f.read_text().replace('0.7.0-preview.1',args.version)
-        with f.open('w',encoding='utf-8',newline='\n') as stream: stream.write(text)
+        write_installer(f,f,args.version)
 print(archive)
