@@ -14,6 +14,9 @@ backend = ROOT/'build/desktop-backend'
 if os_name=='macos':
     native=source/'Contents/MacOS/FarFromDesk'
 else: native=source/('farfromdesk.exe' if os_name=='windows' else 'farfromdesk')
+if os_name=='windows':
+    for dll in ['msvcp140.dll','vcruntime140.dll']:
+        if not (source/dll).is_file(): raise SystemExit('Missing Windows redistributable runtime: '+dll)
 if not source.is_dir() or not (backend/'dist/main.js').is_file(): raise SystemExit('Build Flutter and prepare the backend on this OS first.')
 # Validate the actual executable format before giving an archive an architecture name.
 extra_speech=[p for p in (ROOT/'build/speech').iterdir() if p.name in ['whisper-avx2','whisper-avx2.exe','speech-cpu','speech-cpu.exe']]

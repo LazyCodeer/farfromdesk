@@ -17,6 +17,12 @@ if(!npmCli)throw new Error('Run through npm run desktop:backend so npm_execpath 
 const result=spawnSync(process.execPath,[npmCli,'ci','--omit=dev','--no-audit','--no-fund'],{cwd:target,stdio:'inherit'});
 if(result.status!==0)process.exit(result.status??1);
 mkdirSync(join(target,'runtime'));copyFileSync(process.execPath,join(target,'runtime',process.platform==='win32'?'node.exe':'node'));
+// Preserve Node's complete upstream license alongside the executable.
+const nodeLicense=await fetch(`https://raw.githubusercontent.com/nodejs/node/${process.version}/LICENSE`,{signal:AbortSignal.timeout(30000)});
+if(!nodeLicense.ok)throw new Error('Could not obtain the pinned Node runtime license.');
+const licenseText=await nodeLicense.text();
+if(!licenseText.includes('Node.js')||licenseText.length<10000)throw new Error('Unexpected Node license response.');
+writeFileSync(join(target,'runtime','Node-LICENSE.txt'),licenseText);
 console.log('Prepared backend and native Node runtime for '+process.platform+'/'+process.arch);
 
 const speechSource=join(root,'build',process.arch==='arm64'?'speech-runtime':'speech-runtime-x86_64');
