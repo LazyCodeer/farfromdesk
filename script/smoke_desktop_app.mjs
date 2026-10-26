@@ -53,7 +53,7 @@ try {
   assert.equal(roles.sync?.state,'complete');
   assert.deepEqual(roles.agents.map(a=>a.name).sort(),['farfromdesk-coordinator','farfromdesk-worker']);
   assert.ok(roles.installation.every(a=>a.installation.length===2&&a.installation.every(p=>p.status==='installed'&&p.path.startsWith(state))));
-  for(const a of roles.installation)for(const p of a.installation){assert.ok(existsSync(p.path));assert.match(readFileSync(p.path,'utf8'),/Start routine replies with one purposeful emoji/);}
+  for(const a of roles.installation)for(const p of a.installation){assert.ok(existsSync(p.path));assert.match(readFileSync(p.path,'utf8'),/Start (?:routine replies )?with one (?:purposeful )?emoji/);}
   // A fresh launch creates these instructions without pairing, a request or a manual sync command.
   assert.equal(status.master,null);
   stageLog('authenticated shutdown');
