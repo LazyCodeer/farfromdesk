@@ -44,12 +44,20 @@ class _DeskState extends State<Desk> {
       activityFilter = 'All',
       activityQuery = '';
   bool automaticName = true, showGroups = false, loadingGroups = false;
-  bool setupFormRequested = false, refreshing = false;
+  bool setupFormRequested = false,
+      refreshing = false,
+      groupsLoaded = false,
+      addingCoordinator = false;
   List<Map> groups = [];
   String? groupsError;
   int visibleSessions = 30;
   final customName = TextEditingController();
-  StateSetter? modalUpdate;
+  StateSetter? modalSetter;
+  BuildContext? modalContext;
+  // In release builds setState on a disposed dialog builder throws a bare
+  // "Null check operator" error, so skip a handle whose dialog is gone.
+  StateSetter? get modalUpdate =>
+      modalContext?.mounted == true ? modalSetter : null;
   final search = TextEditingController();
   final chosen = <String>{};
   final audio = <String, String>{};
@@ -81,7 +89,9 @@ class _DeskState extends State<Desk> {
       await refresh();
       if (mounted) {
         setState(() => ready = true);
-        if (showGroups) unawaited(loadGroups());
+        if (showGroups && status['whatsapp']?['status'] == 'connected') {
+          unawaited(loadGroups());
+        }
       }
       timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
       await WidgetsBinding.instance.endOfFrame;
@@ -286,6 +296,15 @@ class _DeskState extends State<Desk> {
           error = null;
         });
         modalUpdate?.call(() {});
+        // Groups can only be read once WhatsApp is connected; the first status
+        // poll often lands before the socket is up, so load on the first
+        // connected poll instead of failing at startup.
+        if (ready &&
+            showGroups &&
+            !groupsLoaded &&
+            next['whatsapp']?['status'] == 'connected') {
+          unawaited(loadGroups());
+        }
       }
     } catch (e) {
       if (mounted) setState(() => error = clean(e));

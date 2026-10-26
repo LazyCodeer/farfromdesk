@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { defaultStateDirectory } from './platform.js';
 const privateRoot=()=>process.env.WSB_STATE_DIR??defaultStateDirectory();
 import type { Binding, Store } from './store.js';
-import { MASTER_POLICY_VERSION, platformCoordinatorPolicy } from './master-policy.js';
+import { MASTER_POLICY_VERSION, platformCoordinatorPolicy, masterCliTools } from './master-policy.js';
 
 export const ROLE_SCHEMA_VERSION=1;
 export const companionStyles=['friendly','cheerful','professional','coding'] as const;
@@ -29,7 +29,9 @@ export function roleConfig(store:Store,b:Binding,kind:'master'|'worker'=b.id===s
   let agent=agentDefinition(store,store.get(`named-agent:${b.id}`)??fallback);
   // Never mix coordinator and worker contracts: a role saved for the other kind falls back to this kind's built-in.
   if(agent.kind!==kind)agent=agentDefinition(store,fallback);
-  const instructions=[companionOperatingInstructions,...(kind==='master'?[platformCoordinatorPolicy]:[]),agent.instructions,styles[style]].join('\n\n');
+  // Only a managed CLI coordinator has the bridge MCP tools; every other route coordinates through the bridge CLI.
+  const cliOnly=kind==='master'&&JSON.parse(store.get(`session-route:${b.id}`)??'null')?.transport!=='managed-cli';
+  const instructions=[companionOperatingInstructions,...(kind==='master'?[platformCoordinatorPolicy]:[]),agent.instructions,...(cliOnly?[masterCliTools]:[]),styles[style]].join('\n\n');
   const version=createHash('sha256').update(JSON.stringify([ROLE_SCHEMA_VERSION,kind,style,config.revision,instructions])).digest('hex').slice(0,20);
   return {style,revision:config.revision,kind,version,instructions,agentName:agent.name};
 }

@@ -50,6 +50,54 @@ test('offline explicit destination never falls back; ambiguous runtimes require 
   }finally{f.close();}
 });
 
+test('an unscoped Desktop coordinator adopts its own session account and dedupes only that same account',()=>{
+  const f=fixture();try {
+    const other=f.coordinator('claude','desktop','other');
+    const direct=(name:string,profileId:string)=>{const b=f.store.register(name,'claude',randomUUID(),'/tmp').binding;f.store.set(`execution-mode:${b.id}`,'desktop');f.store.set(`session-route:${b.id}`,JSON.stringify({provider:'claude',executionMode:'desktop',profileId,transport:'native-session'}));f.c.registry.register(b);return b;};
+    const mine=direct('claude-mine','claude:desktop'),unknown=direct('claude-unknown','claude:desktop:2');f.c.registry.setDefault(mine.id);
+    const cli=f.coordinator('claude','cli','owner');
+    f.c.registry.adoptAccounts('claude',[{id:mine.native_id,executionMode:'desktop',accountScope:'owner'}]);
+    const ids=f.c.registry.entries().map(r=>r.bindingId);
+    assert.ok(ids.includes(mine.id)&&!ids.includes(f.claude.id),'same account: the default stays, the old one retires');
+    assert.equal(f.store.get(`coordinator-retired:${f.claude.id}`),'true');assert.ok(!f.store.binding(f.claude.id)?.enabled);
+    assert.ok(ids.includes(other.id)&&ids.includes(unknown.id)&&ids.includes(cli.id),'other accounts, unproven and CLI coordinators are untouched');
+    assert.equal(f.c.registry.entry(mine.id)?.accountScope,'owner');assert.equal(f.c.registry.entry(unknown.id)?.accountScope,undefined);
+  }finally{f.close();}
+});
+
+test('account adoption never crosses providers, even with an equal native session ID',()=>{
+  const f=fixture();try {
+    const native=randomUUID(),b=f.store.register('codex-direct','codex',native,'/tmp').binding;
+    f.store.set(`execution-mode:${b.id}`,'desktop');f.store.set(`session-route:${b.id}`,JSON.stringify({provider:'codex',executionMode:'desktop',profileId:'codex:desktop',transport:'native-session'}));f.c.registry.register(b);
+    const before=f.store.get(`session-route:${b.id}`);
+    f.c.registry.adoptAccounts('claude',[{id:native,executionMode:'desktop',accountScope:'owner'}]);
+    assert.equal(f.store.get(`session-route:${b.id}`),before);assert.equal(f.c.registry.entry(b.id)?.accountScope,undefined);
+    f.c.registry.adoptAccounts('codex',[{id:native,executionMode:'desktop',accountScope:'owner'}]);
+    assert.equal(f.store.get(`coordinator-retired:${b.id}`),'true','within Codex the proof applies: the default Codex twin stays');assert.ok(f.c.registry.entry(f.codex.id));
+  }finally{f.close();}
+});
+
+test('a default scoped coordinator stays when an unscoped one proves the same account',()=>{
+  const f=fixture();try {
+    const b=f.store.register('claude-direct','claude',randomUUID(),'/tmp').binding;f.store.set(`execution-mode:${b.id}`,'desktop');f.store.set(`session-route:${b.id}`,JSON.stringify({provider:'claude',executionMode:'desktop',profileId:'claude:desktop',transport:'native-session'}));f.c.registry.register(b);
+    f.c.registry.setDefault(f.claude.id);
+    f.c.registry.adoptAccounts('claude',[{id:b.native_id,executionMode:'desktop',accountScope:'owner'}]);
+    const ids=f.c.registry.entries().map(r=>r.bindingId);
+    assert.ok(ids.includes(f.claude.id)&&!ids.includes(b.id));assert.equal(f.store.get(`coordinator-retired:${b.id}`),'true');assert.ok(!f.store.binding(b.id)?.enabled);
+    assert.equal(f.store.get('master'),f.claude.id);
+  }finally{f.close();}
+});
+
+test('a pending request keeps a proven duplicate until the owner resolves it',async()=>{
+  const f=fixture();try {
+    await f.router.receive({id:'wa:held',text:'Claude, review the payments session'});
+    assert.equal(f.store.job('wa:held')?.binding_id,f.claude.id);
+    const b=f.store.register('claude-direct','claude',randomUUID(),'/tmp').binding;f.store.set(`execution-mode:${b.id}`,'desktop');f.store.set(`session-route:${b.id}`,JSON.stringify({provider:'claude',executionMode:'desktop',profileId:'claude:desktop',transport:'native-session'}));f.c.registry.register(b);f.c.registry.setDefault(b.id);
+    f.c.registry.adoptAccounts('claude',[{id:b.native_id,executionMode:'desktop',accountScope:'owner'}]);
+    assert.equal(f.c.registry.entries().filter(r=>r.provider==='claude').length,2);assert.equal(f.store.get(`coordinator-retired:${f.claude.id}`),undefined);
+  }finally{f.close();}
+});
+
 test('delegation is correlated, idempotent, scope checked, and rejects loops',()=>{
   const f=fixture();try {
     f.router.queue('wa:root',f.codex,'Coordinate the review');

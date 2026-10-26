@@ -149,6 +149,8 @@ export class DesktopStarts {
           const collision=this.store.bindings().find(x=>x.provider==='claude'&&x.native_id===s.id&&x.id!==b.id);
           if(collision)throw new Error('Created desktop identity is already bound to another session.');
           this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(s.id,b.id);
+          // A direct start has no launcher account; record the verified session's own account so replacement matches exactly.
+          if(!op.parentId&&s.accountScope){const route=JSON.parse(this.store.get(`session-route:${b.id}`)??'null');if(route&&!route.accountScope)this.store.set(`session-route:${b.id}`,JSON.stringify({...route,accountScope:s.accountScope}));op.accountScope=s.accountScope;}
           this.save({...op,nativeId:s.id,status:'ready'});return;
         }
       }

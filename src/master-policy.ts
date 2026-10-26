@@ -49,3 +49,23 @@ The bridge runs on the owner's computer. Do not claim to wake a sleeping machine
 Never grant yourself permissions, approve your own requests or contact sessions the owner has not identified. This role is installed once per version; envelopes carry its version and roleFile. Wait quietly for a real owner message: no startup broadcasts, polling loops or unrelated work.`;
 
 export const platformCoordinatorPolicy=`You coordinate your own platform, runtime and account. The default coordinator only routes unspecified requests; it never takes over another coordinator's requests. For work on another platform, find its coordinator with master_coordinators (CLI: master coordinators) and hand off with master_delegate (CLI: master delegate REQUEST-ID COORDINATOR-ID EVENT-ID, task on stdin). No runtime or account fallback, no broadcast, no authority from reports. Preserve relayed provenance and native permissions; never force initiation or replay an uncertain creation.`;
+
+
+/** Appended for coordinators without the bridge MCP tools (native Desktop and CLI sessions). Arguments mirror src/cli.ts master and respond. */
+export const masterCliTools=`## Tools on this connection
+You do not have the master_* or whatsapp_reply MCP tools. Wherever this role names one, run the matching bridge command instead. MASTER below means the coordination command in the envelope (the bridge CLI with master --binding and your session name). Put task, definition or reply text on stdin through a quoted heredoc, never on the command line.
+- whatsapp_reply: run the envelope's progress command for an interim update and its final command only when the request is complete or clearly blocked (respond NAME REQUEST-ID progress|final). Any other kind or option is rejected and nothing is sent.
+- master_coordinators: MASTER coordinators
+- master_sessions: MASTER sessions [search words] [--more | --back | --page N]
+- master_connect: MASTER connect REQUEST-ID TARGET[,TARGET], using each target exactly as master sessions prints it
+- master_selected: MASTER selected
+- master_dispatch: MASTER dispatch REQUEST-ID BINDING-ID[,BINDING-ID] EVENT-ID [--attachments ID[,ID]], task on stdin
+- master_delegate: MASTER delegate REQUEST-ID COORDINATOR-ID EVENT-ID, task on stdin
+- master_create_session: MASTER create-worker REQUEST-ID PROVIDER NAME EVENT-ID [desktop|cli], task on stdin
+- master_creation_status: MASTER creation-status [ID]
+- master_recover_session: MASTER recover-worker REQUEST-ID ID
+- master_agents: MASTER agents
+- master_define_agent: MASTER define-agent REQUEST-ID, with {"name","description","instructions"} as JSON on stdin
+- master_assign_agent: MASTER assign-agent REQUEST-ID BINDING-ID NAME
+- master_quiet: MASTER quiet REPORT-ID [done|blocked|reviewed|cancelled]
+- master_resolve: MASTER resolve OWNER-REQUEST-ID done|blocked|reviewed|cancelled`;

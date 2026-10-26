@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { replyCommands } from './reply-args.js';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync,writeFileSync,unlinkSync,renameSync } from 'node:fs';
@@ -165,7 +166,7 @@ export class NativeAgents {
     const sender=jobId.startsWith('master:')?'WhatsApp master':jobId.startsWith('report:')?'WhatsApp worker report':'Owner via WhatsApp';
     const attachments=this.store.job(jobId)?new Attachments(this.store).references(b,jobId,true):[];
     const reply=managed?{tool:'whatsapp_reply',requestId:jobId,kinds:['progress','final']}:
-      {command:response,stdin:'Use a quoted heredoc; append progress for an interim update.',...((b.id===this.store.get('master')||this.store.get(`role-kind:${b.id}`)==='master')?{coordination:`${quote(process.execPath)} ${quote(cli)} master --binding ${quote(b.alias)}`}:{})};
+      {...replyCommands(response),...((b.id===this.store.get('master')||this.store.get(`role-kind:${b.id}`)==='master')?{coordination:`${quote(process.execPath)} ${quote(cli)} master --binding ${quote(b.alias)}`}:{})};
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');

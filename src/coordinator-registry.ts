@@ -42,6 +42,29 @@ export class CoordinatorRegistry {
     if(!defaultId||defaultId===old?.bindingId){this.store.set('master',b.id);this.store.set('active',b.id);}
     return entry;
   }
+  /** Gives a provider's Desktop coordinator saved without an account the account of its own session in that provider's catalog; when that proves it duplicates another coordinator of the same account, keeps the default and retires the idle other one. */
+  adoptAccounts(provider:string,sessions:{id:string;desktopId?:string;executionMode?:string;accountScope?:string}[]) {
+    for(const entry of this.entries()) {
+      const b=this.store.binding(entry.bindingId),route=b&&JSON.parse(this.store.get(`session-route:${b.id}`)??'null');
+      // Session IDs are provider-local: never let one provider's catalog name another provider's binding.
+      if(entry.provider!==provider||b?.provider!==provider||entry.executionMode!=='desktop'||entry.accountScope||entry.accountKey||!b.native_id||!route)continue;
+      const scope=sessions.find(s=>s.executionMode==='desktop'&&(s.id===b.native_id||s.desktopId===b.native_id))?.accountScope;
+      if(!scope)continue;
+      this.store.db.exec('SAVEPOINT adopt_account');
+      try {
+        const rows=this.entries();
+        this.store.set(`session-route:${b.id}`,JSON.stringify({...route,accountScope:scope}));
+        const identity=this.identity(b),twin=rows.find(r=>r.bindingId!==b.id&&r.key===identity.key);
+        const loser=twin&&(this.store.get('master')===twin.bindingId?b.id:twin.bindingId);
+        // An unfinished request keeps both until the owner resolves it.
+        if(loser&&this.store.pendingJobs().some(j=>j.binding_id===loser)){this.store.db.exec('ROLLBACK TO adopt_account; RELEASE adopt_account');continue;}
+        const others=rows.filter(r=>r.bindingId!==b.id&&r.bindingId!==loser);
+        this.store.set('coordinator-registry',JSON.stringify(loser===b.id?others:[...others,{...identity,bindingId:b.id,generation:Math.max(entry.generation,twin?.generation??0)}]));
+        if(loser){this.store.set(`coordinator-retired:${loser}`,'true');this.store.enable(loser,false);this.store.audit('master-replaced',loser,JSON.stringify({replacement:loser===b.id?twin!.bindingId:b.id,closedRequests:0,reason:'same account'}));}
+        this.store.db.exec('RELEASE adopt_account');
+      }catch(e){this.store.db.exec('ROLLBACK TO adopt_account; RELEASE adopt_account');throw e;}
+    }
+  }
   setDefault(id:string) {
     if(!this.isCoordinator(id)||!this.store.binding(id)?.enabled)throw new Error('Choose an enabled coordinator as the default.');
     this.store.set('master',id);this.store.set('active',id);

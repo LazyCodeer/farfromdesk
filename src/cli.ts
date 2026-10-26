@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { handleHook } from './hooks.js';
 import { inspectLocalArtifact } from './large-file.js';
 import { uploadArtifact } from './artifact-upload.js';
+import { parseRespondArgs } from './reply-args.js';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 const args=process.argv.slice(2),command=args.shift();
@@ -34,10 +35,12 @@ async function main() {
   }
   else if(command==='send'||command==='respond') {
     const flag=(name:string)=>{const i=args.indexOf(name);return i<0?undefined:args.splice(i,2)[1];};
-    const turnId=flag('--turn-id'),outcome=flag('--outcome');
-    const alias=args[0],c=credentials(alias);
+    const reply=command==='respond'?parseRespondArgs(args):undefined;
+    const turnId=reply?reply.turnId:flag('--turn-id'),outcome=reply?reply.outcome:flag('--outcome');
+    const alias=reply?.alias??args[0],c=credentials(alias);
     const text=command==='send'&&args.length>1?args.slice(1).join(' '):readFileSync(0,'utf8');
-    const requestId=command==='respond'?args[1]:undefined,kind=command==='respond'&&args[2]==='progress'?'progress':'final';
+    if(reply&&!text.trim())throw new Error('The reply text on stdin is empty; nothing was sent.');
+    const requestId=reply?.requestId,kind=reply?.kind??'final';
     const r=await fetch(baseUrl+'/api/session/reply',{method:'POST',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({text,requestId,kind,eventId:randomUUID(),turnId,outcome})});
     if(!r.ok)throw new Error(await r.text());console.log('Queued for WhatsApp.');
   }
@@ -161,6 +164,6 @@ async function main() {
     }
     console.log('Installed the session-scoped WhatsApp skill for Claude Code and Codex.');
   }
-  else console.log('Commands: style NAME friendly|cheerful|professional|coding | media-capabilities | cleanup-media | cancel-file NAME ARTIFACT-ID | cancel-attachments NAME REQUEST-ID | status | sessions codex|claude | register PROVIDER NAME ID CWD [desktop|channel] | send NAME [TEXT, or stdin] | respond NAME REQUEST-ID [progress] | prepare-file NAME REQUEST-ID /absolute/file | respond-file NAME REQUEST-ID ARTIFACT-ID (caption on stdin) | delivery NAME DELIVERY-ID | configure-audio /absolute/ffmpeg /absolute/whisper-cli /absolute/model | command /COMMAND | open | channel-config NAME | claude-channel NAME | install | stop-service | install-skills | install-hooks');
+  else console.log('Commands: style NAME friendly|cheerful|professional|coding | media-capabilities | cleanup-media | cancel-file NAME ARTIFACT-ID | cancel-attachments NAME REQUEST-ID | status | sessions codex|claude | register PROVIDER NAME ID CWD [desktop|channel] | send NAME [TEXT, or stdin] | respond NAME REQUEST-ID [progress|final] | prepare-file NAME REQUEST-ID /absolute/file | respond-file NAME REQUEST-ID ARTIFACT-ID (caption on stdin) | delivery NAME DELIVERY-ID | configure-audio /absolute/ffmpeg /absolute/whisper-cli /absolute/model | command /COMMAND | open | channel-config NAME | claude-channel NAME | install | stop-service | install-skills | install-hooks');
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1;});

@@ -132,7 +132,10 @@ test('direct start opens one owner-sent chat in the coordinator folder and conne
   assert.throws(()=>starts.acknowledgment(f.binding),/different operation/);
   writeFileSync(join(f.cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:op.nonce,ready:true,sessionId:child}));
   assert.ok(starts.acknowledgment(f.binding));
+  f.store.set(`session-route:${f.binding.id}`,JSON.stringify({provider:'claude',executionMode:'desktop',profileId:'claude:desktop',transport:'native-session'}));
+  f.native.catalog=async()=>({sessions:[{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:true,accountScope:'owner'}]}) as any;
   await starts.confirm(f.binding,true);assert.equal(f.store.binding(f.binding.id)?.native_id,child);assert.equal(starts.get(f.binding.id)?.status,'ready');assert.equal(f.sends(),0);
+  assert.equal(JSON.parse(f.store.get(`session-route:${f.binding.id}`)!).accountScope,'owner');
   starts.close();
  }finally{f.close();}
 });

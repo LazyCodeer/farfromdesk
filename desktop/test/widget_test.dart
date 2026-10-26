@@ -46,25 +46,40 @@ void main() {
       );
       expect(find.text('Review in Activity'), findsNothing);
       api.fail = false;
-      await tester.ensureVisible(find.byTooltip('Refresh groups'));
-      await tester.tap(find.byTooltip('Refresh groups'));
+      await tester.ensureVisible(find.text('Refresh groups'));
+      await tester.tap(find.text('Refresh groups'));
       await tester.pumpAndSettle();
       expect(api.loads, 2);
-      expect(find.text('Session Bridge'), findsOneWidget);
+      expect(find.text('In use'), findsOneWidget);
       expect(
         find.textContaining('Replies go to Session Bridge.'),
         findsOneWidget,
       );
-      await tester.tap(find.text('Session Bridge'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('My notes').last);
+      await tester.ensureVisible(find.text('My notes'));
+      await tester.tap(find.text('My notes'));
       await tester.pumpAndSettle();
       expect(api.destination, 'notes@g.us');
       expect(find.textContaining('Replies go to My notes.'), findsOneWidget);
+      expect(find.text('In use'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('Groups load once WhatsApp finishes connecting', (tester) async {
+    size(tester);
+    final api = GroupsGateway()..linked = false;
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(api.loads, 0);
+    expect(find.textContaining('Could not load groups.'), findsNothing);
+    api.linked = true;
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(api.loads, 1);
+    expect(find.text('My notes'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('Preparation failure does not mark the project step complete', (
     tester,
@@ -656,6 +671,7 @@ void main() {
       expect(api.submitted!.containsKey('workspaceId'), isFalse);
       expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
+      expect(find.text('Create coordinator'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1022,7 +1038,7 @@ class InstructionsGateway extends MultiCoordinatorGateway {
 }
 
 class GroupsGateway extends ConnectionGateway {
-  bool fail = false;
+  bool fail = false, linked = true;
   int loads = 0;
   String destination = 'bridge@g.us';
   @override
@@ -1038,6 +1054,7 @@ class GroupsGateway extends ConnectionGateway {
       };
     }
     final data = await super.get(path);
+    if (!linked) data['whatsapp'] = {'status': 'connecting'};
     data['destination'] = {
       'jid': destination,
       'kind': 'group',

@@ -783,39 +783,22 @@ extension _BridgeScreens on _DeskState {
             gap(14),
             if (loadingGroups)
               const LinearProgressIndicator()
-            else
-              Row(
-                children: [
-                  Expanded(
-                    child: dropdown<String>(
-                      value: current?['id'],
-                      hint: groups.isEmpty
-                          ? 'No groups with only you'
-                          : 'Choose a group',
-                      items: [
-                        for (final group in groups)
-                          DropdownMenuItem(
-                            value: group['id'] as String,
-                            child: Text(group['name'] ?? 'Group'),
-                          ),
-                      ],
-                      onChanged: (id) {
-                        if (id != null) {
-                          post('/api/destination', {'jid': id});
-                        }
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  button('Create group', createGroup),
-                  const SizedBox(width: 6),
-                  IconButton(
-                    tooltip: 'Refresh groups',
-                    onPressed: busy ? null : loadGroups,
-                    icon: const Icon(Icons.refresh, size: 18, color: muted),
-                  ),
-                ],
-              ),
+            else ...[
+              small('Your groups where only you are a member'),
+              gap(8),
+              if (groups.isEmpty && groupsError == null)
+                small('No groups with only you as a member were found.'),
+              for (final group in groups) groupOption(group, current),
+            ],
+            gap(10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                button('+ Create group', createGroup, compact: true),
+                button('Refresh groups', loadGroups, compact: true),
+              ],
+            ),
             groupsError != null
                 ? hint(dot(warning), groupsError!)
                 : inGroup && current != null
@@ -833,15 +816,91 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
+  /// One reply group as a radio option; choosing it switches replies there.
+  Widget groupOption(Map group, Map? current) {
+    final selected =
+        current?['id'] == group['id'] &&
+        status['destination']?['kind'] == 'group';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Semantics(
+        inMutuallyExclusiveGroup: true,
+        checked: selected,
+        child: Material(
+          color: selected ? const Color(0x1a86c9ad) : const Color(0x0af4f1ea),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(
+              color: selected ? accent : hairline,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: InkWell(
+            customBorder: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            onTap: busy || selected
+                ? null
+                : () => post('/api/destination', {'jid': group['id']}),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              child: Row(
+                children: [
+                  Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: selected ? accent : ink.withValues(alpha: .3),
+                        width: selected ? 5 : 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          group['name'] ?? 'Group',
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          'Only you · checked when used',
+                          style: const TextStyle(fontSize: 11.5, color: muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (selected) tag('In use', good: true),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> loadGroups() async {
     if (loadingGroups || !mounted) return;
+    if (!connected) return changeView(() => groupsError = null);
     changeView(() {
       loadingGroups = true;
       groupsError = null;
     });
     try {
       final d = await api.get('/api/group-recover');
-      if (mounted) changeView(() => groups = List<Map>.from(d['groups'] ?? []));
+      if (mounted) {
+        changeView(() {
+          groups = List<Map>.from(d['groups'] ?? []);
+          groupsLoaded = true;
+        });
+      }
     } catch (e) {
       if (mounted) {
         changeView(
@@ -1227,13 +1286,15 @@ extension _BridgeScreens on _DeskState {
       search.clear();
       visibleSessions = 30;
     });
+    addingCoordinator = adding;
     if (adding) startAdding(requestedPlatform);
     if (another) editSetup(() => setupFormRequested = true);
     await showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, update) {
-          modalUpdate = update;
+          modalSetter = update;
+          modalContext = context;
           final entries = coordinatorEntries;
           final Widget body = switch (tab) {
             'Instructions' => instructionsTab(),
@@ -1255,13 +1316,14 @@ extension _BridgeScreens on _DeskState {
                         ],
                       ],
                     )
-                  : adding || entries.isEmpty && setupFormRequested
+                  : addingCoordinator || entries.isEmpty && setupFormRequested
                   ? Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         if (entries.isNotEmpty)
                           TextButton.icon(
-                            onPressed: () => update(() => adding = false),
+                            onPressed: () =>
+                                update(() => addingCoordinator = false),
                             icon: const Icon(Icons.arrow_back, size: 16),
                             label: const Text('Back to coordinators'),
                           ),
@@ -1304,7 +1366,7 @@ extension _BridgeScreens on _DeskState {
                       'Add one so your WhatsApp messages have someone to answer them.',
                       button('+ Add coordinator', () {
                         startAdding();
-                        update(() => adding = true);
+                        update(() => addingCoordinator = true);
                       }, primary: true),
                       logos: true,
                     )
@@ -1339,7 +1401,7 @@ extension _BridgeScreens on _DeskState {
                               startAdding(
                                 '${entry['provider']}:${entry['executionMode']}',
                               );
-                              update(() => adding = true);
+                              update(() => addingCoordinator = true);
                             }, compact: true),
                             if (entry['bindingId'] != null)
                               button(
@@ -1358,7 +1420,7 @@ extension _BridgeScreens on _DeskState {
                           children: [
                             button('+ Add coordinator', () {
                               startAdding();
-                              update(() => adding = true);
+                              update(() => addingCoordinator = true);
                             }, primary: true),
                             const SizedBox(width: 14),
                             Expanded(
@@ -1427,7 +1489,8 @@ extension _BridgeScreens on _DeskState {
         },
       ),
     );
-    modalUpdate = null;
+    modalSetter = null;
+    modalContext = null;
   }
 
   Widget emptyBox(
@@ -2074,8 +2137,12 @@ extension _BridgeScreens on _DeskState {
         'operationId': const Uuid().v4(),
       });
     }
-    modalUpdate?.call(() {});
-    editSetup(() => setupFormRequested = false);
+    // A finished submit returns to the coordinator list; setupActive keeps
+    // showing progress while a native start is still pending.
+    editSetup(() {
+      setupFormRequested = false;
+      if (actionError == null) addingCoordinator = false;
+    });
   }
 
   List<Map> get allJobs {

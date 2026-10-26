@@ -120,6 +120,7 @@ export class Masters {
     const errors=new Set<Provider>();
     const load=(provider:Provider)=>this.catalog(provider,fresh).catch(()=>{errors.add(provider);return fallback(provider);});
     const [claude,codex]=await Promise.all([load('claude'),load('codex')]);
+    if(!errors.has('claude'))this.registry.adoptAccounts('claude',claude);
     const rows=(sessions:any[])=>sessions.map(s=>({id:s.id,desktopId:s.desktopId,executionMode:s.executionMode,accountScope:s.accountScope,name:s.name,cwd:s.cwd,status:s.status,updatedAt:s.updatedAt,available:s.available===true}));
     for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):codex);
     platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'Open a Claude Desktop Code chat to connect. Saved chats without a running local inbox cannot receive messages yet.'});
