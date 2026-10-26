@@ -28,6 +28,19 @@ export class DesktopStarts {
   constructor(private store:Store,private native:NativeAgents,private timeoutMs=90000) {}
   get(id:string):Start|null{return JSON.parse(this.store.get(`desktop-start:${id}`)??'null');}
   save(op:Start){this.store.set(`desktop-start:${op.bindingId}`,JSON.stringify(op));}
+  acknowledgment(b:Binding):string|null {
+    const op=this.get(b.id);
+    if(!op||op.status==='ready'||this.stopped||this.store.get(`desktop-abandoned:${b.id}`)==='true')return null;
+    if(realpathSync(op.cwd)!==op.cwd||b.cwd!==op.cwd)throw new Error('Desktop project path changed.');
+    if(op.supportDir&&realpathSync(op.supportDir)!==op.supportDir)throw new Error('Desktop setup directory changed.');
+    const created=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-created.json'));
+    const ready=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-ready.json'));
+    if(!created||!ready||ready.ready!==true)return null;
+    if(created.nonce!==op.nonce||ready.nonce!==op.nonce)throw new Error('Desktop startup acknowledgment belongs to a different operation.');
+    const id=created.sessionId??ready.sessionId;
+    if(typeof id!=='string'||!/^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)||id===op.parentId)return null;
+    return JSON.stringify([created,ready]);
+  }
   private connectedCandidates(sessions:Session[]) {
     const bindings=[...new CoordinatorRegistry(this.store).entries().map(r=>this.store.binding(r.bindingId)),...JSON.parse(this.store.get('selected')??'[]').map((key:string)=>this.store.binding(key))].filter(Boolean);
     return sessions.filter(s=>s.executionMode==='desktop'&&s.available===true&&bindings.some((b:any)=>b.enabled&&b.provider==='claude'&&b.native_id===s.id&&sameProject(b.cwd,s.cwd)&&this.store.get(`execution-mode:${b.id}`)==='desktop'));
@@ -47,8 +60,10 @@ export class DesktopStarts {
     }while(cursor);
     return {sessions};
   }
-  async parent(id:unknown,accountScope?:string) {
-    const c=await this.catalog();
+  // A fresh Claude scan takes seconds (~3.7s warm for ~2350 records), so a caller
+  // holding a scan from this same step passes it instead of rescanning.
+  async parent(id:unknown,accountScope?:string,sessions?:Session[]) {
+    const c=sessions?{sessions}:await this.catalog();
     if(id===undefined||id===null||id==='') {
       const candidates=this.connectedCandidates(c.sessions);
       const scopes=new Set(candidates.map(s=>s.accountScope??'unknown'));
@@ -106,6 +121,7 @@ export class DesktopStarts {
         if(ready?.ready===true) {
           const catalog=await this.catalog();
           const match=catalog.sessions.find((s:any)=>s.executionMode==='desktop'&&(s.desktopId===created.sessionId||s.id===created.sessionId));
+          if(match&&typeof ready.sessionId==='string'&&ready.sessionId!==match.id&&ready.sessionId!==match.desktopId)throw new Error('Desktop startup acknowledgment names a different session.');
           if(op.requireDetached&&match?.detached!==true) {
             if(recover&&match&&!op.detachSubmitted) {
               // Recover only the confirmed child; record before sending to avoid duplicate actions.
@@ -118,7 +134,7 @@ export class DesktopStarts {
             continue;
           }
           if(!match)throw new Error('Desktop session ID has not appeared in the native catalog. Recover this same setup.');
-          const s=await this.parent(match.id,op.accountScope);
+          const s=await this.parent(match.id,op.accountScope,catalog.sessions);
           if(s.id===op.parentId||(op.nativeId&&op.nativeId!==s.id))throw new Error('Desktop setup identity changed or points to its parent.');
           if(realpathSync(s.cwd)!==op.cwd)throw new Error('Created Claude Desktop session has a different project folder.');
           const collision=this.store.bindings().find(x=>x.provider==='claude'&&x.native_id===s.id&&x.id!==b.id);

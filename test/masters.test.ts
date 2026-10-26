@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,writeFileSync,rmSync,readFileSync,realpathSync,symlinkSync,existsSync } from 'node:fs';
+import { mkdtempSync,writeFileSync,rmSync,readFileSync,realpathSync,symlinkSync,existsSync,mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -331,6 +331,38 @@ test('workspace discovery deduplicates real paths and keeps separate accounts',(
   assert.notEqual(rows[0].id,rows[1].id);
 });
 
+function worktree(project:string,name:string) {
+  const cwd=join(project,'.claude','worktrees',name),git=join(project,'.git','worktrees',name);
+  mkdirSync(cwd,{recursive:true});mkdirSync(git,{recursive:true});
+  writeFileSync(join(cwd,'.git'),'gitdir: '+git+'\n');
+  writeFileSync(join(git,'gitdir'),join(cwd,'.git')+'\n');
+  writeFileSync(join(git,'commondir'),'../..\n');
+  return cwd;
+}
+test('project picker groups Git worktrees and prefers the root launcher without mixing accounts',()=>{
+  const cwd=realpathSync(mkdtempSync(join(dir,'project-'))),one=worktree(cwd,'one'),two=worktree(cwd,'two');
+  const sessions=[
+    {id:'tree-one',cwd:one,accountScope:'personal',available:true,updatedAt:9},
+    {id:'tree-two',cwd:two,accountScope:'personal',available:true,updatedAt:8},
+    {id:'root',cwd,accountScope:'personal',available:true,updatedAt:1},
+    {id:'work-account',cwd:two,accountScope:'work',available:true,updatedAt:2},
+  ];
+  const rows=masterWorkspaces('claude','desktop',sessions);
+  assert.equal(rows.length,2);assert.ok(rows.every(w=>w.cwd===cwd));
+  assert.equal(rows.find(w=>w.accountScope==='personal')?.launcherId,'root');
+  assert.equal(rows.find(w=>w.accountScope==='work')?.launcherId,'work-account');
+  assert.ok(rows.every(w=>!w.label.includes('/')));
+  assert.equal(sessions[0].cwd,one,'Session delivery must retain the worktree path');
+  assert.equal(masterWorkspaces('codex','desktop',sessions.map(s=>({...s,accountScope:undefined}))).length,1);
+});
+test('worktree-like folder names and broken Git pointers never invent a parent project',()=>{
+  const root=realpathSync(mkdtempSync(join(dir,'ordinary-'))),cwd=join(root,'.claude','worktrees','ordinary');
+  mkdirSync(cwd,{recursive:true});
+  assert.equal(masterWorkspaces('codex','cli',[{cwd}])[0].cwd,cwd);
+  writeFileSync(join(cwd,'.git'),'gitdir: /missing/git\n');
+  assert.equal(masterWorkspaces('codex','cli',[{cwd}])[0].cwd,cwd);
+});
+
 test('Codex creates in the chosen real workspace without replacing project instructions',async()=>{
   const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'codex-workspace-')));
   for(const name of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(cwd,name),'Owner instructions');
@@ -352,10 +384,11 @@ test('Codex creates in the chosen real workspace without replacing project instr
 test('Claude workspace creation chooses the matching account and folder without asking for a session',async()=>{
   const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'claude-workspace-')));
   const sessions=[{id:'same-workspace',cwd,executionMode:'desktop',accountScope:'personal',available:true},
-    {id:'other',cwd:realpathSync(dir),executionMode:'desktop',accountScope:'work',available:true,updatedAt:999}];
-  f.router.native.catalog=async()=>({sessions}) as any;
+    {id:'other',cwd:realpathSync(dir),executionMode:'desktop',accountScope:'work',available:true,updatedAt:999},
+    {id:'newer-worktree',cwd:worktree(cwd,'feature'),executionMode:'desktop',accountScope:'personal',available:true,updatedAt:1000}];
+  let scans=0;f.router.native.catalog=async()=>(scans++,{sessions}) as any;
   f.masters.platforms=[{provider:'claude',executionMode:'desktop',available:true}];
-  let starts=0;f.masters.desktop.create=async(b,parent)=>{starts++;assert.equal(parent,'same-workspace');assert.equal(b.cwd,cwd);f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(nativeId,b.id);};
+  let starts=0;f.masters.desktop.create=async(b,parent)=>{starts++;assert.equal(scans,1,'Workspace and launcher checks share one fresh scan');assert.equal(parent,'same-workspace');assert.equal(b.cwd,cwd);f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(nativeId,b.id);};
   const workspace=masterWorkspaces('claude','desktop',sessions).find(w=>w.cwd===cwd)!;
   const id='bbccddee-2222-4222-a222-222222222222';
   await f.masters.create('claude',id,'desktop',undefined,undefined,undefined,workspace.id);await settled(f);
@@ -363,6 +396,52 @@ test('Claude workspace creation chooses the matching account and folder without 
   assert.equal(f.masters.operation().resolvedDesktopParentId,'same-workspace');
   assert.equal(f.masters.operation().route.accountScope,'personal');
   sessions[0].accountScope='changed';
+  sessions[2].accountScope='changed';
   await assert.rejects(f.masters.create('claude','ccddeeaa-2222-4222-a222-222222222222','desktop',undefined,undefined,undefined,workspace.id),/no longer available/);
   assert.equal(starts,1);
+});
+
+async function pendingDesktopSetup() {
+  const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'pending-desktop-')));
+  const b=f.store.register('pending-claude','claude','bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb',cwd).binding;
+  f.store.enable(b.id,false);f.store.set(`execution-mode:${b.id}`,'desktop');
+  f.masters.connections.save(b,await f.masters.connections.prepare(b,'desktop',false,'personal'));
+  const op={id:'cccccccc-cccc-4ccc-accc-cccccccccccc',provider:'claude',executionMode:'desktop',bindingId:b.id,cwd,status:'needs_action',name:'Created coordinator'};
+  f.store.set('master-operation',JSON.stringify(op));f.store.set(`master-attempt:${op.id}`,JSON.stringify(op));
+  f.masters.desktop.save({bindingId:b.id,parentId:'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',cwd,nonce:'original-nonce',status:'needs_action',proposalId:'task_12345678'});
+  f.masters.desktop.create=async()=>{throw new Error('Automatic recovery must never create another child');};
+  const acknowledge=(nonce='original-nonce')=>{
+    writeFileSync(join(cwd,'.tether-desktop-created.json'),JSON.stringify({nonce,sessionId:nativeId,detached:true}));
+    writeFileSync(join(cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce,sessionId:nativeId,ready:true}));
+  };
+  return {...f,b,op,acknowledge};
+}
+test('a started proposal connects automatically once its exact acknowledgment arrives',async()=>{
+  const f=await pendingDesktopSetup();let confirmations=0;
+  f.masters.desktop.confirm=async b=>{confirmations++;f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(nativeId,b.id);};
+  await f.masters.reconcileDesktopSetup();assert.equal(confirmations,0);
+  f.acknowledge('another-operation');await f.masters.reconcileDesktopSetup();assert.equal(confirmations,0);
+  f.acknowledge();await Promise.all([f.masters.reconcileDesktopSetup(),f.masters.reconcileDesktopSetup()]);await settled(f);
+  assert.equal(confirmations,1);assert.equal(f.masters.operation().status,'ready');assert.equal(f.store.binding(f.b.id)?.enabled,1);
+  await f.masters.reconcileDesktopSetup();assert.equal(confirmations,1);
+});
+test('automatic setup checks do not revive abandoned or superseded attempts and bound retries',async()=>{
+  const f=await pendingDesktopSetup();f.acknowledge();let confirmations=0;
+  f.masters.desktop.confirm=async()=>{confirmations++;throw new Error('Temporary discovery failure');};
+  f.store.set('master-operation',JSON.stringify({...f.op,status:'abandoned'}));
+  await f.masters.reconcileDesktopSetup();assert.equal(confirmations,0);
+  f.store.set('master-operation',JSON.stringify({...f.op,status:'set-aside'}));
+  await f.masters.reconcileDesktopSetup();assert.equal(confirmations,0);
+  f.store.set('master-operation',JSON.stringify(f.op));
+  for(const now of [100,101,30100,60100,90100]){await f.masters.reconcileDesktopSetup(now);await settled(f);}
+  assert.equal(confirmations,3);assert.equal(f.store.binding(f.b.id)?.enabled,0);
+});
+test('automatic recovery rejects a ready acknowledgment from a different child',async()=>{
+  const f=await pendingDesktopSetup();
+  writeFileSync(join(f.b.cwd,'.tether-desktop-created.json'),JSON.stringify({nonce:'original-nonce',sessionId:nativeId,detached:true}));
+  writeFileSync(join(f.b.cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:'original-nonce',sessionId:'55555555-5555-4555-a555-555555555555',ready:true}));
+  f.router.native.catalog=async()=>({sessions:[{id:nativeId,desktopId:'local_66666666-6666-4666-a666-666666666666',executionMode:'desktop',available:true,detached:true,cwd:f.b.cwd,accountScope:'personal'}]}) as any;
+  await f.masters.reconcileDesktopSetup();await settled(f);
+  assert.equal(f.masters.operation().status,'uncertain');assert.match(f.masters.operation().error,/different session/);
+  assert.notEqual(f.store.binding(f.b.id)?.native_id,nativeId);
 });

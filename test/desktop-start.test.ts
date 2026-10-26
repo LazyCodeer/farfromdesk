@@ -43,6 +43,16 @@ test('CLI session, missing launcher and wrong child folder cannot satisfy deskto
     await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/acknowledgment/);f.receipts();await assert.rejects(f.starts.confirm(f.binding),/different project/);
   }finally{f.close();}
 });
+test('a mismatched ready acknowledgment cannot trigger a detach recovery message',async()=>{
+  const f=fixture();try {
+    await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'),/acknowledgment/);
+    f.receipts();
+    writeFileSync(join(f.cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:f.starts.get(f.binding.id)!.nonce,ready:true,sessionId:parent}));
+    f.native.catalog=async()=>({sessions:[{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:false}]});
+    await assert.rejects(f.starts.confirm(f.binding,true),/different session/);
+    assert.equal(f.sends(),1);assert.equal(f.starts.get(f.binding.id)?.detachSubmitted,undefined);
+  }finally{f.close();}
+});
 test('nonce substitution, own parent ID, proposal IDs and receipt symlinks are rejected',async()=>{
   for(const id of [parent,'task_abcd1234']) {
     const f=fixture();try{await assert.rejects(f.starts.create(f.binding,parent,'Test','No work'));f.receipts(true,id);await assert.rejects(f.starts.confirm(f.binding),/exact session/);}finally{f.close();}
@@ -126,8 +136,9 @@ test('created child waits for verified native detachment and never repeats creat
   f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:false}]});
   await assert.rejects(f.starts.confirm(f.binding),/detachment/);
   assert.notEqual(f.store.binding(f.binding.id)?.native_id,child);assert.equal(f.sends(),1);
-  f.native.catalog=async()=>({sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:true}]});
+  let scans=0;f.native.catalog=async()=>(scans++,{sessions:[{id:parent,cwd:f.cwd,executionMode:'desktop',available:true,detached:true},{id:child,cwd:f.cwd,executionMode:'desktop',available:true,detached:true}]});
   await f.starts.confirm(f.binding);assert.equal(f.store.binding(f.binding.id)?.native_id,child);assert.equal(f.sends(),1);
+  assert.equal(scans,1,'Child verification reuses its catalog scan for account and folder checks');
  }finally{f.close();}
 });
 

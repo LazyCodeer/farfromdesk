@@ -49,9 +49,10 @@ server.on('listening',()=>{
 server.on('error',e=>{console.error(`Bridge could not start: ${e.message}`);process.exit(1);});
 const worker=setInterval(()=>{drainHooks(store);router.pump();},2000);
 const discovery=setInterval(()=>{void coordinator.refresh();void masters.discover();},30000);
+const setupRecovery=setInterval(()=>{if(power.enabled)void masters.reconcileDesktopSetup();},5000);
 const maintenance=setInterval(()=>{power.apply();router.autoCloseStale();if(wa.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
 let shutting=false;
-function shutdown(){if(shutting)return;shutting=true;router.stopped=true;agentInstaller.close();clearInterval(worker);clearInterval(discovery);clearInterval(maintenance);power.close();workers.close();masters.close();approvals.cancel();wa.close();native.close();server.close();setTimeout(()=>{store.close();process.exit(0);},1500).unref();}
+function shutdown(){if(shutting)return;shutting=true;router.stopped=true;agentInstaller.close();clearInterval(worker);clearInterval(discovery);clearInterval(setupRecovery);clearInterval(maintenance);power.close();workers.close();masters.close();approvals.cancel();wa.close();native.close();server.close();setTimeout(()=>{store.close();process.exit(0);},1500).unref();}
 process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);
 process.on('uncaughtException',e=>{console.error(`Bridge fatal error: ${e.message}`);shutdown();});
 process.on('unhandledRejection',e=>{console.error(`Bridge promise failed: ${e instanceof Error?e.message:'unknown failure'}`);shutdown();});

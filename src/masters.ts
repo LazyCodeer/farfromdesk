@@ -3,7 +3,7 @@ import { CoordinatorRegistry } from './coordinator-registry.js';
 import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync,writeFileSync,realpathSync,existsSync,statSync } from 'node:fs';
+import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
 import { join,basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ import { roleConfig, coordinatorRoleStatus } from './roles.js';
 import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections } from './connections.js';
+import { projectWorkspace } from './project-workspace.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
@@ -41,16 +42,18 @@ export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:a
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
     if(typeof s.cwd!=='string'||!s.cwd)continue;
     try {
-      const cwd=realpathSync(s.cwd);if(!statSync(cwd).isDirectory())continue;
+      const sessionCwd=realpathSync(s.cwd),cwd=projectWorkspace(sessionCwd);
       const accountScope=s.accountScope??null;
       const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,accountScope])).digest('hex');
       const available=provider!=='claude'||mode!=='desktop'||s.available===true;
       const existing=choices.get(id);
-      if(!existing||(!existing.available&&available))choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,launcherId:provider==='claude'&&mode==='desktop'?s.id:undefined});
+      // Prefer a reachable root-project chat over a newer temporary worktree.
+      const rank=(available?2:0)+(sessionCwd===cwd?1:0);
+      if(!existing||rank>existing.rank)choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,rank,launcherId:provider==='claude'&&mode==='desktop'?s.id:undefined});
     }catch{/* A moved or inaccessible folder is not a creation target. */}
   }
   const result=[...choices.values()];
-  return result.map(w=>({...w,label:result.filter(other=>other.cwd===w.cwd).length>1?`${w.cwd} · account ${String(w.accountScope??'unknown').slice(0,8)}`:w.cwd}));
+  return result.map(({rank,...w})=>({...w,label:result.filter(other=>other.cwd===w.cwd).length>1?`${w.name} · account ${String(w.accountScope??'unknown').slice(0,8)}`:w.name}));
 }
 export class Masters {
   connections:Connections;
@@ -68,6 +71,8 @@ export class Masters {
   private discoveryAt=0;
   private catalogRevision=randomUUID();
   private catalogDigest='';
+  private automaticChecks=new Map<string,{receipt:string;attempts:number;after:number}>();
+  private closed=false;
   constructor(private store:Store,private router:Router) {
     this.registry=router.coordinator?.registry??new CoordinatorRegistry(store);
     this.connections=router.native.connections??new Connections(store);
@@ -183,6 +188,21 @@ export class Masters {
     const op=this.operation(id);if(!op)return;
     this.saveOperation({...op,status:/^Desktop start needs owner action/.test(error instanceof Error?error.message:String(error))?'needs_action':'uncertain',updatedAt:Date.now(),needsTrust:/workspace not trusted/i.test(error instanceof Error?error.message:String(error)),error:this.setupError(error)},this.operation()?.id===id);
   }
+  // Receipt-driven recovery never creates/replays a child or approves a native prompt.
+  // Only the current setup can activate automatically; older attempts stay set aside.
+  async reconcileDesktopSetup(now=Date.now()) {
+    const op=this.operation();
+    if(this.closed||this.creating||!op||op.provider!=='claude'||op.executionMode!=='desktop'||!['needs_action','uncertain'].includes(op.status)||!op.bindingId)return;
+    const b=this.store.binding(op.bindingId);if(!b)return;
+    let receipt:string|null;
+    try{receipt=this.desktop.acknowledgment(b);}catch{return;}
+    if(!receipt)return;
+    const prior=this.automaticChecks.get(op.id);
+    const check=prior?.receipt===receipt?prior:{receipt,attempts:0,after:0};
+    if(now<check.after||check.attempts>=3)return;
+    this.automaticChecks.clear();this.automaticChecks.set(op.id,{receipt,attempts:check.attempts+1,after:now+30000});
+    try{await this.recover(op.id);}catch{/* The normal setup error/recovery controls remain available. */}
+  }
   async recover(operationId?:string) {
     const op=this.operation(operationId);if(!op)throw new Error('No exact setup to recover.');
     return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.recoverScoped(op.id));
@@ -192,7 +212,7 @@ export class Masters {
     const op=this.operation(operationId);
     if(!op||!['uncertain','set-aside','needs_action'].includes(op.status)||!op.bindingId||(!op.nativeId&&!(op.executionMode==='desktop'&&op.provider!=='codex')))throw new Error('No exact created session is available to recover. Create a new session instead.');
     const b=this.store.binding(op.bindingId);if(!b||(op.nativeId&&b.native_id!==op.nativeId))throw new Error('Creation identity is incomplete.');
-    this.setAside();this.creating=true;this.saveOperation({...op,status:'creating'});
+    this.setAside();this.creating=true;this.saveOperation({...op,status:'creating',stage:'Connecting your created session',error:undefined});
     void (async()=>{
       await this.connections.assert(b);
       if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b,true);
@@ -310,10 +330,10 @@ export class Masters {
     if(previous){if(previous.workspaceId!==workspaceId||previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():''))throw new Error('Creation ID cannot change platform, workspace or desktop launcher.');return previous;}
     this.assertIdle();
     if(!this.platforms.find(p=>p.provider===provider&&(p.executionMode??'cli')===mode)?.available)throw new Error('The selected execution mode is not available.');
-    let workspace:any;
+    let workspace:any,sessions:any[]|undefined;
     if(workspaceId!==undefined) {
       if(typeof workspaceId!=='string'||!workspaceId)throw new Error('Choose a detected workspace.');
-      const sessions=await this.catalog(provider,true);
+      sessions=await this.catalog(provider,true);
       workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode)).find(w=>w.id===workspaceId);
       if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
       if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
@@ -324,7 +344,7 @@ export class Masters {
     this.setAside();this.creating=true;
     const op={id:operationId,provider,executionMode:mode,desktopParentId,workspaceId,workspaceCwd:workspace?.cwd,route,status:'creating',stage:'Preparing workspace',startedAt:Date.now(),name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
     void (async()=>{
-      const launcher=provider==='claude'&&mode==='desktop'?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined):undefined;
+      const launcher=provider==='claude'&&mode==='desktop'?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined,sessions):undefined;
       if(launcher)this.saveOperation({...this.operation(),route:{...route,accountScope:launcher.accountScope},resolvedDesktopParentId:launcher.id});
       await this.provision(provider,operationId,mode,launcher?.id??desktopParentId);
     })().catch(e=>this.recordSetupFailure(e,operationId)).finally(()=>{this.creating=false;});
@@ -495,5 +515,5 @@ export class Masters {
       if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
     }finally{runtime.close();}
   }
-  close(){this.desktop.close();for(const r of this.runtimes.values())r.close();for(const r of this.claudeRuntimes.values())r.close();}
+  close(){this.closed=true;this.desktop.close();for(const r of this.runtimes.values())r.close();for(const r of this.claudeRuntimes.values())r.close();}
 }

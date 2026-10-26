@@ -482,73 +482,114 @@ class _DeskState extends State<Desk> {
     ];
     final seen = <String>{};
     final operations = entries
-        .where((op) => op['status'] != 'ready' && seen.add('${op['id']}'))
+        .where(
+          (op) =>
+              !['ready', 'abandoned'].contains(op['status']) &&
+              seen.add('${op['id']}'),
+        )
         .toList();
-    return [
-      for (final op in operations) ...[
-        const Divider(height: 32),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (op['status'] == 'creating') ...[
-              const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
+    Widget card(Map op) => Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: canvas.withValues(alpha: .6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: line.withValues(alpha: .5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (op['status'] == 'creating') ...[
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 10),
+              ],
+              Flexible(
+                child: Text(
+                  op['status'] == 'creating'
+                      ? (op['stage'] ?? 'Preparing your session…')
+                      : op['status'] == 'needs_action'
+                      ? 'Start your session in Claude'
+                      : 'Setup not completed',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
               ),
-              const SizedBox(width: 10),
             ],
-            Flexible(
-              child: Text(
-                op['status'] == 'creating'
-                    ? (op['stage'] ?? 'Preparing your session…')
-                    : op['status'] == 'needs_action'
-                    ? 'Waiting for your action in Claude'
-                    : 'Setup not completed',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
+          ),
+          note(op['name'] ?? 'Coordinator setup'),
+          if (op['status'] == 'creating')
+            note(
+              'You can close this window. Progress will stay visible on Home.',
+            ),
+          if (op['status'] == 'needs_action')
+            note(
+              'Open Claude and click Start on the prepared card. FarFromDesk will detect it and connect automatically. You can leave this window open or close it.',
+            )
+          else if (op['error'] != null)
+            note(op['error']),
+          if ([
+            'uncertain',
+            'set-aside',
+            'needs_action',
+          ].contains(op['status'])) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                if (op['status'] == 'needs_action')
+                  button(
+                    'Open Claude',
+                    () => post('/api/master-open-proposal', {
+                      'operationId': op['id'],
+                    }),
+                  ),
+                if (op['status'] != 'needs_action')
+                  button(
+                    'Recover exact session',
+                    () =>
+                        post('/api/master-recover', {'operationId': op['id']}),
+                  ),
+                button('Cancel setup', () async {
+                  if (await confirm(
+                    'Abandon this setup?',
+                    'This closes the setup attempt. It does not delete the native conversation.',
+                  )) {
+                    await post('/api/master-abandon', {
+                      'operationId': op['id'],
+                    });
+                  }
+                }),
+              ],
             ),
           ],
-        ),
-        note(op['name'] ?? 'Coordinator setup'),
-        if (op['status'] == 'creating')
-          note(
-            'You can close this window. Progress will stay visible on Home.',
-          ),
-        if (op['error'] != null) note(op['error']),
-        if ([
-          'uncertain',
-          'set-aside',
-          'needs_action',
-        ].contains(op['status'])) ...[
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            children: [
-              if (op['status'] == 'needs_action')
-                button(
-                  'Open Claude proposal',
-                  () => post('/api/master-open-proposal', {
-                    'operationId': op['id'],
-                  }),
-                ),
-              button(
-                'Recover exact session',
-                () => post('/api/master-recover', {'operationId': op['id']}),
-              ),
-              button('Abandon setup', () async {
-                if (await confirm(
-                  'Abandon this setup?',
-                  'This closes the setup attempt. It does not delete the native conversation.',
-                )) {
-                  await post('/api/master-abandon', {'operationId': op['id']});
-                }
-              }),
-            ],
-          ),
         ],
-      ],
+      ),
+    );
+    final previous = operations
+        .where((op) => op['id'] != current?['id'])
+        .toList();
+    return [
+      for (final op in operations.where((op) => op['id'] == current?['id']))
+        card(op),
+      if (previous.isNotEmpty)
+        ExpansionTile(
+          title: Text(
+            'Earlier setup attempts (${previous.length})',
+            style: const TextStyle(fontSize: 13, color: muted),
+          ),
+          shape: const Border(),
+          collapsedShape: const Border(),
+          tilePadding: EdgeInsets.zero,
+          children: [for (final op in previous) card(op)],
+        ),
     ];
   }
 

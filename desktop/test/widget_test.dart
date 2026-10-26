@@ -55,6 +55,36 @@ void main() {
   );
 
   testWidgets(
+    'Waiting setup guides the native Start and collapses earlier attempts',
+    (tester) async {
+      size(tester);
+      final api = SetupProgressGateway()..waiting = true;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
+      final dialog = find.byType(Dialog);
+      Finder inDialog(String text) =>
+          find.descendant(of: dialog, matching: find.text(text));
+      expect(inDialog('Start your session in Claude'), findsOneWidget);
+      expect(inDialog('Open Claude'), findsOneWidget);
+      expect(inDialog('Recover exact session'), findsNothing);
+      expect(find.textContaining('task_12345678'), findsNothing);
+      expect(inDialog('Earlier setup attempts (1)'), findsOneWidget);
+      expect(inDialog('Earlier Claude coordinator'), findsNothing);
+      await tester.ensureVisible(inDialog('Earlier setup attempts (1)'));
+      await tester.tap(inDialog('Earlier setup attempts (1)'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(inDialog('Earlier Claude coordinator'));
+      expect(inDialog('Earlier Claude coordinator'), findsOneWidget);
+      expect(inDialog('Recover exact session'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Creation dialog refreshes native progress and clears the spinner on failure',
     (tester) async {
       size(tester);
@@ -547,7 +577,7 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(find.text('Workspace'), findsOneWidget);
+      expect(find.text('Project'), findsOneWidget);
       expect(
         tester
             .widget<FilledButton>(
@@ -558,6 +588,7 @@ void main() {
       );
       await tester.tap(find.byType(DropdownButtonFormField<String>));
       await tester.pumpAndSettle();
+      expect(find.text('personal'), findsWidgets);
       await tester.tap(find.text('/sample/personal').last);
       await tester.pumpAndSettle();
       if (Platform.environment['FFD_CAPTURE_SETUP'] == '1') {
@@ -979,12 +1010,32 @@ class GroupsGateway extends ConnectionGateway {
 }
 
 class SetupProgressGateway extends ConnectionGateway {
-  bool creating = false, failed = false;
+  bool creating = false, failed = false, waiting = false;
   @override
   Future<Map<String, dynamic>> get(String path) async {
     final data = await super.get(path);
     data['masterSetup'] = Map<String, dynamic>.from(data['masterSetup']);
-    if (creating || failed) {
+    if (waiting) {
+      data['masterSetup']['operation'] = {
+        'id': 'setup-waiting',
+        'provider': 'claude',
+        'executionMode': 'desktop',
+        'name': 'Current Claude coordinator',
+        'status': 'needs_action',
+        'proposalId': 'task_12345678',
+        'error': 'Desktop start needs owner action: start the existing proposal task_12345678',
+      };
+      data['masterSetup']['attempts'] = [
+        {
+          'id': 'setup-earlier',
+          'provider': 'claude',
+          'executionMode': 'desktop',
+          'name': 'Earlier Claude coordinator',
+          'status': 'uncertain',
+          'error': 'Native approval required',
+        },
+      ];
+    } else if (creating || failed) {
       data['masterSetup']['operation'] = {
         'id': 'setup-test',
         'provider': 'claude',

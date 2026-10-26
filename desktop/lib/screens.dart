@@ -1476,7 +1476,7 @@ extension _BridgeScreens on _DeskState {
         ),
         gap(14),
         if (setupAction == 'new') ...[
-          const Text('Workspace'),
+          const Text('Project'),
           gap(8),
           DropdownButtonFormField<String>(
             key: ValueKey(
@@ -1484,15 +1484,38 @@ extension _BridgeScreens on _DeskState {
             ),
             initialValue: selectedWorkspace?['id'] as String?,
             isExpanded: true,
-            decoration: const InputDecoration(hintText: 'Choose a workspace'),
+            menuMaxHeight: 320,
+            itemHeight: 64,
+            decoration: const InputDecoration(hintText: 'Choose a project'),
+            selectedItemBuilder: (context) => [
+              for (final w in workspaceOptions)
+                Text(
+                  (w['label'] ?? w['name'] ?? w['cwd']).toString(),
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
             items: [
               for (final w in workspaceOptions)
                 DropdownMenuItem(
                   value: w['id'].toString(),
                   enabled: w['available'] == true,
-                  child: Text(
-                    (w['label'] ?? w['cwd']).toString(),
-                    overflow: TextOverflow.ellipsis,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        (w['label'] ?? w['name'] ?? w['cwd']).toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        w['cwd'].toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: muted),
+                      ),
+                    ],
                   ),
                 ),
             ],
@@ -1501,15 +1524,22 @@ extension _BridgeScreens on _DeskState {
                 : (value) => editSetup(() => selectedWorkspaceId = value ?? ''),
           ),
           gap(8),
+          if (selectedWorkspace != null) ...[
+            Text(
+              selectedWorkspace!['cwd'].toString(),
+              style: const TextStyle(fontSize: 11, color: muted),
+            ),
+            gap(6),
+          ],
           small(
             workspaceOptions.isEmpty
                 ? 'Open a project in this app, then reopen this dialog to discover its workspace.'
-                : 'The new session starts in this workspace. Existing project instructions and the app’s own permissions apply.',
+                : 'The new session starts in the project folder. Existing instructions and the app’s own permissions apply.',
           ),
           if (platform == 'claude:desktop') ...[
             gap(6),
             small(
-              'Claude uses a reachable chat in this workspace and its account to create the session. Native approval may still be required.',
+              'Claude uses a reachable chat from this project and account to create the session. Native approval may still be required.',
             ),
           ],
           gap(16),
