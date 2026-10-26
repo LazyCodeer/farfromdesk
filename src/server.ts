@@ -1,4 +1,4 @@
-import { openClaudeDesktop } from './session-activation.js';
+import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
@@ -181,6 +181,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/master-open-proposal'&&req.method==='POST') {
         const d=await body(req),op=services?.masters.operation(d.operationId),start=op?.bindingId?services?.masters.desktop.get(op.bindingId):undefined;
+        if(start&&!start.parentId){await focusClaudeDesktop();json(res,200,{opened:true});return;}
         if(!start?.proposalId)throw new Error('No saved Claude proposal exists for this setup.');
         const catalog=await router.native.catalog('claude',undefined,{fresh:true});
         const parent=catalog.sessions.find(s=>s.id===start.parentId&&s.executionMode==='desktop');

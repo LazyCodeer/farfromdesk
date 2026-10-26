@@ -22,8 +22,13 @@ export function agentName(value:unknown) {
   if(typeof value!=='string'||!/^farfromdesk-[a-z][a-z0-9-]{0,47}$/.test(value))throw new Error('Use a lowercase agent name such as farfromdesk-code-reviewer (letters, numbers and hyphens).');
   return value;
 }
+// Custom roles store only their specialty; the current worker policy is appended on read so
+// policy refinements reach them. Older rows embedded a frozen copy, which is cut at its heading.
+const workerHeading='\n\n# FarFromDesk Session Worker';
+const specialty=(instructions:string)=>instructions.split(workerHeading)[0];
+const withWorkerPolicy=(a:NamedAgent):NamedAgent=>({...a,kind:'worker',instructions:`${specialty(a.instructions)}\n\n${workerPolicy}`});
 export function listNamedAgents(store:Store) {
-  return [...builtins(),...store.db.prepare("SELECT value FROM settings WHERE key LIKE 'agent-definition:%' ORDER BY key").all().map((r:any)=>JSON.parse(r.value) as NamedAgent)];
+  return [...builtins(),...store.db.prepare("SELECT value FROM settings WHERE key LIKE 'agent-definition:%' ORDER BY key").all().map((r:any)=>withWorkerPolicy(JSON.parse(r.value) as NamedAgent))];
 }
 export function agentDefinition(store:Store,name:string):NamedAgent {
   agentName(name);const agent=listNamedAgents(store).find(a=>a.name===name);
@@ -34,11 +39,11 @@ export function defineNamedAgent(store:Store,input:any,roots=agentRoots()) {
   if(builtins().some(a=>a.name===name))throw new Error('Built-in FarFromDesk roles cannot be overwritten.');
   if(typeof input.description!=='string'||input.description.length<10||input.description.length>400||/[\x00-\x1f]/.test(input.description))throw new Error('Provide a one-line description of 10–400 characters.');
   if(typeof input.instructions!=='string'||input.instructions.trim().length<80||Buffer.byteLength(input.instructions)>12000||input.instructions.includes('\0'))throw new Error('Provide detailed role instructions (80 characters to 12 KB).');
-  const definition:NamedAgent={name,description:input.description,instructions:`# ${name}\n\n## Specialty and owner instructions\n${input.instructions.trim()}\n\n${workerPolicy}`,kind:'worker'};
-  const key=`agent-definition:${name}`,previous=store.get(key);
-  if(previous&&previous!==JSON.stringify(definition))throw new Error('This name already has different instructions. Choose a new name to preserve the existing role.');
+  const definition:NamedAgent={name,description:input.description,instructions:`# ${name}\n\n## Specialty and owner instructions\n${input.instructions.trim()}`,kind:'worker'};
+  const key=`agent-definition:${name}`,saved=store.get(key),previous=saved?JSON.parse(saved) as NamedAgent:undefined;
+  if(previous&&(previous.description!==definition.description||specialty(previous.instructions)!==definition.instructions))throw new Error('This name already has different instructions. Choose a new name to preserve the existing role.');
   store.set(key,JSON.stringify(definition));
-  return {agent:{name,description:definition.description,kind:definition.kind},installation:installNamedAgent(store,definition,roots)};
+  return {agent:{name,description:definition.description,kind:definition.kind},installation:installNamedAgent(store,withWorkerPolicy(definition),roots)};
 }
 function safeDirectory(path:string) {
   const abs=resolve(path),parent=dirname(abs);
@@ -85,7 +90,9 @@ export function syncNamedAgents(store:Store,roots=agentRoots()) {
 }
 export function assignNamedAgent(store:Store,b:Binding,name:string,roots=agentRoots()) {
   const agent=agentDefinition(store,name);
-  if(agent.kind==='master'&&b.id!==store.get('master')&&store.get(`role-kind:${b.id}`)!=='master')throw new Error('The coordinator role can only be assigned to the selected coordinator.');
+  const coordinator=b.id===store.get('master')||store.get(`role-kind:${b.id}`)==='master';
+  if(agent.kind==='master'&&!coordinator)throw new Error('The coordinator role can only be assigned to the selected coordinator.');
+  if(agent.kind!=='master'&&coordinator)throw new Error('Worker roles can only be assigned to worker sessions, not a coordinator.');
   const installation=installNamedAgent(store,agent,roots);
   store.set(`named-agent:${b.id}`,agent.name);
   return {bindingId:b.id,agentName:agent.name,applies:'next-request',installation};

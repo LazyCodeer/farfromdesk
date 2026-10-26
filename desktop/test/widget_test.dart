@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:farfromdesk/app.dart';
+import 'package:farfromdesk/bridge_theme.dart';
 import 'package:farfromdesk/preview.dart';
 import 'package:farfromdesk/updates.dart';
 
@@ -16,7 +17,14 @@ void main() {
       ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
     await icons.load();
   });
+  void calm(WidgetTester tester) {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+  }
+
   void size(WidgetTester tester) {
+    calm(tester);
     tester.view.physicalSize = const Size(1160, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -38,21 +46,49 @@ void main() {
       );
       expect(find.text('Review in Activity'), findsNothing);
       api.fail = false;
-      await tester.ensureVisible(find.text('Refresh groups'));
-      await tester.tap(find.text('Refresh groups'));
+      await tester.ensureVisible(find.byTooltip('Refresh groups'));
+      await tester.tap(find.byTooltip('Refresh groups'));
       await tester.pumpAndSettle();
       expect(api.loads, 2);
-      expect(find.text('In use'), findsOneWidget);
-      expect(find.text('My notes'), findsOneWidget);
-      await tester.ensureVisible(find.text('Use this group'));
-      await tester.tap(find.text('Use this group'));
+      expect(find.text('Session Bridge'), findsOneWidget);
+      expect(
+        find.textContaining('Replies go to Session Bridge.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Session Bridge'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('My notes').last);
       await tester.pumpAndSettle();
       expect(api.destination, 'notes@g.us');
-      expect(find.text('In use'), findsOneWidget);
+      expect(find.textContaining('Replies go to My notes.'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('Preparation failure does not mark the project step complete', (
+    tester,
+  ) async {
+    size(tester);
+    final api = SetupProgressGateway()
+      ..failed = true
+      ..stage = 'Preparing workspace';
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Manage coordinators'));
+    await tester.tap(find.text('Manage coordinators'));
+    await tester.pumpAndSettle();
+    final step = find.descendant(
+      of: find.byType(Dialog),
+      matching: find.widgetWithText(Row, 'Prepare the coordinator folder'),
+    );
+    expect(step, findsWidgets);
+    expect(
+      find.descendant(of: step, matching: find.byIcon(Icons.check)),
+      findsNothing,
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'Waiting setup guides the native Start and collapses earlier attempts',
@@ -61,16 +97,13 @@ void main() {
       final api = SetupProgressGateway()..waiting = true;
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Manage coordinators'));
-      await tester.tap(find.text('Manage coordinators'));
-      await tester.pumpAndSettle();
-      final dialog = find.byType(Dialog);
-      Finder inDialog(String text) =>
-          find.descendant(of: dialog, matching: find.text(text));
+      Finder inDialog(String text) => find.text(text);
       expect(inDialog('Start your session in Claude'), findsOneWidget);
       expect(inDialog('Open Claude'), findsOneWidget);
       expect(inDialog('Recover exact session'), findsNothing);
       expect(find.textContaining('task_12345678'), findsNothing);
+      expect(inDialog('Start the session in Claude'), findsOneWidget);
+      expect(inDialog('Create coordinator'), findsNothing);
       expect(inDialog('Earlier setup attempts (1)'), findsOneWidget);
       expect(inDialog('Earlier Claude coordinator'), findsNothing);
       await tester.ensureVisible(inDialog('Earlier setup attempts (1)'));
@@ -79,6 +112,16 @@ void main() {
       await tester.ensureVisible(inDialog('Earlier Claude coordinator'));
       expect(inDialog('Earlier Claude coordinator'), findsOneWidget);
       expect(inDialog('Recover exact session'), findsOneWidget);
+      await tester.ensureVisible(inDialog('Choose another setup'));
+      await tester.tap(inDialog('Choose another setup'));
+      await tester.pumpAndSettle();
+      final dialog = find.byType(Dialog);
+      Finder inDialogOnly(String text) =>
+          find.descendant(of: dialog, matching: find.text(text));
+      expect(find.byKey(const ValueKey('coordinator-folder')), findsOneWidget);
+      expect(inDialogOnly('Add a coordinator'), findsOneWidget);
+      expect(inDialog('Use existing session'), findsOneWidget);
+      expect(inDialog('Create coordinator'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -103,7 +146,7 @@ void main() {
           of: dialog,
           matching: find.byType(CircularProgressIndicator),
         ),
-        findsOneWidget,
+        findsWidgets,
       );
       expect(
         find.descendant(
@@ -220,11 +263,11 @@ void main() {
       await tester.pumpWidget(FarFromDeskApp(gateway: InstructionsGateway()));
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('View instructions'),
+        find.text('Instructions').first,
         300,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('View instructions'));
+      await tester.tap(find.text('Instructions').first);
       await tester.pumpAndSettle();
       expect(find.text('Coordinator instructions'), findsOneWidget);
       expect(find.text('Version secret-version'), findsNothing);
@@ -233,9 +276,10 @@ void main() {
       expect(find.textContaining('# Sample heading'), findsNothing);
       expect(find.textContaining('Sample heading'), findsOneWidget);
       expect(tester.getSize(find.byType(Dialog)).width, greaterThan(560));
-      expect(find.byTooltip('Close instructions'), findsOneWidget);
+      expect(find.text('Copy instructions'), findsOneWidget);
+      expect(find.byTooltip('Close'), findsOneWidget);
       expect(tester.takeException(), isNull);
-      await tester.tap(find.byTooltip('Close instructions'));
+      await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsNothing);
       await tester.pumpWidget(const SizedBox());
@@ -250,7 +294,6 @@ void main() {
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
       expect(find.text('FarFromDesk'), findsOneWidget);
-      expect(find.text('Connected'), findsNothing);
       expect(find.byTooltip('Refresh'), findsNothing);
       expect(find.text('Check delivery after reconnecting'), findsOneWidget);
       expect(find.text('How recovery works'), findsOneWidget);
@@ -261,7 +304,7 @@ void main() {
         );
       }
       await tester.enterText(
-        find.widgetWithText(TextField, 'Search requests'),
+        find.widgetWithText(TextField, 'Search requests or sessions'),
         'reconnecting',
       );
       await tester.pumpAndSettle();
@@ -334,10 +377,7 @@ void main() {
         matching: find.text('Waiting'),
       );
       await tester.ensureVisible(waiting);
-      final target = find
-          .ancestor(of: waiting, matching: find.byType(InkWell))
-          .first;
-      await tester.tapAt(tester.getTopLeft(target) + const Offset(4, 4));
+      await tester.tap(waiting);
       await tester.pumpAndSettle();
       expect(find.text('Check delivery after reconnecting'), findsNothing);
       final select = find.byKey(const ValueKey('select-visible-requests'));
@@ -356,6 +396,7 @@ void main() {
   testWidgets(
     'Update banner stays in the top bar and automatic installation requires a click',
     (tester) async {
+      calm(tester);
       tester.view.physicalSize = const Size(900, 640);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -368,24 +409,20 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('Update available'), findsOneWidget);
         expect(
-          tester.getTopLeft(find.text('Update available')).dy,
-          lessThan(52),
-        );
-        expect(
           tester.getTopLeft(find.text('Update available')).dx,
-          greaterThan(650),
+          lessThan(216),
         );
         expect(find.byTooltip('Refresh'), findsNothing);
         expect(tester.takeException(), isNull);
       }
       expect(api.opened, isEmpty);
-      await tester.tap(find.text('Update available'));
+      await tester.tap(find.text('Update now').first);
       await tester.pumpAndSettle();
       expect(find.text('Version 0.8.0'), findsOneWidget);
       await tester.tap(find.text('Later'));
       await tester.pumpAndSettle();
       expect(api.opened, isEmpty);
-      await tester.tap(find.text('Update available'));
+      await tester.tap(find.text('Update now').first);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Update and restart'));
       await tester.pumpAndSettle();
@@ -432,14 +469,15 @@ void main() {
       expect(find.text('FarFromDesk'), findsWidgets);
       expect(find.byTooltip('Refresh'), findsNothing);
       expect(find.text('FarFromDesk / Home'), findsNothing);
-      expect(find.text('Pair your phone'), findsOneWidget);
+      expect(find.text('Connect your WhatsApp'), findsOneWidget);
+      expect(find.text('Set up a coordinator'), findsOneWidget);
       final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
       expect(
         Theme.of(tester.element(find.byWidget(scaffold)))
             .scaffoldBackgroundColor,
-        const Color(0xff17181d),
+        windowColor,
       );
-      await tester.tap(find.text('Connect WhatsApp'));
+      await tester.tap(find.text('Show QR code').last);
       await tester.pumpAndSettle();
       expect(
         find.text('Allow background access and connect WhatsApp?'),
@@ -448,7 +486,7 @@ void main() {
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(api.calls, isEmpty);
-      await tester.tap(find.text('Connect WhatsApp'));
+      await tester.tap(find.text('Show QR code').last);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Allow and connect'));
       await tester.pumpAndSettle();
@@ -456,6 +494,22 @@ void main() {
         api.calls,
         containsAllInOrder(['/api/preferences', '/api/connect']),
       );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'Existing session picker searches saved chats and confirms before selecting',
+    (tester) async {
+      size(tester);
+      final api = PreviewGateway(fixture: 'connected');
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('+ Add coordinator'));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Use existing session'));
       await tester.tap(find.text('Use existing session'));
       await tester.pumpAndSettle();
@@ -488,22 +542,42 @@ void main() {
       await tester.ensureVisible(find.text('Manage coordinators'));
       await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
-      expect(find.text('Choose an existing session'), findsOneWidget);
-      await tester.tap(find.text('Create new session'));
+      for (final tab in ['Instructions', 'Connected sessions']) {
+        await tester.tap(
+          find
+              .descendant(of: find.byType(Dialog), matching: find.text(tab))
+              .first,
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      }
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(Dialog),
+              matching: find.text('Coordinators'),
+            )
+            .last,
+      );
       await tester.pumpAndSettle();
-      expect(find.text('Automatic'), findsOneWidget);
+      await tester.tap(find.text('+ Add coordinator'));
+      await tester.pumpAndSettle();
+      expect(find.text('Add a coordinator'), findsOneWidget);
+      expect(find.text('Use existing session'), findsOneWidget);
+      expect(find.text('Edit'), findsOneWidget);
       expect(find.text('FarFromDesk · Codex CLI'), findsOneWidget);
       await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Activity'));
       await tester.pumpAndSettle();
       expect(find.text('Request history'), findsOneWidget);
-      expect(find.text('Select all'), findsOneWidget);
+      expect(find.text('Select all'), findsNothing);
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       expect(find.text('Run in the background'), findsOneWidget);
       expect(find.text('Open at login'), findsOneWidget);
-      expect(find.text('Coding apps'), findsOneWidget);
+      expect(find.text('Coding apps'), findsNothing);
+      expect(find.text('App updates'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -511,6 +585,7 @@ void main() {
   testWidgets(
     'Minimum native window has no layout overflow on all three screens',
     (tester) async {
+      calm(tester);
       tester.view.physicalSize = const Size(900, 640);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -528,7 +603,7 @@ void main() {
     },
   );
   testWidgets(
-    'Platform selection keeps CLI account status separate and requires a workspace',
+    'Platform selection keeps CLI account status separate and creates in the coordinator folder',
     (tester) async {
       size(tester);
       final api = ConnectionGateway();
@@ -537,19 +612,15 @@ void main() {
       await tester.ensureVisible(find.text('Manage coordinators'));
       await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Create new session'));
+      await tester.tap(find.text('+ Add coordinator'));
       await tester.pumpAndSettle();
       expect(find.text('Test CLI account'), findsOneWidget);
       await tester.tap(
-        find
-            .descendant(
-              of: find.byType(Dialog),
-              matching: find.byType(DropdownButton<String>),
-            )
-            .first,
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.text('Claude CLI'),
+        ),
       );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Claude CLI').last);
       await tester.pumpAndSettle();
       expect(find.text('CLI signed out · sign in to this CLI'), findsWidgets);
       expect(
@@ -561,15 +632,11 @@ void main() {
         isNull,
       );
       await tester.tap(
-        find
-            .descendant(
-              of: find.byType(Dialog),
-              matching: find.byType(DropdownButton<String>),
-            )
-            .first,
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.text('Claude Desktop'),
+        ),
       );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
       expect(
         find.text(
@@ -577,32 +644,16 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(find.text('Project'), findsOneWidget);
       expect(
-        tester
-            .widget<FilledButton>(
-              find.widgetWithText(FilledButton, 'Create coordinator'),
-            )
-            .onPressed,
-        isNull,
+        find.text('~/.farfromdesk/coordinators/farfromdesk-claude-desktop-…'),
+        findsOneWidget,
       );
-      await tester.tap(find.byType(DropdownButtonFormField<String>));
-      await tester.pumpAndSettle();
-      expect(find.text('personal'), findsWidgets);
-      await tester.tap(find.text('/sample/personal').last);
-      await tester.pumpAndSettle();
-      if (Platform.environment['FFD_CAPTURE_SETUP'] == '1') {
-        await expectLater(
-          find.byType(Dialog),
-          matchesGoldenFile('../../.local/workspace-setup.png'),
-        );
-      }
       await tester.ensureVisible(find.text('Create coordinator'));
       await tester.tap(find.text('Create coordinator'));
       await tester.pumpAndSettle();
       expect(api.submitted?['provider'], 'claude');
       expect(api.submitted?['executionMode'], 'desktop');
-      expect(api.submitted?['workspaceId'], 'workspace-personal');
+      expect(api.submitted!.containsKey('workspaceId'), isFalse);
       expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
       expect(tester.takeException(), isNull);
@@ -622,7 +673,7 @@ void main() {
       expect(tester.widget<DropdownButton<String>>(codex).value, isNull);
       await tester.tap(codex);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('CLI').last);
+      await tester.tap(find.text('Codex CLI').last);
       await tester.pumpAndSettle();
       expect(api.saved['codex']?['executionMode'], 'cli');
       expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
@@ -637,7 +688,7 @@ void main() {
             .enabled,
         false,
       );
-      await tester.tap(find.text('Desktop').last);
+      await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
       expect(find.text('Choose Claude Desktop launcher'), findsNothing);
@@ -672,17 +723,19 @@ void main() {
       final api = MultiCoordinatorGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Your coordinators'));
+      await tester.ensureVisible(find.text('Coordinators'));
       await tester.pumpAndSettle();
-      expect(find.text('Claude project coordinator'), findsOneWidget);
-      expect(find.text('Codex project coordinator'), findsOneWidget);
-      await tester.ensureVisible(find.text('Make default'));
+      expect(find.text('Claude project coordinator'), findsWidgets);
+      expect(find.text('Codex project coordinator'), findsWidgets);
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Make default'));
       await tester.pumpAndSettle();
       expect(api.defaultId, 'claude-coordinator');
       expect(api.changes, 1);
-      expect(find.text('Codex project coordinator'), findsOneWidget);
-      expect(find.text('Claude project coordinator'), findsOneWidget);
+      expect(find.text('Codex project coordinator'), findsWidgets);
+      expect(find.text('Claude project coordinator'), findsWidgets);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1011,6 +1064,7 @@ class GroupsGateway extends ConnectionGateway {
 
 class SetupProgressGateway extends ConnectionGateway {
   bool creating = false, failed = false, waiting = false;
+  String stage = 'Waiting for Claude to start the session';
   @override
   Future<Map<String, dynamic>> get(String path) async {
     final data = await super.get(path);
@@ -1042,7 +1096,7 @@ class SetupProgressGateway extends ConnectionGateway {
         'executionMode': 'desktop',
         'name': 'FarFromDesk · Claude Desktop',
         'status': creating ? 'creating' : 'uncertain',
-        'stage': 'Waiting for Claude to start the session',
+        'stage': stage,
         if (failed) 'error': 'Native approval required',
       };
     }

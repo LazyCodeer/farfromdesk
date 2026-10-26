@@ -8,7 +8,7 @@ import { join,basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
-import { stateDir,baseUrl,codexBin,claudeBin } from './config.js';
+import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
 import type { Store,Binding,Provider } from './store.js';
 import type { Router } from './router.js';
 import { saveBindingCredentials } from './server.js';
@@ -37,6 +37,10 @@ export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
   return name||`FarFromDesk · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
 }
 // Workspace identity includes runtime and account; folder names are display only.
+export function coordinatorFolder(operationId:string,name:string) {
+  const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'coordinator';
+  return join(coordinatorHome,'coordinators',`${slug}-${operationId.slice(0,8)}`);
+}
 export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[]) {
   const choices=new Map<string,any>();
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
@@ -136,7 +140,8 @@ export class Masters {
         const coordinators=this.registry.entries().filter(r=>r.provider==='claude'&&r.executionMode==='desktop'&&this.store.binding(r.bindingId)?.enabled);
         platform.coordinatorId=coordinators.length===1?coordinators[0].bindingId:undefined;
         platform.launcherId=platform.coordinatorId?this.store.binding(platform.coordinatorId)?.native_id:preference?.desktopParentId;
-        platform.creationReadiness=this.desktop.readiness(claude,platform.launcherId);
+        // New coordinators start in their own folder from a Claude chat the owner sends once; no launcher chat is needed.
+        platform.creationReadiness={state:'ready',message:'Claude opens a new chat in the coordinator folder. Confirm the folder and press Send once to start it.'};
       }
     }));
     for(const platform of platforms)platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[]);
@@ -338,13 +343,13 @@ export class Masters {
       if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
       if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
     }
-    const route=await this.connections.prepare({provider,cwd:workspace?.cwd??join(stateDir,'masters',operationId)},mode,mode==='cli',workspace?.accountScope??undefined,connectionRevision);
+    const route=await this.connections.prepare({provider,cwd:workspace?.cwd??coordinatorFolder(operationId,name)},mode,mode==='cli',workspace?.accountScope??undefined,connectionRevision);
     if(this.operation(operationId))return this.create(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId);
     this.assertIdle();
     this.setAside();this.creating=true;
     const op={id:operationId,provider,executionMode:mode,desktopParentId,workspaceId,workspaceCwd:workspace?.cwd,route,status:'creating',stage:'Preparing workspace',startedAt:Date.now(),name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
     void (async()=>{
-      const launcher=provider==='claude'&&mode==='desktop'?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined,sessions):undefined;
+      const launcher=provider==='claude'&&mode==='desktop'&&workspace?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined,sessions):undefined;
       if(launcher)this.saveOperation({...this.operation(),route:{...route,accountScope:launcher.accountScope},resolvedDesktopParentId:launcher.id});
       await this.provision(provider,operationId,mode,launcher?.id??desktopParentId);
     })().catch(e=>this.recordSetupFailure(e,operationId)).finally(()=>{this.creating=false;});
@@ -352,7 +357,7 @@ export class Masters {
   }
   async provision(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
     const selected=this.operation()?.workspaceCwd;
-    let cwd=selected?realpathSync(selected):join(stateDir,'masters',operationId);
+    let cwd=selected?realpathSync(selected):coordinatorFolder(operationId,this.operation()?.name??'coordinator');
     if(selected&&cwd!==selected)throw new Error('Selected workspace path changed. Choose it again.');
     mkdirSync(cwd,{recursive:true,mode:0o700});cwd=realpathSync(cwd);
     // Existing project instructions must never be replaced by bridge setup.
@@ -369,14 +374,22 @@ export class Masters {
     this.saveOperation({...this.operation(),bindingId:b.id,cwd,stage:'Starting native session'});
     const name=this.operation().name??'WhatsApp master';this.store.set(`name:${b.id}`,name);
     this.store.set(`role-kind:${b.id}`,'master');
-    const instruction=roleConfig(this.store,b,'master').instructions+(mode==='desktop'?`\n\nUse the local bridge CLI for coordination: ${quote(process.execPath)} ${quote(join(root,'dist/cli.js'))} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command. Your native permissions still apply.`:'\n\nUse the session_bridge MCP tools for coordination and replies. Your native permissions still apply.');
-    for(const filename of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(support,filename),instruction,{mode:0o600,flag:selected?'wx':'w'});
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${quote(process.execPath)} ${quote(join(root,'dist/cli.js'))} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:'Use the session_bridge MCP tools for coordination and replies.';
+    // Support files are written once and may be auto-loaded beside the provider instructions,
+    // so they point to the versioned role instead of carrying a copy that would go stale.
+    // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
+    const access=selected?'':' This is your own home folder. When a request needs another folder (a project, Documents), read it there and let your app ask the owner for file access; never change permission settings or copy credentials.';
+    const pointer=`# FarFromDesk coordinator workspace\n\nThis folder belongs to the owner's FarFromDesk coordinator. FarFromDesk supplies the current coordinator role through provider instructions or a one-time role bootstrap, and every request envelope names its roleFile; reread that file after context loss. ${tools}${access} Native permissions and project instructions still apply.\n`;
+    for(const filename of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(support,filename),pointer,{mode:0o600,flag:selected?'wx':'w'});
     for(const directory of ['.agents/skills/whatsapp-master','.claude/skills/whatsapp-master']) {
       mkdirSync(join(support,directory),{recursive:true,mode:0o700});
-      writeFileSync(join(support,directory,'SKILL.md'),`---\nname: whatsapp-master\ndescription: Coordinate owner-selected coding sessions and send supportive, request-bound WhatsApp replies.\n---\n${instruction}`,{mode:0o600});
+      writeFileSync(join(support,directory,'SKILL.md'),`---\nname: whatsapp-master\ndescription: Coordinate owner-selected coding sessions and send supportive, request-bound WhatsApp replies.\n---\n${pointer}`,{mode:0o600});
     }
+    const instruction=`${roleConfig(this.store,b,'master').instructions}\n\n${tools}${access} Your native permissions still apply.`;
     if(provider==='claude'&&mode==='desktop') {
-      await this.desktop.create(b,desktopParentId!,name,instruction);
+      // The role arrives once with the first request envelope; the launcher session never sees it.
+      if(selected)await this.desktop.create(b,desktopParentId!,name,`You will be the owner's FarFromDesk coordinator. ${tools}`);
+      else await this.desktop.createDirect(b,`You are my FarFromDesk coordinator. ${tools}${access}`);
       b=this.store.binding(b.id)!;saveBindingCredentials(b,registered.token);
     } else if(provider==='codex') {
       const runtime=new CodexSession(codexBin,cwd,(method,params)=>this.approval(b,method,params));
@@ -474,7 +487,7 @@ export class Masters {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
     await this.connections.assert(b);
     if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop') {
-      await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'FarFromDesk project',roleConfig(this.store,b).instructions+'\nUse the incoming bridge CLI reply command for future requests.');return;
+      await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'FarFromDesk project','You will be a FarFromDesk worker for this project. Your role arrives with the first request; use its bridge CLI reply command.');return;
     }
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);

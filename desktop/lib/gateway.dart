@@ -12,9 +12,15 @@ abstract class Gateway {
       const UpdateCheck();
   Future<void> openReleasePage(Uri uri) async {}
   bool get canInstallUpdate => false;
-  Future<void> installUpdate(AppRelease release, void Function(Map<String, dynamic>) progress) async {
-    throw UnsupportedError('Automatic installation is not available on this platform.');
+  Future<void> installUpdate(
+    AppRelease release,
+    void Function(Map<String, dynamic>) progress,
+  ) async {
+    throw UnsupportedError(
+      'Automatic installation is not available on this platform.',
+    );
   }
+
   void closeUpdates() {}
   String get platform;
   bool get preview => false;

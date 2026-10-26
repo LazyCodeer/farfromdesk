@@ -12,6 +12,18 @@ export async function openClaudeDesktop(session:Session) {
   await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://claude.ai/epitaxy/${session.desktopId}`],{timeout:10000,maxBuffer:65536});
 }
 
+// Opens Claude's new-session page on a folder with a prefilled prompt. The owner presses Send,
+// so the session starts from a genuine owner action; `folder` is the param Claude's own Finder service uses.
+export async function openClaudeNewSession(folder:string,prompt:string) {
+  // Tests must never open the owner's real Claude app.
+  if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
+  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://code/new?${new URLSearchParams({folder,q:prompt})}`],{timeout:10000,maxBuffer:65536});
+}
+// Brings Claude to the front without opening another new-session page (that could start a second session).
+export async function focusClaudeDesktop() {
+  if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
+  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop'],{timeout:10000,maxBuffer:65536});
+}
 export class SessionActivation {
   private pending=new Map<string,Promise<Session>>();
   constructor(private store:Store,private catalog:()=>Promise<Session[]>,private open=openClaudeDesktop,private timeoutMs=20000) {}

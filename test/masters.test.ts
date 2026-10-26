@@ -20,7 +20,7 @@ else if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'${nativeId}'
 else if((m.method==='thread/read'||m.method==='thread/resume'))send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
 else {send({id:m.id,result:{}});if(m.method==='turn/start'){send({method:'item/completed',params:{threadId:'${nativeId}',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{status:'completed'}}});}}
 });`,{mode:0o700});
-process.env.WSB_STATE_DIR=join(dir,'state');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
+process.env.WSB_STATE_DIR=join(dir,'state');process.env.FARFROMDESK_HOME=join(dir,'home');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
 const { Connections }=await import('../src/connections.js');
 const { Masters,codexDesktopInstalled,masterName,masterWorkspaces }=await import('../src/masters.js');
 const { Coordinator }=await import('../src/coordinator.js');
@@ -49,7 +49,7 @@ test('native creation persists exact identity, scoped tools and friendly instruc
   assert.equal(f.store.get('master'),old.id);await f.masters.create('codex',id);await settled(f);
   assert.equal(f.masters.operation().status,'ready');const b=f.store.binding(f.store.get('master')!)!;
   assert.equal(b.native_id,nativeId);assert.equal(f.store.binding(old.id)!.enabled,0);assert.equal(f.store.bindings().length,2);
-  assert.match(readFileSync(join(b.cwd,'AGENTS.md'),'utf8'),/# FarFromDesk Coordinator/);
+  assert.match(readFileSync(join(b.cwd,'AGENTS.md'),'utf8'),/FarFromDesk coordinator workspace/);assert.doesNotMatch(readFileSync(join(b.cwd,'AGENTS.md'),'utf8'),/# FarFromDesk Coordinator/);
   assert.match(readFileSync(join(b.cwd,'.agents/skills/whatsapp-master/SKILL.md'),'utf8'),/session_bridge MCP tools/);
   f.store.enqueue('wa:hello',b,'hello');await f.masters.run(b,'hello','wa:hello');
   assert.equal(f.store.job('wa:hello')!.status,'completed');assert.match(f.store.outbound().body,/I can help/);f.close();
@@ -131,12 +131,11 @@ test('a master waiting for phone creation approval may end quietly without closi
 test('explicit Desktop creation never calls CLI and preserves execution choice across retries',async()=>{
   const f=fixture();let desktopCalls=0,cliCalls=0;
   f.masters.platforms=[{provider:'claude',executionMode:'cli',available:true},{provider:'claude',executionMode:'desktop',available:true}];
-  f.masters.desktop.parent=async()=>({id:'11111111-1111-4111-a111-111111111111'} as any);
-  f.masters.desktop.create=async b=>{desktopCalls++;f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(nativeId,b.id);};
+  f.masters.desktop.createDirect=async b=>{desktopCalls++;f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(nativeId,b.id);};
   f.masters.provisionClaude=async()=>{cliCalls++;};
   const opId='99999999-9999-4999-a999-999999999999';
   await f.masters.create('claude',opId,'desktop','11111111-1111-4111-a111-111111111111');await settled(f);
-  assert.equal(f.masters.operation().status,'ready');assert.equal(desktopCalls,1);assert.equal(cliCalls,0);
+  assert.equal(f.masters.operation().status,'ready');assert.match(f.masters.operation().cwd,/\/home\/coordinators\/farfromdesk-claude-desktop-99999999$/);assert.equal(desktopCalls,1);assert.equal(cliCalls,0);
   assert.equal(f.store.get('claude-execution-mode'),'desktop');assert.equal(f.store.get('claude-desktop-parent'),nativeId);
   await assert.rejects(f.masters.create('claude',opId,'cli'),/cannot change/);
   await f.masters.create('claude',opId,'desktop','11111111-1111-4111-a111-111111111111');assert.equal(desktopCalls,1);
@@ -254,7 +253,7 @@ test('custom and automatic names persist into setup, native creation and recover
  await assert.rejects(f.masters.create('codex',id,'cli',undefined,'Other name'),/cannot change/);
  f.store.set('master-operation',JSON.stringify({...op,status:'uncertain'}));await f.masters.recover(id);await settled(f);assert.equal(f.store.get(`name:${op.bindingId}`),'Release helper');
  f.masters.desktop.parent=async()=>({id:nativeId,cwd:dir,available:true} as any);
- let title='';f.masters.desktop.create=async(b,parent,name)=>{title=name;};
+ let title='';f.masters.desktop.createDirect=async b=>{title=f.store.get(`name:${b.id}`)!;};
  await f.masters.create('claude','31313131-3131-4131-a131-313131313131','desktop',nativeId);await settled(f);
  assert.equal(title,'FarFromDesk · Claude Desktop');assert.equal(f.masters.operation().name,title);
 });

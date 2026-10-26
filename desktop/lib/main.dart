@@ -21,13 +21,18 @@ Future<void> main(List<String> arguments) async {
     },
   );
   final gateway = NativeGateway();
-  runApp(FarFromDeskApp(gateway: gateway, initialize: () async {
-    await gateway.start();
-    // Explicit migration/install opt-in; ordinary launches never change startup.
-    if (arguments.contains('--enable-login-startup')) {
-      await gateway.setStartup(true);
-    }
-  }));
+  runApp(
+    FarFromDeskApp(
+      gateway: gateway,
+      initialize: () async {
+        await gateway.start();
+        // Explicit migration/install opt-in; ordinary launches never change startup.
+        if (arguments.contains('--enable-login-startup')) {
+          await gateway.setStartup(true);
+        }
+      },
+    ),
+  );
   windowManager.addListener(_Lifecycle(gateway));
   await windowManager.setPreventClose(true);
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { defaultStateDirectory } from './platform.js';
 const privateRoot=()=>process.env.WSB_STATE_DIR??defaultStateDirectory();
 import type { Binding, Store } from './store.js';
-import { masterPolicy, MASTER_POLICY_VERSION, platformCoordinatorPolicy } from './master-policy.js';
+import { MASTER_POLICY_VERSION, platformCoordinatorPolicy } from './master-policy.js';
 
 export const ROLE_SCHEMA_VERSION=1;
 export const companionStyles=['friendly','cheerful','professional','coding'] as const;
@@ -25,8 +25,11 @@ export function roleConfig(store:Store,b:Binding,kind:'master'|'worker'=b.id===s
   const saved=store.get(`role:${b.id}`);
   const config=saved?JSON.parse(saved):{style:store.get(`role-default:${kind}`)??'friendly',revision:1};
   const style=companionStyles.includes(config.style)?config.style as CompanionStyle:'friendly';
-  const agent=agentDefinition(store,store.get(`named-agent:${b.id}`)??(kind==='master'?'farfromdesk-coordinator':'farfromdesk-worker'));
-  const instructions=[companionOperatingInstructions,...(kind==='master'?[platformCoordinatorPolicy]:[]),...(kind==='master'&&agent.name!=='farfromdesk-coordinator'?[masterPolicy]:[]),agent.instructions,styles[style]].join('\n\n');
+  const fallback=kind==='master'?'farfromdesk-coordinator':'farfromdesk-worker';
+  let agent=agentDefinition(store,store.get(`named-agent:${b.id}`)??fallback);
+  // Never mix coordinator and worker contracts: a role saved for the other kind falls back to this kind's built-in.
+  if(agent.kind!==kind)agent=agentDefinition(store,fallback);
+  const instructions=[companionOperatingInstructions,...(kind==='master'?[platformCoordinatorPolicy]:[]),agent.instructions,styles[style]].join('\n\n');
   const version=createHash('sha256').update(JSON.stringify([ROLE_SCHEMA_VERSION,kind,style,config.revision,instructions])).digest('hex').slice(0,20);
   return {style,revision:config.revision,kind,version,instructions,agentName:agent.name};
 }

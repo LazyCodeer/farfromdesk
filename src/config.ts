@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { defaultStateDirectory, nativeCommand } from './platform.js';
 
 export const stateDir = process.env.WSB_STATE_DIR ?? defaultStateDirectory();
+// Coordinators get their own folders here, like ~/.codex and ~/.claude; other folders stay behind native permission prompts.
+export const coordinatorHome = process.env.FARFROMDESK_HOME ?? join(homedir(), '.farfromdesk');
 export const port = Number(process.env.WSB_PORT ?? 47831);
 export const baseUrl = `http://127.0.0.1:${port}`;
 export const codexBin = process.env.WSB_CODEX_BIN ?? (process.platform==='win32'?'codex':nativeCommand('codex',[]).binary);

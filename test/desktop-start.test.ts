@@ -120,12 +120,20 @@ test('launcher account is checked before activating a saved Desktop chat',async(
 });
 
 
-test('Desktop runtime detection does not claim new-session readiness without a launcher',async()=>{
+test('direct start opens one owner-sent chat in the coordinator folder and connects only its own ready receipt',async()=>{
  const f=fixture();try {
-  const rows=(await f.native.catalog()).sessions as any;
-  assert.equal(f.starts.readiness(rows).state,'needs-launcher');
-  assert.equal(f.starts.readiness(rows,parent).state,'ready');
-  rows[0].activation='desktop-open';assert.equal(f.starts.readiness(rows,parent).state,'needs-opening');
+  const opened:string[][]=[];const starts=new DesktopStarts(f.store,f.native as any,0,async(folder:string,prompt:string)=>{opened.push([folder,prompt]);});
+  await assert.rejects(starts.createDirect(f.binding,'No project work.'),/press Send/);
+  assert.equal(opened.length,1);assert.equal(opened[0][0],f.cwd);assert.match(opened[0][1],/get_session/);assert.equal(f.sends(),0);
+  const op=starts.get(f.binding.id)!;assert.equal(op.status,'needs_action');assert.equal(op.parentId,'');
+  await assert.rejects(starts.createDirect(f.binding,'No work'),/already/);assert.equal(opened.length,1);
+  assert.equal(starts.acknowledgment(f.binding),null);
+  writeFileSync(join(f.cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:'other',ready:true,sessionId:child}));
+  assert.throws(()=>starts.acknowledgment(f.binding),/different operation/);
+  writeFileSync(join(f.cwd,'.tether-desktop-ready.json'),JSON.stringify({nonce:op.nonce,ready:true,sessionId:child}));
+  assert.ok(starts.acknowledgment(f.binding));
+  await starts.confirm(f.binding,true);assert.equal(f.store.binding(f.binding.id)?.native_id,child);assert.equal(starts.get(f.binding.id)?.status,'ready');assert.equal(f.sends(),0);
+  starts.close();
  }finally{f.close();}
 });
 

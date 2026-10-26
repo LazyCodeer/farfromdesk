@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Store,Binding } from './store.js';
 import { sameProject, type Session } from './session-catalog.js';
 import type { NativeAgents } from './native.js';
+import { openClaudeNewSession } from './session-activation.js';
 
 type Start={supportDir?:string;stage?:string;requireDetached?:boolean;accountScope?:string;createdId?:string;detachSubmitted?:boolean;proposalId?:string;bindingId:string;parentId:string;cwd:string;nonce:string;status:'prepared'|'submitted'|'uncertain'|'ready'|'needs_action';nativeId?:string};
 export function readStartReceipt(path:string):any {
@@ -25,7 +26,7 @@ export function desktopStartPrompt(op:Start,title:string,instructions:string) {
 }
 export class DesktopStarts {
   private stopped=false;
-  constructor(private store:Store,private native:NativeAgents,private timeoutMs=90000) {}
+  constructor(private store:Store,private native:NativeAgents,private timeoutMs=90000,private openNew=openClaudeNewSession) {}
   get(id:string):Start|null{return JSON.parse(this.store.get(`desktop-start:${id}`)??'null');}
   save(op:Start){this.store.set(`desktop-start:${op.bindingId}`,JSON.stringify(op));}
   acknowledgment(b:Binding):string|null {
@@ -33,8 +34,8 @@ export class DesktopStarts {
     if(!op||op.status==='ready'||this.stopped||this.store.get(`desktop-abandoned:${b.id}`)==='true')return null;
     if(realpathSync(op.cwd)!==op.cwd||b.cwd!==op.cwd)throw new Error('Desktop project path changed.');
     if(op.supportDir&&realpathSync(op.supportDir)!==op.supportDir)throw new Error('Desktop setup directory changed.');
-    const created=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-created.json'));
     const ready=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-ready.json'));
+    const created=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-created.json'))??(op.parentId?null:ready);
     if(!created||!ready||ready.ready!==true)return null;
     if(created.nonce!==op.nonce||ready.nonce!==op.nonce)throw new Error('Desktop startup acknowledgment belongs to a different operation.');
     const id=created.sessionId??ready.sessionId;
@@ -44,13 +45,6 @@ export class DesktopStarts {
   private connectedCandidates(sessions:Session[]) {
     const bindings=[...new CoordinatorRegistry(this.store).entries().map(r=>this.store.binding(r.bindingId)),...JSON.parse(this.store.get('selected')??'[]').map((key:string)=>this.store.binding(key))].filter(Boolean);
     return sessions.filter(s=>s.executionMode==='desktop'&&s.available===true&&bindings.some((b:any)=>b.enabled&&b.provider==='claude'&&b.native_id===s.id&&sameProject(b.cwd,s.cwd)&&this.store.get(`execution-mode:${b.id}`)==='desktop'));
-  }
-  readiness(sessions:Session[],parentId?:string) {
-    const candidates=parentId?sessions.filter(s=>s.id===parentId&&s.executionMode==='desktop'&&s.available===true):this.connectedCandidates(sessions);
-    if(!candidates.length)return {state:'needs-launcher',message:'New Desktop sessions need a connected chat with a reachable inbox. Choosing Desktop alone does not establish that connection.'};
-    if(new Set(candidates.map(s=>s.accountScope??'unknown')).size>1)return {state:'account-choice',message:'Connected Desktop chats use different accounts. Choose the launcher account before creating a session.'};
-    const live=candidates.some(s=>!s.activation);
-    return {state:live?'ready':'needs-opening',message:live?'Coordinator is reachable. Native session creation may require an owner action.':'Your connected Desktop launcher must reopen successfully before a new session can start.'};
   }
   private async catalog() {
     const sessions:Session[]=[];let cursor:string|undefined;const seen=new Set<string>();
@@ -91,6 +85,20 @@ export class DesktopStarts {
     this.save({...op,status:'submitted',stage:'Waiting for Claude to start the session'});
     return this.confirm(b);
   }
+  // Starts a top-level session in the coordinator's own folder without a launcher chat.
+  async createDirect(b:Binding,instructions:string) {
+    if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
+    if(realpathSync(b.cwd)!==b.cwd)throw new Error('Desktop project path changed.');
+    const op:Start={supportDir:this.store.get(`master-support:${b.id}`),stage:'Opening Claude',bindingId:b.id,parentId:'',cwd:b.cwd,nonce:randomUUID(),status:'uncertain',requireDetached:false};
+    const ready=join(op.supportDir??b.cwd,'.tether-desktop-ready.json');
+    const prompt=`Set up this folder as my FarFromDesk coordinator. ${instructions}\nNow use get_session to find your own exact session ID and write ${JSON.stringify({nonce:op.nonce,ready:true,sessionId:'YOUR_EXACT_SESSION_ID'})} to ${JSON.stringify(ready)}. Then reply READY and wait for my WhatsApp requests.`;
+    // Save before opening: after a crash, never open a second new-session page blindly.
+    this.save(op);
+    try{await this.openNew(b.cwd,prompt);}catch{throw new Error('Claude Desktop did not open. Open Claude, then recover this setup.');}
+    this.save({...op,status:'needs_action',stage:'Press Send in Claude to start your coordinator'});
+    // The owner's Send arrives later; the setup poll picks up the session's ready receipt.
+    throw new Error('Desktop start needs owner action: confirm the folder and press Send in the new Claude chat that just opened. FarFromDesk connects it automatically.');
+  }
   async confirm(b:Binding,recover=false) {
     const op=this.get(b.id);if(!op)throw new Error('No desktop creation receipt exists.');
     const until=Date.now()+this.timeoutMs;
@@ -98,7 +106,8 @@ export class DesktopStarts {
       if(this.stopped||this.store.get(`desktop-abandoned:${b.id}`)==='true')throw new Error('Desktop setup paused. Recover the exact operation after restart.');
       if(realpathSync(op.cwd)!==op.cwd||b.cwd!==op.cwd)throw new Error('Desktop project path changed.');
       if(op.supportDir&&realpathSync(op.supportDir)!==op.supportDir)throw new Error('Desktop setup directory changed.');
-      const created=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-created.json'));
+      // A direct start (no launcher chat) has no creation receipt; the session's own ready receipt names it.
+      const created=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-created.json'))??(op.parentId?null:readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-ready.json')));
       if(created) {
         if(created.nonce!==op.nonce)throw new Error('Desktop setup receipt belongs to a different operation.');
         const ready=readStartReceipt(join(op.supportDir??op.cwd,'.tether-desktop-ready.json'));

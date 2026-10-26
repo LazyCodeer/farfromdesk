@@ -16,7 +16,7 @@ test('native agent files use official schemas, parse and preserve provider permi
   const result=syncNamedAgents(f.store,f.roots);assert.equal(result.length,2);assert.ok(result.every(a=>a.installation.every(p=>p.status==='installed')));
   const codex=readFileSync(join(f.roots.codex,'farfromdesk-coordinator.toml'),'utf8');
   const parsed=parseFields(codex);
-  assert.deepEqual(Object.keys(parsed).sort(),['description','developer_instructions','name']);assert.match(parsed.developer_instructions,/Core|Identity/);
+  assert.deepEqual(Object.keys(parsed).sort(),['description','developer_instructions','name']);assert.match(parsed.developer_instructions,/# FarFromDesk Coordinator/);
   const claude=readFileSync(join(f.roots.claude,'farfromdesk-coordinator.md'),'utf8');assert.match(claude,/name: farfromdesk-coordinator/);assert.match(claude,/model: inherit/);assert.doesNotMatch(claude,/^permissionMode:|^tools:|^hooks:/m);
   assert.deepEqual(syncNamedAgents(f.store,f.roots),result);
  }finally{f.close();}
@@ -31,6 +31,24 @@ test('named specialist creation is idempotent, selection changes next role and a
   const next=turnEnvelope(f.store,b,'Next change','wa:two',{},[],f.root);assert.match(next.body,/farfromdesk-reviewer/);assert.doesNotMatch(next.body,/careful code reviewer/);
   assert.throws(()=>defineNamedAgent(f.store,{...input,instructions:input.instructions+' Changed.'},f.roots),/different instructions/);
   assert.throws(()=>assignNamedAgent(f.store,b,'farfromdesk-coordinator',f.roots),/selected coordinator/);
+ }finally{f.close();}
+});
+test('coordinator and worker contracts never mix, and custom roles track the current worker policy',()=>{
+ const f=fixture();try{
+  defineNamedAgent(f.store,input,f.roots);
+  const m=f.store.register('master','codex','11111111-1111-4111-a111-111111111111',f.root).binding;f.store.set("master",m.id);
+  assert.throws(()=>assignNamedAgent(f.store,m,input.name,f.roots),/worker sessions/);
+  // A stale assignment from before the guard must not merge worker text into the coordinator.
+  f.store.set(`named-agent:${m.id}`,input.name);const master=roleConfig(f.store,m);
+  assert.equal(master.agentName,'farfromdesk-coordinator');assert.match(master.instructions,/# FarFromDesk Coordinator/);assert.doesNotMatch(master.instructions,/FarFromDesk Session Worker|careful code reviewer/);
+  const w=f.store.register('worker','codex','22222222-2222-4222-a222-222222222222',f.root).binding;
+  f.store.set(`named-agent:${w.id}`,'farfromdesk-coordinator');assert.doesNotMatch(roleConfig(f.store,w).instructions,/# FarFromDesk Coordinator/);
+  // Rows saved with an older embedded worker policy are normalized and still idempotent.
+  const key=`agent-definition:${input.name}`,row=JSON.parse(f.store.get(key)!);
+  f.store.set(key,JSON.stringify({...row,instructions:row.instructions+'\n\n# FarFromDesk Session Worker\n\nOld frozen policy text.'}));
+  const custom=agentDefinition(f.store,input.name);assert.doesNotMatch(custom.instructions,/Old frozen policy/);assert.match(custom.instructions,/## How to work/);
+  assert.doesNotThrow(()=>defineNamedAgent(f.store,input,f.roots));
+  for(const role of [master.instructions,roleConfig(f.store,w).instructions,custom.instructions])assert.doesNotMatch(role,/[\u2013\u2014]/);
  }finally{f.close();}
 });
 test('malformed names/config injection and unknown role do not escape native folders',()=>{

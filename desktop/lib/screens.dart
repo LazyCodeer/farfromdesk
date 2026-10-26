@@ -20,344 +20,91 @@ extension _BridgeScreens on _DeskState {
     modalUpdate?.call(() {});
   }
 
-  Widget small(String text) => Text(
-    text,
-    style: const TextStyle(fontSize: 11, color: muted, height: 1.5),
-  );
-  Widget gap([double size = 18]) => SizedBox(height: size);
-  Widget navTab(
-    String title,
-    bool selected,
-    VoidCallback onTap, {
-    int? count,
-    bool compact = false,
-  }) => Material(
-    color: selected ? action : surface,
-    borderRadius: BorderRadius.circular(8),
-    child: InkWell(
-      borderRadius: BorderRadius.circular(8),
-      onTap: busy ? null : onTap,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 44),
-        child: Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 10 : 16,
-            vertical: 12,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: selected ? Colors.white : ink,
-                ),
-              ),
-              if (count != null) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: selected
-                        ? Colors.white.withValues(alpha: .15)
-                        : canvas,
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                  child: Text('$count', style: const TextStyle(fontSize: 11)),
-                ),
-              ],
-            ],
-          ),
-        ),
+  Widget small(String text) => Builder(
+    builder: (c) => Text(
+      text,
+      style: TextStyle(
+        fontSize: 11,
+        color: onLight(c) ? toneMuted : muted,
+        height: 1.5,
       ),
     ),
   );
+  Widget gap([double size = 18]) => SizedBox(height: size);
   Widget buildDesk(BuildContext context) {
     final titles = ['Home', 'Activity', 'Settings'];
     final pending = (status['pendingJobs'] ?? []).length;
     final count = pending + (status['approvals'] ?? []).length;
     return Scaffold(
       body: SafeArea(
-        child: Column(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SizedBox(
-              height: 52,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 22),
-                child: Row(
-                  children: [
-                    Image.asset(
-                      'assets/ffd-icon.png',
-                      key: const ValueKey('header-logo'),
-                      width: 28,
-                      height: 28,
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'FarFromDesk',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const Spacer(),
-                    if (busy)
-                      const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    if (update.release != null) ...[
-                      const SizedBox(width: 12),
-                      Tooltip(
-                        message:
-                            'Version ${update.release!.version} is available',
-                        child: TextButton.icon(
-                          onPressed: showUpdate,
-                          style: TextButton.styleFrom(
-                            foregroundColor: accent,
-                            backgroundColor: accent.withValues(alpha: .12),
-                            minimumSize: const Size(0, 34),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(9),
-                            ),
-                          ),
-                          icon: const Icon(Icons.system_update_alt, size: 16),
-                          label: const Text(
-                            'Update available',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                  ],
-                ),
-              ),
-            ),
+            sidebar(titles, count),
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+              child: Column(
                 children: [
-                  SizedBox(
-                    width: 86,
-                    child: Column(
-                      children: [
-                        const SizedBox(height: 12),
-                        Container(
-                          key: const ValueKey('navigation-rail'),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: panelColor,
-                            border: Border.all(
-                              color: muted.withValues(alpha: .18),
-                            ),
-                            borderRadius: BorderRadius.circular(28),
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              for (var i = 0; i < 3; i++)
-                                Padding(
-                                  padding: EdgeInsets.only(
-                                    bottom: i == 2 ? 0 : 8,
-                                  ),
-                                  child: Stack(
-                                    clipBehavior: Clip.none,
-                                    children: [
-                                      Material(
-                                        color: section == i
-                                            ? accentWash
-                                            : Colors.transparent,
-                                        borderRadius: BorderRadius.circular(20),
-                                        child: SizedBox(
-                                          width: 40,
-                                          height: 40,
-                                          child: IconButton(
-                                            tooltip: titles[i],
-                                            isSelected: section == i,
-                                            style: IconButton.styleFrom(
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(20),
-                                              ),
-                                            ),
-                                            onPressed: () => go(i),
-                                            icon: Icon(
-                                              [
-                                                Icons.home_outlined,
-                                                Icons.history,
-                                                Icons.settings_outlined,
-                                              ][i],
-                                              size: 18,
-                                              color: section == i
-                                                  ? accent
-                                                  : muted,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      if (i == 1 && count > 0)
-                                        Positioned(
-                                          right: -3,
-                                          top: -3,
-                                          child: Container(
-                                            padding: const EdgeInsets.all(4),
-                                            decoration: const BoxDecoration(
-                                              color: action,
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: Text(
-                                              '$count',
-                                              style: const TextStyle(
-                                                fontSize: 9,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        const Spacer(),
-                      ],
+                  topBar(titles),
+                  if (api.preview)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 32,
+                        vertical: 7,
+                      ),
+                      child: small(
+                        'Design preview · sample data · no account is connected',
+                      ),
                     ),
-                  ),
+                  if (error != null || actionError != null)
+                    Container(
+                      margin: const EdgeInsets.fromLTRB(32, 16, 32, 0),
+                      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+                      decoration: BoxDecoration(
+                        color: sand,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.error_outline,
+                            color: warning,
+                            size: 19,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SelectableText(error ?? actionError!),
+                          ),
+                          IconButton(
+                            tooltip: 'Dismiss error',
+                            onPressed: () => changeView(() {
+                              error = null;
+                              actionError = null;
+                            }),
+                            icon: const Icon(Icons.close, size: 16),
+                          ),
+                        ],
+                      ),
+                    ),
                   Expanded(
-                    child: Column(
-                      children: [
-                        if (api.preview)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 26,
-                              vertical: 7,
-                            ),
-                            child: small(
-                              'Design preview · sample data · no account is connected',
-                            ),
-                          ),
-                        if (error != null || actionError != null)
-                          Container(
-                            color: sand,
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.error_outline,
-                                  color: warning,
-                                  size: 19,
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: SelectableText(error ?? actionError!),
-                                ),
-                                IconButton(
-                                  tooltip: 'Dismiss error',
-                                  onPressed: () => changeView(() {
-                                    error = null;
-                                    actionError = null;
-                                  }),
-                                  icon: const Icon(Icons.close, size: 16),
-                                ),
-                              ],
-                            ),
-                          ),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            padding: const EdgeInsets.fromLTRB(26, 22, 26, 36),
-                            child: Center(
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  maxWidth: 960,
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                titles[section],
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .headlineLarge,
-                                              ),
-                                              gap(7),
-                                              Text(
-                                                [
-                                                  'Your WhatsApp connection and coding assistant.',
-                                                  'See which session answered and what needs your attention.',
-                                                  'Decide when FarFromDesk runs and how this $computer stays available.',
-                                                ][section],
-                                                style: const TextStyle(
-                                                  fontSize: 13,
-                                                  color: muted,
-                                                  height: 1.5,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        if (section == 0 && ready)
-                                          button(
-                                            connected
-                                                ? 'Refresh connection'
-                                                : status['whatsapp']?['qr'] !=
-                                                      null
-                                                ? 'Check connection'
-                                                : 'Connect WhatsApp',
-                                            connected ? refresh : connectPhone,
-                                            primary: !connected,
-                                          ),
-                                      ],
-                                    ),
-                                    gap(),
-                                    if (!ready) ...[
-                                      if (error == null)
-                                        const Center(
-                                          child: CircularProgressIndicator(),
-                                        )
-                                      else
-                                        button('Try again', boot),
-                                    ] else if (section == 0)
-                                      ...homeScreen()
-                                    else if (section == 1)
-                                      ...activityScreen()
-                                    else
-                                      ...settingsScreen(),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(32, 24, 32, 48),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!ready) ...[
+                            if (error == null)
+                              const Center(child: CircularProgressIndicator())
+                            else
+                              button('Try again', boot),
+                          ] else if (section == 0)
+                            ...homeScreen()
+                          else if (section == 1)
+                            ...activityScreen()
+                          else
+                            ...settingsScreen(),
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -367,6 +114,278 @@ extension _BridgeScreens on _DeskState {
         ),
       ),
     );
+  }
+
+  Widget sidebar(List<String> titles, int count) => Container(
+    key: const ValueKey('navigation-rail'),
+    width: 216,
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
+    decoration: const BoxDecoration(
+      border: Border(right: BorderSide(color: hairline)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          height: 64,
+          child: Row(
+            children: [
+              const SizedBox(width: 8),
+              Image.asset(
+                'assets/ffd-icon.png',
+                key: const ValueKey('header-logo'),
+                width: 28,
+                height: 28,
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'FarFromDesk',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.2,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        for (var i = 0; i < 3; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Tooltip(
+              message: titles[i],
+              child: Material(
+                color: section == i ? panelColor : Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: section == i
+                      ? const BorderSide(color: line2)
+                      : BorderSide.none,
+                ),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  hoverColor: hover,
+                  onTap: () => go(i),
+                  child: SizedBox(
+                    height: 40,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          Icon(
+                            [
+                              Icons.home_outlined,
+                              Icons.show_chart_rounded,
+                              Icons.settings_outlined,
+                            ][i],
+                            size: 18,
+                            color: section == i ? accent : muted,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              titles[i],
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: section == i
+                                    ? FontWeight.w600
+                                    : FontWeight.w500,
+                                color: section == i ? ink : muted,
+                              ),
+                            ),
+                          ),
+                          if (i == 1 && count > 0)
+                            Container(
+                              constraints: const BoxConstraints(minWidth: 20),
+                              height: 20,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: warning,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                '$count',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: toneInk,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        const Spacer(),
+        if (update.release != null) ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: panelColor,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: line2),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Update available',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                ),
+                gap(6),
+                Text(
+                  'Version ${update.release!.version} installs after your current work finishes.',
+                  style: const TextStyle(fontSize: 11.5, color: muted),
+                ),
+                gap(10),
+                FilledButton(
+                  onPressed: showUpdate,
+                  style: FilledButton.styleFrom(minimumSize: const Size(0, 34)),
+                  child: const Text('Update now'),
+                ),
+              ],
+            ),
+          ),
+          gap(10),
+        ],
+        Container(
+          padding: const EdgeInsets.fromLTRB(6, 10, 6, 0),
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: hairline)),
+          ),
+          child: Row(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => act(
+                  () => api.openReleasePage(
+                    Uri.parse('https://github.com/LazyCodeer/farfromdesk'),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset(
+                      'assets/logo-github.png',
+                      width: 16,
+                      height: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'GitHub',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              const Text(
+                'v$installedVersion',
+                style: TextStyle(fontSize: 12, color: muted),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget topBar(List<String> titles) => Container(
+    constraints: const BoxConstraints(minHeight: 64),
+    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 10),
+    decoration: const BoxDecoration(
+      border: Border(bottom: BorderSide(color: hairline)),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                titles[section],
+                style: Theme.of(context).textTheme.headlineLarge,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                [
+                  'Your WhatsApp connection and coding assistant.',
+                  'See which session answered and what needs your attention.',
+                  'Decide when FarFromDesk runs and how this $computer stays available.',
+                ][section],
+                style: const TextStyle(fontSize: 12, color: muted),
+              ),
+            ],
+          ),
+        ),
+        if (ready) ...[
+          if (connected) ...[
+            tag('Connected', good: true),
+            const SizedBox(width: 12),
+            spinButton('Refresh connection', 'Refreshing…', refresh),
+          ] else ...[
+            tag('Not connected', tint: warning),
+            const SizedBox(width: 12),
+            button(
+              status['whatsapp']?['qr'] != null
+                  ? 'Check connection'
+                  : 'Show QR code',
+              connectPhone,
+              primary: true,
+            ),
+          ],
+        ],
+      ],
+    ),
+  );
+
+  /// A button that shows a short spinner while [run] works, so the owner
+  /// can see something happened even when the answer comes back at once.
+  Widget spinButton(
+    String label,
+    String working,
+    Future<void> Function() run, {
+    bool primary = false,
+  }) {
+    Future<void> go() async {
+      changeView(() => refreshing = true);
+      await Future.wait([
+        run(),
+        Future<void>.delayed(const Duration(milliseconds: 900)),
+      ]);
+      if (mounted) changeView(() => refreshing = false);
+    }
+
+    final child = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (refreshing) ...[
+          SizedBox(
+            width: 13,
+            height: 13,
+            child: spinner(primary ? onAction : ink),
+          ),
+          const SizedBox(width: 8),
+        ],
+        Text(refreshing ? working : label),
+      ],
+    );
+    final onPressed = busy || refreshing ? null : go;
+    return primary
+        ? FilledButton(onPressed: onPressed, child: child)
+        : OutlinedButton(onPressed: onPressed, child: child);
   }
 
   Future<void> connectPhone() async {
@@ -392,276 +411,302 @@ extension _BridgeScreens on _DeskState {
     }
   }
 
-  Widget pairingStep(String number, String title, String detail) => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Container(
-        width: 25,
-        height: 25,
-        decoration: const BoxDecoration(
-          color: accentWash,
-          shape: BoxShape.circle,
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          number,
-          style: const TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: accent,
-          ),
-        ),
-      ),
-      const SizedBox(width: 11),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            gap(5),
-            small(detail),
-          ],
-        ),
-      ),
-    ],
-  );
-  Widget card(Widget child) => Container(
-    margin: const EdgeInsets.only(bottom: 18),
-    padding: const EdgeInsets.all(24),
-    decoration: BoxDecoration(
-      color: panelColor,
-      borderRadius: BorderRadius.circular(24),
-    ),
-    child: Material(color: Colors.transparent, child: child),
-  );
   List<Widget> homeScreen() {
-    final wa = status['whatsapp'] ?? {},
-        master = status['master'],
-        voice = status['voice']?['ready'] == true;
-    return [
-      if (connected)
-        card(
-          Row(
+    final wa = status['whatsapp'] ?? {};
+    Widget left(bool stretch) => connected
+        ? Column(
             children: [
-              const SizedBox(
-                width: 48,
-                height: 48,
-                child: Icon(
-                  Icons.mark_chat_read_outlined,
-                  size: 26,
-                  color: success,
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              whatsappCard(wa),
+              if (stretch)
+                Expanded(child: destinationCard())
+              else
+                destinationCard(),
+            ],
+          )
+        : pairingCard(wa);
+    return [
+      LayoutBuilder(
+        builder: (context, box) => box.maxWidth >= 860
+            ? IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      wa['phoneNumber'] ?? 'Your WhatsApp account',
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    gap(5),
-                    const Text(
-                      'Linked WhatsApp account · Only this account can control FarFromDesk.',
-                      style: TextStyle(color: muted),
-                    ),
+                    Expanded(child: left(true)),
+                    const SizedBox(width: 12),
+                    Expanded(child: codingPlatformsCard()),
                   ],
                 ),
-              ),
-              const SizedBox(width: 16),
-              tag('Connected', good: true),
-              const SizedBox(width: 14),
-              button('Log out…', logout),
-            ],
-          ),
-        )
-      else
-        panel(
-          'Pair your phone',
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  if (wa['qr'] is String)
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Image.memory(
-                        base64Decode((wa['qr'] as String).split(',').last),
-                        width: 216,
-                        height: 216,
-                        semanticLabel: 'WhatsApp pairing QR code',
-                      ),
-                    )
-                  else
-                    Container(
-                      width: 240,
-                      height: 240,
-                      decoration: BoxDecoration(
-                        color: accentWash,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.qr_code, size: 60, color: accent),
-                          gap(14),
-                          if (wa['status'] == 'connecting')
-                            const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 20),
-                            child: Text(
-                              wa['status'] == 'connecting'
-                                  ? 'Preparing your connection…'
-                                  : 'Connect to generate your QR code',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: muted,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  const SizedBox(width: 30),
-                  Expanded(
-                    child: Column(
-                      children: [
-                        pairingStep(
-                          '1',
-                          'Open WhatsApp',
-                          'Use the account you want to connect.',
-                        ),
-                        gap(22),
-                        pairingStep(
-                          '2',
-                          'Open Linked devices',
-                          'Find it in WhatsApp Settings.',
-                        ),
-                        gap(22),
-                        pairingStep(
-                          '3',
-                          'Link a device',
-                          'Scan the QR code shown here.',
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              if (preferences['backgroundEnabled'] != true) ...[
-                gap(),
-                small(
-                  'Connecting will ask for background access first. No system sleep settings will change.',
-                ),
-              ],
-            ],
-          ),
-          trailing: small('A one-time setup'),
-        ),
-      if (connected) destinationCard(),
-      codingPlatformsCard(),
-      card(
-        master != null
-            ? coordinatorSummary()
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  masterForm(),
-                  gap(),
-                  masterActions(),
-                  ...setupOperation(),
-                ],
-              ),
+              )
+            : Column(children: [left(false), codingPlatformsCard()]),
       ),
       if (wa['error'] != null)
         Padding(
-          padding: const EdgeInsets.only(bottom: 18),
+          padding: const EdgeInsets.only(bottom: 12),
           child: Text(wa['error'], style: const TextStyle(color: warning)),
         ),
-      Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: panelColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: (voice ? success : warning).withValues(alpha: .35),
+      if (!connected)
+        nextSteps()
+      else ...[
+        card(coordinatorSummary()),
+        voiceCard(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 10, 4, 0),
+          child: small(
+            'Pause forwarding in Settings, or use Log out above to unlink this device.',
           ),
         ),
-        child: Row(
+      ],
+    ];
+  }
+
+  Widget whatsappCard(Map wa) => card(
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            Icon(
-              voice ? Icons.graphic_eq : Icons.mic_off_outlined,
-              color: voice ? success : warning,
-              size: 25,
-            ),
+            logoTile('whatsapp'),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    voice
-                        ? 'Voice notes ready'
-                        : status['voice']?['download'] != null
-                        ? 'Voice model setup'
-                        : 'Voice notes unavailable',
+                    wa['phoneNumber'] ?? 'Your WhatsApp account',
                     style: const TextStyle(
-                      fontSize: 14,
+                      fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  gap(5),
-                  Text(
-                    voice
-                        ? 'Send a voice note in your connected chat. Audio is processed locally on this $computer.'
-                        : status['voice']?['download'] != null
-                        ? 'The model downloads once on your first voice note. You can also download it now.'
-                        : 'Configure local speech tools in Settings to enable voice notes.',
-                    style: const TextStyle(fontSize: 12, color: muted),
+                  const Text(
+                    'Linked WhatsApp account',
+                    style: TextStyle(color: onPineMuted),
                   ),
-                  if (status['voice']?['download'] != null) ...[
-                    gap(12),
-                    voiceDownload(),
-                  ],
+                ],
+              ),
+            ),
+            button('Log out…', logout, destructive: true),
+          ],
+        ),
+        gap(16),
+        const Text(
+          'Only this account can control FarFromDesk.',
+          style: TextStyle(color: onPineMuted),
+        ),
+      ],
+    ),
+    tone: tonePine,
+  );
+
+  Widget pairingCard(Map wa) => card(
+    tone: tonePine,
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            logoTile('whatsapp'),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Connect your WhatsApp',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    'A one-time setup. Your phone stays the only account that can control FarFromDesk.',
+                    style: TextStyle(color: onPineMuted),
+                  ),
                 ],
               ),
             ),
           ],
         ),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 18),
-        child: Row(
-          children: [
-            const Icon(Icons.shield_outlined, color: accent, size: 17),
-            const SizedBox(width: 12),
-            Expanded(
-              child: small(
-                'Pause forwarding in Settings, or use Log out above to unlink this device.',
+        gap(20),
+        Center(
+          child: wa['qr'] is String
+              ? Container(
+                  width: 220,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Column(
+                    children: [
+                      Image.memory(
+                        base64Decode((wa['qr'] as String).split(',').last),
+                        width: 160,
+                        height: 160,
+                        semanticLabel: 'WhatsApp pairing QR code',
+                      ),
+                      gap(10),
+                      const Text(
+                        'Scan with WhatsApp',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Color(0xff444444),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : Container(
+                  width: 220,
+                  height: 220,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: .2),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: const Color(0x29f4f1ea)),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.qr_code_2, size: 64, color: accent),
+                      gap(12),
+                      if (wa['status'] == 'connecting')
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      else
+                        button('Show QR code', connectPhone, primary: true),
+                      gap(12),
+                      Text(
+                        wa['status'] == 'connecting'
+                            ? 'Preparing your connection…'
+                            : preferences['backgroundEnabled'] != true
+                            ? 'Asks for background access first. No sleep settings change.'
+                            : 'Open WhatsApp, then Linked devices, then Link a device.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          height: 1.4,
+                          color: onPineMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+        ),
+      ],
+    ),
+  );
+
+  Widget nextSteps() {
+    Widget step(String n, String title, String detail) => Expanded(
+      child: CustomPaint(
+        painter: _DashedBorder(),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: surface,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: line2),
+                ),
+                child: Text(
+                  n,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
-            ),
-          ],
+              gap(10),
+              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+              gap(4),
+              small(detail),
+            ],
+          ),
         ),
       ),
-    ];
+    );
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          step(
+            '1',
+            'Connect WhatsApp',
+            'Scan the QR code above with your phone.',
+          ),
+          const SizedBox(width: 12),
+          step(
+            '2',
+            'Set up a coordinator',
+            'Pick Claude or Codex to handle your messages.',
+          ),
+          const SizedBox(width: 12),
+          step(
+            '3',
+            'Message yourself',
+            'Ask for an update or start work from your phone.',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget voiceCard() {
+    final voice = status['voice']?['ready'] == true;
+    final download = status['voice']?['download'] != null;
+    return card(
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: surface,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              voice ? Icons.graphic_eq : Icons.mic_off_outlined,
+              color: voice ? accent : warning,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  voice
+                      ? 'Voice notes ready'
+                      : download
+                      ? 'Voice model setup'
+                      : 'Voice notes unavailable',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                gap(4),
+                Text(
+                  voice
+                      ? 'Send a voice note in your connected chat. Audio is processed locally on this $computer.'
+                      : download
+                      ? 'The model downloads once on your first voice note. You can also download it now.'
+                      : 'Configure local speech tools in Settings to enable voice notes.',
+                  style: const TextStyle(fontSize: 12, color: muted),
+                ),
+                if (download) ...[gap(12), voiceDownload()],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> logout() async {
@@ -673,156 +718,121 @@ extension _BridgeScreens on _DeskState {
     }
   }
 
-  Widget destinationChoice(
-    String title,
-    String detail,
-    IconData icon,
-    bool selected,
-    VoidCallback tap,
-  ) => Expanded(
-    child: Material(
-      color: selected ? action : canvas,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: busy ? null : tap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: selected ? action : line),
+  Widget destinationCard() {
+    final inGroup = status['destination']?['kind'] == 'group';
+    final current = groups
+        .where((g) => g['id'] == status['destination']?['jid'])
+        .firstOrNull;
+    Widget hint(Widget icon, String text) => Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0x0dffffff),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(padding: const EdgeInsets.only(top: 2), child: icon),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(fontSize: 12.5, color: muted),
+            ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        ],
+      ),
+    );
+    Widget dot(Color color) => Container(
+      width: 8,
+      height: 8,
+      margin: const EdgeInsets.only(top: 3),
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+    return panel(
+      'Where should replies appear?',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          segmented(
+            ['Message yourself', 'Private group'],
+            showGroups ? 'Private group' : 'Message yourself',
+            (value) {
+              if (value == 'Private group') {
+                changeView(() => showGroups = true);
+                loadGroups();
+              } else {
+                changeView(() => showGroups = false);
+                post('/api/destination');
+              }
+            },
+          ),
+          if (!showGroups)
+            hint(
+              Image.asset(
+                'assets/logo-whatsapp.png',
+                width: 16,
+                height: 16,
+                color: whatsappGreen,
+              ),
+              'Replies go to your Message yourself chat. Nothing else to set up.',
+            )
+          else ...[
+            gap(14),
+            if (loadingGroups)
+              const LinearProgressIndicator()
+            else
               Row(
                 children: [
-                  Icon(icon, size: 22, color: selected ? Colors.white : muted),
-                  const Spacer(),
-                  Icon(
-                    selected ? Icons.check_circle : Icons.circle_outlined,
-                    size: 17,
-                    color: selected ? Colors.white : line,
+                  Expanded(
+                    child: dropdown<String>(
+                      value: current?['id'],
+                      hint: groups.isEmpty
+                          ? 'No groups with only you'
+                          : 'Choose a group',
+                      items: [
+                        for (final group in groups)
+                          DropdownMenuItem(
+                            value: group['id'] as String,
+                            child: Text(group['name'] ?? 'Group'),
+                          ),
+                      ],
+                      onChanged: (id) {
+                        if (id != null) {
+                          post('/api/destination', {'jid': id});
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  button('Create group', createGroup),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: 'Refresh groups',
+                    onPressed: busy ? null : loadGroups,
+                    icon: const Icon(Icons.refresh, size: 18, color: muted),
                   ),
                 ],
               ),
-              gap(12),
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-              gap(5),
-              Text(
-                detail,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: selected ? Colors.white : muted,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-  Widget destinationCard() => panel(
-    'Where should replies appear?',
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            destinationChoice(
-              'Message yourself',
-              'Use your existing personal chat.',
-              Icons.account_circle_outlined,
-              !showGroups,
-              () {
-                changeView(() => showGroups = false);
-                post('/api/destination');
-              },
-            ),
-            const SizedBox(width: 14),
-            destinationChoice(
-              'Private group',
-              'Choose a group or set one up.',
-              Icons.people_outline,
-              showGroups,
-              () {
-                changeView(() => showGroups = true);
-                loadGroups();
-              },
-            ),
+            groupsError != null
+                ? hint(dot(warning), groupsError!)
+                : inGroup && current != null
+                ? hint(
+                    dot(success),
+                    'Replies go to ${current['name']}. Only you are in this group.',
+                  )
+                : hint(
+                    dot(warning),
+                    'Pick a group where you are the only member. Replies stay in your chat until you choose one.',
+                  ),
           ],
-        ),
-        if (showGroups) ...[
-          const Divider(),
-          if (status['destination']?['kind'] != 'group') ...[
-            const Text(
-              'Choose a group below to switch replies. For now, replies still go to Message yourself.',
-            ),
-            gap(),
-          ],
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Your bridge groups',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-              ),
-              button('Refresh groups', loadGroups, icon: Icons.refresh),
-            ],
-          ),
-          gap(),
-          if (loadingGroups)
-            const LinearProgressIndicator()
-          else if (groupsError != null) ...[
-            Text(groupsError!, style: const TextStyle(color: warning)),
-          ] else if (groups.isEmpty) ...[
-            small('No groups with only you as a member were found.'),
-            gap(),
-            button('Set up a private group…', createGroup),
-          ] else
-            for (final group in groups)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.people, color: accent, size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            group['name'],
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          small('Saved group · membership checked when used'),
-                        ],
-                      ),
-                    ),
-                    if (status['destination']?['jid'] == group['id'])
-                      tag('In use', good: true)
-                    else
-                      button(
-                        'Use this group',
-                        () => post('/api/destination', {'jid': group['id']}),
-                        primary: true,
-                      ),
-                  ],
-                ),
-              ),
-          gap(),
-          small(
-            'Switching chats keeps your master and selected sessions. Pending replies retain their original destination. Group forwarding pauses if another participant is detected.',
-          ),
         ],
-      ],
-    ),
-    trailing: small(
-      'Current: ${status['destination']?['name'] ?? 'Message yourself'}',
-    ),
-  );
+      ),
+    );
+  }
+
   Future<void> loadGroups() async {
     if (loadingGroups || !mounted) return;
     changeView(() {
@@ -864,121 +874,149 @@ extension _BridgeScreens on _DeskState {
           .where((p) => p['provider'] == provider)
           .firstOrNull;
 
-  Widget codingPlatformsCard() => panel(
-    'Coding platforms',
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        small(
-          'Choose your preferred runtime when a request names only Claude or Codex. Manage each connected coordinator below.',
-        ),
-        gap(18),
-        for (final provider in ['codex', 'claude']) ...[
-          Container(
-            key: ValueKey('platform-preference-$provider'),
-            padding: const EdgeInsets.all(14),
-            margin: const EdgeInsets.only(bottom: 10),
-            decoration: BoxDecoration(
-              color: canvas,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: line),
-            ),
-            child: Column(
+  Widget codingPlatformsCard() {
+    final found = platforms.any((p) => p['available'] == true);
+    Widget link(String label, String url) => TextButton(
+      onPressed: () => act(() => api.openReleasePage(Uri.parse(url))),
+      child: Text(label),
+    );
+    return panel(
+      'Coding platforms',
+      !found
+          ? Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      logoTile('openai', dim: true),
+                      const SizedBox(width: 6),
+                      logoTile('claude', dim: true),
+                    ],
+                  ),
+                  gap(14),
+                  const Text(
+                    'No coding apps found',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  gap(6),
+                  Text(
+                    'FarFromDesk works with Claude Code and Codex on this $computer. Install one, then check again.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, color: muted),
+                  ),
+                  gap(12),
+                  spinButton(
+                    'Check again',
+                    'Checking…',
+                    refresh,
+                    primary: true,
+                  ),
+                  gap(4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      link('Get Claude Code', 'https://claude.com/claude-code'),
+                      link('Get Codex', 'https://developers.openai.com/codex'),
+                    ],
+                  ),
+                ],
+              ),
+            )
+          : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      provider == 'codex'
-                          ? Icons.terminal_rounded
-                          : Icons.auto_awesome_outlined,
-                      size: 20,
-                      color: accent,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        provider == 'codex' ? 'Codex' : 'Claude',
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: surface,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          key: ValueKey('platform-runtime-$provider'),
-                          value: preferredPlatform(provider)?['executionMode'],
-                          hint: const Text(
-                            'Choose an option',
-                            style: TextStyle(fontSize: 13, color: muted),
-                          ),
-                          isDense: true,
-                          dropdownColor: surface,
-                          items: [
-                            for (final option in platforms.where(
-                              (p) => p['provider'] == provider,
-                            ))
-                              DropdownMenuItem<String>(
-                                value: option['executionMode'],
-                                enabled:
-                                    option['available'] == true &&
-                                    option['canCreate'] != false,
-                                child: Padding(
-                                  padding: const EdgeInsets.only(right: 12),
-                                  child: Text(
-                                    '${option['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}${option['available'] != true
-                                        ? ' · not detected'
-                                        : option['canCreate'] == false
-                                        ? ' · sign in first'
-                                        : ''}',
-                                    style: const TextStyle(fontSize: 13),
-                                  ),
-                                ),
-                              ),
-                          ],
-                          onChanged: busy
-                              ? null
-                              : (value) {
-                                  if (value != null) {
-                                    savePreferredPlatform(provider, value);
-                                  }
-                                },
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                gap(9),
-                small(
-                  preferredPlatform(provider)?['connectionLabel'] ?? 'No preference saved. Choose Desktop or CLI independently of your coordinator.',
-                ),
-                if (preferredPlatform(provider)?['executionMode'] == 'desktop')
-                  for (final option in platforms.where(
-                    (p) =>
-                        p['provider'] == provider &&
-                        p['executionMode'] == 'desktop',
-                  ))
-                    if (option['creationReadiness']?['message'] != null) ...[
-                      gap(8),
-                      small(option['creationReadiness']['message']),
-                    ],
+                for (final provider in ['codex', 'claude'])
+                  platformRow(provider),
               ],
             ),
+    );
+  }
+
+  Widget platformRow(String provider) {
+    final options = platforms.where((p) => p['provider'] == provider).toList();
+    String mode(String m) =>
+        options.any((p) => p['executionMode'] == m && p['available'] == true)
+        ? 'available'
+        : 'not detected';
+    final ready = options.any((p) => p['available'] == true);
+    final name = provider == 'codex' ? 'Codex' : 'Claude';
+    final chosen = preferredPlatform(provider);
+    return Container(
+      key: ValueKey('platform-preference-$provider'),
+      padding: EdgeInsets.only(top: provider == 'codex' ? 4 : 16, bottom: 16),
+      decoration: BoxDecoration(
+        border: provider == 'codex'
+            ? null
+            : const Border(top: BorderSide(color: hairline)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              logoTile(provider == 'codex' ? 'openai' : 'claude'),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    small('CLI ${mode('cli')} · Desktop ${mode('desktop')}'),
+                  ],
+                ),
+              ),
+              ready ? tag('Ready', good: true) : tag('Not found'),
+            ],
           ),
+          gap(12),
+          dropdown<String>(
+            key: ValueKey('platform-runtime-$provider'),
+            value: chosen?['executionMode'],
+            hint: 'No preference',
+            items: [
+              for (final option in options)
+                DropdownMenuItem<String>(
+                  value: option['executionMode'],
+                  enabled:
+                      option['available'] == true &&
+                      option['canCreate'] != false,
+                  child: Text(
+                    '$name ${option['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}${option['available'] != true
+                        ? ' · not detected'
+                        : option['canCreate'] == false
+                        ? ' · sign in first'
+                        : ''}',
+                  ),
+                ),
+            ],
+            onChanged: (value) {
+              if (value != null) savePreferredPlatform(provider, value);
+            },
+          ),
+          if (chosen?['connectionLabel'] != null) ...[
+            gap(8),
+            small(chosen!['connectionLabel']),
+          ],
+          if (chosen?['executionMode'] == 'desktop')
+            for (final option in options.where(
+              (p) => p['executionMode'] == 'desktop',
+            ))
+              if (option['creationReadiness']?['message'] != null) ...[
+                gap(8),
+                small(option['creationReadiness']['message']),
+              ],
         ],
-      ],
-    ),
-  );
+      ),
+    );
+  }
 
   Future<void> savePreferredPlatform(String provider, String mode) async {
     final option = platforms.cast<Map>().firstWhere(
@@ -991,298 +1029,569 @@ extension _BridgeScreens on _DeskState {
     });
   }
 
-  Widget coordinatorSummary() {
+  /// Coordinators answer WhatsApp. Older bridges only report one master.
+  List<Map> get coordinatorEntries {
     final entries = List<Map>.from(status['coordinators'] ?? []);
-    if (entries.isEmpty) return assistantSummary(status['master']);
+    if (entries.isEmpty && status['master'] is Map) {
+      return [
+        {...status['master'], 'enabled': true, 'isDefault': true},
+      ];
+    }
+    return entries;
+  }
+
+  String appName(Map entry) =>
+      '${entry['provider'] == 'claude' ? 'Claude' : 'Codex'} · ${entry['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}';
+
+  Widget coordinatorRow(
+    Map entry,
+    List<Widget> trailing, {
+    String? detail,
+  }) => Container(
+    margin: const EdgeInsets.only(top: 8),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    decoration: BoxDecoration(
+      color: toneCharcoal,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: hairline),
+    ),
+    child: Row(
+      children: [
+        logoTile(entry['provider'] == 'claude' ? 'claude' : 'openai', size: 34),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                entry['name'] ?? 'Coordinator',
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              small(
+                '${appName(entry)} · ${detail ?? (entry['enabled'] != true
+                        ? 'Forwarding paused'
+                        : entry['isDefault'] == true
+                        ? 'Default for WhatsApp'
+                        : 'Used when a message names ${entry['provider'] == 'claude' ? 'Claude' : 'Codex'}')}',
+              ),
+            ],
+          ),
+        ),
+        for (final w in trailing) ...[const SizedBox(width: 8), w],
+      ],
+    ),
+  );
+
+  Widget coordinatorSummary() {
+    final entries = coordinatorEntries;
+    final background = preferences['backgroundEnabled'] == true;
+    if (setupActive) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...setupOperation(),
+          if (status['masterSetup']?['operation']?['status'] ==
+              'needs_action') ...[
+            gap(10),
+            button(
+              'Choose another setup',
+              () => openManage(adding: true, another: true),
+              compact: true,
+            ),
+          ],
+        ],
+      );
+    }
+    if (entries.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Set up a coordinator',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              tag('Not set up'),
+            ],
+          ),
+          gap(4),
+          small(
+            'It reads your WhatsApp messages and starts or checks coding sessions for you.',
+          ),
+          ...setupOperation(),
+          gap(16),
+          masterForm(),
+          gap(16),
+          masterActions(),
+        ],
+      );
+    }
+    final answering = entries.where((e) => e['enabled'] == true).length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Your coordinators',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-        ),
-        gap(8),
-        small(
-          'Name a platform in WhatsApp, or use the default for general requests. Existing sessions stay connected.',
-        ),
-        gap(16),
-        for (final entry in entries) ...[
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: canvas,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: line),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Coordinators',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            small(
+              '${entries.length} set up · ${background ? answering : 0} answering',
+            ),
+          ],
+        ),
+        if (!background)
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+            decoration: BoxDecoration(
+              color: sand,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      entry['provider'] == 'claude'
-                          ? Icons.auto_awesome_outlined
-                          : Icons.terminal,
-                      color: accent,
-                      size: 22,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            entry['name'] ?? 'Coordinator',
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          gap(4),
-                          small(
-                            '${entry['provider'] == 'claude' ? 'Claude' : 'Codex'} ${entry['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}',
-                          ),
-                        ],
-                      ),
-                    ),
-                    tag(
-                      entry['enabled'] == true
-                          ? (entry['isDefault'] == true
-                                ? 'Default'
-                                : 'Connected')
-                          : 'Paused',
-                      good: entry['enabled'] == true,
-                    ),
-                  ],
+                const Expanded(
+                  child: Text(
+                    'Running in the background is off, so WhatsApp messages wait until you turn it back on.',
+                    style: TextStyle(fontSize: 12.5),
+                  ),
                 ),
-                gap(12),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 8,
-                  children: [
-                    if (entry['isDefault'] != true && entry['enabled'] == true)
-                      button(
-                        'Make default',
-                        () => post('/api/coordinators/default', {
-                          'bindingId': entry['bindingId'],
-                        }),
-                      ),
-                    button(
-                      'Change coordinator',
-                      () => openMaster(
-                        '${entry['provider']}:${entry['executionMode']}',
-                      ),
-                    ),
-                    button(
-                      entry['enabled'] == true ? 'Pause' : 'Resume',
-                      () => post('/api/action', {
-                        'command':
-                            "/${entry['enabled'] == true ? 'pause' : 'resume'} ${entry['bindingId']}",
-                      }),
-                    ),
-                  ],
+                const SizedBox(width: 12),
+                button(
+                  'Resume',
+                  enableBackground,
+                  primary: true,
+                  compact: true,
                 ),
               ],
             ),
           ),
-          gap(10),
-        ],
-        Wrap(
-          spacing: 10,
-          runSpacing: 8,
-          children: [
+        gap(4),
+        for (final entry in entries)
+          coordinatorRow(entry, [
             button(
-              'Add platform coordinator',
-              () => openMaster(),
-              primary: true,
-              icon: Icons.add,
+              'Instructions',
+              () => openManage(tab: 'Instructions'),
+              compact: true,
             ),
-            button('View instructions', showInstructions),
+            entry['enabled'] != true
+                ? tag('Paused')
+                : background && connected
+                ? tag('Ready', good: true)
+                : tag('Waiting', tint: warning),
+          ]),
+        ...setupOperation(),
+        gap(14),
+        Row(
+          children: [
+            Expanded(
+              child: small(
+                'Name a platform in WhatsApp, or the default answers general requests.',
+              ),
+            ),
+            const SizedBox(width: 12),
+            button('Manage coordinators', openManage, primary: true),
           ],
         ),
-        ...setupOperation(),
       ],
     );
   }
 
-  Widget assistantSummary(dynamic master) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: accentWash,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              master['provider'] == 'claude'
-                  ? Icons.star_rate_rounded
-                  : Icons.terminal,
-              color: master['provider'] == 'claude'
-                  ? const Color(0xffd9a69f)
-                  : accent,
-              size: 25,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  master['name'],
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                gap(5),
-                small(
-                  '${master['provider'] == 'claude' ? 'Claude' : 'Codex'} · ${master['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}',
-                ),
-                if (master['connection'] != null) ...[
-                  gap(4),
-                  small(master['connection']),
-                ],
-              ],
-            ),
-          ),
-          tag(
-            preferences['backgroundEnabled'] != true
-                ? 'Paused'
-                : !connected
-                ? 'Waiting'
-                : 'Ready',
-            good: connected && preferences['backgroundEnabled'] == true,
-          ),
-          PopupMenuButton<String>(
-            tooltip: 'Master chat options',
-            icon: const Icon(Icons.more_horiz, size: 20, color: accent),
-            onSelected: (value) {
-              if (value == 'sessions') {
-                browse();
-              } else {
-                showInstructions();
-              }
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(
-                value: 'instructions',
-                child: Text('View instructions'),
-              ),
-              const PopupMenuItem(
-                value: 'sessions',
-                child: Text('Connected sessions'),
-              ),
-            ],
-          ),
-        ],
-      ),
-      gap(20),
-      Row(
-        children: [
-          const Expanded(
-            child: Text(
-              'Handles your WhatsApp requests and coordinates other sessions.',
-              style: TextStyle(color: muted),
-            ),
-          ),
-          const SizedBox(width: 20),
-          button(
-            'Manage coordinators',
-            openMaster,
-            primary: true,
-            icon: Icons.sync,
-          ),
-        ],
-      ),
-      ...setupOperation(),
-    ],
-  );
-  Future<void> showInstructions() async {
-    final delivery = status['masterSetup']?['roleDelivery'];
+  /// One dialog for who answers WhatsApp (coordinators), what they were told
+  /// (instructions) and which worker sessions they may use.
+  Future<void> openManage({
+    String tab = 'Coordinators',
+    bool adding = false,
+    String? requestedPlatform,
+    bool another = false,
+  }) async {
+    void startAdding([String? requested]) => editSetup(() {
+      platform =
+          requested ??
+          (status['master'] == null
+              ? platform
+              : '${status['master']['provider']}:${status['master']['executionMode']}');
+      setupAction = 'new';
+      setupFormRequested = false;
+      selectedNativeId = '';
+      search.clear();
+      visibleSessions = 30;
+    });
+    if (adding) startAdding(requestedPlatform);
+    if (another) editSetup(() => setupFormRequested = true);
     await showDialog<void>(
       context: context,
-      builder: (context) => Dialog(
-        insetPadding: const EdgeInsets.all(32),
-        child: SizedBox(
-          width: (MediaQuery.sizeOf(context).width - 64).clamp(0.0, 900.0),
-          height: (MediaQuery.sizeOf(context).height - 64).clamp(0.0, 760.0),
-          child: Padding(
-            padding: const EdgeInsets.all(28),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) {
+          modalUpdate = update;
+          final entries = coordinatorEntries;
+          final Widget body = switch (tab) {
+            'Instructions' => instructionsTab(),
+            'Connected sessions' => sessionsTab(),
+            _ =>
+              setupActive
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ...setupOperation(),
+                        if (status['masterSetup']?['operation']?['status'] ==
+                            'needs_action') ...[
+                          gap(10),
+                          button(
+                            'Choose another setup',
+                            () => editSetup(() => setupFormRequested = true),
+                            compact: true,
+                          ),
+                        ],
+                      ],
+                    )
+                  : adding || entries.isEmpty && setupFormRequested
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (entries.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: () => update(() => adding = false),
+                            icon: const Icon(Icons.arrow_back, size: 16),
+                            label: const Text('Back to coordinators'),
+                          ),
+                        ...setupOperation(),
+                        Container(
+                          margin: const EdgeInsets.only(top: 12),
+                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                          decoration: BoxDecoration(
+                            color: toneCharcoal,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: hairline),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                entries.isEmpty
+                                    ? 'Set up a coordinator'
+                                    : 'Add a coordinator',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              gap(4),
+                              small(
+                                entries.isEmpty
+                                    ? 'Pick the app that should answer your WhatsApp requests.'
+                                    : 'Pick the app. Your current coordinators keep working until the new one is ready.',
+                              ),
+                              gap(16),
+                              masterForm(),
+                              gap(16),
+                              masterActions(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    )
+                  : entries.isEmpty
+                  ? emptyBox(
+                      'No coordinators yet',
+                      'Add one so your WhatsApp messages have someone to answer them.',
+                      button('+ Add coordinator', () {
+                        startAdding();
+                        update(() => adding = true);
+                      }, primary: true),
+                      logos: true,
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final entry in entries)
+                          coordinatorRow(entry, [
+                            button(
+                              'Instructions',
+                              () => update(() => tab = 'Instructions'),
+                              compact: true,
+                            ),
+                            entry['enabled'] != true
+                                ? tag('Paused')
+                                : tag(
+                                    entry['isDefault'] == true
+                                        ? 'Default'
+                                        : 'Connected',
+                                    good: true,
+                                  ),
+                            if (entry['isDefault'] != true &&
+                                entry['enabled'] == true)
+                              button(
+                                'Make default',
+                                () => post('/api/coordinators/default', {
+                                  'bindingId': entry['bindingId'],
+                                }),
+                                compact: true,
+                              ),
+                            button('Change', () {
+                              startAdding(
+                                '${entry['provider']}:${entry['executionMode']}',
+                              );
+                              update(() => adding = true);
+                            }, compact: true),
+                            if (entry['bindingId'] != null)
+                              button(
+                                entry['enabled'] == true ? 'Pause' : 'Resume',
+                                () => post('/api/action', {
+                                  'command':
+                                      "/${entry['enabled'] == true ? 'pause' : 'resume'} ${entry['bindingId']}",
+                                }),
+                                compact: true,
+                                primary: entry['enabled'] != true,
+                              ),
+                          ], detail: entry['cwd'] ?? entry['connection']),
+                        ...setupOperation(),
+                        gap(16),
+                        Row(
+                          children: [
+                            button('+ Add coordinator', () {
+                              startAdding();
+                              update(() => adding = true);
+                            }, primary: true),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: small(
+                                'Name a platform in WhatsApp, or the default answers general requests.',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+          };
+          return Dialog(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 960,
+                maxHeight: MediaQuery.sizeOf(context).height - 48,
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(26, 24, 26, 26),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        'Coordinator instructions',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Coordinators',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineLarge,
+                              ),
+                              gap(4),
+                              small(
+                                'Who answers your WhatsApp messages, what they were told, and which sessions they can use.',
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, size: 18),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      tooltip: 'Close instructions',
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close),
+                    gap(16),
+                    segmented(
+                      ['Coordinators', 'Instructions', 'Connected sessions'],
+                      tab,
+                      (value) => update(() => tab = value),
+                      compact: true,
                     ),
+                    gap(8),
+                    body,
                   ],
                 ),
-                if (delivery != null) ...[
-                  const SizedBox(height: 8),
-                  small(
-                    delivery['state'] == 'sent'
-                        ? 'Applied to this session. Later messages use a short reference.'
-                        : delivery['state'] == 'unselected'
-                        ? 'Select a coordinator session to apply these instructions.'
-                        : 'Ready to apply with your next message.',
-                  ),
-                ],
-                const SizedBox(height: 20),
-                const Divider(height: 1),
-                const SizedBox(height: 20),
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: MarkdownBody(
-                      data:
-                          status['masterSetup']?['prompt'] ??
-                          'Instructions unavailable.',
-                      selectable: true,
-                      imageBuilder: (uri, title, alt) =>
-                          const SizedBox.shrink(),
-                      styleSheet:
-                          MarkdownStyleSheet.fromTheme(Theme.of(context))
-                              .copyWith(
-                                p: const TextStyle(fontSize: 14, height: 1.65),
-                                h1: const TextStyle(
-                                  fontSize: 25,
-                                  fontWeight: FontWeight.w700,
-                                  height: 1.3,
-                                ),
-                                h2: const TextStyle(
-                                  fontSize: 19,
-                                  fontWeight: FontWeight.w600,
-                                  height: 1.4,
-                                ),
-                                h3: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                blockSpacing: 18,
-                                listBullet: const TextStyle(
-                                  fontSize: 14,
-                                  height: 1.65,
-                                ),
-                              ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    modalUpdate = null;
+  }
+
+  Widget emptyBox(
+    String title,
+    String detail,
+    Widget action, {
+    bool logos = false,
+  }) => Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(top: 12),
+    constraints: const BoxConstraints(minHeight: 220),
+    padding: const EdgeInsets.all(24),
+    decoration: BoxDecoration(
+      color: toneCharcoal,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: hairline),
+    ),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (logos) ...[
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              logoTile('openai', dim: true),
+              const SizedBox(width: 6),
+              logoTile('claude', dim: true),
+            ],
+          ),
+          gap(14),
+        ],
+        Text(
+          title,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        gap(6),
+        Text(
+          detail,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12, color: muted),
+        ),
+        gap(14),
+        action,
+      ],
+    ),
+  );
+
+  Widget instructionsTab() {
+    final delivery = status['masterSetup']?['roleDelivery']?['state'];
+    final prompt =
+        status['masterSetup']?['prompt'] ?? 'Instructions unavailable.';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        gap(4),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Coordinator instructions',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            switch (delivery) {
+              'sent' => tag('Applied', good: true),
+              'unselected' => tag('No session'),
+              null => const SizedBox.shrink(),
+              _ => tag('Ready to apply', tint: warning),
+            },
+          ],
+        ),
+        if (delivery != null) ...[
+          gap(10),
+          small(
+            delivery == 'sent'
+                ? 'Applied to this session. Later messages use a short reference.'
+                : delivery == 'unselected'
+                ? 'Select a coordinator session to apply these instructions.'
+                : 'Ready to apply with your next message.',
+          ),
+        ],
+        Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(top: 14),
+          constraints: const BoxConstraints(maxHeight: 340),
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+          decoration: BoxDecoration(
+            color: toneCharcoal,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: hairline),
+          ),
+          child: SingleChildScrollView(
+            child: MarkdownBody(
+              data: prompt,
+              selectable: true,
+              imageBuilder: (uri, title, alt) => const SizedBox.shrink(),
+              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
+                  .copyWith(
+                    p: const TextStyle(
+                      fontSize: 13,
+                      height: 1.65,
+                      color: Color(0xffd9d6cc),
+                    ),
+                    h1: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    h2: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    h3: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    listBullet: const TextStyle(
+                      fontSize: 13,
+                      height: 1.65,
+                      color: Color(0xffd9d6cc),
                     ),
                   ),
-                ),
-              ],
             ),
           ),
         ),
-      ),
+        gap(16),
+        button(
+          'Copy instructions',
+          () => Clipboard.setData(ClipboardData(text: prompt)),
+        ),
+      ],
+    );
+  }
+
+  Widget sessionsTab() {
+    final sessions = List<Map>.from(status['bindings'] ?? []);
+    if (sessions.isEmpty) {
+      return emptyBox(
+        'No connected sessions',
+        'Pick the coding sessions your coordinators may send work to.',
+        button('Choose sessions', browse, primary: true),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final s in sessions)
+          coordinatorRow(
+            {...s, 'executionMode': s['executionMode'] ?? s['execution_mode']},
+            const [],
+            detail: s['cwd'] ?? 'Project unavailable',
+          ),
+        gap(16),
+        Row(
+          children: [
+            button('Choose sessions', browse, primary: true),
+            const SizedBox(width: 14),
+            Expanded(
+              child: small(
+                'Coordinators can only send work to sessions you pick here.',
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -1316,49 +1625,15 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
-  Widget settingsDisclosure({
-    required Widget leading,
-    required Widget title,
-    required Widget subtitle,
-    required List<Widget> children,
-  }) {
-    final border = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(12),
-      side: const BorderSide(color: line),
-    );
-    return ExpansionTile(
-      tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      backgroundColor: canvas.withValues(alpha: .5),
-      collapsedBackgroundColor: canvas.withValues(alpha: .5),
-      shape: border,
-      collapsedShape: border,
-      leading: Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          color: accentWash,
-          borderRadius: BorderRadius.circular(9),
-        ),
-        child: Center(child: leading),
-      ),
-      title: title,
-      subtitle: subtitle,
-      children: children,
-    );
-  }
-
-  List<Map> get workspaceOptions =>
-      List<Map>.from(selectedPlatform?['workspaces'] ?? []);
-
-  Map? get selectedWorkspace {
-    for (final workspace in workspaceOptions) {
-      if (workspace['id'] == selectedWorkspaceId &&
-          workspace['available'] == true) {
-        return workspace;
-      }
-    }
-    return null;
+  // Mirrors coordinatorFolder() in src/masters.ts; the id suffix is added on create.
+  String get coordinatorFolderPreview {
+    final name = automaticName
+        ? 'FarFromDesk · $platformName'
+        : customName.text.trim();
+    var slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+    slug = slug.replaceAll(RegExp(r'^-+|-+$'), '');
+    if (slug.length > 40) slug = slug.substring(0, 40);
+    return '~/.farfromdesk/coordinators/${slug.isEmpty ? 'coordinator' : slug}-…';
   }
 
   Widget masterForm() {
@@ -1373,216 +1648,141 @@ extension _BridgeScreens on _DeskState {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            const Text('App'),
-            const Spacer(),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: line.withValues(alpha: .65),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: platform,
-                  dropdownColor: surface,
-                  isDense: true,
-                  style: const TextStyle(
-                    fontFamily: 'DMSans',
-                    fontSize: 13,
-                    color: ink,
-                    fontWeight: FontWeight.w600,
+        LayoutBuilder(
+          builder: (context, box) {
+            final columns = box.maxWidth < 640 ? 2 : 4;
+            return Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                for (final p in platforms)
+                  SizedBox(
+                    width: (box.maxWidth - 10 * (columns - 1)) / columns,
+                    child: appTile(p),
                   ),
-                  items: [
-                    for (final p in platforms)
-                      DropdownMenuItem(
-                        value: '${p['provider']}:${p['executionMode']}',
-                        child: Text(
-                          '${p['provider'] == 'claude' ? 'Claude' : 'Codex'} ${p['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}',
-                        ),
-                      ),
-                  ],
-                  onChanged: busy
-                      ? null
-                      : (value) {
-                          if (value != null) {
-                            editSetup(() {
-                              platform = value;
-                              selectedNativeId = '';
-                              selectedWorkspaceId = '';
-                              visibleSessions = 30;
-                              search.clear();
-                            });
-                          }
-                        },
-                ),
-              ),
-            ),
-          ],
+              ],
+            );
+          },
         ),
-        gap(12),
-        if (selectedPlatform?['connection'] != null)
+        if (selectedPlatform?['connection'] != null) ...[
+          gap(10),
+          Row(
+            children: [
+              Icon(
+                selectedPlatform?['connection']['state'] == 'verified'
+                    ? Icons.verified_user_outlined
+                    : Icons.account_circle_outlined,
+                size: 15,
+                color: muted,
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: small(selectedPlatform!['connection']['label'])),
+            ],
+          ),
+        ],
+        gap(14),
+        if (setupAction == 'new') ...[
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: canvas,
-              borderRadius: BorderRadius.circular(9),
-              border: Border.all(color: line),
+              color: const Color(0x0df4f1ea),
+              borderRadius: BorderRadius.circular(12),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  selectedPlatform?['connection']['state'] == 'verified'
-                      ? Icons.verified_user_outlined
-                      : Icons.account_circle_outlined,
-                  size: 18,
-                  color: accent,
+                Row(
+                  children: [
+                    small('Folder'),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        coordinatorFolderPreview,
+                        key: const ValueKey('coordinator-folder'),
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: small(selectedPlatform!['connection']['label']),
+                gap(4),
+                small(
+                  'Its own folder. It asks before reading your projects or other folders.',
                 ),
               ],
             ),
           ),
-        gap(14),
-        Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: canvas,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: navTab(
-                  'Create new session',
-                  setupAction == 'new',
-                  () => editSetup(() => setupAction = 'new'),
-                ),
+          if (platform == 'claude:desktop' &&
+              selectedPlatform?['available'] == true &&
+              selectedPlatform?['canCreate'] != false) ...[
+            gap(14),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: accentWash,
+                borderRadius: BorderRadius.circular(12),
               ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: navTab(
-                  'Use existing session',
-                  setupAction == 'existing',
-                  () => editSetup(() => setupAction = 'existing'),
-                ),
-              ),
-            ],
-          ),
-        ),
-        gap(14),
-        if (setupAction == 'new') ...[
-          const Text('Project'),
-          gap(8),
-          DropdownButtonFormField<String>(
-            key: ValueKey(
-              'workspace-$platform-${selectedWorkspace?['id'] ?? 'none'}',
-            ),
-            initialValue: selectedWorkspace?['id'] as String?,
-            isExpanded: true,
-            menuMaxHeight: 320,
-            itemHeight: 64,
-            decoration: const InputDecoration(hintText: 'Choose a project'),
-            selectedItemBuilder: (context) => [
-              for (final w in workspaceOptions)
-                Text(
-                  (w['label'] ?? w['name'] ?? w['cwd']).toString(),
-                  overflow: TextOverflow.ellipsis,
-                ),
-            ],
-            items: [
-              for (final w in workspaceOptions)
-                DropdownMenuItem(
-                  value: w['id'].toString(),
-                  enabled: w['available'] == true,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        (w['label'] ?? w['name'] ?? w['cwd']).toString(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        w['cwd'].toString(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: muted),
-                      ),
-                    ],
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.touch_app_outlined, size: 18, color: accent),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Confirm and send once in Claude',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        gap(4),
+                        small(
+                          'Claude opens a new chat in the coordinator folder with the setup message filled in. Confirm the folder, press Send, and FarFromDesk connects it automatically.',
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-            ],
-            onChanged: busy
-                ? null
-                : (value) => editSetup(() => selectedWorkspaceId = value ?? ''),
-          ),
-          gap(8),
-          if (selectedWorkspace != null) ...[
-            Text(
-              selectedWorkspace!['cwd'].toString(),
-              style: const TextStyle(fontSize: 11, color: muted),
-            ),
-            gap(6),
-          ],
-          small(
-            workspaceOptions.isEmpty
-                ? 'Open a project in this app, then reopen this dialog to discover its workspace.'
-                : 'The new session starts in the project folder. Existing instructions and the app’s own permissions apply.',
-          ),
-          if (platform == 'claude:desktop') ...[
-            gap(6),
-            small(
-              'Claude uses a reachable chat from this project and account to create the session. Native approval may still be required.',
+                ],
+              ),
             ),
           ],
-          gap(16),
+          gap(18),
           Row(
             children: [
-              const Text(
-                'Session name',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+              const Text('Name', style: TextStyle(color: muted, fontSize: 13)),
+              const SizedBox(width: 14),
+              Expanded(
+                child: automaticName
+                    ? Text(
+                        'FarFromDesk · $platformName',
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : TextField(
+                        controller: customName,
+                        maxLength: 80,
+                        onChanged: (_) => editSetup(() {}),
+                        decoration: const InputDecoration(
+                          hintText: 'e.g. My coding assistant',
+                          counterText: '',
+                          isDense: true,
+                        ),
+                      ),
               ),
-              const Spacer(),
-              const Text('Automatic'),
-              const SizedBox(width: 8),
-              SizedBox(
-                height: 26,
-                child: Switch(
-                  value: automaticName,
-                  onChanged: busy
-                      ? null
-                      : (v) => editSetup(() => automaticName = v),
-                ),
+              TextButton(
+                onPressed: busy
+                    ? null
+                    : () => editSetup(() => automaticName = !automaticName),
+                child: Text(automaticName ? 'Edit' : 'Use automatic'),
               ),
             ],
           ),
-          gap(10),
-          if (automaticName)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: canvas,
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: Text('FarFromDesk · $platformName'),
-            )
-          else
-            TextField(
-              controller: customName,
-              maxLength: 80,
-              onChanged: (_) => editSetup(() {}),
-              decoration: const InputDecoration(
-                hintText: 'e.g. My coding assistant',
-              ),
-            ),
         ] else ...[
           TextField(
             controller: search,
@@ -1735,42 +1935,100 @@ extension _BridgeScreens on _DeskState {
         !(status['masterSetup']?['operation']?['status'] == 'creating' &&
             '${status['masterSetup']?['operation']?['provider']}:${status['masterSetup']?['operation']?['executionMode']}' ==
                 platform);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Wrap(
+      spacing: 10,
+      runSpacing: 8,
       children: [
-        Row(
-          children: [
-            const Spacer(),
-            button(
-              setupAction == 'new'
-                  ? (List<Map>.from(status['coordinators'] ?? []).any(
-                          (c) =>
-                              '${c['provider']}:${c['executionMode']}' ==
-                              platform,
-                        )
-                        ? 'Create replacement'
-                        : 'Create coordinator')
-                  : 'Use selected session',
-              submitMaster,
-              primary: true,
-              enabled:
-                  can &&
-                  (setupAction == 'new'
-                      ? (selectedPlatform?['canCreate'] != false &&
-                            selectedWorkspace != null &&
-                            (automaticName ||
-                                customName.text.trim().isNotEmpty))
-                      : existing),
-            ),
-          ],
+        button(
+          setupAction == 'new'
+              ? (List<Map>.from(status['coordinators'] ?? []).any(
+                      (c) =>
+                          '${c['provider']}:${c['executionMode']}' == platform,
+                    )
+                    ? 'Create replacement'
+                    : 'Create coordinator')
+              : 'Use selected session',
+          submitMaster,
+          primary: true,
+          enabled:
+              can &&
+              (setupAction == 'new'
+                  ? (selectedPlatform?['canCreate'] != false &&
+                        (automaticName || customName.text.trim().isNotEmpty))
+                  : existing),
         ),
-        gap(10),
-        small(
-          status['master'] == null
-              ? 'Your chosen app’s sign-in and permissions apply.'
-              : 'Only replaces a coordinator on the same connection. Other platforms and their requests stay active.',
+        button(
+          setupAction == 'new' ? 'Use existing session' : 'Create new session',
+          () => editSetup(
+            () => setupAction = setupAction == 'new' ? 'existing' : 'new',
+          ),
         ),
       ],
+    );
+  }
+
+  bool get setupActive =>
+      [
+        'creating',
+        'needs_action',
+      ].contains(status['masterSetup']?['operation']?['status']) &&
+      !setupFormRequested;
+
+  Widget appTile(Map p) {
+    final id = '${p['provider']}:${p['executionMode']}',
+        selected = id == platform;
+    final desktop = p['executionMode'] == 'desktop';
+    final ok = p['available'] == true && p['canCreate'] != false;
+    return Material(
+      color: selected ? const Color(0x1a86c9ad) : const Color(0x0af4f1ea),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: selected ? accent : hairline,
+          width: selected ? 1.5 : 1,
+        ),
+      ),
+      child: InkWell(
+        customBorder: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+        onTap: busy
+            ? null
+            : () => editSetup(() {
+                platform = id;
+                selectedNativeId = '';
+                visibleSessions = 30;
+                search.clear();
+              }),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              logoTile(
+                p['provider'] == 'claude' ? 'claude' : 'openai',
+                size: 34,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '${p['provider'] == 'claude' ? 'Claude' : 'Codex'} ${desktop ? 'Desktop' : 'CLI'}',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                p['available'] != true
+                    ? 'Not detected'
+                    : p['canCreate'] == false
+                    ? 'Sign in first'
+                    : '${desktop ? 'App' : 'Terminal'} · Ready',
+                style: TextStyle(fontSize: 11.5, color: ok ? muted : warning),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1793,7 +2051,6 @@ extension _BridgeScreens on _DeskState {
         'provider': parts[0],
         'executionMode': parts[1],
         'connectionRevision': selectedPlatform?['connection']?['revision'],
-        'workspaceId': selectedWorkspace?['id'],
         'name': automaticName
             ? 'FarFromDesk · $platformName'
             : customName.text.trim(),
@@ -1818,82 +2075,7 @@ extension _BridgeScreens on _DeskState {
       });
     }
     modalUpdate?.call(() {});
-  }
-
-  Future<void> openMaster([String? requestedPlatform]) async {
-    editSetup(() {
-      platform =
-          requestedPlatform ??
-          (status['master'] == null
-              ? platform
-              : '${status['master']['provider']}:${status['master']['executionMode']}');
-      setupAction = 'existing';
-      selectedNativeId = '';
-      selectedWorkspaceId = '';
-      search.clear();
-      visibleSessions = 30;
-    });
-    await showDialog<void>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) {
-          modalUpdate = update;
-          return Dialog(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: setupAction == 'existing' ? 620 : 540,
-                maxHeight: MediaQuery.sizeOf(context).height - 70,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            setupAction == 'new'
-                                ? 'Create a master chat'
-                                : 'Choose an existing session',
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Close',
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.close, size: 16),
-                        ),
-                      ],
-                    ),
-                    gap(8),
-                    const Text(
-                      'Your current master stays active until this one is ready.',
-                      style: TextStyle(color: muted),
-                    ),
-                    gap(20),
-                    Flexible(
-                      child: SingleChildScrollView(
-                        child: Column(
-                          children: [masterForm(), ...setupOperation()],
-                        ),
-                      ),
-                    ),
-                    const Divider(),
-                    masterActions(),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-    modalUpdate = null;
+    editSetup(() => setupFormRequested = false);
   }
 
   List<Map> get allJobs {
@@ -1955,15 +2137,6 @@ extension _BridgeScreens on _DeskState {
     'cancelled' => 'Cancelled',
     _ => jobLabel(job['status']),
   };
-  Color requestColor(Map job) =>
-      ['uncertain', 'failed'].contains(job['status']) ||
-          job['outcome'] == 'blocked'
-      ? warning
-      : job['status'] == 'completed'
-      ? success
-      : ['queued', 'dispatched', 'submitted'].contains(job['status'])
-      ? accent
-      : muted;
   Future<void> recoveryGuide() async {
     await showDialog<void>(
       context: context,
@@ -1986,16 +2159,54 @@ extension _BridgeScreens on _DeskState {
   }
 
   List<Widget> activityScreen() {
+    final approvals = List<Map>.from(status['approvals'] ?? []);
+    if (!connected && allJobs.isEmpty && approvals.isEmpty) {
+      return [
+        card(
+          Container(
+            constraints: const BoxConstraints(minHeight: 280),
+            alignment: Alignment.center,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                logoTile('whatsapp'),
+                gap(14),
+                const Text(
+                  'No activity yet',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                gap(6),
+                const SizedBox(
+                  width: 320,
+                  child: Text(
+                    'Requests from WhatsApp and approvals your sessions ask for will show up here once WhatsApp is connected.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, color: muted),
+                  ),
+                ),
+                gap(14),
+                button('Connect WhatsApp', () => go(0), primary: true),
+              ],
+            ),
+          ),
+        ),
+      ];
+    }
     final query = activityQuery.trim().toLowerCase();
-    final jobs = allJobs
-        .where(
-          (j) =>
-              includeJob(j, activityFilter) &&
-              '${requestTitle(j)} ${requestBinding(j)?['name'] ?? ''} ${j['id']}'
-                  .toLowerCase()
-                  .contains(query),
-        )
-        .toList();
+    final jobs =
+        allJobs
+            .where(
+              (j) =>
+                  includeJob(j, activityFilter) &&
+                  '${requestTitle(j)} ${requestBinding(j)?['name'] ?? ''} ${j['id']}'
+                      .toLowerCase()
+                      .contains(query),
+            )
+            .toList()
+          ..sort(
+            (a, b) =>
+                (b['created_at'] as num).compareTo(a['created_at'] as num),
+          );
     final eligibleIds = jobs
         .where((j) => j['canClose'] == true)
         .take(500)
@@ -2011,33 +2222,106 @@ extension _BridgeScreens on _DeskState {
         chosen.addAll(eligibleIds);
       }
     });
+    const filters = ['All', 'Waiting', 'Needs review', 'Answered', 'Closed'];
+    final rows = <Widget>[];
+    String? lastDay;
+    for (final j in jobs) {
+      final day = dayLabel(j['created_at']);
+      if (day != lastDay) {
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
+            child: Text(
+              day,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: muted,
+              ),
+            ),
+          ),
+        );
+        lastDay = day;
+      }
+      rows.add(activityRow(j, selectable: eligibleIds.isNotEmpty));
+    }
     return [
-      Container(
-        margin: const EdgeInsets.only(bottom: 20),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: panelColor,
-          borderRadius: BorderRadius.circular(12),
+      for (final a in approvals)
+        panel(
+          '${a['alias']} needs your input',
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: toneInk.withValues(alpha: .08),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: SelectableText(
+                  a['question'],
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12.5,
+                    color: toneInk,
+                  ),
+                ),
+              ),
+              gap(14),
+              Wrap(
+                spacing: 10,
+                children: [
+                  if (a['kind'] == 'approval') ...[
+                    button(
+                      'Allow once',
+                      () => post('/api/action', {
+                        'command': '/approve ${a['code']}',
+                      }),
+                      primary: true,
+                    ),
+                    button(
+                      'Deny',
+                      () => post('/api/action', {
+                        'command': '/deny ${a['code']}',
+                      }),
+                    ),
+                  ] else
+                    button('Send answer', () async {
+                      final answer = await ask(a['question']);
+                      if (answer != null && answer.isNotEmpty) {
+                        await post('/api/action', {
+                          'command': '/answer ${a['code']} $answer',
+                        });
+                      }
+                    }, primary: true),
+                ],
+              ),
+            ],
+          ),
+          tone: toneAmber,
+          light: true,
         ),
-        child: Row(
+      card(
+        Row(
           children: [
             const Icon(Icons.history_rounded, size: 18, color: accent),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
+              child: small(
                 '${(status['pendingJobs'] ?? []).length} unfinished · Requests are saved on this $computer',
-                style: const TextStyle(fontSize: 12, color: muted),
               ),
             ),
             TextButton(
               onPressed: recoveryGuide,
-              child: const Text(
-                'How recovery works',
-                style: TextStyle(fontSize: 12),
-              ),
+              child: const Text('How recovery works'),
             ),
           ],
         ),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
       ),
       if (List<Map>.from(status['voiceRequests'] ?? []).any(
         (v) =>
@@ -2068,11 +2352,12 @@ extension _BridgeScreens on _DeskState {
                         ? 'Transcribed · routing blocked'
                         : 'Voice note ${v['status']}',
                   ),
-                  subtitle: Text(
-                    v['id'],
-                    style: const TextStyle(color: muted, fontSize: 11),
+                  subtitle: small(v['id']),
+                  trailing: button(
+                    'Details',
+                    () => requestTimeline(v['id']),
+                    compact: true,
                   ),
-                  trailing: button('Details', () => requestTimeline(v['id'])),
                 ),
             ],
           ),
@@ -2090,23 +2375,25 @@ extension _BridgeScreens on _DeskState {
                 status['unlinkedUpdates'],
               ).take(10))
                 ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
                   title: Text(
                     List<Map>.from(status['bindings'] ?? [])
                             .where((b) => b['id'] == u['binding_id'])
                             .firstOrNull?['name'] ??
                         'Native session update',
                   ),
-                  subtitle: Text(
+                  subtitle: small(
                     DateTime.fromMillisecondsSinceEpoch(u['at'])
                         .toLocal()
                         .toString(),
                   ),
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.all(12),
+                    Align(
+                      alignment: Alignment.centerLeft,
                       child: button(
                         'Read local update',
                         () => readLocalUpdate(u['id']),
+                        compact: true,
                       ),
                     ),
                   ],
@@ -2114,219 +2401,174 @@ extension _BridgeScreens on _DeskState {
             ],
           ),
         ),
-      for (final a in status['approvals'] ?? [])
-        panel(
-          '${a['alias']} needs your input',
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SelectableText(a['question']),
-              gap(),
-              Wrap(
-                spacing: 10,
-                children: [
-                  if (a['kind'] == 'approval') ...[
-                    button(
-                      'Allow once',
-                      () => post('/api/action', {
-                        'command': '/approve ${a['code']}',
-                      }),
-                      primary: true,
-                    ),
-                    button(
-                      'Deny',
-                      () => post('/api/action', {
-                        'command': '/deny ${a['code']}',
-                      }),
-                    ),
-                  ] else
-                    button('Send answer', () async {
-                      final answer = await ask(a['question']);
-                      if (answer != null && answer.isNotEmpty) {
-                        await post('/api/action', {
-                          'command': '/answer ${a['code']} $answer',
-                        });
-                      }
-                    }),
-                ],
-              ),
-            ],
-          ),
-        ),
-
-      Container(
-        decoration: BoxDecoration(
-          color: panelColor,
-          borderRadius: BorderRadius.circular(18),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Column(
+      card(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Request history',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 230,
-                    child: TextField(
-                      onChanged: (value) =>
-                          changeView(() => activityQuery = value),
-                      decoration: const InputDecoration(
-                        hintText: 'Search requests',
-                        prefixIcon: Icon(Icons.search, size: 18),
-                        isDense: true,
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 12,
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Request history',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Container(
-                key: const ValueKey('activity-filter-group'),
-                padding: const EdgeInsets.all(5),
-                decoration: BoxDecoration(
-                  color: canvas,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: muted.withValues(alpha: .12)),
-                ),
-                child: Row(
-                  children: [
-                    for (final filter in [
-                      'All',
-                      'Waiting',
-                      'Needs review',
-                      'Answered',
-                      'Closed',
-                    ])
-                      Expanded(
-                        flex: filter == 'Needs review' ? 5 : 4,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 2),
-                          child: navTab(
-                            filter,
-                            activityFilter == filter,
-                            () => changeView(() => activityFilter = filter),
-                            compact: true,
-                            count: allJobs
-                                .where((j) => includeJob(j, filter))
-                                .length,
-                          ),
-                        ),
+                      gap(2),
+                      small(
+                        'Every WhatsApp request, which session took it and what happened.',
                       ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
+                SizedBox(
+                  width: 260,
+                  child: TextField(
+                    onChanged: (value) =>
+                        changeView(() => activityQuery = value),
+                    decoration: InputDecoration(
+                      hintText: 'Search requests or sessions',
+                      prefixIcon: const Icon(
+                        Icons.search,
+                        size: 18,
+                        color: muted,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 11,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(999),
+                        borderSide: const BorderSide(color: line2),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(999),
+                        borderSide: const BorderSide(color: line2),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(999),
+                        borderSide: const BorderSide(color: accent, width: 1.5),
+                      ),
+                    ),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ],
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 20, 10),
-              child: Row(
-                children: [
+            gap(16),
+            Row(
+              children: [
+                Flexible(
+                  child: segmented(
+                    filters,
+                    activityFilter,
+                    (filter) => changeView(() => activityFilter = filter),
+                    key: const ValueKey('activity-filter-group'),
+                    compact: true,
+                    counts: {
+                      for (final f in filters)
+                        f: allJobs.where((j) => includeJob(j, f)).length,
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                if (eligibleIds.isNotEmpty || chosen.isNotEmpty)
                   Tooltip(
                     message: 'Select reviewable requests in this list',
                     child: InkWell(
                       borderRadius: BorderRadius.circular(8),
                       onTap: eligibleIds.isEmpty ? null : toggleSelection,
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: 10),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              key: const ValueKey('select-visible-requests'),
-                              tristate: true,
-                              value: allSelected
-                                  ? true
-                                  : someSelected
-                                  ? null
-                                  : false,
-                              onChanged: eligibleIds.isEmpty
-                                  ? null
-                                  : (_) => toggleSelection(),
-                            ),
-                            const Text(
-                              'Select all',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ],
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Checkbox(
+                            key: const ValueKey('select-visible-requests'),
+                            tristate: true,
+                            value: allSelected
+                                ? true
+                                : someSelected
+                                ? null
+                                : false,
+                            onChanged: eligibleIds.isEmpty
+                                ? null
+                                : (_) => toggleSelection(),
+                          ),
+                          const Text(
+                            'Select all',
+                            style: TextStyle(fontSize: 12.5),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
                       ),
                     ),
                   ),
-                  if (chosen.isNotEmpty)
-                    TextButton(
-                      onPressed: () => changeView(chosen.clear),
-                      child: const Text(
-                        'Clear selection',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  const Spacer(),
-                  if (chosen.isNotEmpty)
-                    button('Close selected (${chosen.length})…', bulkClose)
-                  else
-                    small('${jobs.length} requests'),
+                if (chosen.isNotEmpty) ...[
+                  TextButton(
+                    onPressed: () => changeView(chosen.clear),
+                    child: const Text('Clear'),
+                  ),
+                  button(
+                    'Close selected (${chosen.length})…',
+                    bulkClose,
+                    compact: true,
+                  ),
                 ],
-              ),
+              ],
             ),
+            gap(14),
             Container(
-              color: canvas.withValues(alpha: .4),
-              padding: const EdgeInsets.fromLTRB(64, 11, 48, 11),
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: hairline)),
+              ),
               child: Row(
                 children: [
-                  Expanded(child: small('Request / session')),
+                  SizedBox(width: eligibleIds.isNotEmpty ? 80 : 48),
+                  Expanded(child: small('Request')),
                   SizedBox(width: 92, child: small('Received')),
-                  SizedBox(width: 132, child: small('Status')),
+                  SizedBox(width: 190, child: small('Status')),
+                  const SizedBox(width: 40),
                 ],
               ),
             ),
             if (jobs.isEmpty)
               Padding(
-                padding: const EdgeInsets.all(36),
-                child: Column(
-                  children: [
-                    const Icon(Icons.inbox_outlined, color: muted, size: 28),
-                    gap(12),
-                    Text(
-                      query.isNotEmpty
-                          ? 'No matching requests'
-                          : 'No requests here yet',
-                      style: const TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                    gap(8),
-                    small(
-                      query.isNotEmpty
-                          ? 'Try a session name or a few words from your request.'
-                          : 'Send a task in your connected WhatsApp chat to get started.',
-                    ),
-                  ],
+                padding: const EdgeInsets.symmetric(vertical: 36),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Text(
+                        query.isNotEmpty || activityFilter != 'All'
+                            ? 'No matching requests'
+                            : 'No requests here yet',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      gap(6),
+                      small(
+                        query.isNotEmpty || activityFilter != 'All'
+                            ? 'Try another filter or search.'
+                            : 'Send a task in your connected WhatsApp chat to get started.',
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            for (final j in jobs) activityRow(j),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-              child: Row(
-                children: [
-                  small('Showing ${jobs.length} of ${allJobs.length} loaded'),
-                  const Spacer(),
-                  small('All unfinished + latest 100'),
-                ],
-              ),
+            ...rows,
+            gap(14),
+            Row(
+              children: [
+                Expanded(
+                  child: small('Showing ${jobs.length} of ${allJobs.length}'),
+                ),
+                small('All unfinished + latest 100'),
+              ],
             ),
           ],
         ),
@@ -2334,176 +2576,210 @@ extension _BridgeScreens on _DeskState {
     ];
   }
 
-  Widget activityRow(Map job) {
-    final binding = requestBinding(job), color = requestColor(job);
+  String dayLabel(num at) {
+    final t = DateTime.fromMillisecondsSinceEpoch(at.toInt()).toLocal();
+    final now = DateTime.now();
+    final days = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).difference(DateTime(t.year, t.month, t.day)).inDays;
+    return days == 0
+        ? 'Today'
+        : days == 1
+        ? 'Yesterday'
+        : '${t.day.toString().padLeft(2, '0')}/${t.month.toString().padLeft(2, '0')}/${t.year}';
+  }
+
+  String clock(num at) {
+    final t = DateTime.fromMillisecondsSinceEpoch(at.toInt()).toLocal();
+    return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget activityRow(Map job, {bool selectable = false}) {
+    final binding = requestBinding(job);
+    final st = '${job['status']}';
+    final waiting = ['queued', 'dispatched', 'submitted'].contains(st);
     final review =
-        ['uncertain', 'failed'].contains(job['status']) ||
-        job['outcome'] == 'blocked';
-    final time = DateTime.fromMillisecondsSinceEpoch(job['created_at'])
-        .toLocal();
+        ['uncertain', 'failed'].contains(st) || job['outcome'] == 'blocked';
+    final blocked = job['outcome'] == 'blocked';
+    final closed = ['reviewed', 'replaced', 'auto_closed'].contains(st);
     final selected = chosen.contains(job['id']);
+    final app =
+        '${{'claude': 'Claude', 'codex': 'Codex'}[binding?['provider']] ?? 'Coding'} ${{'desktop': 'Desktop', 'cli': 'CLI'}[binding?['executionMode']] ?? 'session'}';
+    final session = binding?['name'] ?? binding?['alias'] ?? 'Coding session';
+    final received = clock(job['created_at']);
+    final sending = ['queued', 'dispatched'].contains(st);
+    final chip = waiting
+        ? tag(requestState(job), spinning: true)
+        : blocked
+        ? tag('Blocked', tint: danger)
+        : review
+        ? tag(requestState(job), tint: warning)
+        : st == 'completed'
+        ? tag(requestState(job), good: true)
+        : tag(requestState(job));
     return Container(
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: muted.withValues(alpha: .09))),
-      ),
+      margin: const EdgeInsets.only(top: 2),
       child: Material(
         color: selected ? accent.withValues(alpha: .08) : Colors.transparent,
-        child: Theme(
-          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-          child: ExpansionTile(
-            key: PageStorageKey('request-${job['id']}'),
-            tilePadding: const EdgeInsets.fromLTRB(12, 5, 16, 5),
-            childrenPadding: const EdgeInsets.fromLTRB(64, 8, 24, 20),
-            leading: SizedBox(
-              width: 36,
-              child: Tooltip(
-                message: job['canClose'] == true
-                    ? 'Select for review'
-                    : 'Active or already closed requests cannot be selected',
-                child: Checkbox(
-                  value: selected,
-                  onChanged: job['canClose'] == true
-                      ? (value) => changeView(() {
-                          if (value == true) {
-                            chosen.add(job['id']);
-                          } else {
-                            chosen.remove(job['id']);
-                          }
-                        })
-                      : null,
-                ),
-              ),
-            ),
-            title: Row(
-              children: [
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          requestTitle(job),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '${binding?['provider'] ?? ''} ${binding?['executionMode'] ?? ''} · ${binding?['name'] ?? binding?['alias'] ?? 'Coding session'} · ${requestKind(job)}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11, color: muted),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: 92,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      const SizedBox(height: 4),
-                      small(
-                        '${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')}',
-                      ),
-                    ],
-                  ),
-                ),
-                SizedBox(
-                  width: 132,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 9,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: .1),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        requestState(job),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: color,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+        borderRadius: BorderRadius.circular(14),
+        clipBehavior: Clip.antiAlias,
+        child: ExpansionTile(
+          key: PageStorageKey('request-${job['id']}'),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+          childrenPadding: const EdgeInsets.fromLTRB(62, 0, 14, 14),
+          backgroundColor: const Color(0x0af4f1ea),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: const BorderSide(color: hairline),
+          ),
+          collapsedShape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          title: Row(
             children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                // SelectableText has an internal scroll position that shares
-                // the ExpansionTile's PageStorage bucket (bool vs. double).
-                // Static selectable metadata does not need its own scroll view.
-                child: SelectionArea(
-                  child: Text(
-                    'Request: ${job['id']}\nSession: ${binding?['native_id'] ?? 'Unknown'}\nProject: ${binding?['cwd'] ?? 'Unavailable'}',
-                    style: const TextStyle(fontSize: 12, color: muted),
-                  ),
+              if (selectable) ...[
+                SizedBox(
+                  width: 24,
+                  child: job['canClose'] != true
+                      ? null
+                      : Checkbox(
+                          value: selected,
+                          onChanged: (value) => changeView(() {
+                            if (value == true) {
+                              chosen.add(job['id']);
+                            } else {
+                              chosen.remove(job['id']);
+                            }
+                          }),
+                        ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              logoTile(
+                binding?['provider'] == 'claude' ? 'claude' : 'openai',
+                size: 34,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      requestTitle(job),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      '${requestKind(job)} · $app · $session',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, color: muted),
+                    ),
+                  ],
                 ),
               ),
-              gap(12),
-              if (job['error'] != null)
-                Text(job['error'], style: const TextStyle(color: warning)),
-              if (job['last_error'] != null && job['error'] == null) ...[
-                gap(8),
-                small(
-                  'Earlier error (cleared after a later response): ${job['last_error']}',
-                ),
-              ],
-              if (review && job['outcome'] == null)
-                const Text(
-                  'Delivery or completion could not be confirmed. Check the native chat before sending anything again. This request will not be resent automatically.',
-                ),
-              gap(12),
-              Wrap(
-                spacing: 10,
-                children: [
-                  button(
-                    'Timing and delivery',
-                    () => requestTimeline(job['id']),
-                  ),
-                  if (job['canClose'] == true)
-                    button('Close after review…', () async {
-                      if (await confirm(
-                        'Close this request after review?',
-                        'This ends tracking for the exact request. History is kept; native work is not stopped or marked successful.',
-                      )) {
-                        await post('/api/request-review', {
-                          'requestId': job['id'],
-                          'expectedStatus': job['status'],
-                          'confirmed': true,
-                        });
-                      }
-                    }),
-                  if (![
-                    'reviewed',
-                    'replaced',
-                    'auto_closed',
-                    'completed',
-                  ].contains(job['status']))
-                    button('Send reviewed document', () => document(job)),
-                ],
+              const SizedBox(width: 14),
+              SizedBox(width: 92, child: small(received)),
+              SizedBox(
+                width: 190,
+                child: Align(alignment: Alignment.centerLeft, child: chip),
               ),
             ],
           ),
+          children: [
+            stepRow('Received on WhatsApp', detail: received, state: 'done'),
+            stepRow(
+              sending ? 'Sending to session' : 'Sent to session',
+              detail: '$session · $app',
+              state: sending ? 'now' : 'done',
+            ),
+            stepRow(
+              sending
+                  ? 'Reply'
+                  : st == 'submitted'
+                  ? 'Awaiting reply'
+                  : requestState(job),
+              detail: sending
+                  ? 'Sent to WhatsApp when the session answers'
+                  : review && job['outcome'] == null
+                  ? (job['error'] ??
+                        'Delivery or completion could not be confirmed. Check the native chat before sending anything again. This request will not be resent automatically.')
+                  : job['error'],
+              state: sending
+                  ? 'pending'
+                  : st == 'submitted'
+                  ? 'now'
+                  : blocked
+                  ? 'fail'
+                  : review
+                  ? 'wait'
+                  : 'done',
+            ),
+            if (job['last_error'] != null && job['error'] == null) ...[
+              gap(8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: small(
+                  'Earlier error (cleared after a later response): ${job['last_error']}',
+                ),
+              ),
+            ],
+            gap(10),
+            Row(
+              children: [
+                Expanded(
+                  // SelectableText has an internal scroll position that shares
+                  // the ExpansionTile's PageStorage bucket (bool vs. double).
+                  child: SelectionArea(
+                    child: Text(
+                      'Request ID ${job['id']} · Session ${binding?['native_id'] ?? 'unknown'} · ${binding?['cwd'] ?? 'Project unavailable'}',
+                      style: const TextStyle(fontSize: 11, color: muted),
+                    ),
+                  ),
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    if (job['canClose'] == true)
+                      button(
+                        'Mark reviewed',
+                        () async {
+                          if (await confirm(
+                            'Close this request after review?',
+                            'This ends tracking for the exact request. History is kept; native work is not stopped or marked successful.',
+                          )) {
+                            await post('/api/request-review', {
+                              'requestId': job['id'],
+                              'expectedStatus': job['status'],
+                              'confirmed': true,
+                            });
+                          }
+                        },
+                        primary: true,
+                        compact: true,
+                      ),
+                    if (!closed && st != 'completed')
+                      button(
+                        'Send reviewed document',
+                        () => document(job),
+                        compact: true,
+                      ),
+                    button(
+                      'Timing and delivery',
+                      () => requestTimeline(job['id']),
+                      compact: true,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -2635,17 +2911,10 @@ extension _BridgeScreens on _DeskState {
     }
   }
 
-  Widget settingRow(
-    IconData icon,
-    String title,
-    String detail,
-    Widget control,
-  ) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 4),
+  Widget settingRow(String title, String detail, Widget control) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 12),
     child: Row(
       children: [
-        SizedBox(width: 28, child: Icon(icon, size: 19, color: accent)),
-        const SizedBox(width: 16),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2654,10 +2923,10 @@ extension _BridgeScreens on _DeskState {
                 title,
                 style: const TextStyle(
                   fontSize: 14,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              gap(6),
+              gap(2),
               Text(
                 detail,
                 style: const TextStyle(fontSize: 12, height: 1.5, color: muted),
@@ -2680,7 +2949,6 @@ extension _BridgeScreens on _DeskState {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             settingRow(
-              Icons.app_registration_outlined,
               'Run in the background',
               'Receive WhatsApp tasks while the window is closed. Turning this off disconnects WhatsApp and pauses forwarding.',
               Switch(
@@ -2699,9 +2967,8 @@ extension _BridgeScreens on _DeskState {
                       },
               ),
             ),
-            const Divider(),
+            const Divider(height: 1),
             settingRow(
-              Icons.power_settings_new,
               'Open at login',
               'Launch FarFromDesk when you sign in to this $computer.',
               Switch(
@@ -2714,9 +2981,8 @@ extension _BridgeScreens on _DeskState {
                       }),
               ),
             ),
-            const Divider(),
+            const Divider(height: 1),
             settingRow(
-              Icons.bedtime_outlined,
               'Keep awake while locked',
               'Keep work running with the lid open, even when the screen is locked or off. Your password and lock screen stay enabled.',
               Switch(
@@ -2760,53 +3026,11 @@ extension _BridgeScreens on _DeskState {
         ),
       ),
       panel(
-        'Coding apps',
-        Column(
-          children: [
-            for (final provider in ['codex', 'claude']) ...[
-              if (provider == 'claude') const Divider(),
-              settingRow(
-                provider == 'codex' ? Icons.terminal : Icons.star_rate_rounded,
-                provider == 'codex' ? 'Codex' : 'Claude',
-                platforms.any(
-                      (p) =>
-                          p['provider'] == provider && p['available'] == true,
-                    )
-                    ? 'Native CLI available'
-                    : 'Native CLI unavailable · install and sign in first',
-                Switch(
-                  value: (status['apps'] ?? []).any(
-                    (a) => a['provider'] == provider && a['enabled'] == true,
-                  ),
-                  onChanged:
-                      busy ||
-                          !platforms.any(
-                            (p) =>
-                                p['provider'] == provider &&
-                                p['available'] == true,
-                          )
-                      ? null
-                      : (v) {
-                          final enabled = (status['apps'] ?? [])
-                              .where((a) => a['enabled'] == true)
-                              .map((a) => a['provider'])
-                              .toSet();
-                          v ? enabled.add(provider) : enabled.remove(provider);
-                          post('/api/apps', {'enabled': enabled.toList()});
-                        },
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-      panel(
         'Request cleanup',
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             settingRow(
-              Icons.history_toggle_off,
               'Auto-close stale requests',
               'Close tracking after no recorded updates for the chosen period. Keeps history; never stops native work or marks a task successful.',
               Switch(
@@ -2832,7 +3056,8 @@ extension _BridgeScreens on _DeskState {
               children: [
                 const Text('Close after no updates for'),
                 const Spacer(),
-                DropdownButton<int>(
+                dropdown<int>(
+                  width: 180,
                   value: [24, 72, 168].contains(cleanup['afterHours'])
                       ? cleanup['afterHours']
                       : 24,
@@ -2841,16 +3066,14 @@ extension _BridgeScreens on _DeskState {
                     DropdownMenuItem(value: 72, child: Text('3 days')),
                     DropdownMenuItem(value: 168, child: Text('7 days')),
                   ],
-                  onChanged: busy
-                      ? null
-                      : (hours) {
-                          if (hours != null) {
-                            post('/api/request-cleanup', {
-                              'enabled': cleanup['enabled'] == true,
-                              'afterHours': hours,
-                            });
-                          }
-                        },
+                  onChanged: (hours) {
+                    if (hours != null) {
+                      post('/api/request-cleanup', {
+                        'enabled': cleanup['enabled'] == true,
+                        'afterHours': hours,
+                      });
+                    }
+                  },
                 ),
               ],
             ),
@@ -2870,53 +3093,65 @@ extension _BridgeScreens on _DeskState {
         Column(
           children: [
             settingsDisclosure(
-              leading: const Icon(Icons.laptop_mac, color: accent, size: 19),
-              title: const Text(
-                'Keep your computer available',
-                style: TextStyle(fontSize: 14),
-              ),
-              subtitle: small('Lock screen, sleep and closed-lid behavior'),
+              icon: Icons.laptop_mac,
+              title: 'Keep your $computer available',
+              subtitle: 'Lock screen, sleep and closed-lid behaviour',
               children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: small(
-                    'Keep an operating laptop ventilated, never in a bag. Sleep prevention does not override manual sleep or low-battery protection. If this $computer sleeps or loses internet, WhatsApp cannot wake or reach it. Use your operating system’s supported external-display setup.',
-                  ),
+                settingRow(
+                  'Lock screen',
+                  'Work keeps running while the screen is locked.',
+                  tag('Works', good: true),
+                ),
+                settingRow(
+                  'Sleep',
+                  preferences['keepAwake'] == true
+                      ? 'This $computer stays awake while work is running.'
+                      : 'Turn on Keep awake while locked to stop idle sleep.',
+                  preferences['keepAwake'] == true
+                      ? tag('Covered', good: true)
+                      : tag('Off'),
+                ),
+                settingRow(
+                  'Closed lid',
+                  'Keep an operating laptop ventilated, never in a bag. Sleep prevention does not override manual sleep, lid-close sleep or low-battery protection. If this $computer sleeps or loses internet, WhatsApp cannot reach it.',
+                  tag('Pauses'),
                 ),
               ],
             ),
-            gap(12),
+            gap(10),
             settingsDisclosure(
-              leading: const Icon(
-                Icons.shield_outlined,
-                color: accent,
-                size: 19,
-              ),
-              title: const Text(
-                'Your account & permissions',
-                style: TextStyle(fontSize: 14),
-              ),
-              subtitle: small(
-                'Your account, selected sessions and native approvals',
-              ),
+              icon: Icons.shield_outlined,
+              title: 'Your account & permissions',
+              subtitle: 'Your account, selected sessions and native approvals',
               children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: small(
-                    'Only your linked WhatsApp account can control the bridge. Your master coordinates selected sessions; worker reports do not grant new permissions. Native agent approval rules still apply. Pausing the bridge does not stop work already running in an agent. Your local admin credential is never sent to a model.',
+                settingRow(
+                  'Owner account',
+                  '${status['whatsapp']?['phoneNumber'] ?? 'Your linked WhatsApp account'} is the only account that can send tasks.',
+                  connected ? tag('Linked', good: true) : tag('Not linked'),
+                ),
+                settingRow(
+                  'Selected sessions',
+                  '${(status['bindings'] ?? []).length} sessions can receive tasks from WhatsApp. Worker reports do not grant new permissions.',
+                  button(
+                    'Manage',
+                    () => openManage(tab: 'Connected sessions'),
+                    compact: true,
                   ),
+                ),
+                settingRow(
+                  'Native approvals',
+                  'Prompts shown by Claude or Codex still need you at this $computer. Pausing the bridge does not stop work already running.',
+                  tag('Always on'),
                 ),
               ],
             ),
-            gap(12),
+            gap(10),
             settingsDisclosure(
-              leading: const Icon(Icons.graphic_eq, color: accent, size: 19),
-              title: const Text('Voice notes', style: TextStyle(fontSize: 14)),
-              subtitle: small(
-                status['voice']?['ready'] == true
-                    ? 'Voice notes ready'
-                    : 'Choose local transcription tools',
-              ),
+              icon: Icons.graphic_eq,
+              title: 'Voice notes',
+              subtitle: status['voice']?['ready'] == true
+                  ? 'Voice notes ready'
+                  : 'Choose local transcription tools',
               children: [
                 gap(12),
                 if (status['voice']?['download'] != null) ...[
@@ -2961,66 +3196,121 @@ extension _BridgeScreens on _DeskState {
       ),
       panel(
         'App updates',
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        Row(
           children: [
-            Text(
-              checkingUpdates
-                  ? 'Checking for updates…'
-                  : update.release != null
-                  ? 'Version ${update.release!.version} is available.'
-                  : update.problem ??
-                        (update.checkedAt == null
-                            ? 'Updates are checked automatically when the app opens, then every six hours.'
-                            : 'No newer compatible release found.'),
-            ),
-            gap(12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                button(
-                  'Check for updates',
-                  () => checkUpdates(manual: true),
-                  enabled: !checkingUpdates,
-                ),
-                if (update.release != null)
-                  button('View update', showUpdate, primary: true),
-              ],
-            ),
-          ],
-        ),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        child: Row(
-          children: [
-            Image.asset('assets/ffd-icon.png', width: 28, height: 28),
-            const SizedBox(width: 14),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'FarFromDesk',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                ),
-                gap(5),
-                small(
-                  "Version ${const String.fromEnvironment('FFD_VERSION', defaultValue: '0.7.0')}",
-                ),
-              ],
-            ),
-            const Spacer(),
             Expanded(
-              child: Text(
-                'This $computer and your agent provider must be online.\nQueued replies are retained during outages.',
-                textAlign: TextAlign.right,
-                style: const TextStyle(fontSize: 11, color: muted),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    checkingUpdates
+                        ? 'Checking for updates…'
+                        : update.release != null
+                        ? 'Version ${update.release!.version} is available'
+                        : update.problem ??
+                              (update.checkedAt == null
+                                  ? 'Checked when the app opens'
+                                  : 'You are up to date'),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  gap(2),
+                  small(
+                    update.release != null
+                        ? 'Installs after your current work finishes.'
+                        : 'Updates are checked when the app opens, then every hour.',
+                  ),
+                ],
               ),
             ),
+            const SizedBox(width: 12),
+            OutlinedButton(
+              onPressed: checkingUpdates || busy
+                  ? null
+                  : () => checkUpdates(manual: true),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (checkingUpdates) ...[
+                    SizedBox(width: 13, height: 13, child: spinner(ink)),
+                    const SizedBox(width: 8),
+                  ],
+                  Text(checkingUpdates ? 'Checking…' : 'Check for updates'),
+                ],
+              ),
+            ),
+            if (update.release != null) ...[
+              const SizedBox(width: 10),
+              button('Update now', showUpdate, primary: true),
+            ],
           ],
+        ),
+        trailing: small('v$installedVersion'),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+        child: small(
+          'This $computer and your agent provider must be online. Queued replies are retained during outages.',
         ),
       ),
     ];
   }
+
+  Widget settingsDisclosure({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required List<Widget> children,
+  }) {
+    final border = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(14),
+      side: const BorderSide(color: hairline),
+    );
+    return ExpansionTile(
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      childrenPadding: const EdgeInsets.fromLTRB(62, 0, 16, 6),
+      backgroundColor: const Color(0x08f4f1ea),
+      collapsedBackgroundColor: const Color(0x08f4f1ea),
+      shape: border,
+      collapsedShape: border,
+      leading: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: surface,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, size: 18, color: accent),
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      subtitle: small(subtitle),
+      children: children,
+    );
+  }
+}
+
+class _DashedBorder extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(18)),
+      );
+    final paint = Paint()
+      ..color = line
+      ..style = PaintingStyle.stroke;
+    for (final metric in path.computeMetrics()) {
+      for (var d = 0.0; d < metric.length; d += 9) {
+        canvas.drawPath(metric.extractPath(d, d + 5), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_) => false;
 }

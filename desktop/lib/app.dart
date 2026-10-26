@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:uuid/uuid.dart';
 
@@ -40,10 +41,10 @@ class _DeskState extends State<Desk> {
   String platform = 'codex:cli',
       setupAction = 'new',
       selectedNativeId = '',
-      selectedWorkspaceId = '',
       activityFilter = 'All',
       activityQuery = '';
   bool automaticName = true, showGroups = false, loadingGroups = false;
+  bool setupFormRequested = false, refreshing = false;
   List<Map> groups = [];
   String? groupsError;
   int visibleSessions = 30;
@@ -380,95 +381,425 @@ class _DeskState extends State<Desk> {
     VoidCallback action, {
     bool enabled = true,
     bool primary = false,
+    bool compact = false,
+    bool destructive = false,
     IconData? icon,
-  }) => primary
-      ? FilledButton(
-          onPressed: busy || !enabled ? null : action,
-          child: Text(title),
-        )
-      : OutlinedButton(
-          onPressed: busy || !enabled ? null : action,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 17),
-                const SizedBox(width: 8),
-              ],
-              Text(title),
-            ],
-          ),
-        );
+    Key? key,
+  }) {
+    final size = compact
+        ? const ButtonStyle(
+            minimumSize: WidgetStatePropertyAll(Size(0, 32)),
+            padding: WidgetStatePropertyAll(
+              EdgeInsets.symmetric(horizontal: 13),
+            ),
+            textStyle: WidgetStatePropertyAll(
+              TextStyle(
+                fontFamily: 'DMSans',
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          )
+        : null;
+    final onPressed = busy || !enabled ? null : action;
+    final label = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: compact ? 15 : 17),
+          const SizedBox(width: 8),
+        ],
+        Text(title),
+      ],
+    );
+    if (primary) {
+      return FilledButton(
+        key: key,
+        onPressed: onPressed,
+        style: size,
+        child: label,
+      );
+    }
+    return OutlinedButton(
+      key: key,
+      onPressed: onPressed,
+      style: destructive
+          ? OutlinedButton.styleFrom(
+              backgroundColor: const Color(0x24e85d50),
+              foregroundColor: const Color(0xffffb4ab),
+              side: const BorderSide(color: Color(0x73ff8a80)),
+            ).merge(size)
+          : size,
+      child: label,
+    );
+  }
+
   Widget panel(
     String title,
     Widget child, {
     String? subtitle,
     Widget? trailing,
+    Color? tone,
+    bool light = false,
+  }) => card(
+    panelBody(title, child, subtitle, trailing, light),
+    tone: tone,
+    light: light,
+  );
+  Widget card(
+    Widget child, {
+    Color? tone,
+    bool light = false,
+    Key? key,
+    EdgeInsets padding = const EdgeInsets.fromLTRB(22, 20, 22, 20),
   }) => Container(
-    margin: const EdgeInsets.only(bottom: 18),
-    padding: const EdgeInsets.all(24),
+    key: key,
+    width: double.infinity,
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: padding,
     decoration: BoxDecoration(
-      color: panelColor,
-      borderRadius: BorderRadius.circular(24),
+      color: tone ?? toneCharcoal,
+      borderRadius: BorderRadius.circular(18),
+      border: tone == null ? Border.all(color: hairline) : null,
     ),
     child: Material(
       color: Colors.transparent,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
-              ?trailing,
-            ],
-          ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 8),
-            Text(subtitle, style: const TextStyle(color: muted)),
-          ],
-          const SizedBox(height: 18),
-          child,
-        ],
-      ),
+      child: light ? onLightTone(context, child) : child,
     ),
   );
-  Widget tag(String text, {bool good = false}) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-    decoration: BoxDecoration(
-      color: (good ? success : muted).withValues(alpha: .09),
-      borderRadius: BorderRadius.circular(6),
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(
-            color: good ? success : muted,
-            shape: BoxShape.circle,
+  Widget panelBody(
+    String title,
+    Widget child,
+    String? subtitle,
+    Widget? trailing,
+    bool light,
+  ) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: Theme.of(context).textTheme.titleLarge
+                  ?.copyWith(color: light ? toneInk : null),
+            ),
           ),
-        ),
-        const SizedBox(width: 6),
+          ?trailing,
+        ],
+      ),
+      if (subtitle != null) ...[
+        const SizedBox(height: 4),
         Text(
-          text,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: good ? success : muted,
-          ),
+          subtitle,
+          style: TextStyle(fontSize: 12, color: light ? toneMuted : muted),
         ),
       ],
+      const SizedBox(height: 14),
+      child,
+    ],
+  );
+
+  /// Round status chip. [good] is green; otherwise [tint] picks warning,
+  /// danger or muted. [spinning] swaps the dot for a small spinner.
+  Widget tag(
+    String text, {
+    bool good = false,
+    Color? tint,
+    bool spinning = false,
+  }) => Builder(
+    builder: (c) {
+      final light = onLight(c);
+      final color =
+          tint ?? (good ? (light ? const Color(0xff1f4d3f) : success) : muted);
+      final plain = !good && tint == null;
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        decoration: BoxDecoration(
+          color: plain
+              ? const Color(0x297f7f78)
+              : color.withValues(alpha: light ? .13 : .15),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (spinning) ...[
+              SizedBox(width: 11, height: 11, child: spinner(color)),
+              const SizedBox(width: 7),
+            ] else if (!plain) ...[
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 7),
+            ],
+            Text(
+              text,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+
+  /// Small working spinner. Holds still when the system asks for reduced
+  /// motion, so the state stays readable without movement.
+  Widget spinner(Color color) => Builder(
+    builder: (c) => CircularProgressIndicator(
+      strokeWidth: 2,
+      color: color,
+      value: MediaQuery.disableAnimationsOf(c) ? .3 : null,
     ),
   );
   Widget note(String text) => Padding(
-    padding: const EdgeInsets.only(top: 12),
-    child: Text(text, style: const TextStyle(color: muted, fontSize: 13)),
+    padding: const EdgeInsets.only(top: 10),
+    child: Text(text, style: const TextStyle(color: muted, fontSize: 12)),
+  );
+
+  /// Brand tile: WhatsApp, Claude or Codex (OpenAI) mark on its own colour.
+  Widget logoTile(String brand, {double size = 40, bool dim = false}) {
+    final (bg, asset) = switch (brand) {
+      'whatsapp' => (whatsappGreen, 'whatsapp'),
+      'claude' => (const Color(0xfff4ede4), 'claude'),
+      _ => (const Color(0xfff3f1ea), 'openai'),
+    };
+    final tile = Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(size * .3),
+      ),
+      alignment: Alignment.center,
+      child: Image.asset(
+        'assets/logo-$asset.png',
+        width: size * .53,
+        height: size * .53,
+      ),
+    );
+    return dim
+        ? Opacity(
+            opacity: .45,
+            child: ColorFiltered(
+              colorFilter: const ColorFilter.matrix([
+                .33, .33, .33, 0, 0, //
+                .33, .33, .33, 0, 0, //
+                .33, .33, .33, 0, 0, //
+                0, 0, 0, 1, 0,
+              ]),
+              child: tile,
+            ),
+          )
+        : tile;
+  }
+
+  /// One step of a setup or request timeline: done, now (spinner), wait
+  /// (needs the owner), fail, or pending.
+  Widget stepRow(String title, {String? detail, String state = 'pending'}) {
+    final highlighted = ['now', 'wait', 'fail'].contains(state);
+    final marker = switch (state) {
+      'done' => Container(
+        width: 18,
+        height: 18,
+        decoration: const BoxDecoration(color: accent, shape: BoxShape.circle),
+        child: const Icon(Icons.check, size: 12, color: accentInk),
+      ),
+      'now' => Padding(
+        padding: const EdgeInsets.all(2),
+        child: SizedBox(width: 14, height: 14, child: spinner(ink)),
+      ),
+      'wait' || 'fail' => Container(
+        width: 18,
+        height: 18,
+        decoration: BoxDecoration(
+          color: state == 'wait' ? warning : const Color(0xffe85d50),
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: (state == 'wait' ? warning : const Color(0xffe85d50))
+                  .withValues(alpha: .18),
+              spreadRadius: 4,
+            ),
+          ],
+        ),
+      ),
+      _ => Container(
+        width: 18,
+        height: 18,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: ink.withValues(alpha: .3), width: 1.5),
+        ),
+      ),
+    };
+    return Opacity(
+      opacity: state == 'pending' ? .6 : 1,
+      child: Container(
+        margin: const EdgeInsets.only(top: 4),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        decoration: BoxDecoration(
+          color: state == 'fail'
+              ? const Color(0x14e85d50)
+              : highlighted
+              ? canvas
+              : null,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(padding: const EdgeInsets.only(top: 1), child: marker),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (detail != null)
+                    Text(
+                      detail,
+                      style: const TextStyle(fontSize: 11, color: muted),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Website-style segmented control: dark pill track, mint selected pill.
+  Widget segmented(
+    List<String> options,
+    String value,
+    ValueChanged<String> onChanged, {
+    Map<String, int>? counts,
+    Key? key,
+    bool compact = false,
+  }) => Container(
+    key: key,
+    padding: const EdgeInsets.all(4),
+    decoration: BoxDecoration(
+      color: panelColor,
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: line2),
+    ),
+    child: Wrap(
+      spacing: 4,
+      children: [
+        for (final option in options)
+          Material(
+            color: option == value ? accent : Colors.transparent,
+            shape: const StadiumBorder(),
+            child: InkWell(
+              customBorder: const StadiumBorder(),
+              onTap: busy ? null : () => onChanged(option),
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 14 : 16,
+                  vertical: compact ? 7 : 9,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      option,
+                      style: TextStyle(
+                        fontSize: compact ? 13 : 14,
+                        fontWeight: FontWeight.w600,
+                        color: option == value ? accentInk : muted,
+                      ),
+                    ),
+                    if (counts != null) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: option == value
+                              ? accentInk.withValues(alpha: .16)
+                              : canvas,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '${counts[option] ?? 0}',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: option == value ? accentInk : muted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+
+  /// Website-style dropdown: 44px, rounded, inset hairline, chevron.
+  Widget dropdown<T>({
+    Key? key,
+    required T? value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?>? onChanged,
+    String? hint,
+    double? width,
+  }) => Container(
+    width: width,
+    height: 44,
+    padding: const EdgeInsets.only(left: 16, right: 12),
+    decoration: BoxDecoration(
+      color: panelColor,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: line2),
+    ),
+    child: DropdownButtonHideUnderline(
+      child: DropdownButton<T>(
+        key: key,
+        value: value,
+        isExpanded: true,
+        hint: hint == null
+            ? null
+            : Text(
+                hint,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: ink,
+                ),
+              ),
+        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: muted),
+        dropdownColor: panelColor,
+        borderRadius: BorderRadius.circular(14),
+        style: const TextStyle(
+          fontFamily: 'DMSans',
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          color: ink,
+        ),
+        items: items,
+        onChanged: busy ? null : onChanged,
+      ),
+    ),
   );
 
   @override
@@ -488,102 +819,171 @@ class _DeskState extends State<Desk> {
               seen.add('${op['id']}'),
         )
         .toList();
-    Widget card(Map op) => Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(top: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: canvas.withValues(alpha: .6),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: line.withValues(alpha: .5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (op['status'] == 'creating') ...[
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+    // Map the backend's setup stages onto three plain steps so progress reads
+    // as one honest sequence instead of raw native status text.
+    int stepOf(Map op) {
+      final stage = '${op['stage'] ?? ''}';
+      if (op['status'] == 'needs_action') return 1;
+      if (stage.startsWith('Preparing')) return 0;
+      if (RegExp(r'Verifying|Connecting').hasMatch(stage)) return 2;
+      if (RegExp(r'Claude|startup|Sending|native session').hasMatch(stage)) {
+        return 1;
+      }
+      return op['nativeId'] == null ? 0 : 2;
+    }
+
+    String stateOf(Map op, int index) {
+      final at = stepOf(op);
+      if (index < at) return 'done';
+      if (index > at) return 'pending';
+      return switch (op['status']) {
+        'creating' => 'now',
+        'needs_action' => 'wait',
+        _ => 'fail',
+      };
+    }
+
+    Widget card(Map op, {bool detailed = false}) {
+      final desktopClaude =
+          op['provider'] == 'claude' && op['executionMode'] == 'desktop';
+      final waiting = op['status'] == 'needs_action',
+          creating = op['status'] == 'creating';
+      final at = stepOf(op);
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(top: 12),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+        decoration: BoxDecoration(
+          color: toneCharcoal,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: hairline),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        creating
+                            ? 'Setting up your coordinator'
+                            : waiting
+                            ? 'Start your session in Claude'
+                            : 'Setup not completed',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        op['name'] ?? 'Coordinator setup',
+                        style: const TextStyle(color: muted, fontSize: 12),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 10),
+                creating
+                    ? tag('Working', spinning: true)
+                    : waiting
+                    ? tag('Needs you', tint: warning)
+                    : tag('Not completed', tint: danger),
               ],
-              Flexible(
-                child: Text(
-                  op['status'] == 'creating'
-                      ? (op['stage'] ?? 'Preparing your session…')
-                      : op['status'] == 'needs_action'
-                      ? 'Start your session in Claude'
-                      : 'Setup not completed',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
+            ),
+            if (detailed) ...[
+              const SizedBox(height: 8),
+              stepRow(
+                'Prepare the coordinator folder',
+                detail: at == 0 && creating ? op['stage'] : null,
+                state: stateOf(op, 0),
+              ),
+              stepRow(
+                desktopClaude
+                    ? 'Start the session in Claude'
+                    : 'Start the session',
+                detail: at == 1 && creating ? op['stage'] : null,
+                state: stateOf(op, 1),
+              ),
+              stepRow(
+                'Connect to WhatsApp',
+                detail: at == 2 && creating ? op['stage'] : null,
+                state: stateOf(op, 2),
               ),
             ],
-          ),
-          note(op['name'] ?? 'Coordinator setup'),
-          if (op['status'] == 'creating')
-            note(
-              'You can close this window. Progress will stay visible on Home.',
-            ),
-          if (op['status'] == 'needs_action')
-            note(
-              'Open Claude and click Start on the prepared card. FarFromDesk will detect it and connect automatically. You can leave this window open or close it.',
-            )
-          else if (op['error'] != null)
-            note(op['error']),
-          if ([
-            'uncertain',
-            'set-aside',
-            'needs_action',
-          ].contains(op['status'])) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              children: [
-                if (op['status'] == 'needs_action')
-                  button(
-                    'Open Claude',
-                    () => post('/api/master-open-proposal', {
-                      'operationId': op['id'],
-                    }),
-                  ),
-                if (op['status'] != 'needs_action')
-                  button(
-                    'Recover exact session',
-                    () =>
-                        post('/api/master-recover', {'operationId': op['id']}),
-                  ),
-                button('Cancel setup', () async {
-                  if (await confirm(
-                    'Abandon this setup?',
-                    'This closes the setup attempt. It does not delete the native conversation.',
-                  )) {
-                    await post('/api/master-abandon', {
-                      'operationId': op['id'],
-                    });
-                  }
-                }),
-              ],
-            ),
+            if (creating)
+              note('You can close this window. Progress stays on Home.'),
+            if (waiting)
+              note(
+                op['workspaceId'] == null
+                    ? 'Claude opened a new chat with the setup message filled in. Confirm the folder and press Send. FarFromDesk detects it and connects automatically.'
+                    : 'Claude shows a card for this session. Click Start on it once. FarFromDesk detects it and connects automatically.',
+              )
+            else if (op['error'] != null)
+              note(op['error']),
+            if ([
+              'uncertain',
+              'set-aside',
+              'needs_action',
+            ].contains(op['status'])) ...[
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (waiting)
+                    button(
+                      'Open Claude',
+                      () => post('/api/master-open-proposal', {
+                        'operationId': op['id'],
+                      }),
+                      primary: true,
+                    ),
+                  if (!waiting)
+                    button(
+                      'Recover exact session',
+                      () => post('/api/master-recover', {
+                        'operationId': op['id'],
+                      }),
+                      primary: true,
+                    ),
+                  button('Cancel setup', () async {
+                    if (await confirm(
+                      'Abandon this setup?',
+                      'This closes the setup attempt. It does not delete the native conversation.',
+                    )) {
+                      await post('/api/master-abandon', {
+                        'operationId': op['id'],
+                      });
+                    }
+                  }),
+                  if (waiting)
+                    const Text(
+                      'Checking every few seconds',
+                      style: TextStyle(fontSize: 11, color: muted),
+                    ),
+                ],
+              ),
+            ],
           ],
-        ],
-      ),
-    );
+        ),
+      );
+    }
+
     final previous = operations
         .where((op) => op['id'] != current?['id'])
         .toList();
     return [
       for (final op in operations.where((op) => op['id'] == current?['id']))
-        card(op),
+        card(op, detailed: true),
       if (previous.isNotEmpty)
         ExpansionTile(
           title: Text(
             'Earlier setup attempts (${previous.length})',
-            style: const TextStyle(fontSize: 13, color: muted),
+            style: const TextStyle(fontSize: 12.5, color: muted),
           ),
           shape: const Border(),
           collapsedShape: const Border(),
