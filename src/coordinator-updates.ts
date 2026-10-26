@@ -27,7 +27,7 @@ function queueConnectionUpdates(store:Store,router:Router,bindingId:string,now:n
   if(router.stopped||!master||store.get('coordinator-updates-enabled')==='false')return 0;
   const since=Number(store.get('coordinator-summary-since'));
   if(!Number.isFinite(since))return 0;
-  const parents=store.db.prepare("SELECT id,binding_id,status,created_at,updated_at,destination FROM inbox WHERE binding_id=? AND id LIKE 'wa:%' AND created_at>=? AND status IN ('queued','dispatched','submitted','uncertain','failed') ORDER BY created_at,id").all(master.id,since) as unknown as Job[];
+  const parents=store.db.prepare("SELECT id,binding_id,status,created_at,updated_at,destination FROM inbox WHERE binding_id=? AND (id LIKE 'wa:%' OR id LIKE 'tg:%') AND created_at>=? AND status IN ('queued','dispatched','submitted','uncertain','failed') ORDER BY created_at,id").all(master.id,since) as unknown as Job[];
   const groups=new Map<string,{parents:Job[];jobs:Job[]}>();
   for(const parent of parents) {
     if(!parent.destination)continue;

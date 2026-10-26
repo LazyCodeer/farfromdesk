@@ -64,7 +64,12 @@ export class Store {
   enable(id: string, enabled: boolean) { this.db.prepare('UPDATE bindings SET enabled=? WHERE id=?').run(enabled ? 1 : 0, id); }
   seen(id: string) { return !!this.db.prepare('SELECT 1 FROM seen WHERE id=?').get(id); }
   remember(id: string) { this.db.prepare('INSERT OR IGNORE INTO seen VALUES(?,?)').run(id, Date.now()); }
-  destination(){return this.destinationContext.getStore()??this.get('destination-jid')??this.get('whatsapp-owner')??null;}
+  controlChannel(){return this.get('control-channel')==='telegram'?'telegram':'whatsapp';}
+  ownerFor(destination?:string|null) {
+    if(destination?.startsWith('tg:'))return destination===this.get('telegram-owner')?destination:undefined;
+    return this.get('whatsapp-owner');
+  }
+  destination(){return this.destinationContext.getStore()??(this.controlChannel()==='telegram'?this.get('telegram-owner')??'tg:unpaired':this.get('destination-jid')??this.get('whatsapp-owner'))??null;}
   enqueue(id: string, b: Binding, body: string, destination:string|null=this.destination()) {
     const existing=this.job(id);if(existing&&(existing.binding_id!==b.id||existing.body!==body))throw new Error('A delivery ID cannot be reused for different content or another session.');
     const now=Date.now();
@@ -107,6 +112,7 @@ export class Store {
   unlinkedHooks(){return this.db.prepare('SELECT id,binding_id,turn_id,at FROM hook_updates ORDER BY at DESC LIMIT 50').all();}
   hookUpdate(id:string){return this.db.prepare('SELECT text FROM hook_updates WHERE id=?').get(id);}
   recover() {
+    this.db.prepare("UPDATE outbox SET status='uncertain',error='Telegram delivery was interrupted; check the bot before resending' WHERE status='sending' AND destination LIKE 'tg:%'").run();
     for(const row of this.db.prepare("SELECT id FROM inbox WHERE status='dispatched'").all() as any[])this.jobState(row.id,'uncertain','Bridge restarted during delivery. Check the native session before retrying.');
     this.interruptAudio('The bridge restarted while processing your voice note. Please resend it or type your message.');
   }
@@ -142,7 +148,11 @@ export class Store {
       }catch(e){this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output');throw e;}
     }
     // Stable message IDs are recorded before network I/O. Retries reuse them.
-    const chunks = toWhatsApp(text).match(/[\s\S]{1,3500}/gu) ?? [];
+    const formatted=toWhatsApp(text);
+    const chunks:string[]=[];let chunk='';
+    // Bound UTF-16 length too: emoji occupy two units in Telegram entity offsets.
+    for(const character of formatted){if(chunk.length+character.length>3500){chunks.push(chunk);chunk='';}chunk+=character;}
+    if(chunk)chunks.push(chunk);
     const insert = this.db.prepare('INSERT OR IGNORE INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,request_id,reply_kind,turn_id) VALUES(?,?,?,?,?,?,?,?,?,?)');
     const label=binding?`${binding.provider==='claude'?'Claude':'Codex'} ${this.get(`execution-mode:${binding.id}`)==='desktop'?'Desktop':'CLI'} · ${this.get(`name:${binding.id}`)??binding.alias}`.slice(0,130):'';
     const coordinator=!!binding&&(binding.id===this.get('master')||this.get(`role-kind:${binding.id}`)==='master');
@@ -159,7 +169,7 @@ export class Store {
       return true;
     } catch (e) { this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output'); throw e; }
   }
-  outbound() { cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT * FROM outbox WHERE status='queued' AND next_at<=? AND (binding_id IS NULL OR binding_id IN (SELECT id FROM bindings WHERE enabled=1)) ORDER BY created_at LIMIT 1").get(Date.now()) as any; }
+  outbound(channel:'whatsapp'|'telegram'='whatsapp') { cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT * FROM outbox WHERE status='queued' AND next_at<=? AND (CASE WHEN destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (binding_id IS NULL OR binding_id IN (SELECT id FROM bindings WHERE enabled=1)) ORDER BY created_at LIMIT 1").get(Date.now(),channel) as any; }
   sent(id: string) { const row=this.db.prepare('SELECT request_id,sent_at FROM outbox WHERE id=?').get(id) as any;this.db.prepare("UPDATE outbox SET status='sent',error=NULL,sent_at=COALESCE(sent_at,?) WHERE id=?").run(Date.now(),id);if(row?.request_id&&!row.sent_at)this.event(row.request_id,'reply_sent'); }
   deliveryReceipt(waId:string,destination:string,kind:'delivered'|'read') {
     const row=this.db.prepare('SELECT id,request_id,delivered_at,read_at FROM outbox WHERE wa_id=? AND destination=?').get(waId,destination) as any;

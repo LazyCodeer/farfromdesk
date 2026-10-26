@@ -1,6 +1,6 @@
 {
   "name": "farfromdesk",
-  "version": "0.7.1",
+  "version": "0.7.8",
   "private": true,
   "type": "module",
   "engines": {
@@ -31,7 +31,7 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },
-  "description": "Your coding sessions, one WhatsApp message away.",
+  "description": "Control your coding sessions through WhatsApp or Telegram.",
   "license": "MIT",
   "repository": {
     "type": "git",

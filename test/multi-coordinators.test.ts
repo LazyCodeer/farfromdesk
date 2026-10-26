@@ -105,6 +105,11 @@ test('delegation is correlated, idempotent, scope checked, and rejects loops',()
     assert.equal(f.store.get(`parent:${delegated.requestId}`),'wa:root');
     assert.deepEqual(f.c.scope.run(f.codex.id,()=>f.c.delegate('wa:root',f.claude.id,'Review Claude work','review')),delegated);
     assert.throws(()=>f.c.scope.run(f.codex.id,()=>f.c.delegate('wa:root',f.claude.id,'Different task','review')),/cannot change/);
+    // The platform name or the registry key reaches the same coordinator, so a retry by name never duplicates.
+    const key=f.c.registry.entry(f.claude.id)!.key;
+    assert.deepEqual(f.c.scope.run(f.codex.id,()=>f.c.delegate('wa:root','claude','Review Claude work','review')),delegated);
+    assert.deepEqual(f.c.scope.run(f.codex.id,()=>f.c.delegate('wa:root',key,'Review Claude work','review')),delegated);
+    assert.throws(()=>f.c.scope.run(f.codex.id,()=>f.c.delegate('wa:root','codex','Do it yourself','self')),/your own platform/);
     f.c.scope.run(f.claude.id,()=>f.c.ownerRequest(delegated.requestId));
     assert.throws(()=>f.c.scope.run(f.claude.id,()=>f.c.delegate(delegated.requestId,f.codex.id,'Loop','loop')),/cycle/);
     assert.throws(()=>f.c.scope.run(f.codex.id,()=>f.router.resolveOwner('wa:root','done')),/delegated/);

@@ -124,7 +124,7 @@ test('direct start opens one owner-sent chat in the coordinator folder and conne
  const f=fixture();try {
   const opened:string[][]=[];const starts=new DesktopStarts(f.store,f.native as any,0,async(folder:string,prompt:string)=>{opened.push([folder,prompt]);});
   await assert.rejects(starts.createDirect(f.binding,'No project work.'),/press Send/);
-  assert.equal(opened.length,1);assert.equal(opened[0][0],f.cwd);assert.match(opened[0][1],/get_session/);assert.equal(f.sends(),0);
+  assert.equal(opened.length,1);assert.equal(opened[0][0],f.cwd);assert.match(opened[0][1],/get_session/);assert.match(opened[0][1],/^Set up this folder as my FarFromDesk coordinator\./);assert.equal(f.sends(),0);
   const op=starts.get(f.binding.id)!;assert.equal(op.status,'needs_action');assert.equal(op.parentId,'');
   await assert.rejects(starts.createDirect(f.binding,'No work'),/already/);assert.equal(opened.length,1);
   assert.equal(starts.acknowledgment(f.binding),null);

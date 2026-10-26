@@ -65,3 +65,20 @@ export async function streamMediaDownload(media:any,kind:'image'|'document'|'aud
   }catch(e){await handle?.close().catch(()=>{});dispose();throw e;}
   finally{clearTimeout(idle);abort.removeEventListener('abort',cancel);stream?.destroy();}
 }
+
+// Public HTTPS transports supply a bounded stream; validation and private staging
+// stay shared with native attachment and voice processing.
+export async function stageMediaStream(source:AsyncIterable<Uint8Array>,filename:string,declared:number,max:number,signal:AbortSignal,root=privateMediaRoot()):Promise<DownloadedMedia> {
+  if(!Number.isSafeInteger(declared)||declared<1||declared>max)throw new Error('Invalid attachment size.');
+  const dir=privateDirectory(root,['media-downloads',randomUUID()],true),path=join(dir,'data');active.add(dir);
+  const dispose=()=>{active.delete(dir);rmSync(dir,{recursive:true,force:true});};
+  let handle:Awaited<ReturnType<typeof open>>|undefined;
+  try {
+    requireDiskSpace(dir,declared);handle=await open(path,'wx',0o600);
+    const digest=new FileDigest(filename,max);let size=0;
+    for await(const chunk of source){signal.throwIfAborted();size+=chunk.length;if(size>declared)throw new Error('Attachment exceeds declared size.');digest.add(Buffer.from(chunk));await handle.writeFile(chunk);}
+    signal.throwIfAborted();const meta=digest.finish();if(meta.bytes!==declared)throw new Error('Attachment size mismatch.');
+    await handle.sync();await handle.close();handle=undefined;await chmod(path,0o400);
+    const file={path,...meta,dispose};verifiedDownloads.add(file);return file;
+  }catch(e){await handle?.close().catch(()=>{});dispose();throw e;}
+}

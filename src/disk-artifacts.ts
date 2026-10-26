@@ -32,7 +32,7 @@ export class DiskArtifacts {
   }
   private assertCurrent(snapshot:Snapshot) {
     const b=this.store.binding(snapshot.binding_id),job=this.store.job(snapshot.request_id);
-    if(!b?.enabled||b.native_id!==snapshot.native_id||this.store.get('whatsapp-owner')!==snapshot.owner||!job||job.binding_id!==b.id||['replaced','reviewed','auto_closed','cancelled'].includes(job.status)||![job.destination??snapshot.owner,snapshot.owner].includes(snapshot.destination))throw new Error('Artifact owner, session or request changed. Preparation/delivery stopped.');
+    if(!b?.enabled||b.native_id!==snapshot.native_id||this.store.ownerFor(snapshot.destination)!==snapshot.owner||!job||job.binding_id!==b.id||['replaced','reviewed','auto_closed','cancelled'].includes(job.status)||![job.destination??snapshot.owner,snapshot.owner].includes(snapshot.destination))throw new Error('Artifact owner, session or request changed. Preparation/delivery stopped.');
   }
   usage() {
     const a=this.store.db.prepare('SELECT COALESCE(SUM(CASE WHEN storage_key IS NOT NULL THEN bytes ELSE length(data) END),0) n FROM artifacts').get() as any;
@@ -43,10 +43,11 @@ export class DiskArtifacts {
     const type=fileType(input.filename);
     if(!Number.isSafeInteger(input.bytes)||Number(input.bytes)<1||Number(input.bytes)>MAX_OUTGOING_DOCUMENT_BYTES||typeof input.sha256!=='string'||!/^[0-9a-f]{64}$/.test(input.sha256))throw new Error('An exact SHA-256 and size from 1 byte to 2,097,152,000 bytes are required.');
     if(destinationMode!=='request'&&destinationMode!=='self')throw new Error('Use the original request or linked owner self-chat.');
-    const job=this.store.job(requestId),owner=this.store.get('whatsapp-owner');
+    const job=this.store.job(requestId),owner=this.store.ownerFor(job?.destination);
     if(!owner||!job)throw new Error('An existing owner request is required.');
     const snapshot={binding_id:b.id,request_id:requestId,native_id:b.native_id,owner,destination:destinationMode==='self'?owner:job.destination??owner};
     this.assertCurrent(snapshot);
+    if(snapshot.destination.startsWith('tg:')&&Number(input.bytes)>50_000_000)throw new Error('Telegram documents must be at most 50 MB.');
     const prior=this.store.db.prepare('SELECT id,filename,mime,COALESCE(bytes,length(data)) bytes,sha256 FROM artifacts WHERE binding_id=? AND request_id=? AND filename=? AND sha256=? AND destination=? AND owner=? AND native_id=? AND COALESCE(bytes,length(data))=? AND removed_at IS NULL').get(b.id,requestId,type.filename,input.sha256,snapshot.destination,owner,b.native_id,Number(input.bytes)) as any;
     if(prior)return {artifactId:prior.id,filename:prior.filename,mime:prior.mime,bytes:prior.bytes,sha256:prior.sha256};
     this.expire();

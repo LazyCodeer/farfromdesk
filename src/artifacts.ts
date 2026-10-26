@@ -31,12 +31,13 @@ export class Artifacts {
   prepare(b:Binding,requestId:string,filename:unknown,base64:unknown,destinationMode:unknown='request') {
     const job=this.request(b,requestId);
     if(!['request','self'].includes(destinationMode as string))throw new Error('Documents can only use the original request or the linked owner self-chat.');
-    const owner=this.store.get('whatsapp-owner');
+    const owner=this.store.ownerFor(job.destination);
     const destination=destinationMode==='self'?owner:job.destination??owner;
-    if(!owner||!destination)throw new Error('Pair WhatsApp first.');
+    if(!owner||!destination)throw new Error('Connect the original messaging account first.');
     if(typeof base64!=='string'||base64.length>Math.ceil(MAX_ARTIFACT_BYTES/3)*4)throw new Error('Legacy JSON preparation is limited to 25 MiB; use prepare-file streaming for larger documents.');
     const data=Buffer.from(base64,'base64');if(data.toString('base64')!==base64)throw new Error('Invalid document encoding.');
     const meta=validateArtifact(filename,data);
+    if(destination.startsWith('tg:')&&data.length>50_000_000)throw new Error('Telegram documents must be at most 50 MB.');
     const prior=this.store.db.prepare('SELECT id FROM artifacts WHERE binding_id=? AND request_id=? AND sha256=? AND filename=? AND destination=? AND removed_at IS NULL').get(b.id,requestId,meta.sha256,meta.filename,destination) as any;
     if(prior)return {artifactId:prior.id,...meta};
     const id=randomUUID();
@@ -54,12 +55,12 @@ export class Artifacts {
     const job=this.request(b,requestId);
     if(typeof caption!=='string'||caption.length>1000)throw new Error('Document caption must be at most 1,000 characters.');
     const artifact=this.store.db.prepare('SELECT * FROM artifacts WHERE id=? AND binding_id=? AND request_id=?').get(artifactId,b.id,requestId) as any;
-    if(!artifact||artifact.removed_at||artifact.owner&&artifact.owner!==this.store.get('whatsapp-owner')||artifact.native_id&&artifact.native_id!==b.native_id)throw new Error('Prepare this exact artifact locally for this session and request first.');
+    if(!artifact||artifact.removed_at||artifact.owner&&artifact.owner!==this.store.ownerFor(artifact.destination)||artifact.native_id&&artifact.native_id!==b.native_id)throw new Error('Prepare this exact artifact locally for this session and request first.');
     const source=`document:${b.id}:${requestId}:${artifactId}`;
     const prior=this.store.db.prepare('SELECT id,body FROM outbox WHERE source=?').get(source) as any;
     if(prior){if(prior.body!==caption)throw new Error('This artifact was already queued with a different caption.');return this.status(b,prior.id);}
-    const owner=this.store.get('whatsapp-owner'),destination=artifact.destination??job.destination??owner;
-    if(!owner||!destination)throw new Error('Pair WhatsApp first.');
+    const owner=this.store.ownerFor(job.destination),destination=artifact.destination??job.destination??owner;
+    if(!owner||!destination)throw new Error('Connect the original messaging account first.');
     const id=randomUUID();
     this.store.db.prepare('INSERT INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,artifact_id,request_id,reply_kind) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,b.id,caption,source,`3EB0${randomUUID().replaceAll('-','').toUpperCase()}`,Date.now(),destination,artifactId,requestId,'progress');
     this.store.event(requestId,'document_queued');

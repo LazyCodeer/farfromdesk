@@ -1,4 +1,11 @@
 export type ReplyArgs={alias:string;requestId:string;kind:'progress'|'final';turnId?:string;outcome?:string};
+/** Desktop chats do not inherit the bridge process's environment. Bind their
+ * commands to the originating instance, without putting credentials in prompts. */
+export function scopedBridgeCommand(node:string,cli:string,stateDir:string,port:string) {
+  if(!/^\d+$/.test(port)||Number(port)<1||Number(port)>65535)throw new Error('Invalid bridge port');
+  const quote=(value:string)=>`'${value.replaceAll("'","'\\''")}'`;
+  return ['/usr/bin/env',`WSB_STATE_DIR=${stateDir}`,`WSB_PORT=${port}`,node,cli].map(quote).join(' ');
+}
 const usage='Usage: respond NAME REQUEST-ID [progress|final] [--turn-id ID] [--outcome done|blocked|reviewed|cancelled], with the reply text on stdin.';
 /** Validates respond arguments before anything is read or sent, so a mistyped kind never becomes a final reply. */
 export function parseRespondArgs(argv:string[]):ReplyArgs {
@@ -18,8 +25,4 @@ export function parseRespondArgs(argv:string[]):ReplyArgs {
   if(kind!==undefined&&kind!=='progress'&&kind!=='final')throw new Error(`Unknown reply kind "${kind}"; nothing was sent. Use progress or final, and put the reply text on stdin. ${usage}`);
   if(extra.length)throw new Error(`Unexpected argument "${extra[0]}"; nothing was sent. Put the reply text on stdin, not on the command line. ${usage}`);
   return {alias,requestId,kind:kind??'final',turnId:flags['--turn-id'],outcome:flags['--outcome']};
-}
-/** The exact commands a session uses to answer one request; both pass parseRespondArgs. */
-export function replyCommands(respond:string) {
-  return {progress:`${respond} progress`,final:`${respond} final`,stdin:'Reply text goes on stdin through a quoted heredoc. Use the progress command for interim updates and the final command only when the request is done or clearly blocked. No other options or kinds are accepted.'};
 }

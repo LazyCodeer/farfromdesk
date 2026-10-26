@@ -7,6 +7,7 @@ import { streamMediaDownload, isDownloadedMedia, requireDiskSpace, type Download
 import { digestFileSync } from './large-file.js';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
+import { readVoiceKey, transcribeCloud, voiceEngine } from './voice-cloud.js';
 import { errorCode, type VoiceStage, type VoiceStageEvent } from './request-events.js';
 
 export type AudioObserver=(event:VoiceStageEvent)=>void;
@@ -90,15 +91,28 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
     },observe);
   }finally{await rm(dir,{recursive:true,force:true});}
 }
-export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver) {
-  audioFormat(audio);
+export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver,download:typeof downloadAudio=downloadAudio) {
+  const format=audioFormat(audio),engine=voiceEngine(store);
+  if(engine!=='local') {
+    const k=readVoiceKey()!,mime=String(audio.mimetype).split(';')[0].trim().toLowerCase();
+    const data=await measureVoiceStage('download',()=>download(audio,signal),observe);
+    try {
+      try{return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,data.path,mime,signal),observe);}
+      catch(e) {
+        // Fall back only to a model that is already on disk; never start a download here.
+        const local=store.get('audio-config');
+        if(signal?.aborted||store.get('voice-fallback')==='0'||!local||/No clear speech/.test((e as Error).message))throw e;
+        return await transcribeLocal(data,format,validateAudioConfig(JSON.parse(local)),stateDir,signal,observe);
+      }
+    }finally{data.dispose();}
+  }
   if(!store.get('audio-config')&&store.get('audio-tools')) {
     const {prepareVoiceModel}=await import('./voice-model.js');await prepareVoiceModel(store);
     signal?.throwIfAborted();
   }
   const saved=store.get('audio-config');
-  if(!saved)throw new Error('Voice transcription is not configured on this computer yet. Please type your message; configure local Whisper in the bridge CLI.');
-  const config=validateAudioConfig(JSON.parse(saved)),format=audioFormat(audio);
-  const data=await measureVoiceStage('download',()=>downloadAudio(audio,signal),observe);
+  if(!saved)throw new Error('Voice transcription is not configured on this computer yet. Please type your message, or set up voice notes in the FarFromDesk app.');
+  const config=validateAudioConfig(JSON.parse(saved));
+  const data=await measureVoiceStage('download',()=>download(audio,signal),observe);
   try{return await transcribeLocal(data,format,config,stateDir,signal,observe);}finally{data.dispose();}
 }

@@ -108,8 +108,11 @@ def main():
     if state and state['targetCommitish'] != args.commit:
         raise RuntimeError('Draft belongs to another source commit')
     if not state:
+        changes_file = Path(__file__).resolve().parent.parent / 'docs' / 'releases' / f'{args.version}.md'
+        changes = changes_file.read_text(encoding='utf-8').strip() + '\n\n' if changes_file.is_file() else ''
         notes = (f'# FarFromDesk {args.version}\n\n'
-                 'Your coding sessions, one WhatsApp message away.\n\n'
+                 'Your coding sessions, one phone message away.\n\n'
+                 + changes +
                  '## Choose your download\n\n'
                  '| Computer | Asset |\n|---|---|\n'
                  f'| Apple Silicon Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-arm64.dmg` or `.zip` |\n'
@@ -120,9 +123,9 @@ def main():
                  'The automatically generated Source code archives are for contributors, not app installation.\n\n'
                  '## Get started\n\n'
                  '1. Install and open FarFromDesk on your computer.\n'
-                 '2. Link WhatsApp using the QR code in the app.\n'
-                 '3. Choose your coding platform and coordinator session, then message yourself.\n\n'
-                 'Local voice tools are included. The multilingual model downloads once on first use and stays on your computer for offline transcription. '
+                 '2. Choose WhatsApp (QR linking) or Telegram (bot pairing and local confirmation).\n'
+                 '3. Choose your coding platform and coordinator, then message your chosen private chat.\n\n'
+                 'Local voice tools are included. The multilingual model downloads once on first use and stays on your computer for offline transcription. You can alternatively configure your own supported cloud voice API key in Settings. '
                  'Codex/Claude accounts are separate and must have access to the selected runtime. '
                  'Mac supports native Desktop integrations (Python 3 required) and CLI sessions; '
                  'Windows/Linux support CLI sessions. Native permissions still apply.\n\n'

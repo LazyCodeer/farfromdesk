@@ -1,6 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRespondArgs, replyCommands } from '../src/reply-args.js';
+import { parseRespondArgs,scopedBridgeCommand } from '../src/reply-args.js';
+import { cliReplyRule } from '../src/master-policy.js';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync,writeFileSync,rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+test('Desktop command keeps the exact state and port despite a different inherited instance',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ffd-reply-scope-'));
+  try {
+    const cli=join(dir,"fake cli's.js"),state=join(dir,"test instance's $(not-a-command)");
+    writeFileSync(cli,'console.log(JSON.stringify({state:process.env.WSB_STATE_DIR,port:process.env.WSB_PORT,args:process.argv.slice(2)}))');
+    const command=scopedBridgeCommand(process.execPath,cli,state,'47839')+" respond 'master' 'tg:request' final";
+    const result=JSON.parse(execFileSync('/bin/sh',['-c',command],{encoding:'utf8',env:{...process.env,WSB_STATE_DIR:'/wrong-instance',WSB_PORT:'47831'}}));
+    assert.deepEqual(result,{state,port:'47839',args:['respond','master','tg:request','final']});
+    assert.throws(()=>scopedBridgeCommand('/node','/cli','/state','0'),/port/);
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
 
 test('respond accepts only progress or final and rejects anything that would silently become final',()=>{
   assert.deepEqual(parseRespondArgs(['worker','req-1']),{alias:'worker',requestId:'req-1',kind:'final',turnId:undefined,outcome:undefined});
@@ -15,11 +32,7 @@ test('respond accepts only progress or final and rejects anything that would sil
   assert.throws(()=>parseRespondArgs(['worker']),/request ID are required/);
 });
 
-test('the envelope names both full commands and each one parses to its kind',()=>{
-  const r=replyCommands("'/node' '/cli.js' respond 'worker' 'master:wa:1'");
-  for(const kind of ['progress','final'] as const) {
-    const words=r[kind].split(' ').map(w=>w.replace(/^'|'$/g,'')).slice(3);
-    assert.equal(parseRespondArgs(words).kind,kind);assert.ok(r[kind].endsWith(` ${kind}`));
-  }
-  assert.match(r.stdin,/heredoc/);
+test('the reply form in the role parses to each kind',()=>{
+  assert.match(cliReplyRule,/ffd reply 'REQUEST-ID' progress/);assert.match(cliReplyRule,/never sends twice/);
+  for(const kind of ['progress','final'] as const)assert.equal(parseRespondArgs(['worker','master:wa:1',kind]).kind,kind);
 });

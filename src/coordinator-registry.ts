@@ -76,13 +76,14 @@ export class CoordinatorRegistry {
   choose(provider:string,mode?:string) {
     let entries=this.entries().filter(r=>r.provider===provider&&(!mode||r.executionMode===mode));
     if(!mode&&entries.length>1){const p=JSON.parse(this.store.get(`platform-preference:${provider}`)??'null');if(p?.executionMode)entries=entries.filter(r=>r.executionMode===p.executionMode&&(!p.route?.accountScope||r.accountScope===p.route.accountScope));}
-    if(entries.length!==1)throw new Error(entries.length?'Choose the exact Desktop/CLI connection and account in Coding platforms.':'Set up a coordinator for this connection in Coding platforms.');
+    if(entries.length!==1)throw new Error(entries.length?'Choose the exact Desktop/CLI connection and account in Coding platforms.':`No ${provider==='claude'?'Claude':'Codex'} coordinator is set up. Add one in FarFromDesk, Coding platforms.`);
     const b=this.store.binding(entries[0].bindingId);
     if(!b?.enabled)throw new Error('That coordinator is paused. Resume it in Coding platforms; no other platform was selected.');
     return b;
   }
   view() {return this.entries().map(({accountKey,accountScope,...e})=>{
     const b=this.store.binding(e.bindingId);
-    return {...e,name:b?this.store.get(`name:${b.id}`)??b.alias:'Missing session',nativeId:b?.native_id,enabled:!!b?.enabled,isDefault:e.bindingId===this.store.get('master'),state:b?.enabled?'connected':'paused'};
+    const error=b?this.store.get(`native-history-error:${b.id}`)||undefined:undefined;
+    return {...e,name:b?this.store.get(`name:${b.id}`)??b.alias:'Missing session',nativeId:b?.native_id,enabled:!!b?.enabled,isDefault:e.bindingId===this.store.get('master'),error,state:!b?.enabled?'paused':error?'needs_attention':'connected'};
   });}
 }

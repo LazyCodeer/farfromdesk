@@ -32,7 +32,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
     assert.equal(wrongHost,403);
     assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
-    for(const endpoint of ['/api/voice-model','/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown','/api/update-shutdown']) {
+    for(const endpoint of ['/api/control-channel','/api/control-channel/disconnect','/api/telegram/connect','/api/telegram/confirm','/api/telegram/disconnect','/api/voice-model','/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown','/api/update-shutdown']) {
       assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
     }
     router.busy.add(a.binding.id);

@@ -85,13 +85,13 @@ export class DesktopStarts {
     this.save({...op,status:'submitted',stage:'Waiting for Claude to start the session'});
     return this.confirm(b);
   }
-  // Starts a top-level session in the coordinator's own folder without a launcher chat.
-  async createDirect(b:Binding,instructions:string) {
+  // Opens a prefilled top-level chat without a launcher chat; it starts only when the owner presses Send.
+  async createDirect(b:Binding,instructions:string,lead='Set up this folder as my FarFromDesk coordinator.') {
     if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
     if(realpathSync(b.cwd)!==b.cwd)throw new Error('Desktop project path changed.');
     const op:Start={supportDir:this.store.get(`master-support:${b.id}`),stage:'Opening Claude',bindingId:b.id,parentId:'',cwd:b.cwd,nonce:randomUUID(),status:'uncertain',requireDetached:false};
     const ready=join(op.supportDir??b.cwd,'.tether-desktop-ready.json');
-    const prompt=`Set up this folder as my FarFromDesk coordinator. ${instructions}\nNow use get_session to find your own exact session ID and write ${JSON.stringify({nonce:op.nonce,ready:true,sessionId:'YOUR_EXACT_SESSION_ID'})} to ${JSON.stringify(ready)}. Then reply READY and wait for my WhatsApp requests.`;
+    const prompt=`${lead} ${instructions}\nNow use get_session to find your own exact session ID and write ${JSON.stringify({nonce:op.nonce,ready:true,sessionId:'YOUR_EXACT_SESSION_ID'})} to ${JSON.stringify(ready)}. Then reply READY and wait for my WhatsApp requests.`;
     // Save before opening: after a crash, never open a second new-session page blindly.
     this.save(op);
     try{await this.openNew(b.cwd,prompt);}catch{throw new Error('Claude Desktop did not open. Open Claude, then recover this setup.');}

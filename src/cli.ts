@@ -10,9 +10,12 @@ import { handleHook } from './hooks.js';
 import { inspectLocalArtifact } from './large-file.js';
 import { uploadArtifact } from './artifact-upload.js';
 import { parseRespondArgs } from './reply-args.js';
+import { runFfd } from './ffd.js';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
-const args=process.argv.slice(2),command=args.shift();
+const args=process.argv.slice(2);let command=args.shift();
+// ffd ALIAS master OP ... is the master command with the session already chosen.
+if(command==='ffd'&&args[1]==='master'){const alias=args.shift()!;args.shift();args.push('--binding',alias);command='master';}
 async function api(path:string,data?:unknown) {
   const r=await fetch(baseUrl+path,{method:data===undefined?'GET':'POST',headers:{Authorization:`Bearer ${initializeState()}`,'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
   const d=await r.json() as any;if(!r.ok)throw new Error(d.error);return d;
@@ -32,6 +35,11 @@ async function main() {
     const [provider,alias,nativeId,cwd,mode='desktop']=args;
     if(!cwd)throw new Error('Usage: register codex|claude NAME EXACT-SESSION-ID /absolute/project [desktop|channel]');
     console.log(JSON.stringify(await api('/api/register',{provider,alias,nativeId,cwd,mode}),null,2));
+  }
+  else if(command==='ffd') {
+    const alias=args.shift()!,c=credentials(alias);
+    const call=async(path:string,data?:unknown)=>{const r=await fetch(baseUrl+path,{method:data===undefined?'GET':'POST',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});const d=await r.json() as any;if(!r.ok)throw new Error(d.error);return d;};
+    console.log(await runFfd(args,c.data,call,()=>readFileSync(0,'utf8')));
   }
   else if(command==='send'||command==='respond') {
     const flag=(name:string)=>{const i=args.indexOf(name);return i<0?undefined:args.splice(i,2)[1];};
@@ -166,4 +174,5 @@ async function main() {
   }
   else console.log('Commands: style NAME friendly|cheerful|professional|coding | media-capabilities | cleanup-media | cancel-file NAME ARTIFACT-ID | cancel-attachments NAME REQUEST-ID | status | sessions codex|claude | register PROVIDER NAME ID CWD [desktop|channel] | send NAME [TEXT, or stdin] | respond NAME REQUEST-ID [progress|final] | prepare-file NAME REQUEST-ID /absolute/file | respond-file NAME REQUEST-ID ARTIFACT-ID (caption on stdin) | delivery NAME DELIVERY-ID | configure-audio /absolute/ffmpeg /absolute/whisper-cli /absolute/model | command /COMMAND | open | channel-config NAME | claude-channel NAME | install | stop-service | install-skills | install-hooks');
 }
-main().catch(e=>{console.error(e.message);process.exitCode=1;});
+// A refused connection means the app is closed or restarting; ffd and master commands repeat safely.
+main().catch(e=>{console.error(e.message==='fetch failed'?'FarFromDesk is not reachable right now (it may be restarting). Wait a minute and run the exact same command again; the same ffd or master command with the same text never sends twice.':e.message);process.exitCode=1;});

@@ -264,3 +264,15 @@ test('discovery applies backpressure at 64 distinct in-flight keys and releases 
     await f.native.catalog('codex','64');assert.equal(calls,65);
   }finally{gate.resolve({sessions:[],cursor:null});f.close();}
 });
+
+
+test('denied catalog access stays paused even for automatic fresh scans until the owner retries',async()=>{
+ const f=nativeFixture();let calls=0;
+ try {
+  (f.native as any).readCatalog=async()=>{calls++;if(calls===1)throw Object.assign(new Error('permission denied'),{code:'EPERM'});return {sessions:[session(1,'claude')],cursor:null};};
+  await assert.rejects(f.native.catalog('claude'),/permission denied/);
+  await assert.rejects(f.native.catalog('claude',undefined,{fresh:true}),/File access was denied/);
+  await assert.rejects(f.native.catalog('claude'),/File access was denied/);assert.equal(calls,1);
+  f.native.retryDiscovery();assert.equal((await f.native.catalog('claude')).sessions.length,1);assert.equal(calls,2);
+ }finally{f.close();}
+});

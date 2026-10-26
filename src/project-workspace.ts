@@ -23,5 +23,5 @@ export function projectWorkspace(path:string) {
     const common=realpathSync(resolve(gitdir,metadata(join(gitdir,'commondir'))));
     if(basename(common)!=='.git'||!statSync(common).isDirectory())return cwd;
     return dirname(common);
-  }catch{return cwd;}
+  }catch(error:any){if(error?.code==='EPERM'||error?.code==='EACCES')throw error;return cwd;}
 }

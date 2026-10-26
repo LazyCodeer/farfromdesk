@@ -1,6 +1,7 @@
 import { spawn,type ChildProcess } from 'node:child_process';
 import type { Store } from './store.js';
 import type { Router } from './router.js';
+import type { Telegram } from './telegram.js';
 import type { WhatsApp } from './whatsapp.js';
 import { join } from 'node:path';
 
@@ -16,7 +17,7 @@ export function spawnPowerAssertion(pid:number):ChildProcess {
 export class PowerPolicy {
   child?:ChildProcess;
   error?:string;
-  constructor(private store:Store,private router:Router,private wa:WhatsApp,private spawnAssertion:(pid:number)=>ChildProcess=spawnPowerAssertion) {
+  constructor(private store:Store,private router:Router,private wa:WhatsApp,private spawnAssertion:(pid:number)=>ChildProcess=spawnPowerAssertion,private telegram?:Telegram) {
     // Preserve earlier explicit background-use consent; fresh installs default off.
     if(store.get('background-enabled')===undefined)store.set('background-enabled',store.get('whatsapp-owner')?'true':'false');
     router.stopped=!this.enabled;
@@ -28,8 +29,8 @@ export class PowerPolicy {
     this.store.set('keep-awake',String(backgroundEnabled&&keepAwake));
     this.router.stopped=!backgroundEnabled;
     this.apply();
-    if(!backgroundEnabled){this.router.approvals.cancel();this.wa.close();this.wa.status='paused';}
-    else if(this.wa.closed){this.wa.closed=false;if(this.store.get('whatsapp-owner'))await this.wa.connect();}
+    if(!backgroundEnabled){this.router.approvals.cancel();this.wa.close();this.wa.status='paused';this.telegram?.close();if(this.telegram)this.telegram.status='paused';}
+    else {if(this.wa.closed){this.wa.closed=false;if(this.store.controlChannel()==='whatsapp'&&this.store.get('whatsapp-owner'))await this.wa.connect().catch(e=>{this.wa.error=(e as Error).message;});}if(this.store.controlChannel()==='telegram')await this.telegram?.resume().catch(()=>{});}
   }
   apply() {
     const wanted=this.enabled&&this.store.get('keep-awake')==='true';

@@ -4,8 +4,15 @@ import { mkdtempSync,rmSync,realpathSync,symlinkSync,mkdirSync,unlinkSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { SessionActivation } from '../src/session-activation.js';
+import { SessionActivation,codexDesktopUrl } from '../src/session-activation.js';
 import type { Session } from '../src/session-catalog.js';
+
+test('Codex opening and queue wake target only the exact existing thread',()=>{
+  const id='11111111-1111-4111-a111-111111111111';
+  assert.equal(codexDesktopUrl(id),`codex://threads/${id}`);
+  assert.equal(codexDesktopUrl(id,true),`codex://threads/wake/${id}`);
+  for(const bad of ['new',`${id}?prompt=other`,'../new',''])assert.throws(()=>codexDesktopUrl(bad,true),/exact Codex/);
+});
 
 function fixture() {
   const cwd=realpathSync(mkdtempSync(join(tmpdir(),'ffd-activation-'))),store=new Store(':memory:');

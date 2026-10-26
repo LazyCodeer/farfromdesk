@@ -48,7 +48,7 @@ export function boundedDocumentUpload(sock:Pick<WASocket,'refreshMediaConn'>,sig
   };
 }
 
-export async function sendDiskDocument(sock:WASocket,destination:string,row:any,caption:string,messageId:string,disk:DiskArtifacts,beforeRelay:()=>Promise<void>,uploadOverride?:WAMediaUploadFunction) {
+export async function sendDiskDocument(sock:Pick<WASocket,'refreshMediaConn'|'user'>&{relayMessage(jid:string,message:any,options:{messageId:string}):Promise<unknown>},destination:string,row:any,caption:string,messageId:string,disk:DiskArtifacts,beforeRelay:()=>Promise<void>,uploadOverride?:WAMediaUploadFunction) {
   const lease=await disk.openForDelivery(row);
   try {
     const media=await prepareWAMessageMedia({document:{stream:lease.stream},fileName:row.filename,mimetype:row.mime,caption},

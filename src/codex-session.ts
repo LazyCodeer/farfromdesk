@@ -1,7 +1,26 @@
 import { spawn,type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
+import { stat,realpath } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { nativeCommand } from './platform.js';
+
+export async function requireCodexHistory(path:unknown) {
+  if(typeof path!=='string'||!isAbsolute(path))throw new Error('Codex has not saved this conversation yet. Recover this exact setup before sending a task.');
+  try {
+    const info=await stat(path);
+    if(!info.isFile()||info.size===0)throw new Error('Empty history');
+  }catch(error:any) {throw Object.assign(new Error('Codex conversation history is unavailable. Open this exact chat in Codex before sending a task.'),{code:error?.code});}
+}
+
+/** thread/start can return before its rollout is written. Read the saved history
+ * before stopping app-server; a database row alone is not a usable chat. */
+export async function confirmCodexSession(runtime:Pick<CodexSession,'request'>,id:string,cwd:string) {
+  const result=await runtime.request('thread/read',{threadId:id,includeTurns:true});
+  const thread=result?.thread;
+  if(thread?.id!==id||typeof thread.cwd!=='string'||await realpath(thread.cwd)!==await realpath(cwd))throw new Error('Native session identity does not match this setup.');
+  await requireCodexHistory(thread.path);
+}
 
 /** One native app-server transport. No shell, API keys or alternate model client. */
 export class CodexSession extends EventEmitter {

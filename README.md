@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Step away from your desk. Stay close to your work.</strong><br />
-  Connect WhatsApp to your coding assistants on your computer.
+  Connect WhatsApp or Telegram to your coding assistants on your computer.
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 <p align="center"><strong>Open source · MIT</strong> · macOS · Windows · Linux</p>
 
-Ask for updates, give your coding assistants instructions, and get their replies in WhatsApp. Your assistants keep their own context and tools. You choose which sessions to connect.
+Ask for updates, give your coding assistants instructions, and get their replies on your chosen messaging app. Your assistants keep their own context and tools. You choose which sessions to connect.
 
 ## A look inside
 
@@ -67,13 +67,13 @@ On Windows, download **install.ps1** from the latest release and run it in Power
 
 ## Get started in three steps
 
-### 1. Connect WhatsApp
+### 1. Choose WhatsApp or Telegram
 
-Open FarFromDesk and scan its QR code from **WhatsApp → Settings → Linked devices → Link a device**. Choose **Message yourself** or a supported private group containing only your account.
+For WhatsApp, scan the QR code from **WhatsApp → Settings → Linked devices → Link a device**. Choose **Message yourself** or a supported private group containing only your account. For Telegram, create a dedicated bot with BotFather, enter its token locally, open the pairing link and confirm your account in FarFromDesk. [Telegram setup and limits](docs/telegram.md). Change messaging apps in Settings; switching disconnects the current account first.
 
 ### 2. Choose your assistant
 
-Choose Codex or Claude and an available Desktop or CLI option. Connect an existing coordinating session or create one in a detected workspace. For Claude Desktop, FarFromDesk uses a reachable chat in that workspace and account to initialize the new coordinator. Your app's normal sign-in, account limits, and permissions still apply.
+Choose Codex or Claude and an available Desktop or CLI option. Connect an existing coordinating session or create one in a detected workspace. For Claude Desktop, FarFromDesk opens a prepared chat on your Mac. Confirm the folder and press Send; FarFromDesk waits for the session's verified acknowledgment before connecting it. Your app's normal sign-in, account limits, and permissions still apply.
 
 ### 3. Send a message
 
@@ -106,7 +106,7 @@ These are example requests. FarFromDesk routes them to your selected assistants 
 
 ## How it works
 
-**Your WhatsApp → FarFromDesk on your computer → Your selected coding sessions → Replies in WhatsApp.**
+**Your WhatsApp or Telegram → FarFromDesk on your computer → Your selected coding sessions → Replies on the original channel.**
 
 FarFromDesk connects to the assistants you already use. It does not replace their subscriptions or account permissions. The selected coordinating session helps direct your requests to the right worker sessions.
 
@@ -114,18 +114,18 @@ FarFromDesk connects to the assistants you already use. It does not replace thei
 
 On Mac, FarFromDesk has **Codex Desktop**, **Codex CLI**, **Claude Desktop**, and **Claude CLI** options. Windows and Linux currently offer the CLI options. Availability depends on your installed version, sign-in, account, and whether the selected session can be reached.
 
-Each Desktop or CLI connection can have its own coordinator, with one default for new messages. Some new Claude Desktop chats require you to start a proposal in Claude; FarFromDesk verifies the child before dispatching its task. Existing-chat messaging is separate from this creation step. Follow the app’s recovery guidance instead of repeatedly creating replacements.
+Each Desktop or CLI connection can have its own coordinator, with one default for new messages. New Claude Desktop chats use a prefilled native chat and require your Send action; FarFromDesk verifies the session before dispatching its task. Existing-chat messaging is separate from this creation step. Follow the app’s recovery guidance instead of repeatedly creating replacements.
 
 A chat visible in history may need to be opened before FarFromDesk can connect. A Desktop login does not automatically sign you into the CLI. Not every version and account combination has completed a real-phone test.
 
 ## Private by design, with you in control
 
 - Your linked account and selected destination control incoming requests.
-- Voice transcription happens on your computer; only the initial model download requires a connection to the model host. WhatsApp and your coding assistants still use their normal network services.
+- Voice notes can use the on-device model or your own Deepgram/AssemblyAI API key. Cloud transcription sends the audio to your selected provider; keys are stored locally in a restricted file. Optional fallback uses an already-downloaded local model. Messaging and coding assistants use their normal network services.
 - Your assistants retain their normal permissions. FarFromDesk does not isolate an assistant that already has broad file access.
 - Uncertain requests are held for review rather than automatically repeated.
 
-FarFromDesk uses an unofficial WhatsApp connection and is not affiliated with WhatsApp, Meta, Anthropic, or OpenAI. Changes to those services can affect compatibility.
+FarFromDesk uses an unofficial WhatsApp connection and the official Telegram Bot API. Telegram bots are cloud chats, not end-to-end encrypted Secret Chats. FarFromDesk is not affiliated with WhatsApp, Telegram, Meta, Anthropic, or OpenAI. Changes to those services can affect compatibility.
 
 ## Questions
 
@@ -144,3 +144,7 @@ FarFromDesk uses an unofficial WhatsApp connection and is not affiliated with Wh
 ## License
 
 [MIT](LICENSE)
+
+## Version 0.7.8 scope
+
+This release adds Telegram, cloud voice options, simpler coordinator management and session-scoped FFD commands. Native permissions and Claude Desktop’s Send step remain required. Experimental browser/Accessibility control remains local-only and is not shipped in this release.

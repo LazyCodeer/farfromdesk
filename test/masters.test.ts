@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
 import { Approvals } from '../src/approvals.js';
+import { WorkspaceScanner } from '../src/workspace-scanner.js';
+import { projectWorkspace } from '../src/project-workspace.js';
 
 const dir=mkdtempSync(join(tmpdir(),'bridge-native-test-')),fake=join(dir,'fake-codex');
 const nativeId='44444444-4444-4444-a444-444444444444';
@@ -17,12 +19,12 @@ rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;
 if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt',email:'test@example.com'}}});
 else if(m.method==='config/read')send({id:m.id,result:{config:{model_provider:'openai'}}});
 else if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
-else if((m.method==='thread/read'||m.method==='thread/resume'))send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
+else if((m.method==='thread/read'||m.method==='thread/resume')){const path=require('node:path').join(process.cwd(),'fake-rollout.jsonl');require('node:fs').writeFileSync(path,'{}\\n');send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd(),path}}});}
 else {send({id:m.id,result:{}});if(m.method==='turn/start'){send({method:'item/completed',params:{threadId:'${nativeId}',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{status:'completed'}}});}}
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=join(dir,'state');process.env.FARFROMDESK_HOME=join(dir,'home');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
 const { Connections }=await import('../src/connections.js');
-const { Masters,codexDesktopInstalled,masterName,masterWorkspaces }=await import('../src/masters.js');
+const { Masters,codexDesktopInstalled,claudeDesktopInstalled,masterName,masterWorkspaces }=await import('../src/masters.js');
 const { Coordinator }=await import('../src/coordinator.js');
 const { CodexSession }=await import('../src/codex-session.js');
 test.after(()=>rmSync(dir,{recursive:true,force:true}));
@@ -35,6 +37,10 @@ function fixture(){
   const native={run:async()=>{},stop:()=>{},catalog:async()=>({sessions:[],cursor:null}),validate:async()=>{}};
   const router=new Router(store,native as any,approvals),coordinator=new Coordinator(store,native as any,router);router.coordinator=coordinator;
   const masters=new Masters(store,router);
+  masters.openCodex=async()=>{};
+  masters.workspaceScanner=new WorkspaceScanner(async paths=>new Map(paths.flatMap(path=>{
+    try{const sessionCwd=realpathSync(path);return [[path,{sessionCwd,cwd:projectWorkspace(sessionCwd)}]] as const;}catch{return [];}
+  })));
   masters.connections=new Connections(store,async()=>({state:"verified",label:"Test account",accountKey:"test-account"}));
   let closed=false;const close=()=>{if(closed)return;closed=true;masters.close();approvals.cancel();store.close();};
   cleanups.push(close);return {store,router,masters,approvals,close};
@@ -135,7 +141,7 @@ test('explicit Desktop creation never calls CLI and preserves execution choice a
   f.masters.provisionClaude=async()=>{cliCalls++;};
   const opId='99999999-9999-4999-a999-999999999999';
   await f.masters.create('claude',opId,'desktop','11111111-1111-4111-a111-111111111111');await settled(f);
-  assert.equal(f.masters.operation().status,'ready');assert.match(f.masters.operation().cwd,/\/home\/coordinators\/farfromdesk-claude-desktop-99999999$/);assert.equal(desktopCalls,1);assert.equal(cliCalls,0);
+  assert.equal(f.masters.operation().status,'ready');assert.match(f.masters.operation().cwd,/\/home\/coordinators\/farfromdesk-orbit-claude-desktop-99999999$/);assert.equal(desktopCalls,1);assert.equal(cliCalls,0);
   assert.equal(f.store.get('claude-execution-mode'),'desktop');assert.equal(f.store.get('claude-desktop-parent'),nativeId);
   await assert.rejects(f.masters.create('claude',opId,'cli'),/cannot change/);
   await f.masters.create('claude',opId,'desktop','11111111-1111-4111-a111-111111111111');assert.equal(desktopCalls,1);
@@ -255,10 +261,10 @@ test('custom and automatic names persist into setup, native creation and recover
  f.masters.desktop.parent=async()=>({id:nativeId,cwd:dir,available:true} as any);
  let title='';f.masters.desktop.createDirect=async b=>{title=f.store.get(`name:${b.id}`)!;};
  await f.masters.create('claude','31313131-3131-4131-a131-313131313131','desktop',nativeId);await settled(f);
- assert.equal(title,'FarFromDesk · Claude Desktop');assert.equal(f.masters.operation().name,title);
+ assert.equal(title,'FarFromDesk Orbit · Claude Desktop');assert.equal(f.masters.operation().name,title);
 });
 test('session name validation rejects nontext, oversized and hidden controls before provisioning',async()=>{
- assert.equal(masterName('codex','desktop',undefined),'FarFromDesk · Codex Desktop');
+ assert.equal(masterName('codex','desktop',undefined),'FarFromDesk Orbit · Codex Desktop');
  assert.equal(masterName('claude','cli','  Team helper  '),'Team helper');
  const f=fixture();f.masters.platforms=[{provider:'codex',available:true}];
  for(const name of [42,'x'.repeat(81),'bad\nname','bad\u202ename'])await assert.rejects(f.masters.create('codex','32323232-3232-4232-a232-323232323232','cli',undefined,name),/name/);
@@ -443,4 +449,53 @@ test('automatic recovery rejects a ready acknowledgment from a different child',
   await f.masters.reconcileDesktopSetup();await settled(f);
   assert.equal(f.masters.operation().status,'uncertain');assert.match(f.masters.operation().error,/different session/);
   assert.notEqual(f.store.binding(f.b.id)?.native_id,nativeId);
+});
+
+
+test('Desktop creation waits for durable history before activating or closing the helper',async t=>{
+  const f=fixture();f.masters.platforms=[{provider:'codex',executionMode:'desktop',available:true}];
+  let release!:()=>void,entered!:()=>void;
+  const gate=new Promise<void>(r=>release=r),reading=new Promise<void>(r=>entered=r);
+  const request=CodexSession.prototype.request;
+  t.mock.method(CodexSession.prototype,'request',async function(this:InstanceType<typeof CodexSession>,method:string,params:any){
+    if(method==='thread/read'){assert.equal(params.includeTurns,true);entered();await gate;assert.equal(this.alive,true);}
+    return request.call(this,method,params);
+  });
+  await f.masters.create('codex','a2222222-2222-4222-a222-222222222222','desktop');await reading;
+  try{assert.equal(f.masters.operation().status,'creating');assert.equal(f.store.get('master'),undefined);assert.equal(f.store.binding(f.masters.operation().bindingId)?.enabled,0);}
+  finally{release();}
+  await settled(f);assert.equal(f.masters.operation().status,'ready');assert.equal(f.masters.runtimes.size,0);
+});
+
+test('missing Codex history keeps the exact setup uncertain and preserves the old coordinator and requests',async t=>{
+  const f=fixture(),old=f.store.register('old-master','codex','11111111-1111-4111-a111-111111111111',dir).binding;
+  f.store.set('master',old.id);f.store.enqueue('wa:keep',old,'Do not replay');
+  f.masters.platforms=[{provider:'codex',executionMode:'desktop',available:true}];
+  const request=CodexSession.prototype.request;
+  t.mock.method(CodexSession.prototype,'request',async function(this:InstanceType<typeof CodexSession>,method:string,params:any){
+    const result=await request.call(this,method,params);
+    if(method==='thread/read')result.thread.path=join(dir,'missing-rollout');
+    return result;
+  });
+  await f.masters.create('codex','b2222222-2222-4222-a222-222222222222','desktop');await settled(f);
+  const op=f.masters.operation();assert.equal(op.status,'uncertain');assert.equal(op.nativeId,nativeId);
+  assert.equal(f.store.get('master'),old.id);assert.equal(f.store.job('wa:keep')?.status,'queued');
+  assert.equal(f.store.binding(op.bindingId)?.enabled,0);assert.equal(f.masters.runtimes.size,0);
+  await f.masters.recover();await settled(f);assert.equal(f.masters.operation().status,'uncertain');assert.equal(f.store.bindings().length,2);
+});
+test('Claude Desktop can be detected for direct setup without a readable chat catalog',()=>{
+  assert.equal(claudeDesktopInstalled('/fixture',path=>path==='/Applications/Claude.app'),true);
+  assert.equal(claudeDesktopInstalled('/fixture',path=>path==='/fixture/Applications/Claude.app'),true);
+  assert.equal(claudeDesktopInstalled('/fixture',()=>false),false);
+});
+test('Desktop open failure cannot mark a saved coordinator ready; recovery opens the same chat',async()=>{
+  const f=fixture();f.masters.platforms=[{provider:'codex',executionMode:'desktop',available:true}];
+  const opened:string[]=[];
+  f.masters.openCodex=async id=>{opened.push(id);throw new Error('Desktop unavailable');};
+  await f.masters.create('codex','c2222222-2222-4222-a222-222222222222','desktop');await settled(f);
+  const op=f.masters.operation();assert.equal(op.status,'uncertain');assert.equal(f.store.binding(op.bindingId)?.enabled,0);
+  assert.deepEqual(opened,[nativeId]);
+  f.masters.openCodex=async id=>{opened.push(id);};
+  await f.masters.recover();await settled(f);
+  assert.equal(f.masters.operation().status,'ready');assert.equal(f.store.bindings().length,1);assert.deepEqual(opened,[nativeId,nativeId]);
 });

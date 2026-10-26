@@ -5,6 +5,18 @@ import type { Session } from './session-catalog.js';
 import type { Store } from './store.js';
 
 const exec=promisify(execFile);
+export function codexDesktopUrl(id:string,wakeOnly=false) {
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))throw new Error('An exact Codex session ID is required.');
+  return `codex://threads/${wakeOnly?'wake/':''}${id}`;
+}
+/** Codex Desktop's wake route resumes queued work without resubmitting it or
+ * navigating the current window. New setup uses the normal visible chat route. */
+export async function openCodexDesktop(id:string,wakeOnly=false) {
+  const url=codexDesktopUrl(id,wakeOnly);
+  if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Codex Desktop from a test run.');
+  if(process.platform!=='darwin')throw new Error('Automatic Codex Desktop opening is not supported by this OS adapter.');
+  await exec('/usr/bin/open',[...(wakeOnly?['-g']:[]),'-b','com.openai.codex',url],{timeout:10000,maxBuffer:65536});
+}
 /** Open the exact native Desktop identity without creating a CLI runtime. */
 export async function openClaudeDesktop(session:Session) {
   if(process.platform!=='darwin')throw new Error('Automatic Claude Desktop reopening is not supported by this OS adapter.');

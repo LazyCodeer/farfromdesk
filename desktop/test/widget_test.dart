@@ -32,6 +32,196 @@ void main() {
   }
 
   testWidgets(
+    'Unconfigured messaging choice switches both ways without a disconnect dialog',
+    (tester) async {
+      size(tester);
+      final api = PreviewGateway(fixture: 'empty');
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Your coding sessions,\none message away.'),
+        findsOneWidget,
+      );
+      expect(find.byType(SegmentedButton<String>), findsNothing);
+      await tester.tap(find.text('Continue with Telegram'));
+      await tester.pumpAndSettle();
+      expect(api.chosen, isTrue);
+      expect(api.controlChannel, 'telegram');
+      await tester.tap(find.text('Choose another app'));
+      await tester.pumpAndSettle();
+      expect(find.text('Switch to WhatsApp?'), findsNothing);
+      expect(find.text('Disconnect and switch'), findsNothing);
+      expect(api.controlChannel, 'whatsapp');
+      expect(find.text('Connect your WhatsApp'), findsOneWidget);
+      await tester.tap(find.text('Choose another app'));
+      await tester.pumpAndSettle();
+      expect(api.controlChannel, 'telegram');
+      expect(find.text('Switch to Telegram?'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Unfinished bot pairing asks to cancel setup and cancel preserves it',
+    (tester) async {
+      size(tester);
+      final api = PreviewGateway(fixture: 'telegram-pairing');
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Choose another app'));
+      await tester.pumpAndSettle();
+      expect(find.text('Cancel setup and switch'), findsOneWidget);
+      expect(find.textContaining('unfinished Telegram setup'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(api.controlChannel, 'telegram');
+      expect(api.telegramState, 'pairing');
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('Every connection flow renders without layout overflow', (
+    tester,
+  ) async {
+    size(tester);
+    tester.view.physicalSize = const Size(900, 720);
+    for (final flow in [
+      'empty',
+      'whatsapp-setup',
+      'whatsapp-qr',
+      'whatsapp-connected',
+      'telegram',
+      'telegram-pairing',
+      'telegram-confirm',
+      'telegram-connected',
+      'telegram-expired',
+      'telegram-error',
+    ]) {
+      await tester.pumpWidget(
+        FarFromDeskApp(
+          key: ValueKey(flow),
+          gateway: PreviewGateway(fixture: flow),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.takeException(), isNull, reason: flow);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+    }
+  });
+
+  testWidgets(
+    'Telegram setup selects the channel, pairs, confirms and disconnects',
+    (tester) async {
+      size(tester);
+      final api = PreviewGateway(fixture: 'connected');
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Messaging settings').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Use Telegram'));
+      await tester.pumpAndSettle();
+      expect(find.text('Switch to Telegram?'), findsOneWidget);
+      await tester.tap(find.text('Disconnect and switch'));
+      await tester.pumpAndSettle();
+      expect(api.controlChannel, 'telegram');
+      expect(find.text('Connect Telegram'), findsWidgets);
+      expect(find.text('Where should replies appear?'), findsNothing);
+      final field = find.widgetWithText(TextField, 'Bot token');
+      expect(tester.widget<TextField>(field).obscureText, isTrue);
+      await tester.enterText(
+        field,
+        '123456:FAKE_TOKEN_FOR_TEST_ONLY_1234567890',
+      );
+      await tester.ensureVisible(find.text('Connect bot'));
+      await tester.tap(find.text('Connect bot'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.text('Waiting for you in Telegram'), findsOneWidget);
+      expect(api.calls, contains('/api/telegram/connect'));
+      await tester.tap(find.text('Open Telegram'));
+      await tester.pumpAndSettle();
+      expect(find.text('Confirm your Telegram account'), findsOneWidget);
+      await tester.tap(find.text('Confirm this account'));
+      await tester.pumpAndSettle();
+      expect(find.text('@ffd_sample_bot'), findsOneWidget);
+      expect(find.textContaining('Secret Chats'), findsOneWidget);
+      expect(find.text('Where should replies appear?'), findsNothing);
+      await tester.tap(find.text('Messaging settings').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Use WhatsApp'));
+      await tester.pumpAndSettle();
+      expect(find.text('Switch to WhatsApp?'), findsOneWidget);
+      await tester.tap(find.text('Disconnect and switch'));
+      await tester.pumpAndSettle();
+      expect(api.controlChannel, 'whatsapp');
+      expect(api.telegramState, 'disconnected');
+      expect(find.text('Connect your WhatsApp'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Home disconnect is explicit and Settings shows both messaging apps',
+    (tester) async {
+      size(tester);
+      final api = PreviewGateway(fixture: 'telegram-connected');
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(find.text('Switch app'), findsNothing);
+      expect(
+        find.image(const AssetImage('assets/logo-telegram.png')),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(api.telegramState, 'connected');
+      await tester.tap(find.text('Messaging settings').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Messaging app'), findsOneWidget);
+      expect(find.text('Not connected'), findsOneWidget);
+      expect(find.text('Use WhatsApp'), findsOneWidget);
+      await tester.tap(find.byTooltip('Home'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('Disconnect'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(api.controlChannel, 'telegram');
+      expect(api.telegramState, 'disconnected');
+      expect(api.calls, contains('/api/control-channel/disconnect'));
+      expect(find.text('Not connected'), findsWidgets);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Telegram home fits a smaller desktop without a WhatsApp QR or group picker',
+    (tester) async {
+      size(tester);
+      tester.view.physicalSize = const Size(900, 720);
+      await tester.pumpWidget(
+        FarFromDeskApp(gateway: PreviewGateway(fixture: 'telegram-connected')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('@ffd_sample_bot'), findsOneWidget);
+      expect(find.text('Show QR code'), findsNothing);
+      expect(find.text('Where should replies appear?'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Selected private group loads on startup, retries failures, and switches',
     (tester) async {
       size(tester);
@@ -61,6 +251,51 @@ void main() {
       expect(api.destination, 'notes@g.us');
       expect(find.textContaining('Replies go to My notes.'), findsOneWidget);
       expect(find.text('In use'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Voice notes set up from Home with a local download or an API key',
+    (tester) async {
+      size(tester);
+      final api = VoiceGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(find.text('Set up voice notes'), findsOneWidget);
+      await tester.ensureVisible(find.text('Download voice model · 141 MB'));
+      await tester.tap(find.text('Download voice model · 141 MB'));
+      await tester.pumpAndSettle();
+      expect(api.posts.containsKey('/api/voice-model'), isTrue);
+      await tester.tap(find.text('Use an API key'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('not affiliated'), findsNothing);
+      expect(find.textContaining('isn\'t affiliated'), findsOneWidget);
+      expect(find.text('console.deepgram.com'), findsOneWidget);
+      await tester.tap(find.text('AssemblyAI'));
+      await tester.pumpAndSettle();
+      expect(find.text('www.assemblyai.com/dashboard'), findsOneWidget);
+      await tester.tap(find.text('Deepgram'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).last,
+        'dg_abcdefghijklmnopqrstuvwxyza91f',
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Save and test'));
+      await tester.tap(find.text('Save and test'));
+      await tester.pumpAndSettle();
+      expect(api.posts['/api/voice-engine'], {
+        'engine': 'deepgram',
+        'key': 'dg_abcdefghijklmnopqrstuvwxyza91f',
+      });
+      expect(
+        find.textContaining(
+          'Transcribed by Deepgram with your key ending a91f',
+        ),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -118,7 +353,7 @@ void main() {
       expect(inDialog('Recover exact session'), findsNothing);
       expect(find.textContaining('task_12345678'), findsNothing);
       expect(inDialog('Start the session in Claude'), findsOneWidget);
-      expect(inDialog('Create coordinator'), findsNothing);
+      expect(inDialog('Create Claude Desktop coordinator'), findsNothing);
       expect(inDialog('Earlier setup attempts (1)'), findsOneWidget);
       expect(inDialog('Earlier Claude coordinator'), findsNothing);
       await tester.ensureVisible(inDialog('Earlier setup attempts (1)'));
@@ -136,7 +371,7 @@ void main() {
       expect(find.byKey(const ValueKey('coordinator-folder')), findsOneWidget);
       expect(inDialogOnly('Add a coordinator'), findsOneWidget);
       expect(inDialog('Use existing session'), findsOneWidget);
-      expect(inDialog('Create coordinator'), findsOneWidget);
+      expect(inDialog('Create Codex CLI coordinator'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -272,26 +507,23 @@ void main() {
   );
 
   testWidgets(
-    'Instructions render Markdown in a larger dialog with a close icon',
+    'Coordinator manager shows only coordinator management and keeps the close control',
     (tester) async {
       size(tester);
-      await tester.pumpWidget(FarFromDeskApp(gateway: InstructionsGateway()));
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('Instructions').first,
-        300,
-        scrollable: find.byType(Scrollable).first,
+      await tester.pumpWidget(
+        FarFromDeskApp(gateway: MultiCoordinatorGateway()),
       );
-      await tester.tap(find.text('Instructions').first);
       await tester.pumpAndSettle();
-      expect(find.text('Coordinator instructions'), findsOneWidget);
-      expect(find.text('Version secret-version'), findsNothing);
-      expect(find.text('internal-agent-name'), findsNothing);
-      expect(find.text('Done'), findsNothing);
-      expect(find.textContaining('# Sample heading'), findsNothing);
-      expect(find.textContaining('Sample heading'), findsOneWidget);
-      expect(tester.getSize(find.byType(Dialog)).width, greaterThan(560));
-      expect(find.text('Copy instructions'), findsOneWidget);
+      expect(find.text('Instructions'), findsNothing);
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
+      expect(find.text('Instructions'), findsNothing);
+      expect(find.text('Connected sessions'), findsNothing);
+      expect(find.text('Copy instructions'), findsNothing);
+      expect(find.text('+ Add coordinator'), findsOneWidget);
+      expect(find.text('Make default'), findsOneWidget);
+      expect(find.text('Change'), findsNWidgets(2));
       expect(find.byTooltip('Close'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.tap(find.byTooltip('Close'));
@@ -557,30 +789,32 @@ void main() {
       await tester.ensureVisible(find.text('Manage coordinators'));
       await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
-      for (final tab in ['Instructions', 'Connected sessions']) {
-        await tester.tap(
-          find
-              .descendant(of: find.byType(Dialog), matching: find.text(tab))
-              .first,
-        );
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-      }
-      await tester.tap(
-        find
-            .descendant(
-              of: find.byType(Dialog),
-              matching: find.text('Coordinators'),
-            )
-            .last,
-      );
-      await tester.pumpAndSettle();
+      expect(find.text('Instructions'), findsNothing);
+      expect(find.text('Connected sessions'), findsNothing);
       await tester.tap(find.text('+ Add coordinator'));
       await tester.pumpAndSettle();
       expect(find.text('Add a coordinator'), findsOneWidget);
       expect(find.text('Use existing session'), findsOneWidget);
-      expect(find.text('Edit'), findsOneWidget);
-      expect(find.text('FarFromDesk · Codex CLI'), findsOneWidget);
+      expect(find.text('Edit'), findsNothing);
+      expect(find.text('Use automatic'), findsNothing);
+      final nameField = find.byKey(const ValueKey('coordinator-name'));
+      expect(
+        tester.widget<TextField>(nameField).controller!.text,
+        'FarFromDesk Orbit · Codex CLI',
+      );
+      await tester.tap(find.text('Codex Desktop'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(nameField).controller!.text,
+        'FarFromDesk Orbit · Codex Desktop',
+      );
+      await tester.enterText(nameField, 'Mission Control');
+      await tester.tap(find.text('Claude Desktop'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(nameField).controller!.text,
+        'Mission Control',
+      );
       await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Activity'));
@@ -641,7 +875,10 @@ void main() {
       expect(
         tester
             .widget<FilledButton>(
-              find.widgetWithText(FilledButton, 'Create coordinator'),
+              find.widgetWithText(
+                FilledButton,
+                'Create Claude CLI coordinator',
+              ),
             )
             .onPressed,
         isNull,
@@ -660,18 +897,26 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.text('~/.farfromdesk/coordinators/farfromdesk-claude-desktop-…'),
+        find.text(
+          '~/.farfromdesk/coordinators/farfromdesk-orbit-claude-desktop-…',
+        ),
         findsOneWidget,
       );
-      await tester.ensureVisible(find.text('Create coordinator'));
-      await tester.tap(find.text('Create coordinator'));
+      api.reversePlatforms = true;
+      await tester.pump(const Duration(seconds: 4));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.text('Create Claude Desktop coordinator'),
+      );
+      await tester.tap(find.text('Create Claude Desktop coordinator'));
+      await tester.pumpAndSettle();
+      expect(api.submitted?['name'], 'FarFromDesk Orbit · Claude Desktop');
       expect(api.submitted?['provider'], 'claude');
       expect(api.submitted?['executionMode'], 'desktop');
       expect(api.submitted!.containsKey('workspaceId'), isFalse);
       expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
-      expect(find.text('Create coordinator'), findsNothing);
+      expect(find.text('Create Claude Desktop coordinator'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -923,6 +1168,7 @@ class ActivityDesignGateway extends PreviewGateway {
 }
 
 class ConnectionGateway extends PreviewGateway {
+  bool reversePlatforms = false;
   ConnectionGateway() : super(fixture: 'connected');
   Map<String, dynamic>? submitted;
   @override
@@ -971,6 +1217,11 @@ class ConnectionGateway extends PreviewGateway {
           },
         ];
       }
+    }
+    if (reversePlatforms) {
+      data['masterSetup']['platforms'] = List.from(
+        data['masterSetup']['platforms'].reversed,
+      );
     }
     return data;
   }
@@ -1146,6 +1397,45 @@ class VoiceDownloadGateway extends ConnectionGateway {
   ) async {
     if (path == '/api/voice-model') {
       phase = 'downloading';
+      return {};
+    }
+    return super.post(path, data);
+  }
+}
+
+class VoiceGateway extends ConnectionGateway {
+  Map<String, dynamic> voice = {
+    'ready': false,
+    'local': true,
+    'localReady': false,
+    'engine': 'local',
+    'fallback': true,
+    'download': {'state': 'needed', 'bytes': 0, 'total': 147951465},
+  };
+  final posts = <String, Map<String, dynamic>>{};
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    data['voice'] = voice;
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/voice-engine' || path == '/api/voice-model') {
+      posts[path] = data;
+      if (data['engine'] == 'deepgram') {
+        voice = {
+          ...voice,
+          'ready': true,
+          'local': false,
+          'engine': 'deepgram',
+          'keyHint': 'a91f',
+        };
+      }
       return {};
     }
     return super.post(path, data);

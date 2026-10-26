@@ -1,28 +1,23 @@
 import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,normalizeMessageContent,Browsers,proto,type WASocket} from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { join } from 'node:path';
-import { rm } from 'node:fs/promises';
+import { rm, readFile } from 'node:fs/promises';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
 import type { Router } from './router.js';
 import { transcribeAudio, audioFormat, type AudioObserver } from './audio.js';
+import { voiceEngine } from './voice-cloud.js';
 import { createHash } from 'node:crypto';
 import { BufferJSON } from '@whiskeysockets/baileys';
 import { disposeIncoming, incomingMetadata, type AttachmentKind, type IncomingFile } from './attachments.js';
 import { Artifacts } from './artifacts.js';
 import { sendDiskDocument, MediaHostLimitError } from './document-delivery.js';
 import { errorCode } from './request-events.js';
+import { GuardedSocket, isSelfMessage, ownerOnlyGroup } from './wa-guard.js';
 
-export function isSelfMessage(key:{fromMe?:boolean|null;remoteJid?:string|null;remoteJidAlt?:string|null},owners:string[]) {
-  if(key.fromMe!==true)return false;
-  return [key.remoteJid,key.remoteJidAlt].some(j=>j&&owners.includes(jidNormalizedUser(j)));
-}
-export function ownerOnlyGroup(metadata:any,owners:string[]) {
-  return Array.isArray(metadata?.participants)&&metadata.participants.length>0&&metadata.participants.every((p:any)=>
-    [p.id,p.phoneNumber,p.lid].some(id=>typeof id==='string'&&owners.includes(jidNormalizedUser(id))));
-}
+export { isSelfMessage, ownerOnlyGroup };
 export class WhatsApp {
-  sock?:WASocket; qr?:string; status='not paired'; error?:string;
+  sock?:GuardedSocket; qr?:string; status='not paired'; error?:string;
   owners:string[]=[]; selfJid?:string;
   closed=false; connecting=false; attempts=0; flushing=false;
   reconnect?:NodeJS.Timeout; flusher?:NodeJS.Timeout;
@@ -66,6 +61,25 @@ export class WhatsApp {
     }catch {
       throw new Error('Logout could not finish. Reconnect and try again, or remove this device in WhatsApp → Linked devices.');
     }finally{this.loggingOut=false;}
+  }
+  async switchState():Promise<'none'|'setup'|'saved'|'connected'> {
+    if(this.status==='connected')return 'connected';
+    try {if(JSON.parse(await readFile(join(this.authDirectory,'creds.json'),'utf8')).registered===true)return 'saved';}
+    catch(e:any){if(e.code!=='ENOENT')return 'saved';}
+    return this.qr||this.status==='connecting'?'setup':'none';
+  }
+  async disconnectForSwitch(confirmed=true) {
+    if(this.status==='connected'){
+      if(!confirmed)throw new Error('WhatsApp connected since your last check. Confirm logout before switching.');
+      await this.logout();return;
+    }
+    let registered=false;
+    try{registered=JSON.parse(await readFile(join(this.authDirectory,'creds.json'),'utf8')).registered===true;}
+    catch(e:any){if(e.code!=='ENOENT')throw new Error('Could not verify WhatsApp logout. Reconnect before switching.');}
+    if(registered)throw new Error('Reconnect WhatsApp to log out before switching. You can also remove this device in WhatsApp Linked devices.');
+    if(!confirmed&&(this.qr||this.status==='connecting'))throw new Error('WhatsApp pairing started. Confirm cancelling setup before switching.');
+    this.close();await Promise.allSettled([...this.authWrites]);await rm(this.authDirectory,{recursive:true,force:true});
+    this.qr=undefined;this.selfJid=undefined;this.owners=[];this.status='logged out';this.error=undefined;
   }
   destination(){return {jid:this.store.get('destination-jid')??this.selfJid??null,kind:this.store.get('destination-kind')??'self',name:this.store.get('destination-name')??'Message yourself'};}
   async verifyGroup(jid:string) {
@@ -123,8 +137,9 @@ export class WhatsApp {
       const setKeys=state.keys.set;
       state.keys.set=data=>write(async()=>{await setKeys(data);});
       this.status='connecting';
-      const sock=makeWASocket({auth:state,logger:pino({level:'silent'}),browser:(process.platform==='win32'?Browsers.windows:process.platform==='darwin'?Browsers.macOS:Browsers.ubuntu)('FarFromDesk'),markOnlineOnConnect:false,syncFullHistory:false,shouldSyncHistoryMessage:()=>false,emitOwnEvents:false,
-        getMessage:async key=>{const r=this.store.db.prepare('SELECT body,artifact_id,wa_message FROM outbox WHERE wa_id=?').get(key.id??'') as any;return r?.wa_message?JSON.parse(r.wa_message,BufferJSON.reviver):r&&!r.artifact_id?{conversation:r.body}:undefined;}});
+      const sock=new GuardedSocket(makeWASocket({auth:state,logger:pino({level:'silent'}),browser:(process.platform==='win32'?Browsers.windows:process.platform==='darwin'?Browsers.macOS:Browsers.ubuntu)('FarFromDesk'),markOnlineOnConnect:false,syncFullHistory:false,shouldSyncHistoryMessage:()=>false,emitOwnEvents:false,
+        getMessage:async key=>{const r=this.store.db.prepare('SELECT body,artifact_id,wa_message FROM outbox WHERE wa_id=?').get(key.id??'') as any;return r?.wa_message?JSON.parse(r.wa_message,BufferJSON.reviver):r&&!r.artifact_id?{conversation:r.body}:undefined;}}),
+        {owners:()=>this.owners,ownedGroup:jid=>!!this.store.get(`owned-group:${jid}`)});
       this.sock=sock;
       sock.ev.on('creds.update',()=>void write(saveCreds).catch(()=>{this.error='Could not save WhatsApp credentials';}));
       sock.ev.on('connection.update',u=>{
@@ -177,7 +192,7 @@ export class WhatsApp {
     return false; // SERVER_ACK alone proves neither delivery nor reading.
   }
   async receiveMessage(m:any) {
-    if(this.closed||this.loggingOut||this.router.stopped||this.status!=='connected'||!m.key?.id||this.store.isOurs(m.key.id)||m.key.fromMe!==true)return;
+    if(this.store.controlChannel()!=='whatsapp'||this.closed||this.loggingOut||this.router.stopped||this.status!=='connected'||!m.key?.id||this.store.isOurs(m.key.id)||m.key.fromMe!==true)return;
     const id=`wa:${m.key.id}`,destination=this.destination().jid,self=isSelfMessage(m.key,this.owners);
     const group=m.key.remoteJid===destination&&destination?.endsWith('@g.us');
     if((!self&&!group)||this.store.seen(id)||this.receiving.has(id))return;
@@ -185,6 +200,8 @@ export class WhatsApp {
     const media=msg?.imageMessage??msg?.documentMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
     let text=msg?.conversation??msg?.extendedTextMessage?.text;
     if(!text&&!audio&&!media)return;
+    // With a group selected, the self chat only accepts the /self escape back to it.
+    if(self&&destination?.endsWith('@g.us')&&text?.trim()!=='/self')return;
     this.receiving.add(id);
     try {
       if(group)await this.verifyGroup(destination!);
@@ -218,7 +235,7 @@ export class WhatsApp {
           const claimed=this.store.db.prepare("INSERT OR IGNORE INTO audio_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now());
           if(!claimed.changes)return;
           let started=false,routingStarted:number|undefined;const controller=new AbortController();
-          this.store.event(id,'voice_received',{audioSeconds:Number(audio.seconds),engine:'whisper.cpp',model:this.store.get('audio-origin')==='bundled'?'bundled':'custom'});
+          this.store.event(id,'voice_received',{audioSeconds:Number(audio.seconds),...(voiceEngine(this.store)==='local'?{engine:'whisper.cpp',model:this.store.get('audio-origin')==='bundled'?'bundled':'custom'}:{engine:voiceEngine(this.store)})});
           const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected')]);
           const originalRouting=routing();
           try {
@@ -244,7 +261,7 @@ export class WhatsApp {
             if(routingStarted!==undefined)this.store.voiceEvent(id,{stage:'route',state:'failed',durationMs:performance.now()-routingStarted,code:errorCode(e)});
             this.store.event(id,'voice_failed',{code:errorCode(e)});
             // Never echo provider output, media URLs, transcript or command paths.
-            const allowed=/^(?:Voice transcription is not configured|Voice model download did not finish|Unsupported voice-note format|Voice notes must|Two voice notes|The selected session changed|No clear speech detected|Please type permission)/;
+            const allowed=/^(?:Voice transcription is not configured|Voice model download did not finish|Unsupported voice-note format|Voice notes must|Two voice notes|The selected session changed|No clear speech detected|Please type permission|Deepgram |AssemblyAI |Couldn’t reach )/;
             const message=allowed.test((e as Error).message)?(e as Error).message:'I couldn’t transcribe this voice note. Please resend a clear recording (up to 5 minutes for local transcription), or type your message.';
             this.store.output(undefined,message,`audio-error:${id}`,origin);this.store.remember(id);
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routingStarted===undefined?'failed':'routing_blocked',id);
@@ -267,7 +284,7 @@ export class WhatsApp {
         if(m.binding_id&&!this.store.binding(m.binding_id)?.enabled)continue;
         const destination:string=m.destination??this.selfJid;
         try {
-          const sock:WASocket=this.sock;
+          const sock:GuardedSocket=this.sock;
           if(destination!==this.selfJid)await this.verifyGroup(destination);
           if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
           let content:any={text:m.body},sent:any;

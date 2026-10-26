@@ -12,7 +12,7 @@ import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js
 import type { Store,Binding,Provider } from './store.js';
 import type { Router } from './router.js';
 import { saveBindingCredentials } from './server.js';
-import { CodexSession } from './codex-session.js';
+import { CodexSession,confirmCodexSession } from './codex-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
@@ -22,6 +22,9 @@ import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections } from './connections.js';
 import { projectWorkspace } from './project-workspace.js';
+import { WorkspaceScanner,type ResolvedWorkspaces } from './workspace-scanner.js';
+import { scopedBridgeCommand } from './reply-args.js';
+import { openCodexDesktop } from './session-activation.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
@@ -30,23 +33,28 @@ const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
 export function codexDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
 }
+export function claudeDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
+  return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Claude.app')));
+}
 export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
   if(value!==undefined&&typeof value!=='string')throw new Error('Session name must be text.');
   const name=(value as string|undefined)?.trim()??'';
   if(name.length>80||/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name))throw new Error('Use a session name of up to 80 characters without control characters.');
-  return name||`FarFromDesk · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
+  return name||`FarFromDesk Orbit · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
 }
 // Workspace identity includes runtime and account; folder names are display only.
 export function coordinatorFolder(operationId:string,name:string) {
   const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'coordinator';
   return join(coordinatorHome,'coordinators',`${slug}-${operationId.slice(0,8)}`);
 }
-export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[]) {
+export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[],resolved?:ResolvedWorkspaces) {
   const choices=new Map<string,any>();
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
     if(typeof s.cwd!=='string'||!s.cwd)continue;
     try {
-      const sessionCwd=realpathSync(s.cwd),cwd=projectWorkspace(sessionCwd);
+      const location=resolved?.get(s.cwd);
+      if(resolved&&!location)continue;
+      const sessionCwd=location?.sessionCwd??realpathSync(s.cwd),cwd=location?.cwd??projectWorkspace(sessionCwd);
       const accountScope=s.accountScope??null;
       const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,accountScope])).digest('hex');
       const available=provider!=='claude'||mode!=='desktop'||s.available===true;
@@ -60,6 +68,8 @@ export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:a
   return result.map(({rank,...w})=>({...w,label:result.filter(other=>other.cwd===w.cwd).length>1?`${w.name} · account ${String(w.accountScope??'unknown').slice(0,8)}`:w.name}));
 }
 export class Masters {
+  openCodex=openCodexDesktop;
+  workspaceScanner=new WorkspaceScanner();
   connections:Connections;
   registry:CoordinatorRegistry;
   runtimes=new Map<string,CodexSession>();
@@ -113,6 +123,7 @@ export class Masters {
     if(this.discovery)return this.discovery;
     this.discovery=(async()=>{
     const platforms:any[]=await Promise.all(([['codex',codexBin],['claude',claudeBin]] as const).map(async([provider,bin])=>{
+      if(this.router.native.discoveryBlocked?.(provider))return this.platforms.find(p=>p.provider===provider&&p.executionMode==='cli')??{provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'File access denied · click Check apps to retry'};
       try {const command=nativeCommand(bin,['--version']);await exec(command.binary,command.args,{timeout:5000,maxBuffer:10000,windowsHide:true});return {provider,executionMode:'cli',available:true,label:provider==='codex'?'Codex · native CLI':'Claude Code · background CLI'};}
       catch{return {provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'Native CLI unavailable. Claude Desktop uses its separate app session.'};}
     }));
@@ -123,7 +134,7 @@ export class Masters {
     if(!errors.has('claude'))this.registry.adoptAccounts('claude',claude);
     const rows=(sessions:any[])=>sessions.map(s=>({id:s.id,desktopId:s.desktopId,executionMode:s.executionMode,accountScope:s.accountScope,name:s.name,cwd:s.cwd,status:s.status,updatedAt:s.updatedAt,available:s.available===true}));
     for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):codex);
-    platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'Open a Claude Desktop Code chat to connect. Saved chats without a running local inbox cannot receive messages yet.'});
+    platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claudeDesktopInstalled()||claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'New coordinators open directly in Claude Desktop. Existing chats still require verified session discovery.'});
     platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
     if(portableAgents)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
     await Promise.all(platforms.map(async platform=>{
@@ -145,7 +156,10 @@ export class Masters {
         platform.creationReadiness={state:'ready',message:'Claude opens a new chat in the coordinator folder. Confirm the folder and press Send once to start it.'};
       }
     }));
-    for(const platform of platforms)platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[]);
+    let resolved:ResolvedWorkspaces=new Map(),workspaceError:string|undefined;
+    try{resolved=await this.workspaceScanner.scan([...claude,...codex].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
+    catch(error){workspaceError=error instanceof Error?error.message:'Workspace discovery unavailable';}
+    for(const platform of platforms){platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[],resolved);if(workspaceError)platform.workspaceError=workspaceError;}
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
     const digest=createHash('sha256').update(JSON.stringify(platforms)).digest('hex');
     if(digest!==this.catalogDigest){this.catalogDigest=digest;this.catalogRevision=randomUUID();}
@@ -184,6 +198,7 @@ export class Masters {
   }
   setupError(error:unknown) {
     const message=error instanceof Error?error.message:String(error);
+    if(/^Codex (has not saved|conversation history)/.test(message))return message;
     if(/^(Desktop (creation|start|setup|project)|Claude Desktop could not|The selected Claude Desktop|No owner-connected|Connected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
     if(/^(CLI account|CLI signed out|Connection changed|Review this existing|Custom provider|Configured|Session connection)/.test(message))return message.slice(0,400);
     if(/Claude authentication expired|OAuth|Failed to authenticate/i.test(message))return 'Claude authentication expired. Sign in to the selected Claude app or CLI, then recover this exact setup.';
@@ -224,9 +239,9 @@ export class Masters {
       if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b,true);
       else if(b.provider==='codex') {
         const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(b,m,p));
-        try {await runtime.initialize();const r=await runtime.request('thread/read',{threadId:b.native_id,includeTurns:false});
-          if(r.thread?.id!==b.native_id||typeof r.thread?.cwd!=='string'||realpathSync(r.thread.cwd)!==realpathSync(b.cwd))throw new Error('Native session identity does not match this setup.');
+        try {await runtime.initialize();await confirmCodexSession(runtime,b.native_id,b.cwd);
         }finally{runtime.close();}
+        if(op.executionMode==='desktop')await this.openCodex(b.native_id);
         if(op.executionMode!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
       }else if(op.needsTrust||/workspace not trusted/i.test(op.error??''))await this.provisionClaude(b);
       else if(/Claude authentication expired/i.test(op.error??'')) {
@@ -340,7 +355,8 @@ export class Masters {
     if(workspaceId!==undefined) {
       if(typeof workspaceId!=='string'||!workspaceId)throw new Error('Choose a detected workspace.');
       sessions=await this.catalog(provider,true);
-      workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode)).find(w=>w.id===workspaceId);
+      const resolved=await this.workspaceScanner.scan(sessions.map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));
+      workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode),resolved).find(w=>w.id===workspaceId);
       if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
       if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
     }
@@ -375,7 +391,7 @@ export class Masters {
     this.saveOperation({...this.operation(),bindingId:b.id,cwd,stage:'Starting native session'});
     const name=this.operation().name??'WhatsApp master';this.store.set(`name:${b.id}`,name);
     this.store.set(`role-kind:${b.id}`,'master');
-    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${quote(process.execPath)} ${quote(join(root,'dist/cli.js'))} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:'Use the session_bridge MCP tools for coordination and replies.';
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:'Use the session_bridge MCP tools for coordination and replies.';
     // Support files are written once and may be auto-loaded beside the provider instructions,
     // so they point to the versioned role instead of carrying a copy that would go stale.
     // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
@@ -401,8 +417,10 @@ export class Masters {
       b=this.store.binding(b.id)!;saveBindingCredentials(b,registered.token);
       this.saveOperation({...this.operation(),nativeId:b.native_id});
       await runtime.request('thread/name/set',{threadId:b.native_id,name});
+      this.saveOperation({...this.operation(),stage:'Verifying saved conversation'});
+      try{await confirmCodexSession(runtime,b.native_id,b.cwd);}catch(e){this.stopWorker(b.id);throw e;}
       if(mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
-      else {runtime.close();this.runtimes.delete(b.id);}
+      else {runtime.close();this.runtimes.delete(b.id);this.saveOperation({...this.operation(),stage:'Opening Codex Desktop'});await this.openCodex(b.native_id);}
     } else {
       this.saveOperation({...this.operation(),nativeId:b.native_id});
       await this.provisionClaude(b);
@@ -488,7 +506,8 @@ export class Masters {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
     await this.connections.assert(b);
     if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop') {
-      await this.desktop.create(b,this.store.get(`desktop-parent:${b.id}`)!,this.store.get(`name:${b.id}`)??'FarFromDesk project','You will be a FarFromDesk worker for this project. Your role arrives with the first request; use its bridge CLI reply command.');return;
+      // The owner's Send press in Claude is the direct request; no launcher chat relays it.
+      await this.desktop.createDirect(b,'Your role arrives with the first request; use its bridge CLI reply command.',`Set up this folder as my FarFromDesk project session “${this.store.get(`name:${b.id}`)??'FarFromDesk project'}”.`);return;
     }
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
@@ -506,7 +525,8 @@ export class Masters {
     this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(r.thread.id,b.id);
     if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
     await runtime.request('thread/name/set',{threadId:r.thread.id,name:this.store.get(`name:${b.id}`)??'FarFromDesk project'});
-    if(this.store.get(`execution-mode:${b.id}`)==='desktop'){runtime.close();this.runtimes.delete(b.id);}
+    try{await confirmCodexSession(runtime,r.thread.id,b.cwd);}catch(e){this.stopWorker(b.id);throw e;}
+    if(this.store.get(`execution-mode:${b.id}`)==='desktop'){runtime.close();this.runtimes.delete(b.id);await this.openCodex(r.thread.id);}
   }
   stopWorker(id:string){this.runtimeRoles.delete(id);this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
   async recoverWorker(b:Binding) {
@@ -524,10 +544,10 @@ export class Masters {
     }
     const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));
     try {
-      await runtime.initialize();const r=await runtime.request('thread/read',{threadId:b.native_id,includeTurns:false});
-      if(r.thread?.id!==b.native_id||realpathSync(r.thread.cwd)!==realpathSync(b.cwd))throw new Error('Native session identity differs; recovery stopped.');
+      await runtime.initialize();await confirmCodexSession(runtime,b.native_id,b.cwd);
       if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
     }finally{runtime.close();}
+    if(this.store.get(`execution-mode:${b.id}`)==='desktop')await this.openCodex(b.native_id);
   }
   close(){this.closed=true;this.desktop.close();for(const r of this.runtimes.values())r.close();for(const r of this.claudeRuntimes.values())r.close();}
 }

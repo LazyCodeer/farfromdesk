@@ -3,19 +3,20 @@ import type { Binding } from './store.js';
 import { Store } from './store.js';
 
 export class Approvals {
-  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
+  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; destination:string|null; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
   constructor(private store:Store) {}
   ask(binding:Binding, question:string, kind:'approval'|'question'='approval'):Promise<string> {
     const code=randomBytes(4).toString('hex'), expires=Date.now()+15*60_000;
     return new Promise(resolve=>{
       const settle=(answer:string)=>{const p=this.pending.get(code);if(!p)return;clearTimeout(p.timer);this.pending.delete(code);this.store.audit('permission-answer',binding.id,`${code}:${kind==='approval'?answer:'answered'}`);resolve(answer);};
       const timer=setTimeout(()=>settle('deny'),15*60_000);
-      this.pending.set(code,{binding,question,kind,expires,settle,timer});
+      this.pending.set(code,{binding,question,kind,expires,destination:this.store.destination(),settle,timer});
       this.store.output(binding,`${kind==='approval'?'Permission needed':'Answer needed'}\n${question}\n\n${kind==='approval'?'Reply to this message with “Yes, allow it” or “No, deny it”.':'Reply to this message with your answer.'}\nExpires in 15 minutes.`, `permission:${code}`);
     });
   }
   answer(code:string,answer:string,kind:'approval'|'question') {
     const p=this.pending.get(code);if(!p || p.kind!==kind || Date.now()>p.expires)throw new Error('That request has expired, belongs to another action, or was already answered.');
+    if(this.store.destinationContext.getStore()&&p.destination!==this.store.destination())throw new Error('Reply in the original chat where this permission was requested.');
     if(kind==='approval'&&!['approve','deny'].includes(answer))throw new Error('Choose approve or deny.');
     p.settle(answer);
   }
@@ -36,6 +37,7 @@ export class Approvals {
       if(!sent)throw new Error('Wait for the permission message, then reply to it with your decision.');
     }
     if(!pending||!selected)return;
+    if(pending.destination!==this.store.destination())throw new Error('Reply in the original chat where this permission was requested.');
     if(quoted&&quoted.status!=='sent')throw new Error('Wait for the permission message, then reply to it with your decision.');
     if(!this.store.binding(pending.binding.id)?.enabled)throw new Error('That session is paused. Resume it in the app before answering.');
     if(source==='voice')throw new Error('Please type your permission decision or answer; voice transcription may mishear it.');

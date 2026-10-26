@@ -20,7 +20,7 @@ test('fresh installation configures bundled files without downloads or processes
   const f=fixture();try {
     assert.equal(audioReadiness(f.store).ready,false);
     assert.deepEqual(installBundledAudio(f.store,f.dir),{configured:true,preserved:false});
-    assert.deepEqual(audioReadiness(f.store),{ready:true,local:true,bundled:true});
+    assert.deepEqual(audioReadiness(f.store),{ready:true,local:true,localReady:true,bundled:true,engine:'local',fallback:true});
     assert.equal(JSON.parse(f.store.get('audio-config')!).model,join(f.dir,'ggml-base.bin'));
     assert.equal(installBundledAudio(f.store,f.dir).preserved,false);
     writeFileSync(join(f.dir,'ggml-base.bin'),'modified after installation');

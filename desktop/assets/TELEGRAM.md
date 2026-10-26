@@ -1,0 +1,1 @@
+Telegram logo downloaded from the official asset https://telegram.org/img/t_logo.png on 2026-10-27. Branding source: https://telegram.org/press. Used to identify the Telegram integration; no affiliation implied.

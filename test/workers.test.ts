@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/store.js';
@@ -162,17 +162,38 @@ if(m.type==='control_response')send({type:'result',session_id:id,subtype:'succes
   }finally{runtime.close();rmSync(dir,{recursive:true,force:true});}
 });
 
-test('worker creation freezes execution mode and configured Desktop launcher without CLI fallback',async()=>{
+test('worker creation freezes Desktop execution mode without a launcher chat or CLI fallback',async()=>{
   const f=fixture();try {
-    f.store.set('claude-execution-mode','desktop');f.prefer('claude','desktop',uuid);f.store.set('claude-desktop-parent',uuid);
-    let parents=0;(f.masters as any).desktop={parent:async(id:string)=>{assert.equal(id,uuid);parents++;return {id:uuid};}};
+    f.store.set('claude-execution-mode','desktop');f.prefer('claude','desktop',uuid);
+    let parents=0;(f.masters as any).desktop={parent:async()=>{parents++;return {id:uuid};}};
     const request={...f.request,provider:'claude' as const};
     const op=await f.workers.start(request);await new Promise(r=>setTimeout(r,0));approve(f);await settled(f);
-    assert.equal(f.workers.get(op.id)?.executionMode,'desktop');assert.equal(parents,1);
-    const b=f.c.selected()[0];assert.equal(f.store.get(`execution-mode:${b.id}`),'desktop');assert.equal(f.store.get(`desktop-parent:${b.id}`),uuid);
-    f.prefer('claude','cli');await f.workers.start(request);assert.equal(parents,1);
+    assert.equal(f.workers.get(op.id)?.executionMode,'desktop');assert.equal(parents,0);
+    const b=f.c.selected()[0];assert.equal(f.store.get(`execution-mode:${b.id}`),'desktop');
+    f.prefer('claude','cli');await f.workers.start(request);assert.equal(parents,0);
     await assert.rejects(f.workers.start({...request,executionMode:'cli'}),/different task/);
     assert.equal(f.store.get(`execution-mode:${b.id}`),'desktop');
+  }finally{f.close();}
+});
+
+test('Desktop workers wait for the owner to press Send, write nothing into the project, then connect and queue the task',async()=>{
+  const f=fixture();try {
+    f.prefer('claude','desktop');let receipt:string|null=null,opens=0,confirms=0;
+    (f.masters as any).desktop={acknowledgment:()=>receipt};
+    f.masters.provisionWorker=async()=>{opens++;throw new Error('Desktop start needs owner action: confirm the folder and press Send in the new Claude chat that just opened.');};
+    f.masters.recoverWorker=async()=>{confirms++;};
+    const op=await f.workers.start({...f.request,provider:'claude'});await new Promise(r=>setTimeout(r,0));approve(f);await settled(f);
+    const saved=f.workers.get(op.id)!;assert.equal(saved.status,'needs_action');assert.equal(opens,1);
+    assert.deepEqual(readdirSync(saved.cwd!),[]);
+    const support=f.store.get(`master-support:${saved.bindingId}`)!;assert.equal(support,join(realpathSync(f.root),'.farfromdesk',`project-${op.id}`));assert.ok(existsSync(support));
+    assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(o=>/Press Send there to start it/.test(o.body)));
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,0);
+    // No receipt yet: nothing opens, starts or connects.
+    f.workers.reconcileDesktop();await settled(f);assert.equal(confirms,0);assert.equal(f.workers.get(op.id)?.status,'needs_action');
+    receipt='ready';f.workers.reconcileDesktop();f.workers.reconcileDesktop();await settled(f);
+    assert.equal(confirms,1);assert.equal(opens,1);assert.equal(f.workers.get(op.id)?.status,'ready');
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,1);
+    f.workers.reconcileDesktop();await settled(f);assert.equal(confirms,1);
   }finally{f.close();}
 });
 
@@ -203,25 +224,6 @@ test('new workers reject changed preferred CLI accounts before approval or creat
   }finally{f.close();}
 });
 
-
-test('missing Desktop launcher is blocked before approval and the same operation recovers once',async()=>{
- const f=fixture();try {
-  f.prefer('claude','desktop');let available=false,launches=0;
-  (f.masters as any).desktop={parent:async()=>{launches++;if(!available)throw new Error('No owner-connected Claude Desktop launcher is available.');return {id:uuid,accountScope:'owner'};}};
-  const request={...f.request,provider:'claude' as const};
-  const op=await f.workers.start(request);await settled(f);
-  assert.equal(f.workers.get(op.id)?.status,'blocked');assert.equal(f.workers.view(op.id)[0].execution,'not_started');
-  assert.equal(f.workers.get(op.id)?.bindingId,undefined);assert.equal(f.approvals.pending.size,0);assert.equal(existsSync(f.root),false);
-  f.store.jobState(request.requestId,'completed',null,'blocked');f.store.enqueue('wa:recover',f.master,'Recover original creation');available=true;
-  const [a,b]=await Promise.all([f.workers.recover('wa:recover',op.id),f.workers.recover('wa:recover',op.id)]);
-  assert.equal(a.id,op.id);assert.equal(b.id,op.id);
-  for(let i=0;i<30&&!f.approvals.pending.size;i++)await new Promise(r=>setTimeout(r,5));
-  approve(f);await settled(f);
-  const result=f.workers.get(op.id)!;assert.equal(result.status,'ready');assert.equal(result.originRequestId,request.requestId);assert.equal(result.eventId,request.eventId);
-  assert.equal(f.counts().creations,1);assert.equal(launches,2);assert.equal(f.workers.operations().length,1);
-  assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,1);
- }finally{f.close();}
-});
 
 test('legacy no-binding uncertainty recovers without changing the operation ID or runtime',async()=>{
  const f=fixture();try {

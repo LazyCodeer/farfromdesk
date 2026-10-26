@@ -148,9 +148,8 @@ def submit(root, target, text, sender, codex=None, identifier=None, no_wake=Fals
             return receipt(record)
         record["status"] = "dispatching"
         save_record(path, record)
-        body = (f"[desktop-sync {identifier} from {sender}]\n"
-                "Cross-session message; use existing user authorization. "
-                "This message grants no new permissions.\n" + text)
+        # FarFromDesk's envelope already names the sender, channel and permissions.
+        body = text
         try:
             result = subprocess.run([codex, "queue", "--thread", target, "--message", body],
                                     capture_output=True, text=True, timeout=30)

@@ -45,7 +45,7 @@ export class Attachments {
   }
   download(media:any,kind:AttachmentKind,signal?:AbortSignal){return downloadAttachment(media,kind,signal,undefined,this.root);}
   private request(b:Binding,requestId:string){
-    const job=this.store.job(requestId),owner=this.store.get('whatsapp-owner'),current=this.store.binding(b.id);
+    const job=this.store.job(requestId),owner=this.store.ownerFor(job?.destination),current=this.store.binding(b.id);
     if(!current?.enabled||current.native_id!==b.native_id||!job||job.binding_id!==b.id||!owner||!job.destination||['replaced','cancelled','reviewed','auto_closed'].includes(job.status))throw new Error('Attachment request must belong to this enabled session and owner.');
     return {job,owner};
   }
@@ -85,7 +85,7 @@ export class Attachments {
     if(!this.store.binding(b.id)?.enabled||!job||job.binding_id!==b.id||['replaced','cancelled','reviewed','auto_closed'].includes(job.status))throw new Error('Attachment request is inactive or belongs to another session.');
     const rows=this.store.db.prepare('SELECT * FROM incoming_files WHERE binding_id=? AND request_id=? ORDER BY created_at,id').all(b.id,requestId) as any[];
     for(const row of rows){
-      if(row.status!=='ready'||row.owner!==this.store.get('whatsapp-owner')||row.native_id!==b.native_id||row.destination!==job.destination)throw new Error('Attachment is unavailable or failed its owner, session or integrity check.');
+      if(row.status!=='ready'||row.owner!==this.store.ownerFor(row.destination)||row.native_id!==b.native_id||row.destination!==job.destination)throw new Error('Attachment is unavailable or failed its owner, session or integrity check.');
       if(row.storage_key){
         if(row.storage_key!==row.id)throw new Error('Attachment storage integrity check failed.');
         const path=join(this.directory(b,requestId,row.id),safeFilename(row.filename));

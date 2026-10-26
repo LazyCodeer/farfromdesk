@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:uuid/uuid.dart';
 
 import 'gateway.dart';
@@ -43,7 +42,7 @@ class _DeskState extends State<Desk> {
       selectedNativeId = '',
       activityFilter = 'All',
       activityQuery = '';
-  bool automaticName = true, showGroups = false, loadingGroups = false;
+  bool coordinatorNameEdited = false, showGroups = false, loadingGroups = false;
   bool setupFormRequested = false,
       refreshing = false,
       groupsLoaded = false,
@@ -51,7 +50,10 @@ class _DeskState extends State<Desk> {
   List<Map> groups = [];
   String? groupsError;
   int visibleSessions = 30;
-  final customName = TextEditingController();
+  final telegramToken = TextEditingController();
+  final customName = TextEditingController(
+    text: 'FarFromDesk Orbit · Codex CLI',
+  );
   StateSetter? modalSetter;
   BuildContext? modalContext;
   // In release builds setState on a disposed dialog builder throws a bare
@@ -61,6 +63,10 @@ class _DeskState extends State<Desk> {
   final search = TextEditingController();
   final chosen = <String>{};
   final audio = <String, String>{};
+  // Voice setup choices; null follows the saved engine.
+  String? voicePathChoice, voiceProviderChoice;
+  bool replacingVoiceKey = false;
+  final voiceKey = TextEditingController();
   Timer? timer, updateTimer;
   UpdateCheck update = const UpdateCheck();
   bool checkingUpdates = false;
@@ -109,6 +115,7 @@ class _DeskState extends State<Desk> {
     api.closeUpdates();
     search.dispose();
     customName.dispose();
+    telegramToken.dispose();
     super.dispose();
   }
 
@@ -156,7 +163,7 @@ class _DeskState extends State<Desk> {
               const SizedBox(height: 18),
               Text(
                 api.canInstallUpdate
-                    ? 'FarFromDesk will download and verify the update, install it, and restart. Your requests and WhatsApp pairing stay saved.'
+                    ? 'FarFromDesk will download and verify the update, install it, and restart. Your requests and messaging connections stay saved.'
                     : 'Download the update and install it after your current work finishes.',
               ),
               const SizedBox(height: 10),
@@ -584,6 +591,17 @@ class _DeskState extends State<Desk> {
 
   /// Brand tile: WhatsApp, Claude or Codex (OpenAI) mark on its own colour.
   Widget logoTile(String brand, {double size = 40, bool dim = false}) {
+    if (brand == 'telegram') {
+      return Opacity(
+        opacity: dim ? .45 : 1,
+        child: Image.asset(
+          'assets/logo-telegram.png',
+          width: size,
+          height: size,
+          semanticLabel: 'Telegram',
+        ),
+      );
+    }
     final (bg, asset) = switch (brand) {
       'whatsapp' => (whatsappGreen, 'whatsapp'),
       'claude' => (const Color(0xfff4ede4), 'claude'),
@@ -927,7 +945,7 @@ class _DeskState extends State<Desk> {
                 state: stateOf(op, 1),
               ),
               stepRow(
-                'Connect to WhatsApp',
+                'Connect to your chat',
                 detail: at == 2 && creating ? op['stage'] : null,
                 state: stateOf(op, 2),
               ),
@@ -1189,7 +1207,7 @@ class _DeskState extends State<Desk> {
     if (path == null) return;
     if (!await confirm(
       'Send this reviewed document?',
-      '$path\n\nRequest: ${job['id']}\n\nConfirm you have reviewed this document for sharing. It will be queued for this request’s selected WhatsApp destination.',
+      '$path\n\nRequest: ${job['id']}\n\nConfirm you have reviewed this document for sharing. It will be queued for this request’s original chat.',
     )) {
       return;
     }
@@ -1207,7 +1225,7 @@ class _DeskState extends State<Desk> {
           builder: (context) => AlertDialog(
             title: const Text('Document queued'),
             content: SelectableText(
-              'Your reviewed document is queued for WhatsApp. Delivery follows the selected request’s destination.',
+              'Your reviewed document is queued for your chat. Delivery follows the selected request’s destination.',
             ),
             actions: [
               TextButton(

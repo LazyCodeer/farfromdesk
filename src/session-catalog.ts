@@ -13,6 +13,7 @@ export function activityTime(value:unknown):number|undefined {
   const n=typeof value==='number'?value:typeof value==='string'?Date.parse(value):NaN;
   return Number.isFinite(n)&&n>0?(n<1e12?n*1000:n):undefined;
 }
+function denied(error:any){if(error?.code==='EPERM'||error?.code==='EACCES')throw error;}
 const metadataCache=new Map<string,{signature:string;session?:Session}>();
 const signature=(s:{ino:number;size:number;mtimeMs:number;ctimeMs:number})=>`${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
 /** Read only bounded metadata windows. Never retain or return message content. */
@@ -24,7 +25,7 @@ export async function claudeHistory(root:string):Promise<Session[]> {
   const seen=new Set<string>();
   for(const project of projects.filter(p=>p.isDirectory())) {
     const dir=join(root,project.name);
-    let files;try{files=await readdir(dir,{withFileTypes:true});}catch{continue;}
+    let files;try{files=await readdir(dir,{withFileTypes:true});}catch(e){denied(e);continue;}
     const index=new Map<string,any>();
     let indexFile;
     try {
@@ -34,7 +35,7 @@ export async function claudeHistory(root:string):Promise<Session[]> {
         const data=JSON.parse(await indexFile.readFile('utf8'));
         for(const entry of Array.isArray(data.entries)?data.entries:[])if(typeof entry.sessionId==='string')index.set(entry.sessionId,entry);
       }
-    }catch{/* Optional index: bounded transcript metadata remains the fallback. */}finally{await indexFile?.close();}
+    }catch(e){denied(e);/* Optional index: bounded transcript metadata remains the fallback. */}finally{await indexFile?.close();}
     const enrich=(session:Session)=>{
       const entry=index.get(session.id);if(!entry||(entry.projectPath&&entry.projectPath!==session.cwd))return {...session};
       const title=entry.customTitle||entry.summary;
@@ -66,7 +67,7 @@ export async function claudeHistory(root:string):Promise<Session[]> {
         }
         const session:Session|undefined=cwd&&!sidechain?{id,provider:'claude',name:name||`${basename(cwd)} · ${id.slice(0,8)}`,cwd,executionMode:'cli',live:false,activation:'cli-resume',status:'Saved CLI session · resumes automatically after account verification',available:false,updatedAt:updatedAt??stat.mtimeMs}:undefined;
         metadataCache.set(path,{signature:signature(stat),session});if(session)result.push(enrich(session));
-      } catch {/* A removed/unreadable history file must not hide the other sessions. */}
+      } catch (e){denied(e);/* A removed/unreadable history file must not hide the other sessions. */}
       finally {await handle?.close();}
     }
   }
@@ -79,9 +80,9 @@ const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Desktop metadata only, across saved account/org folders. Never retain prompts or MCP configuration. */
 export async function claudeDesktopHistory(root:string):Promise<Session[]> {
   const result:Session[]=[],seen=new Set<string>();
-  async function dirs(path:string){try{return (await readdir(path,{withFileTypes:true})).filter(e=>e.isDirectory());}catch{return [];}}
+  async function dirs(path:string){try{return (await readdir(path,{withFileTypes:true})).filter(e=>e.isDirectory());}catch(e){denied(e);return [];}}
   for(const account of await dirs(root))for(const org of await dirs(join(root,account.name))) {
-    const dir=join(root,account.name,org.name);let files;try{files=await readdir(dir,{withFileTypes:true});}catch{continue;}
+    const dir=join(root,account.name,org.name);let files;try{files=await readdir(dir,{withFileTypes:true});}catch(e){denied(e);continue;}
     for(const file of files) {
       if(!file.isFile()||!/^local_[0-9a-f-]{36}\.json$/i.test(file.name))continue;
       const path=join(dir,file.name);seen.add(path);let handle;
@@ -100,7 +101,7 @@ export async function claudeDesktopHistory(root:string):Promise<Session[]> {
           live:false,activation:nativeId&&row.isArchived!==true?'desktop-open':undefined,available:false,status:row.isArchived===true?'Archived in Claude Desktop':nativeId?'Saved in Claude Desktop · open in its account to connect':'Not initialized in Claude Desktop',
           updatedAt:activityTime(row.lastActivityAt)??activityTime(row.createdAt)};
         desktopCache.set(path,{signature:signature(st),session});result.push({...session});
-      }catch{/* Unreadable records do not hide other sessions. */}finally{await handle?.close();}
+      }catch(e){denied(e);/* Unreadable records do not hide other sessions. */}finally{await handle?.close();}
     }
   }
   for(const path of desktopCache.keys())if(path.startsWith(root+'/')&&!seen.has(path))desktopCache.delete(path);

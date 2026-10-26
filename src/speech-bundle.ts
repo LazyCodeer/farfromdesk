@@ -7,6 +7,7 @@ import type { Store } from './store.js';
 import { stateDir } from './config.js';
 import { VOICE_MODEL, voiceModelProgress } from './voice-model.js';
 import { validateAudioConfig } from './audio.js';
+import { cloudView } from './voice-cloud.js';
 
 // Verify model integrity with a fixed 64 KiB window, never a model-sized allocation.
 export function speechAssetHash(path:string) {
@@ -70,10 +71,14 @@ export function installBundledAudio(store:Store,directory=defaultSpeechBundle,mo
   return {configured:true,preserved:false};
 }
 export function audioReadiness(store:Store) {
+  const cloud=cloudView(store),local=localReadiness(store);
+  return cloud.engine==='local'?{...local,...cloud}:{...local,...cloud,ready:true,local:false};
+}
+function localReadiness(store:Store) {
   try {
     const config=validateAudioConfig(JSON.parse(store.get('audio-config')??'null'));
     for(const tool of [config.ffmpeg,config.whisper])accessSync(tool,constants.X_OK);
     if(!statSync(config.model).size)throw new Error('Empty model');
-    return {ready:true,local:true,bundled:store.get('audio-origin')==='bundled'};
-  }catch{return {ready:false,local:true,bundled:false,...(store.get('audio-tools')?{download:voiceModelProgress(store)}:{})};}
+    return {ready:true,local:true,localReady:true,bundled:store.get('audio-origin')==='bundled'};
+  }catch{return {ready:false,local:true,localReady:false,bundled:false,...(store.get('audio-tools')?{download:voiceModelProgress(store)}:{})};}
 }

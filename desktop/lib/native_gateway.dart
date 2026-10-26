@@ -102,6 +102,35 @@ class NativeGateway extends Gateway {
     if (!trustedReleaseUrl(uri)) {
       throw StateError('Unrecognized release download location.');
     }
+    await _openBrowser(uri);
+  }
+
+  @override
+  Future<void> openVoiceSignup(Uri uri) async {
+    if (!voiceSignupUrls.contains(uri)) {
+      throw StateError('Unrecognized sign-up page.');
+    }
+    await _openBrowser(uri);
+  }
+
+  @override
+  Future<void> openTelegram(Uri uri) async {
+    if (uri.scheme != 'https' ||
+        uri.host != 't.me' ||
+        uri.hasPort ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasFragment ||
+        !RegExp(r'^/[A-Za-z0-9_]{5,32}$').hasMatch(uri.path) ||
+        uri.queryParameters.keys.any((k) => k != 'start') ||
+        (uri.queryParameters.containsKey('start') &&
+            !RegExp(r'^[A-Za-z0-9_-]{1,64}$')
+                .hasMatch(uri.queryParameters['start']!))) {
+      throw StateError('Unrecognized Telegram link.');
+    }
+    await _openBrowser(uri);
+  }
+
+  Future<void> _openBrowser(Uri uri) async {
     final command = Platform.isMacOS
         ? '/usr/bin/open'
         : Platform.isWindows

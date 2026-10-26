@@ -110,12 +110,12 @@ test('coordinator role version sends once, keeps the receipt state and renews on
     f.router.queue('wa:first',f.master,'Check work');
     assert.equal(coordinatorRoleStatus(f.store).state,'pending');
     const first=turnEnvelope(f.store,f.master,'Check work','wa:first',{},[],dir);
-    assert.match(first.body,/# FarFromDesk Coordinator/);assert.match(first.body,/"receipt":\{"status":"queued","delivered":false\}/);
+    assert.match(first.body,/# FarFromDesk Coordinator/);assert.doesNotMatch(first.body,/"receipt"/);
     first.acknowledge();assert.equal(coordinatorRoleStatus(f.store).state,'sent');
     const next=turnEnvelope(f.store,f.master,'Next','wa:next',{},[],dir);
-    assert.doesNotMatch(next.body,/# FarFromDesk Coordinator/);assert.match(next.body,/roleFile/);
+    assert.doesNotMatch(next.body,/# FarFromDesk Coordinator/);assert.match(next.body,/reread if context was lost: \//);
     updateRole(f.store,f.master,'professional');assert.equal(coordinatorRoleStatus(f.store).state,'pending');
-    assert.match(turnEnvelope(f.store,f.master,'Next','wa:changed',{},[],dir).body,/# FarFromDesk Coordinator/);
+    assert.match(turnEnvelope(f.store,f.master,'Next','wa:changed',{},[],dir).body,/role updated to/);
     const changed={...f.master,native_id:uuid(3)};
     assert.match(turnEnvelope(f.store,changed,'New session','wa:new',{},[],dir).body,/role bootstrap/);
     assert.ok(roleConfig(f.store,f.master).instructions.length<16000);

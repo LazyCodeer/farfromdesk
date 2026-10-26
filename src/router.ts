@@ -40,7 +40,7 @@ export class Router {
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
     return {binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
-      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.get('whatsapp-owner')])};
+      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel()])};
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
     if(this.stopped||this.store.seen(m.id))return;
@@ -120,7 +120,7 @@ export class Router {
   resolveOwner(id:string,outcome:RequestOutcome,acknowledgingReport?:string) {
     const job=this.store.job(id),master=this.coordinator?.requestMaster(id);
     if(this.coordinator?.scope.getStore()&&master?.id!==this.coordinator.scope.getStore())throw new Error('Request belongs to another coordinator.');
-    if(!job||!/^(wa|local|master):/.test(id)||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
+    if(!job||!/^(wa|tg|local|master):/.test(id)||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
     if(!['done','blocked','reviewed','cancelled'].includes(outcome))throw new Error('An explicit outcome is required.');
     if(job.status==='completed'){if(job.outcome!==outcome)throw new Error('This request already has a different outcome.');return;}
     const children=this.store.db.prepare(`SELECT i.id,i.binding_id FROM inbox i JOIN settings s ON s.key='parent:'||i.id WHERE s.value=?`).all(id) as {id:string;binding_id:string}[];
@@ -214,7 +214,7 @@ export class Router {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.store.queued(b.id);if(!job)continue;
       this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
-      const run=()=>this.native.run(b,job.body,job.id);
+      const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
       void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
@@ -230,7 +230,7 @@ export class Router {
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.store.queued(b.id);if(!job)return null;
-    const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply',request_id:job.id,kinds:['progress','final']},this.attachments.references(b,job.id,true));
+    const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
   }
   channelReply(b:Binding,text:string,kind:string,requestId?:string,source?:string,context:Pick<ReplyContext,'turnId'|'outcome'>={}) {

@@ -4,7 +4,7 @@ export const ownerReceiptText = '💬 *Message received*\nGot your message. I’
 
 // A transport receipt is not an agent answer and never resolves a request.
 export function queueOwnerReceipt(store:Store, requestId:string, binding?:Binding, browsing=false) {
-  if(!requestId.startsWith('wa:'))return false;
+  if(!/^(wa|tg):/.test(requestId))return false;
   if(store.db.prepare('SELECT 1 FROM reply_receipts WHERE source IN (?,?)').get(`owner-receipt:${requestId}`,`audio-progress:${requestId}`))return false;
   const job=store.job(requestId);
   return store.output(binding,browsing?'🔎 *Checking sessions*\nGot your message. I’m checking your sessions.':ownerReceiptText,

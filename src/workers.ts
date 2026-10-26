@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, lstatSync, realpathSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, lstatSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Store, Provider, Binding } from './store.js';
@@ -88,7 +88,7 @@ export class Workers {
       const status=/^Desktop start needs owner action/.test(e instanceof Error?e.message:String(e))?'needs_action':!current.bindingId&&!current.cwd&&current.stage!=='native'&&current.stage!=='dispatch'?'blocked':'uncertain';
       this.save({...current,status,error:e instanceof Error?e.message:'Native creation could not be confirmed.'});
       if(current.bindingId&&!this.store.job(`master:${current.requestId}:create-${op.id}:${current.bindingId}`))this.masters.stopWorker(current.bindingId);
-      this.store.output(undefined,`New ${op.provider} session ${status==='blocked'?'has not started':'could not be confirmed'}. ${this.get(op.id)!.error}\nRecover this same operation after resolving the blocker. Reference: ${op.id}`,`worker-create:${op.id}:${status}:${op.requestId}`,destination);
+      this.store.output(undefined,status==='needs_action'?`A new Claude chat for “${op.name}” is open on your Mac. Press Send there to start it. FarFromDesk then connects it and queues your task. Reference: ${op.id}`:`New ${op.provider} session ${status==='blocked'?'has not started':'could not be confirmed'}. ${this.get(op.id)!.error}\nRecover this same operation after resolving the blocker. Reference: ${op.id}`,`worker-create:${op.id}:${status}:${op.requestId}`,destination);
       this.reportFailure(this.get(op.id)!);
     }).finally(()=>this.tasks.delete(op.id));
     this.tasks.set(op.id,task);return this.view(op.id)[0];
@@ -110,10 +110,6 @@ export class Workers {
     return this.workspaceGrant;
   }
   async create(op:Creation) {
-    if(op.provider==='claude'&&op.executionMode==='desktop') {
-      const launcher=await this.masters.desktop.parent(op.desktopParentId,op.route?.accountScope);
-      op={...op,desktopParentId:launcher.id,route:op.route?{...op.route,accountScope:launcher.accountScope}:undefined};this.save(op);
-    }
     op={...op,stage:'workspace',status:'awaiting_approval'};this.save(op);
     const w=await this.approveWorkspace(op);
     if(this.closed)return;
@@ -130,8 +126,13 @@ export class Workers {
     this.store.set(`execution-mode:${b.id}`,op.executionMode??'cli');if(op.desktopParentId)this.store.set(`desktop-parent:${b.id}`,op.desktopParentId);
     if(op.route)this.masters.connections.save(b,op.route);
     this.store.set(`name:${b.id}`,op.name);this.store.set(`managed-worker:${b.id}`,'true');
-    const instructions='This is a dedicated owner-requested coding project. Preserve native permissions. Work only on the requested project. Report progress and final results on the exact incoming bridge request. Do not contact other sessions or approve your own permissions.';
-    writeFileSync(join(cwd,'AGENTS.md'),instructions,{mode:0o600});writeFileSync(join(cwd,'CLAUDE.md'),instructions,{mode:0o600});
+    // The role travels with provider instructions or the first request, never as files in the project.
+    // Desktop startup receipts live beside the project, inside the approved workspace.
+    if(op.provider==='claude'&&op.executionMode==='desktop') {
+      const support=join(w.path,'.farfromdesk',`project-${op.id}`);mkdirSync(support,{recursive:true,mode:0o700});
+      if(realpathSync(support)!==support)throw new Error('Desktop setup directory must not be a symbolic link.');
+      this.store.set(`master-support:${b.id}`,support);
+    }
     op={...op,stage:'native'};this.save(op);
     await this.masters.provisionWorker(b);
     if(this.closed)return;
@@ -175,6 +176,17 @@ export class Workers {
     }).catch(e=>{if(this.closed)return;this.save({...next,status:/^Desktop start needs owner action/.test(e instanceof Error?e.message:String(e))?'needs_action':'uncertain',error:e instanceof Error?e.message:'Exact-session recovery failed.'});this.store.output(undefined,`Recovery is still blocked: ${this.get(id)!.error}`,`worker-create:${id}:recovery-error:${requestId}`,destination);this.reportFailure(this.get(id)!);}).finally(()=>this.tasks.delete(id));
     this.tasks.set(id,task);return this.view(id)[0];
   }
+  // Connects a Desktop session once the owner has pressed Send and it wrote its own ready
+  // receipt. Never opens or starts anything; recovery only verifies that exact session.
+  reconcileDesktop() {
+    if(this.closed||this.router.stopped)return;
+    for(const op of this.operations()) {
+      if(op.status!=='needs_action'||!op.bindingId||op.executionMode!=='desktop'||this.tasks.has(op.id))continue;
+      const b=this.store.binding(op.bindingId);let receipt:string|null=null;
+      try{receipt=b?this.masters.desktop.acknowledgment(b):null;}catch{continue;}
+      if(receipt)void this.recover(op.requestId,op.id).catch(()=>{/* The request closed; the owner can recover with a new request. */});
+    }
+  }
   private recoverPreflight(op:Creation,requestId:string,parent:{binding_id:string;destination?:string|null}) {
     // Legacy missing-launcher failures have no stage. No directory or binding can
     // exist on this branch: otherwise a side effect needs exact-child recovery.
@@ -210,7 +222,8 @@ export class Workers {
     if(!master||master.id!==op.masterId||!parent||parent.status==='replaced')return;
     const reportId=`report:creation:${op.id}:${op.status}:${op.requestId}`;
     this.store.set(`report-parent:${reportId}`,op.requestId);
-    this.store.enqueue(reportId,master,`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. Close the original owner request as blocked if no further work is possible; do not create a replacement or duplicate the notification.`,parent.destination??null);
+    const next=op.status==='needs_action'?'Keep the original owner request open: the bridge connects the session and queues its task once the owner presses Send in Claude. Do not open, start or create anything yourself, and do not duplicate the notification.':'Close the original owner request as blocked if no further work is possible; do not create a replacement or duplicate the notification.';
+    this.store.enqueue(reportId,master,`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. ${next}`,parent.destination??null);
     this.router.pump();
   }
   close(){this.closed=true;}

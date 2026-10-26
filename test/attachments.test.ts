@@ -117,6 +117,22 @@ test('download cancellation, errors and restart produce one scoped failure witho
   }finally{f.close();}
 });
 
+test('with a group selected, the self chat is ignored except for /self',async()=>{
+  const f=transportFixture();try {
+    const group='owner@g.us';f.store.set('destination-jid',group);f.store.set('destination-kind','group');f.store.set(`owned-group:${group}`,'Owner');
+    f.wa.sock={end:()=>{},groupMetadata:async()=>({participants:[{id:'123@s.whatsapp.net'}]})} as any;
+    const text=(id:string,body:string,jid='123@s.whatsapp.net')=>({key:{id,fromMe:true,remoteJid:jid},message:{conversation:body}});
+    await f.wa.receiveMessage(text('dm','Fix the build'));
+    await f.wa.receiveMessage(message('dm-file'));
+    assert.equal(f.store.job('wa:dm'),undefined);assert.equal(f.store.job('wa:dm-file'),undefined);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM outbox').get()?.n,0);
+    await f.wa.receiveMessage(text('in-group','Fix the build',group));
+    assert.equal(f.store.job('wa:in-group')?.body,'Fix the build');
+    await f.wa.receiveMessage(text('back','/self'));
+    assert.equal(f.wa.destination().kind,'self');
+  }finally{f.close();}
+});
+
 test('owner-only group membership is checked before download and again before staging',async()=>{
   const f=transportFixture();try {
     const group='owner@g.us';f.store.set('destination-jid',group);f.store.set(`owned-group:${group}`,'Owner');

@@ -75,9 +75,10 @@ export class Connections {
     if(this.pending.size>=8)throw new Error('CLI account checks are busy. Retry this exact connection shortly.');
     const task=(async()=>{
       let status:Pick<Connection,'state'|'label'|'accountKey'>={state:'native',label:'Uses the selected desktop chat’s account · identity not exposed'};
-      if(mode==='cli')try{status=await this.probe(provider,cwd);}catch{status={state:'unknown',label:'CLI account check unavailable · no Desktop fallback'};}
+      let failed=false;
+      if(mode==='cli')try{status=await this.probe(provider,cwd);}catch{failed=true;status={state:'unknown',label:'CLI account check unavailable · click Check apps to retry'};}
       const value={id,provider,executionMode:mode,...status,revision:digest([id,status])};
-      this.cache.set(key,{until:Date.now()+15000,value});while(this.cache.size>64)this.cache.delete(this.cache.keys().next().value!);
+      this.cache.set(key,{until:failed?Infinity:Date.now()+15000,value});while(this.cache.size>64)this.cache.delete(this.cache.keys().next().value!);
       return value;
     })();
     this.pending.set(key,task);try{return {...await task};}finally{this.pending.delete(key);}

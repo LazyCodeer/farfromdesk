@@ -24,6 +24,9 @@ function fixture(provider:'codex'|'claude'='codex') {
   let account='one',calls=0;
   const connections=new Connections(store,async()=>{calls++;return {state:'verified',label:'Test CLI account',accountKey:account};});
   native.connections=connections;
+  native.wakeCodex=async()=>{};
+  // Synthetic account/transport tests must never inspect the owner's Codex database.
+  native.validateSessions=async()=>{};
   const b=store.register('target',provider,sessionId,dir).binding;
   return {store,native,connections,b,setAccount:(v:string)=>account=v,calls:()=>calls,close:()=>{native.close();store.close();}};
 }
@@ -69,10 +72,31 @@ test('unknown CLI identity and stale selector revision cannot pin a managed sess
 });
 test('desktop route uses the native queue even when stale managed flags exist; CLI account change is irrelevant',async()=>{
   const f=fixture();try {
+    let wakes=0;f.native.wakeCodex=async id=>{assert.equal(id,sessionId);assert.equal(existsSync(join(dir,'sent')),true);wakes++;};
     await f.connections.choose(f.b,'desktop',false);f.store.set(`managed-codex:${f.b.id}`,'true');f.setAccount('two');
     f.native.managedRun=async()=>{throw new Error('must not run CLI');};
     await f.native.run(f.b,'synthetic queue test','local:desktop');
-    assert.deepEqual(JSON.parse(readFileSync(join(dir,'sent'),'utf8')),['send-codex']);assert.equal(f.calls(),0);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir,'sent'),'utf8')),['send-codex']);assert.equal(f.calls(),0);assert.equal(wakes,1);
+  }finally{f.close();}
+});
+test('Codex Desktop delivery rejects unavailable history before writing to its queue',async()=>{
+  const f=fixture();try {
+    rmSync(join(dir,'sent'),{force:true});
+    await f.connections.choose(f.b,'desktop',false);
+    f.native.validateSessions=async sessions=>{
+      assert.deepEqual(sessions,[{provider:'codex',id:sessionId,cwd:dir}]);
+      throw new Error('Codex conversation history is unavailable');
+    };
+    await assert.rejects(f.native.run(f.b,'not sent','local:missing-history'),/history is unavailable/);
+    assert.equal(existsSync(join(dir,'sent')),false);
+  }finally{f.close();}
+});
+test('a failed Desktop wake preserves queue submission and reports opening only, without resending',async()=>{
+  const f=fixture();try {
+    await f.connections.choose(f.b,'desktop',false);let wakes=0;
+    f.native.wakeCodex=async()=>{wakes++;throw new Error('app not found');};
+    await assert.rejects(f.native.run(f.b,'queued once','local:wake-failed'),/saved in the Codex queue.*do not resend/);
+    assert.equal(wakes,1);assert.deepEqual(JSON.parse(readFileSync(join(dir,'sent'),'utf8')),['send-codex']);
   }finally{f.close();}
 });
 test('Claude mode/account provenance changes stop native delivery before contacting a session',async()=>{
@@ -133,4 +157,11 @@ test('unavailable live-process discovery prevents managed Claude auto-resume',as
     let runs=0;f.native.managedRun=async()=>{runs++;};
     await assert.rejects(f.native.run(f.b,'do not duplicate','local:scan'),/could not be checked/);assert.equal(runs,0);
   }finally{f.close();}
+});
+
+
+test('failed account probe does not repeat on background refresh but explicit retry can recover',async(t)=>{
+ const store=new Store(':memory:');let calls=0;let now=100000; t.mock.method(Date,'now',()=>now);
+ const c=new Connections(store,async()=>{calls++;if(calls===1)throw new Error('permission timeout');return {state:'verified',label:'Test',accountKey:'one'};});
+ try {assert.equal((await c.read('claude','cli')).state,'unknown');now+=60000;assert.equal((await c.read('claude','cli')).state,'unknown');assert.equal(calls,1);assert.equal((await c.read('claude','cli',true)).state,'verified');assert.equal(calls,2);}finally{store.close();}
 });

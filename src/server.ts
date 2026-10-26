@@ -1,3 +1,4 @@
+import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -8,6 +9,7 @@ import QRCode from 'qrcode';
 import { stateDir, port } from './config.js';
 import type { Store, Provider, Binding } from './store.js';
 import type { Router } from './router.js';
+import type { Telegram } from './telegram.js';
 import type { WhatsApp } from './whatsapp.js';
 import type { Masters } from './masters.js';
 import type { PowerPolicy } from './power.js';
@@ -15,6 +17,7 @@ import type { Workers } from './workers.js';
 import { Artifacts } from './artifacts.js';
 import { validateAudioConfig } from './audio.js';
 import { prepareVoiceModel } from './voice-model.js';
+import { cleanKey, isCloud, removeVoiceKey, testVoiceKey, writeVoiceKey } from './voice-cloud.js';
 import { audioReadiness } from './speech-bundle.js';
 import { roleConfig, updateRole, companionStyles } from './roles.js';
 import { fileTypes, MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_OUTGOING_DOCUMENT_BYTES, MAX_INLINE_BYTES } from './file-types.js';
@@ -42,7 +45,7 @@ export function saveBindingCredentials(b:Binding,token:string) {
   const dir=join(stateDir,'bindings');mkdirSync(dir,{recursive:true,mode:0o700});
   writeFileSync(join(dir,`${b.alias}.json`),JSON.stringify({id:b.id,token,alias:b.alias,provider:b.provider,nativeId:b.native_id,cwd:b.cwd}),{mode:0o600});
 }
-export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers}) {
+export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram}) {
   const artifacts=new Artifacts(store);
   artifacts.disk.recover();
   const server=createServer((req,res)=>{
@@ -106,10 +109,29 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/session/permission'&&req.method==='POST'&&binding) {
         if(router.stopped)throw new Error('Background operation is paused; approval is unavailable.');
         const d=await body(req);if(typeof d.question!=='string')throw new Error('Question required');
-        const answer=await router.approvals.ask(binding,d.question);
+        const jobs=store.unfinished(binding.id);
+        const job=typeof d.requestId==='string'?store.job(d.requestId):jobs.length===1?jobs[0]:undefined;
+        if(d.requestId!==undefined&&(!job||job.binding_id!==binding.id)||d.requestId===undefined&&jobs.length>1)throw new Error('Specify the exact request for this permission question.');
+        const destination=job?.destination??store.destination();
+        const answer=await (destination?store.destinationContext.run(destination,()=>router.approvals.ask(binding,d.question)):router.approvals.ask(binding,d.question));
         json(res,200,{answer});return;
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}
+      if(path==='/api/control-channel/disconnect'&&req.method==='POST') {
+        json(res,200,await disconnectControlChannel(store,{whatsapp:wa,telegram:services?.telegram},await body(req)));return;
+      }
+      if(path==='/api/control-channel'&&req.method==='POST') {
+        const d=await body(req);json(res,200,await switchControlChannel(store,{whatsapp:wa,telegram:services?.telegram},d));return;
+      }
+      if(path.startsWith('/api/telegram/')&&req.method==='POST') {
+        const tg=services?.telegram;if(!tg)throw new Error('Update the background service for Telegram support.');
+        const d=await body(req);
+        if(path==='/api/telegram/connect') {if(!services?.power.enabled)throw new Error('Allow background operation first.');if(d.token!==undefined&&typeof d.token!=='string')throw new Error('Bot token must be text.');await tg.connect(d.token);}
+        else if(path==='/api/telegram/confirm') {if(!services?.power.enabled)throw new Error('Allow background operation first.');tg.confirm(d.userId);}
+        else if(path==='/api/telegram/disconnect')tg.disconnect();
+        else throw new Error('Unknown Telegram action.');
+        json(res,200,tg.view());return;
+      }
       if(path==='/api/agents'&&req.method==='GET') {json(res,200,{agents:listNamedAgents(store),installation:JSON.parse(store.get('agent-install-status')??'[]'),sync:JSON.parse(store.get('agent-sync-status')??'null')});return;}
       if(path==='/api/agents'&&req.method==='POST') {json(res,200,defineNamedAgent(store,await body(req)));return;}
       if(path==='/api/agents/sync'&&req.method==='POST') {await body(req);json(res,200,{agents:syncNamedAgents(store)});return;}
@@ -197,6 +219,17 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');
         json(res,200,await services.masters.useDesktop(d.sessionId,d.operationId));return;
       }
+      if(path==='/api/voice-engine'&&req.method==='POST') {
+        const d=await body(req);
+        if(d.remove===true){removeVoiceKey();store.set('voice-engine','local');}
+        if(typeof d.fallback==='boolean')store.set('voice-fallback',d.fallback?'1':'0');
+        if(d.engine==='local')store.set('voice-engine','local');
+        if(isCloud(d.engine)) {
+          const key=cleanKey(d.key);await testVoiceKey(d.engine,key);
+          writeVoiceKey(d.engine,key);store.set('voice-engine',d.engine);
+        }
+        json(res,200,audioReadiness(store));return;
+      }
       if(path==='/api/voice-model'&&req.method==='POST') {
         if(!store.get('audio-tools'))throw new Error('Bundled voice tools are unavailable.');
         void prepareVoiceModel(store).catch(()=>{});json(res,200,{started:true});return;
@@ -205,12 +238,12 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');
         json(res,200,await services.masters.create(d.provider,d.operationId,d.executionMode,d.desktopParentId,d.name,d.connectionRevision,d.workspaceId));return;
       }
-      if(path==='/api/master-options'&&req.method==='GET') {if(!services)throw new Error('Update the background service.');await services.masters.discover(url.searchParams.get('fresh')==='1');json(res,200,services.masters.options());return;}
+      if(path==='/api/master-options'&&req.method==='GET') {if(!services)throw new Error('Update the background service.');const fresh=url.searchParams.get('fresh')==='1';if(fresh){router.native.retryDiscovery?.();services.masters.workspaceScanner.retry();}await services.masters.discover(fresh);json(res,200,services.masters.options());return;}
       if(path==='/api/master-recover'&&req.method==='POST') {const d=await body(req);if(!services?.power.enabled)throw new Error('Allow background operation first.');json(res,200,await services.masters.recover(d.operationId));return;}
       if(path==='/api/master-abandon'&&req.method==='POST') {const d=await body(req);if(!services)throw new Error('Update the service.');json(res,200,services.masters.abandon(d.operationId));return;}
       if(path==='/api/status'&&req.method==='GET') {
         const c=router.coordinator;
-        json(res,200,{unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        json(res,200,{channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');

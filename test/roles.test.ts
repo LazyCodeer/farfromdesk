@@ -17,12 +17,15 @@ test('first binding bootstraps once; next turns, restart, versions and context l
     assert.match(turnEnvelope(store,b,'Retry adoption','wa:2',{},[],dir).body,/role bootstrap/);
     first.acknowledge();
     const second=turnEnvelope(store,b,'Latest request','wa:3',{},[],dir);
-    assert.doesNotMatch(second.body,/role bootstrap|First task/);assert.match(second.body,/roleFile/);assert.match(second.body,/context was lost or compacted/);
+    assert.doesNotMatch(second.body,/role bootstrap|First task/);assert.match(second.body,/reread if context was lost: \//);
     assert.ok(second.body.length<first.body.length/2);
     store.close();store=new Store(db);
     assert.doesNotMatch(turnEnvelope(store,b,'After restart','wa:4',{},[],dir).body,/role bootstrap/);
     updateRole(store,b,'cheerful');const changed=turnEnvelope(store,b,'New tone','wa:5',{},[],dir);
-    assert.match(changed.body,/role bootstrap/);assert.notEqual(changed.version,second.version);changed.acknowledge();
+    assert.doesNotMatch(changed.body,/role bootstrap/);assert.match(changed.body,/role updated to .*Read the role file/);assert.notEqual(changed.version,second.version);changed.acknowledge();
+    assert.doesNotMatch(turnEnvelope(store,b,'Same tone','wa:5b',{},[],dir).body,/role updated/);
+    const skilled=turnEnvelope(store,b,'Use skill','wa:5c',{ffd:'/h/ffd',skill:'/h/SKILL.md'},[],dir).body;
+    assert.match(skilled,/farfromdesk skill .*read \/h\/SKILL\.md/);assert.match(skilled,/"ffd":"\/h\/ffd"/);assert.doesNotMatch(skilled,/"skill"/);
     const revision=roleConfig(store,b).revision;updateRole(store,b,'cheerful');assert.equal(roleConfig(store,b).revision,revision);
     assert.throws(()=>updateRole(store,b,'ignore permissions'));
     store.set('master',b.id);assert.match(turnEnvelope(store,b,'Coordinate','wa:6',{},[],dir).body,/Use master_sessions/);
