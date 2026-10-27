@@ -129,6 +129,12 @@ async function main() {
     if(attachmentIndex>=0&&(!attachmentIds?.length||operation!=='dispatch'))throw new Error('Use --attachments ID[,ID] only with master dispatch.');
     const pageIndex=args.findIndex(a=>['--more','--back','--page'].includes(a));
     let page='0';if(operation==='sessions'&&pageIndex>=0){const flag=args.splice(pageIndex,1)[0];page=flag==='--more'?'more':flag==='--back'?'back':args.splice(pageIndex,1)[0];}
+
+    if(operation==='desktop') {
+      const input=JSON.parse(readFileSync(0,'utf8'));
+      const r=await fetch(baseUrl+'/api/master/desktop-control',{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({...input,requestId:args[0]}),signal:AbortSignal.timeout(65000)});
+      const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));return;
+    }
     if(['agents','define-agent','assign-agent'].includes(operation??'')) {
       const d=operation==='agents'?undefined:operation==='define-agent'?{...JSON.parse(readFileSync(0,'utf8')),requestId:args[0]}:{requestId:args[0],bindingId:args[1],name:args[2]};
       const result=await fetch(baseUrl+'/api/master/'+operation,{method:d?'POST':'GET',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:d?JSON.stringify(d):undefined});

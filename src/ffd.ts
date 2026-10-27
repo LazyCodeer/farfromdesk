@@ -1,3 +1,4 @@
+import { desktopInput } from './desktop-control.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,6 +18,7 @@ FFD below is ${ffd}. Run it as given; it already knows your session, the app and
 
 - Reply to the owner: FFD reply REQ progress 'text' for a meaningful update, FFD reply REQ final 'text' only when the request is done or clearly blocked.
 - Ask another platform's coordinator (for example the owner says Claude, or a voice note says "cloud"): FFD ask claude REQ 'task' or FFD ask codex REQ 'task'. Give the owner's request and what you already know. If that coordinator is not set up, ffd says so; tell the owner to add it in FarFromDesk, Coding platforms.
+- Desktop functions (proxies only): FFD desktop REQ, JSON on stdin. Use list_apps/list_browsers, then list_tabs with explicit browser or list_windows with appRef. Read using exact windowRef/tabRef. Every mutation needs UUID actionId; unknown outcomes are never retried. Browser tabs support new_tab/focus_tab/navigate_tab/close_tab in an existing chosen window. chat_controls reads known app context; chat_action new/draft/send follows the owner task, and send requires exact expectedDraft and explicit authorization. Stop and disable remains in Settings.
 - List sessions: FFD sessions [search words]. It lists your platform's sessions and shows which coordinator handles the other platforms.
 - Send to a connected session: FFD send REQ 'session name' 'task'. Connect it first with FFD master connect REQ TARGET, using the target exactly as sessions printed it.
 - Everything else: FFD master OPERATION ..., with the operations your role lists (MASTER in the role means FFD master).
@@ -44,6 +46,11 @@ const usage='Use ffd reply REQ progress|final [TEXT] | ask claude|codex REQ [TEX
 /** Runs one ffd command. Event IDs come from the content, so a retried command is recognised instead of sent twice. */
 export async function runFfd(args:string[],self:{id:string},call:Call,stdin:()=>string):Promise<string> {
   const op=args.shift(),text=(rest:string[])=>{const t=rest.length?rest.join(' '):stdin();if(!t.trim())throw new Error('The text is empty; nothing was sent.');return t;};
+  if(op==='desktop') {
+    if(args.length!==1||!args[0])throw new Error('Use ffd desktop REQUEST-ID with action JSON on stdin.');
+    const input=desktopInput.parse(JSON.parse(stdin()));
+    return JSON.stringify(await call('/api/master/desktop-control',{...input,requestId:args[0]}),null,2);
+  }
   if(op==='reply') {
     const [req,kind,...rest]=args;
     if(!req||kind!=='progress'&&kind!=='final')throw new Error('Use ffd reply REQ progress|final [TEXT]');

@@ -7,6 +7,8 @@
   Connect WhatsApp or Telegram to your coding assistants on your computer.
 </p>
 
+The next release adds an opt-in macOS desktop-control preview. See [desktop control](docs/desktop-control.md) for setup, reusable app/browser functions and tested limits.
+
 <p align="center">
   <a href="https://github.com/LazyCodeer/farfromdesk/releases"><strong>Download FarFromDesk</strong></a> ·
   <a href="https://ffd.codecylabs.com">Website</a> ·

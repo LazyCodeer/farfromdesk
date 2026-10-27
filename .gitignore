@@ -41,3 +41,6 @@ __pycache__/
 
 # Machine-specific local build/install reports
 /docs/local-build-*.md
+
+# Pinned driver is downloaded and verified during macOS packaging.
+native/cua-driver/cua-driver

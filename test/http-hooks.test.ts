@@ -17,7 +17,9 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
   saveBindingCredentials(a.binding,a.token);saveBindingCredentials(b.binding,b.token);
   let logoutCalls=0,pauseCalls=0;
   const wa={status:'not paired',logout:async()=>{logoutCalls++;}} as any;
-  const services={masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
+  let desktopCalls=0,desktopStops=0;
+  const desktopControl={view:()=>({supported:true}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{desktopCalls++;assert.equal(scope,`${a.binding.id}:wa:connect-owner`);assert.equal(input.action,'list_apps');return {apps:[]};}};
+  const services={desktopControl,masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
   const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
   const url=`http://127.0.0.1:${port}`;
   try {
@@ -32,7 +34,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
     assert.equal(wrongHost,403);
     assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
-    for(const endpoint of ['/api/control-channel','/api/control-channel/disconnect','/api/telegram/connect','/api/telegram/confirm','/api/telegram/disconnect','/api/voice-model','/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown','/api/update-shutdown']) {
+    for(const endpoint of ['/api/mac-control','/api/control-channel','/api/control-channel/disconnect','/api/telegram/connect','/api/telegram/confirm','/api/telegram/disconnect','/api/voice-model','/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown','/api/update-shutdown']) {
       assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
     }
     router.busy.add(a.binding.id);
@@ -98,6 +100,15 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     router.native.catalog=async()=>({sessions:[{id:ownWorker.binding.native_id,provider:'codex',name:'API project',cwd:'/tmp',status:'running',available:true}],cursor:null}) as any;
     router.native.validate=async()=>{};
     router.coordinator=new Coordinator(store,router.native,router,()=>{});
+    const desktopRequest={requestId:'wa:connect-owner',action:'list_apps'};
+    assert.equal((await post('/api/master/desktop-control',desktopRequest,b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/desktop-control',desktopRequest,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/desktop-control',{...desktopRequest,requestId:'report:fake'})).status,400);
+    assert.equal(desktopCalls,0);
+    assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,200);
+    assert.equal(desktopCalls,1);
+    assert.equal((await post('/api/mac-control',{action:'disable'},'test-admin-token')).status,200);
+    assert.equal(desktopStops,1);
     const connect={requestId:'wa:connect-owner',targets:[`codex:${ownWorker.binding.native_id}`]};
     assert.equal((await post('/api/master/connect',connect,b.token,b.binding.id)).status,403);
     for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);

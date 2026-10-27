@@ -2,6 +2,7 @@
 import argparse, hashlib, json, pathlib, platform, shutil, subprocess, tarfile, zipfile, tempfile, struct
 from release_installers import write_installer
 from windows_installer import build_windows_installer
+from sign_macos_bundle import sign_bundle
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--version', default=json.loads((ROOT/'release.json').read_text())['version'])
@@ -58,8 +59,7 @@ archive = out/f'FarFromDesk-{args.version}-{os_name}-{arch}.{ext}'
 archive.unlink(missing_ok=True)
 if os_name=='macos':
     # Ad-hoc development signing only. Release signing/notarization is a separate gate.
-    subprocess.run(['codesign','--force','--deep','--sign','-',str(app)],check=True)
-    subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
+    sign_bundle(app)
     subprocess.run(['ditto','-c','-k','--keepParent',str(app),str(archive)],check=True)
 elif os_name=='linux':
     with tarfile.open(archive,'w:gz',dereference=True) as f:f.add(app,arcname=app.name)
