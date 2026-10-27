@@ -59,7 +59,7 @@ jobs:
     if: needs.version.outputs.skip != 'true'
     needs: [version, checks]
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35

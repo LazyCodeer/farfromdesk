@@ -41,6 +41,8 @@ dependencies:
   window_manager: ^0.5.2
   launch_at_startup: ^0.5.1
   flutter_markdown_plus: ^1.0.12
+  # 7.3.x references a macOS 26 SDK symbol unavailable in the Xcode 16 CI toolchain.
+  connectivity_plus: 7.0.0
   livekit_client: 2.13.2
   flutter_webrtc: 1.6.3
 
