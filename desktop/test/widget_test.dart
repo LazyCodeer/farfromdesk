@@ -31,6 +31,47 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
+  testWidgets('Mac control requires opt-in, separates permission setup and can stop immediately', (tester) async {
+    size(tester);
+    final api = MacControlGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(const Key('mac-control-enabled'));
+    await tester.ensureVisible(toggle);
+    expect(tester.widget<Switch>(toggle).value, isFalse);
+    expect(find.text('Open Accessibility settings'), findsNothing);
+    expect(api.macActions, isEmpty);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(api.macActions, ['enable']);
+    expect(find.text('Open Accessibility settings'), findsOneWidget);
+    final check = find.text('Check permission');
+    await tester.ensureVisible(check);
+    await tester.tap(check);
+    await tester.pumpAndSettle();
+    expect(api.macActions, ['enable', 'check']);
+    expect(find.text('Accessibility permission needed'), findsOneWidget);
+    final setup = find.text('Open Accessibility settings');
+    await tester.ensureVisible(setup);
+    await tester.tap(setup);
+    await tester.pumpAndSettle();
+    expect(api.macActions.last, 'permission');
+    final recording = find.text('Screen Recording settings');
+    await tester.ensureVisible(recording);
+    await tester.tap(recording);
+    await tester.pumpAndSettle();
+    expect(api.macActions.last, 'capture-permission');
+    final stop = find.text('Stop and disable');
+    await tester.ensureVisible(stop);
+    await tester.tap(stop);
+    await tester.pumpAndSettle();
+    expect(api.macActions.last, 'disable');
+    expect(tester.widget<Switch>(toggle).value, isFalse);
+    expect(find.text('Mac control is off'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'Unconfigured messaging choice switches both ways without a disconnect dialog',
     (tester) async {
@@ -1436,6 +1477,30 @@ class VoiceGateway extends ConnectionGateway {
           'keyHint': 'a91f',
         };
       }
+      return {};
+    }
+    return super.post(path, data);
+  }
+}
+
+class MacControlGateway extends PreviewGateway {
+  MacControlGateway() : super(screen: 'settings');
+  final macActions = <String>[];
+  bool enabled = false;
+  bool? trusted;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    if (path == '/api/status') data['macControl'] = {'supported': true, 'enabled': enabled, 'trusted': trusted};
+    return data;
+  }
+  @override
+  Future<Map<String, dynamic>> post(String path, Map<String, dynamic> data) async {
+    if (path == '/api/mac-control') {
+      macActions.add(data['action'] as String);
+      if (data['action'] == 'enable') enabled = true;
+      if (data['action'] == 'disable') enabled = false;
+      if (data['action'] == 'check') trusted = false;
       return {};
     }
     return super.post(path, data);

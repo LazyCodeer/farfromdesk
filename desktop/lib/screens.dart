@@ -3798,6 +3798,7 @@ extension _BridgeScreens on _DeskState {
         status['requestCleanup'] ?? {'enabled': false, 'afterHours': 24};
     return [
       messagingAppSettings(),
+      if (status['macControl']?['supported'] == true) macControlPanel(),
       panel(
         'On this $computer',
         Column(

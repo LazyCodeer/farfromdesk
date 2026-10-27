@@ -1,3 +1,5 @@
+import { DesktopControl } from './desktop-control.js';
+import { MacControl } from './mac-control.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
@@ -45,7 +47,9 @@ export function saveBindingCredentials(b:Binding,token:string) {
   const dir=join(stateDir,'bindings');mkdirSync(dir,{recursive:true,mode:0o700});
   writeFileSync(join(dir,`${b.alias}.json`),JSON.stringify({id:b.id,token,alias:b.alias,provider:b.provider,nativeId:b.native_id,cwd:b.cwd}),{mode:0o600});
 }
-export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram}) {
+export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram;desktopControl?:DesktopControl;macControl?:MacControl}) {
+  const desktopControl=services?.desktopControl??new DesktopControl(store);
+  const macControl=services?.macControl??new MacControl(store);
   const artifacts=new Artifacts(store);
   artifacts.disk.recover();
   const server=createServer((req,res)=>{
@@ -73,6 +77,20 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path.startsWith('/api/master/')) {
         if(!binding||!router.coordinator?.isCoordinator(binding.id)){json(res,403,{error:'Only the WhatsApp master can use this endpoint'});return;}
         return await router.coordinator!.scope.run(binding.id,async()=>{
+        if(path==='/api/master/desktop-control'&&req.method==='POST') {
+          const {requestId,...input}=await body(req);
+          router.coordinator!.ownerRequest(requestId);
+          if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
+          if(input.action==='stop')macControl.stop();
+          const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{
+            router.coordinator!.ownerRequest(requestId);
+            if(router.stopped)throw new Error('Background operation is paused.');
+          });
+          router.coordinator!.ownerRequest(requestId);
+          store.audit('desktop-control-action',binding.id,input.action);
+          json(res,200,result);return;
+        }
+
         if(path==='/api/master/coordinators'&&req.method==='GET'){json(res,200,{coordinators:router.coordinator!.registry.view()});return;}
         if(path==='/api/master/delegate'&&req.method==='POST'){const d=await body(req);json(res,200,router.coordinator!.delegate(d.requestId,d.coordinatorId,d.text,d.eventId));return;}
         if(path==='/api/master/agents'&&req.method==='GET') {json(res,200,{agents:listNamedAgents(store).map(({instructions,...a})=>a)});return;}
@@ -152,6 +170,14 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/media/cleanup'&&req.method==='POST') {await body(req);json(res,200,{incoming:router.attachments.cleanup(),outgoing:artifacts.cleanup()});return;}
       if(path==='/api/hook-update'&&req.method==='GET') {json(res,200,store.hookUpdate(url.searchParams.get('id')??'')??{text:'This local update has expired.'});return;}
       if(path==='/api/request-events'&&req.method==='GET') {const id=url.searchParams.get('id')??'';json(res,200,{events:store.events(id),deliveries:store.deliveries(id)});return;}
+
+      if(path==='/api/mac-control'&&req.method==='GET'){json(res,200,macControl.view());return;}
+      if(path==='/api/mac-control'&&req.method==='POST') {
+        const d=await body(req);
+        if(Object.keys(d).length!==1||!['enable','disable','check','permission','capture-permission'].includes(d.action))throw new Error('Choose enable, disable, check, permission or capture-permission.');
+        if(d.action==='disable')desktopControl.stop();
+        json(res,200,d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));return;
+      }
       if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/update-shutdown'&&req.method==='POST') {
         await body(req);
@@ -243,7 +269,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/master-abandon'&&req.method==='POST') {const d=await body(req);if(!services)throw new Error('Update the service.');json(res,200,services.masters.abandon(d.operationId));return;}
       if(path==='/api/status'&&req.method==='GET') {
         const c=router.coordinator;
-        json(res,200,{channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        json(res,200,{macControl:macControl.view(),desktopControl:desktopControl.view(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');
@@ -292,5 +318,6 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   server.requestTimeout=PREPARATION_TIMEOUT_MS;
   server.keepAliveTimeout=5000;
   server.maxHeadersCount=64;
+  server.on('close',()=>{desktopControl.stop();macControl.stop();});
   server.listen(port,'127.0.0.1');return server;
 }

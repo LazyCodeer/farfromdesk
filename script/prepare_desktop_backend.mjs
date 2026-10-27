@@ -9,6 +9,10 @@ cpSync(join(root,'dist'),join(target,'dist'),{recursive:true});
 // Retain the existing Mac desktop transport and its helpers.
 if(process.platform==='darwin') {
   cpSync(join(root,'native'),join(target,'native'),{recursive:true});
+  const ax=spawnSync('python3',[join(root,'script/build_accessibility_helper.py'),join(target,'native')],{stdio:'inherit'});
+  if(ax.status!==0)throw new Error('Could not build the macOS Accessibility helper.');
+  const driver=spawnSync('python3',[join(root,'script/prepare_desktop_driver.py'),join(target,'native/cua-driver')],{stdio:'inherit'});
+  if(driver.status!==0)throw new Error('Could not verify and bundle the desktop driver.');
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.

@@ -123,9 +123,13 @@ jobs:
             build/speech-runtime*
       - run: npm run desktop:backend
       - run: node script/smoke_desktop_backend.mjs
+      - if: runner.os == 'macOS'
+        run: node script/smoke_desktop_driver.mjs
       - run: node script/test_desktop_speech.mjs
         timeout-minutes: 5
       - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
+      - if: runner.os == 'macOS'
+        run: node script/smoke_desktop_driver.mjs 'build/desktop-release/stage/FarFromDesk.app/Contents/Resources/backend/native'
       - if: runner.os == 'Windows'
         name: Verify EXE install and uninstall
         run: python script/test_windows_installer.py --version ${{ needs.version.outputs.version }}

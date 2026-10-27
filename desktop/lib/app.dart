@@ -10,6 +10,7 @@ import 'updates.dart';
 
 import 'bridge_theme.dart';
 part 'screens.dart';
+part 'mac_control_panel.dart';
 
 class FarFromDeskApp extends StatelessWidget {
   final Gateway gateway;
@@ -36,6 +37,8 @@ class _DeskState extends State<Desk> {
   Map<String, dynamic> status = {};
   String? error, actionError;
   bool ready = false, busy = false, polling = false, startup = false;
+  bool macTrialPressed = false;
+  void _macUpdate(VoidCallback change) { if (mounted) setState(change); }
   int section = 0, page = 0;
   String platform = 'codex:cli',
       setupAction = 'new',
