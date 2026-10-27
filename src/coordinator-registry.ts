@@ -76,9 +76,9 @@ export class CoordinatorRegistry {
   choose(provider:string,mode?:string) {
     let entries=this.entries().filter(r=>r.provider===provider&&(!mode||r.executionMode===mode));
     if(!mode&&entries.length>1){const p=JSON.parse(this.store.get(`platform-preference:${provider}`)??'null');if(p?.executionMode)entries=entries.filter(r=>r.executionMode===p.executionMode&&(!p.route?.accountScope||r.accountScope===p.route.accountScope));}
-    if(entries.length!==1)throw new Error(entries.length?'Choose the exact Desktop/CLI connection and account in Coding platforms.':`No ${provider==='claude'?'Claude':'Codex'} coordinator is set up. Add one in FarFromDesk, Coding platforms.`);
+    if(entries.length!==1)throw new Error(entries.length?'Choose the exact Desktop/CLI connection and account in Coding platforms.':`No ${provider==='claude'?'Claude':'Codex'} proxy is set up. Add one in FarFromDesk, Coding platforms.`);
     const b=this.store.binding(entries[0].bindingId);
-    if(!b?.enabled)throw new Error('That coordinator is paused. Resume it in Coding platforms; no other platform was selected.');
+    if(!b?.enabled)throw new Error('That proxy is paused. Resume it in Coding platforms; no other platform was selected.');
     return b;
   }
   view() {return this.entries().map(({accountKey,accountScope,...e})=>{

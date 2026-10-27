@@ -73,3 +73,20 @@ test('network failures name the provider and point at the connection',async()=>{
   await assert.rejects(cloud.transcribeCloud('deepgram',KEY,note,'audio/ogg',undefined,f),/Couldn’t reach Deepgram/);
   assert.ok(readFileSync(note).length);
 });
+
+test('Meta checks the key read-only and sends a WAV clip to Muse Voice Transcribe',async()=>{
+  const wav=join(dir,'note.wav');writeFileSync(wav,Buffer.from('RIFF fake wav'));
+  const f=fake({'https://api.meta.ai/v1/models':()=>json({data:[]}),'https://api.meta.ai/v1/asr/transcribe':()=>json({transcript:' Ask Codex for an update ',turns:[]})});
+  await cloud.testVoiceKey('meta',KEY,f.fetcher);
+  assert.equal(f.calls[0].init.headers.authorization,`Bearer ${KEY}`);assert.equal(f.calls[0].init.redirect,'error');
+  assert.equal(await cloud.transcribeCloud('meta',KEY,wav,'audio/wav',undefined,{fetcher:f.fetcher}),'Ask Codex for an update');
+  const form=f.calls[1].init.body as FormData,request=JSON.parse(await (form.get('request') as Blob).text());
+  assert.deepEqual(request,{model:'muse-voice-transcribe-1.0',audioEncoding:'WAV',mode:'PUSH_TO_TALK'});
+  assert.equal((form.get('audio') as Blob).type,'audio/wav');assert.equal(cloud.needsWav('meta'),true);assert.equal(cloud.needsWav('deepgram'),false);
+  const bad=fake({'https://api.meta.ai/v1/asr/transcribe':()=>json({error:{message:'secret detail'}},401)});
+  await assert.rejects(cloud.transcribeCloud('meta',KEY,wav,'audio/wav',undefined,{fetcher:bad.fetcher}),e=>/Meta rejected this API key/.test(e.message)&&!/secret detail/.test(e.message));
+});
+
+test('repeated words from Meta are collapsed',()=>{
+  for(const [raw,clean] of [['send me me the summary','send me the summary'],['Ask Codex Codex for for an update','Ask Codex for an update'],['Ask Codex for Codex for an update on on P1','Ask Codex for an update on P1'],['Telegram Reconnect reconnect tests','Telegram Reconnect tests'],['P1 and P2 are done','P1 and P2 are done'],['Codex वाला सेशन','Codex वाला सेशन']])assert.equal(cloud.collapseRepeats(raw),clean);
+});

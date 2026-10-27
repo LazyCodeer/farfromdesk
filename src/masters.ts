@@ -4,7 +4,7 @@ import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
-import { join,basename } from 'node:path';
+import { join,basename,dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
@@ -12,7 +12,12 @@ import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js
 import type { Store,Binding,Provider } from './store.js';
 import type { Router } from './router.js';
 import { saveBindingCredentials } from './server.js';
-import { CodexSession,confirmCodexSession } from './codex-session.js';
+/** A chat working in a git project is someone's worker; making it a proxy sends every hand-off through that project's chat. */
+export function inProject(cwd:string) {
+  for(let d=cwd;d&&d!==dirname(d)&&d!==homedir();d=dirname(d))if(existsSync(join(d,'.git')))return true;
+  return false;
+}
+import { CodexSession,confirmCodexSession,saveNewCodexWorkerSettings } from './codex-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
@@ -320,6 +325,7 @@ export class Masters {
     try {
       const session=provider==='claude'&&mode==='desktop'?await this.desktop.parent(sessionId):(await this.catalog(provider,true)).find(s=>s.id===sessionId&&(provider==='codex'||(s.executionMode??'cli')===mode));
       if(!session?.cwd||(!(provider==='claude'&&mode==='desktop')&&session.available!==true))throw new Error('This saved session is not reachable. Open it in its native app or CLI, then refresh.');
+      if(inProject(session.cwd))throw new Error('This chat works in a project folder, so it cannot be your proxy. Choose Create new proxy chat instead, and keep this chat as a worker.');
       if(!(provider==='claude'&&mode==='desktop'))await this.router.native.validate(provider,session.id,session.cwd);
       let b=this.store.bindings().find(b=>b.provider===provider&&b.native_id===session.id);
       if(b&&realpathSync(b.cwd)!==realpathSync(session.cwd))throw new Error('Selected project differs from the registered binding.');
@@ -500,7 +506,7 @@ export class Masters {
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:roleConfig(this.store,b).instructions,...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['master_desktop_control','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
+    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:roleConfig(this.store,b).instructions,...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
   }
   async provisionWorker(b:Binding) {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
@@ -525,7 +531,14 @@ export class Masters {
     this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(r.thread.id,b.id);
     if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
     await runtime.request('thread/name/set',{threadId:r.thread.id,name:this.store.get(`name:${b.id}`)??'FarFromDesk project'});
-    try{await confirmCodexSession(runtime,r.thread.id,b.cwd);}catch(e){this.stopWorker(b.id);throw e;}
+    try{
+      await confirmCodexSession(runtime,r.thread.id,b.cwd);
+      if(this.store.get(`execution-mode:${b.id}`)==='desktop'){
+        this.store.set(`worker-desktop-settings:${b.id}`,'pending');
+        await saveNewCodexWorkerSettings(runtime,r.thread.id,b.cwd);
+        this.store.set(`worker-desktop-settings:${b.id}`,'saved');
+      }
+    }catch(e){this.stopWorker(b.id);throw e;}
     if(this.store.get(`execution-mode:${b.id}`)==='desktop'){runtime.close();this.runtimes.delete(b.id);await this.openCodex(r.thread.id);}
   }
   stopWorker(id:string){this.runtimeRoles.delete(id);this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
@@ -545,6 +558,10 @@ export class Masters {
     const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));
     try {
       await runtime.initialize();await confirmCodexSession(runtime,b.native_id,b.cwd);
+      if(this.store.get(`execution-mode:${b.id}`)==='desktop'&&this.store.get(`worker-desktop-settings:${b.id}`)==='pending') {
+        await saveNewCodexWorkerSettings(runtime,b.native_id,b.cwd);
+        this.store.set(`worker-desktop-settings:${b.id}`,'saved');
+      }
       if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
     }finally{runtime.close();}
     if(this.store.get(`execution-mode:${b.id}`)==='desktop')await this.openCodex(b.native_id);

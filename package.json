@@ -1,6 +1,6 @@
 {
   "name": "farfromdesk",
-  "version": "0.7.8",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -21,6 +21,8 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.310",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@whiskeysockets/baileys": "7.0.0-rc14",
+    "livekit-client": "2.15.6",
+    "livekit-server-sdk": "2.19.2",
     "pino": "^9.14.0",
     "qrcode": "^1.5.4",
     "zod": "^4.0.0"
@@ -31,7 +33,7 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },
-  "description": "Control your coding sessions through WhatsApp or Telegram.",
+  "description": "Your coding sessions, one WhatsApp message away.",
   "license": "MIT",
   "repository": {
     "type": "git",

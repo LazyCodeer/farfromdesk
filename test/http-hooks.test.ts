@@ -17,9 +17,11 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
   saveBindingCredentials(a.binding,a.token);saveBindingCredentials(b.binding,b.token);
   let logoutCalls=0,pauseCalls=0;
   const wa={status:'not paired',logout:async()=>{logoutCalls++;}} as any;
+  const browser={run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);assert.equal(input.action,'discover');return {matches:0};}};
+  const macControl={configure:()=>({enabled:false}),view:()=>({enabled:false}),run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='capture')return {captured:true,pngBase64:Buffer.from([137,80,78,71,13,10,26,10]).toString('base64'),frame:[-1920,125,800,600]};assert.equal(input.action,'discover');return {apps:[]};},stop:()=>{}};
   let desktopCalls=0,desktopStops=0;
   const desktopControl={view:()=>({supported:true}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{desktopCalls++;assert.equal(scope,`${a.binding.id}:wa:connect-owner`);assert.equal(input.action,'list_apps');return {apps:[]};}};
-  const services={desktopControl,masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
+  const services={desktopControl,browser,macControl,masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
   const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
   const url=`http://127.0.0.1:${port}`;
   try {
@@ -100,6 +102,8 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     router.native.catalog=async()=>({sessions:[{id:ownWorker.binding.native_id,provider:'codex',name:'API project',cwd:'/tmp',status:'running',available:true}],cursor:null}) as any;
     router.native.validate=async()=>{};
     router.coordinator=new Coordinator(store,router.native,router,()=>{});
+    // Browser commands remain coordinator/request-scoped, never admin or cross-session shortcuts.
+    // This fixture injects the adapter at server creation; actual browser access stays out of tests.
     const desktopRequest={requestId:'wa:connect-owner',action:'list_apps'};
     assert.equal((await post('/api/master/desktop-control',desktopRequest,b.token,b.binding.id)).status,403);
     assert.equal((await post('/api/master/desktop-control',desktopRequest,'test-admin-token')).status,403);
@@ -114,6 +118,26 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);
     assert.equal((await post('/api/master/connect',connect,'test-admin-token')).status,403);
     assert.equal((await post('/api/master/connect',{...connect,requestId:'report:fake'})).status,400);
+    const browserRequest={requestId:'wa:connect-owner',action:'discover'};
+    assert.equal((await post('/api/master/browser',browserRequest,b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/browser',browserRequest,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/browser',{...browserRequest,requestId:'report:fake'})).status,400);
+    assert.equal((await post('/api/master/browser',browserRequest)).status,200);
+    assert.equal((await post('/api/master/mac-control',browserRequest,b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/mac-control',browserRequest,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/mac-control',{...browserRequest,requestId:'report:fake'})).status,400);
+    assert.equal((await post('/api/master/mac-control',browserRequest)).status,200);
+    const captureRequest={requestId:'wa:connect-owner',action:'capture',windowRef:'11111111-1111-4111-a111-111111111111'};
+    assert.equal((await post('/api/master/mac-control',captureRequest,b.token,b.binding.id)).status,403);
+    const capture=await post('/api/master/mac-control',captureRequest);assert.equal(capture.status,200);const screenshot=await capture.json();assert.equal(screenshot.pngBase64,undefined);assert.equal(typeof screenshot.artifactId,'string');assert.equal(screenshot.delivery,'prepared, not sent');
+    const screenshotReply=await post('/api/session/document',{requestId:'wa:connect-owner',artifactId:screenshot.artifactId,caption:'Fixture screenshot'});assert.equal(screenshotReply.status,200);assert.equal((await screenshotReply.json()).status,'queued');
+
+    router.stopped=true;
+    assert.equal((await post('/api/master/mac-control',browserRequest)).status,400);
+    router.stopped=false;
+
+    store.enqueue('wa:closed-browser',a.binding,'Read selected page');store.jobState('wa:closed-browser','done');
+    assert.equal((await post('/api/master/browser',{...browserRequest,requestId:'wa:closed-browser'})).status,400);
     const connected=await post('/api/master/connect',connect);assert.equal(connected.status,200);
     assert.equal((await connected.json()).sessions[0].id,ownWorker.binding.id);
     const list=await fetch(url+'/api/master/sessions?search=API',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}});

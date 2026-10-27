@@ -7,7 +7,7 @@ import { streamMediaDownload, isDownloadedMedia, requireDiskSpace, type Download
 import { digestFileSync } from './large-file.js';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
-import { readVoiceKey, transcribeCloud, voiceEngine } from './voice-cloud.js';
+import { readVoiceKey, transcribeCloud, voiceEngine, needsWav } from './voice-cloud.js';
 import { errorCode, type VoiceStage, type VoiceStageEvent } from './request-events.js';
 
 export type AudioObserver=(event:VoiceStageEvent)=>void;
@@ -58,6 +58,23 @@ export async function downloadAudio(audio:any,signal?:AbortSignal):Promise<Downl
   audioFormat(audio);
   return streamMediaDownload(audio,'audio','voice.bin',Number.MAX_SAFE_INTEGER,signal);
 }
+async function decodeWav(ffmpeg:string,format:string,input:string,wav:string,signal?:AbortSignal) {
+  await exec(ffmpeg,['-nostdin','-hide_banner','-loglevel','error','-protocol_whitelist','file,pipe','-f',format,'-i',input,'-vn','-ac','1','-ar','16000','-t','301','-c:a','pcm_s16le',wav],{timeout:45000,killSignal:'SIGKILL',maxBuffer:64000,signal});
+  const bytes=(await stat(wav)).size;
+  if(bytes<=78||bytes>MAX_AUDIO_SECONDS*32000+78)throw new Error('Audio is empty or longer than five minutes.');
+  const pcm=await readFile(wav);
+  if(!hasAudibleSamples(pcm))throw new Error('No clear speech detected.');
+  return pcm;
+}
+// Cloud engines that only take WAV get the same validated 16 kHz PCM the local engine uses.
+async function cloudAudio(store:Store,data:DownloadedMedia,format:string,signal?:AbortSignal,observe?:AudioObserver) {
+  let tools:any;try{tools=JSON.parse(store.get('audio-tools')||store.get('audio-config')||'null');}catch{}
+  if(typeof tools?.ffmpeg!=='string'||!isAbsolute(tools.ffmpeg)||!existsSync(tools.ffmpeg))throw new Error('Voice tools are missing, so this voice note can’t be converted. Reinstall FarFromDesk or switch voice notes to this Mac.');
+  const parent=join(stateDir,'audio-tmp');await mkdir(parent,{recursive:true,mode:0o700});
+  const dir=await mkdtemp(join(parent,'cloud-')),wav=join(dir,'audio.wav');
+  try{await measureVoiceStage('decode',()=>decodeWav(tools.ffmpeg,format,data.path,wav,signal),observe);return {path:wav,dispose:()=>rm(dir,{recursive:true,force:true})};}
+  catch(e){await rm(dir,{recursive:true,force:true});throw e;}
+}
 export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,config:AudioConfig,root=stateDir,signal?:AbortSignal,observe?:AudioObserver):Promise<string> {
   if((Buffer.isBuffer(data)?!data.length:!isDownloadedMedia(data))||!Object.values(formats).includes(format))throw new Error('Invalid audio input.');
   validateAudioConfig(config);
@@ -66,14 +83,7 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
   try {
     if(Buffer.isBuffer(data))await writeFile(input,data,{mode:0o600});
     else {requireDiskSpace(dir,data.bytes);await copyFile(data.path,input);const check=digestFileSync(input,'voice.bin',Number.MAX_SAFE_INTEGER);if(check.bytes!==data.bytes||check.sha256!==data.sha256)throw new Error('Voice note integrity check failed.');}
-    const pcm=await measureVoiceStage('decode',async()=>{
-      await exec(config.ffmpeg,['-nostdin','-hide_banner','-loglevel','error','-protocol_whitelist','file,pipe','-f',format,'-i',input,'-vn','-ac','1','-ar','16000','-t','301','-c:a','pcm_s16le',wav],{timeout:45000,killSignal:'SIGKILL',maxBuffer:64000,signal});
-      const bytes=(await stat(wav)).size;
-      if(bytes<=78||bytes>MAX_AUDIO_SECONDS*32000+78)throw new Error('Audio is empty or longer than five minutes.');
-      const pcm=await readFile(wav);
-      if(!hasAudibleSamples(pcm))throw new Error('No clear speech detected.');
-      return pcm;
-    },observe);
+    const pcm=await measureVoiceStage('decode',()=>decodeWav(config.ffmpeg,format,input,wav,signal),observe);
     // Feed the already-validated PCM WAV through Whisper's memory decoder,
     // keeping the decoder input identical across platforms.
     // The pinned Windows GGML runtime stalls with four threads on the hosted
@@ -97,7 +107,11 @@ export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,
     const k=readVoiceKey()!,mime=String(audio.mimetype).split(';')[0].trim().toLowerCase();
     const data=await measureVoiceStage('download',()=>download(audio,signal),observe);
     try {
-      try{return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,data.path,mime,signal),observe);}
+      try{
+        if(!needsWav(k.provider))return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,data.path,mime,signal),observe);
+        const wav=await cloudAudio(store,data,format,signal,observe);
+        try{return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,wav.path,'audio/wav',signal),observe);}finally{await wav.dispose();}
+      }
       catch(e) {
         // Fall back only to a model that is already on disk; never start a download here.
         const local=store.get('audio-config');

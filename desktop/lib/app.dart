@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import 'gateway.dart';
+import 'remote_desktop.dart';
+import 'meta_brain_panel.dart';
 import 'updates.dart';
 
 import 'bridge_theme.dart';

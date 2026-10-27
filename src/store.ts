@@ -31,6 +31,9 @@ export class Store {
       CREATE INDEX IF NOT EXISTS request_events_request ON request_events(request_id,id);
       CREATE TABLE IF NOT EXISTS reply_receipts(source TEXT PRIMARY KEY,request_id TEXT,binding_id TEXT,kind TEXT,origin TEXT,turn_id TEXT,text_hash TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS reply_receipts_turn ON reply_receipts(binding_id,request_id,turn_id);
+      CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,status TEXT NOT NULL,binding_id TEXT,event_id TEXT UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS item_notes(id INTEGER PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES items(id),at INTEGER NOT NULL,by TEXT,note TEXT NOT NULL,event_id TEXT UNIQUE);
+      CREATE TABLE IF NOT EXISTS item_requests(request_id TEXT PRIMARY KEY,item_id INTEGER NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS hook_updates(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,turn_id TEXT,at INTEGER NOT NULL,text TEXT NOT NULL);
     `);
     if(!this.db.prepare('PRAGMA table_info(inbox)').all().some((c:any)=>c.name==='updated_at')) {
@@ -50,6 +53,17 @@ export class Store {
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  /** The item a request belongs to: its own link, else the nearest linked parent or report parent. */
+  itemOf(requestId?:string|null):number|undefined {
+    let id=requestId??undefined;
+    for(let depth=0;id&&depth<6;depth++) {
+      const row=this.db.prepare('SELECT item_id FROM item_requests WHERE request_id=?').get(id) as {item_id:number}|undefined;
+      if(row)return row.item_id;
+      id=this.get(`report-parent:${id}`)??this.get(`parent:${id}`);
+    }
+    return undefined;
+  }
+  linkItem(requestId:string,itemId:number){this.db.prepare('INSERT OR IGNORE INTO item_requests VALUES(?,?,?)').run(requestId,itemId,Date.now());}
   bindings() { return this.db.prepare('SELECT * FROM bindings ORDER BY created_at').all() as Binding[]; }
   binding(id: string) { return this.db.prepare('SELECT * FROM bindings WHERE id=? OR alias=?').get(id, id) as Binding | undefined; }
   register(alias: string, provider: Provider, nativeId: string, cwd: string, mode: Binding['mode'] = 'desktop') {
@@ -154,7 +168,8 @@ export class Store {
     for(const character of formatted){if(chunk.length+character.length>3500){chunks.push(chunk);chunk='';}chunk+=character;}
     if(chunk)chunks.push(chunk);
     const insert = this.db.prepare('INSERT OR IGNORE INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,request_id,reply_kind,turn_id) VALUES(?,?,?,?,?,?,?,?,?,?)');
-    const label=binding?`${binding.provider==='claude'?'Claude':'Codex'} ${this.get(`execution-mode:${binding.id}`)==='desktop'?'Desktop':'CLI'} · ${this.get(`name:${binding.id}`)??binding.alias}`.slice(0,130):'';
+    const item=binding?this.itemOf(context.requestId):undefined;
+    const label=binding?`${item?`#${item} · `:''}${binding.provider==='claude'?'Claude':'Codex'} ${this.get(`execution-mode:${binding.id}`)==='desktop'?'Desktop':'CLI'} · ${this.get(`name:${binding.id}`)??binding.alias}`.slice(0,130):'';
     const coordinator=!!binding&&(binding.id===this.get('master')||this.get(`role-kind:${binding.id}`)==='master');
     this.db.exec('SAVEPOINT reply_output');
     try {
@@ -169,6 +184,30 @@ export class Store {
       return true;
     } catch (e) { this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output'); throw e; }
   }
+  /** Internal brain replies have an owner ledger row, not a fabricated agent job. */
+  outputBrain(requestId:string,text:string,source=`brain:${requestId}`) {
+    const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
+    if(!task||!/^(wa|tg|local):/.test(requestId))throw new Error('A recorded owner request is required');
+    const prior=this.db.prepare('SELECT request_id,text_hash,binding_id FROM reply_receipts WHERE source=?').get(source) as any;
+    if(prior){if(prior.request_id!==requestId||prior.text_hash!==hash(text)||prior.binding_id!==null)throw new Error('Brain reply identity was reused');return false;}
+    this.db.exec('SAVEPOINT brain_output');
+    try {
+      const queued=this.output(undefined,text,source,task.destination);
+      if(queued){this.correlateBrainReply(requestId,source,task.destination);this.event(requestId,'reply_queued');}
+      this.db.exec('RELEASE brain_output');return queued;
+    }catch(e){this.db.exec('ROLLBACK TO brain_output; RELEASE brain_output');throw e;}
+  }
+  /** Backfill correlation only. Never enqueue or resend a historical answer. */
+  correlateBrainReply(requestId:string,source:string,destination:string|null) {
+    const receipt=this.db.prepare('SELECT request_id,binding_id FROM reply_receipts WHERE source=?').get(source) as any;
+    if(!receipt||receipt.binding_id!==null||(receipt.request_id!==null&&receipt.request_id!==requestId))return;
+    const prefix=source+':';
+    const rows=this.db.prepare('SELECT id,source,destination,request_id,binding_id FROM outbox WHERE substr(source,1,?)=?').all(prefix.length,prefix)
+      .filter(r=>/^\d+$/.test(String(r.source).slice(prefix.length)));
+    if(!rows.length||rows.some(r=>r.destination!==destination||r.binding_id!==null||(r.request_id!==null&&r.request_id!==requestId)))return;
+    this.db.prepare("UPDATE reply_receipts SET request_id=?,kind='system',origin='system' WHERE source=?").run(requestId,source);
+    for(const row of rows)this.db.prepare("UPDATE outbox SET request_id=?,reply_kind='system' WHERE id=?").run(requestId,row.id);
+  }
   outbound(channel:'whatsapp'|'telegram'='whatsapp') { cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT * FROM outbox WHERE status='queued' AND next_at<=? AND (CASE WHEN destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (binding_id IS NULL OR binding_id IN (SELECT id FROM bindings WHERE enabled=1)) ORDER BY created_at LIMIT 1").get(Date.now(),channel) as any; }
   sent(id: string) { const row=this.db.prepare('SELECT request_id,sent_at FROM outbox WHERE id=?').get(id) as any;this.db.prepare("UPDATE outbox SET status='sent',error=NULL,sent_at=COALESCE(sent_at,?) WHERE id=?").run(Date.now(),id);if(row?.request_id&&!row.sent_at)this.event(row.request_id,'reply_sent'); }
   deliveryReceipt(waId:string,destination:string,kind:'delivered'|'read') {
@@ -179,6 +218,7 @@ export class Store {
   }
   sendFailed(id: string, attempts: number, error: string) { const row=this.db.prepare('SELECT request_id FROM outbox WHERE id=?').get(id) as any;if(row?.request_id)this.event(row.request_id,'reply_send_failed',{code:errorCode(error)});this.db.prepare('UPDATE outbox SET attempts=?,next_at=?,error=? WHERE id=?').run(attempts,Date.now()+Math.min(300000,2000*2**Math.min(attempts,8)),error,id); }
   isOurs(waId: string) { return !!this.db.prepare('SELECT 1 FROM outbox WHERE wa_id=?').get(waId); }
+  quotedRequest(waId: string) { return (this.db.prepare('SELECT request_id FROM outbox WHERE wa_id=?').get(waId) as any)?.request_id as string|undefined; }
   quotedBinding(waId: string) { const row=this.db.prepare('SELECT binding_id FROM outbox WHERE wa_id=?').get(waId) as any; return row?.binding_id ? this.binding(row.binding_id) : undefined; }
   audit(event: string, bindingId?: string, detail?: string) { this.db.prepare('INSERT INTO audit(at,event,binding_id,detail) VALUES(?,?,?,?)').run(Date.now(),event,bindingId??null,detail??null); }
   close() { this.db.close(); }

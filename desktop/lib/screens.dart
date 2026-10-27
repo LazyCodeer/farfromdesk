@@ -1197,7 +1197,7 @@ extension _BridgeScreens on _DeskState {
 
   Widget voiceCard() {
     final v = Map<String, dynamic>.from(status['voice'] ?? {});
-    final cloud = v['engine'] == 'deepgram' || v['engine'] == 'assemblyai';
+    final cloud = voiceClouds.contains(v['engine']);
     final downloading = v['download']?['state'] == 'downloading';
     final title = v['ready'] == true
         ? 'Voice notes ready'
@@ -1257,16 +1257,20 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
-  String voiceName(Object? engine) =>
-      engine == 'assemblyai' ? 'AssemblyAI' : 'Deepgram';
+  static const voiceClouds = {'deepgram', 'assemblyai', 'meta'};
+  String voiceName(Object? engine) => engine == 'assemblyai'
+      ? 'AssemblyAI'
+      : engine == 'meta'
+      ? 'Meta'
+      : 'Deepgram';
 
   /// Local model or the owner's own API key; shared by Home and Settings.
   Widget voiceSetup() {
     final v = Map<String, dynamic>.from(status['voice'] ?? {});
     final engine = v['engine'] ?? 'local';
-    final cloud = engine == 'deepgram' || engine == 'assemblyai';
+    final cloud = voiceClouds.contains(engine);
     final path = voicePathChoice ?? (cloud ? 'api' : 'local');
-    final provider = voiceProviderChoice ?? (cloud ? engine : 'deepgram');
+    final provider = voiceProviderChoice ?? (cloud ? engine : 'meta');
     final name = voiceName(provider);
     final connected =
         cloud &&
@@ -1380,7 +1384,11 @@ extension _BridgeScreens on _DeskState {
     );
     final signup = provider == 'assemblyai'
         ? Uri.parse('https://www.assemblyai.com/dashboard/')
+        : provider == 'meta'
+        ? Uri.parse('https://dev.meta.ai/')
         : Uri.parse('https://console.deepgram.com/');
+    final brainKey =
+        provider == 'meta' && status['metaBrain']?['configured'] == true;
     void pick(String? p, String? prov) => changeView(() {
       voicePathChoice = p ?? voicePathChoice;
       voiceProviderChoice = prov ?? voiceProviderChoice;
@@ -1402,7 +1410,7 @@ extension _BridgeScreens on _DeskState {
             choice(
               'api',
               'Use an API key',
-              'No download. Free credits from Deepgram or AssemblyAI.',
+              'No download. Meta, Deepgram or AssemblyAI.',
               path == 'api',
               () => pick('api', null),
             ),
@@ -1461,7 +1469,7 @@ extension _BridgeScreens on _DeskState {
                 const SizedBox(width: 10),
                 const Expanded(
                   child: Text(
-                    'Both platforms give new accounts free credit: Deepgram \$200 and AssemblyAI \$50. No credit card is needed, and that is enough for years of voice notes. Both understand English, Hindi and mixed speech. FarFromDesk isn\'t affiliated with either; this is only for your information.',
+                    'Meta uses your Meta Model API account, the same one the Brain can use, and bills by the hour of audio. Deepgram gives new accounts \$200 of free credit and AssemblyAI \$50, with no credit card needed. All three understand English, Hindi and mixed speech. FarFromDesk isn\'t affiliated with any of them; this is only for your information.',
                     style: TextStyle(fontSize: 12.5, color: muted),
                   ),
                 ),
@@ -1471,6 +1479,14 @@ extension _BridgeScreens on _DeskState {
           gap(12),
           Row(
             children: [
+              choice(
+                'meta',
+                'Meta',
+                'Muse Voice Transcribe',
+                provider == 'meta',
+                () => pick(null, 'meta'),
+              ),
+              const SizedBox(width: 12),
               choice(
                 'deepgram',
                 'Deepgram',
@@ -1547,6 +1563,32 @@ extension _BridgeScreens on _DeskState {
               ),
             ])
           else ...[
+            if (brainKey)
+              box([
+                Row(
+                  children: [
+                    Expanded(
+                      child: settingText(
+                        'Use your Brain key',
+                        'The Meta key saved in Brain settings works for voice notes too. FarFromDesk tests it first.',
+                      ),
+                    ),
+                    button(
+                      'Use Brain key',
+                      () => act(() async {
+                        await api.post('/api/voice-engine', {
+                          'engine': 'meta',
+                          'useBrainKey': true,
+                        });
+                        replacingVoiceKey = false;
+                      }),
+                      primary: true,
+                      compact: true,
+                      key: const Key('voice-use-brain-key'),
+                    ),
+                  ],
+                ),
+              ]),
             gap(14),
             stepLine(
               1,
@@ -1568,9 +1610,11 @@ extension _BridgeScreens on _DeskState {
                       ),
                     ),
                   ),
-                  const Text(
-                    ' and sign up. No credit card needed.',
-                    style: TextStyle(fontSize: 13),
+                  Text(
+                    provider == 'meta'
+                        ? ' and sign in.'
+                        : ' and sign up. No credit card needed.',
+                    style: const TextStyle(fontSize: 13),
                   ),
                 ],
               ),
@@ -1580,6 +1624,8 @@ extension _BridgeScreens on _DeskState {
               Text(
                 provider == 'assemblyai'
                     ? 'On the dashboard, go to API Keys, create a new API key and copy it.'
+                    : provider == 'meta'
+                    ? 'Open the Dashboard, create a Model API key and copy it.'
                     : 'In the console, go to API Keys, create a new API key and copy it.',
                 style: const TextStyle(fontSize: 13),
               ),
@@ -3798,6 +3844,19 @@ extension _BridgeScreens on _DeskState {
         status['requestCleanup'] ?? {'enabled': false, 'afterHours': 24};
     return [
       messagingAppSettings(),
+      panel(
+        'Brain',
+        trailing: status['metaBrain']?['enabled'] != true
+            ? tag('Off')
+            : status['metaBrain']?['configured'] == true
+            ? tag('On', good: true)
+            : tag('Needs a key', tint: warning),
+        MetaBrainPanel(
+          gateway: api,
+          saved: Map<String, dynamic>.from(status['metaBrain'] ?? {}),
+          onSaved: refresh,
+        ),
+      ),
       if (status['macControl']?['supported'] == true) macControlPanel(),
       panel(
         'On this $computer',
@@ -4011,40 +4070,52 @@ extension _BridgeScreens on _DeskState {
               children: [
                 gap(12),
                 voiceSetup(),
-                gap(18),
-                small('Advanced: use your own FFmpeg, whisper-cli and model.'),
-                gap(10),
-                for (final item in [
-                  ('ffmpeg', 'FFmpeg executable'),
-                  ('whisper', 'whisper-cli executable'),
-                  ('model', 'Whisper model'),
-                ])
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            audio[item.$1] ?? item.$2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12, color: muted),
-                          ),
-                        ),
-                        button('Choose ${item.$1}', () async {
-                          final path = await api.chooseFile(item.$2);
-                          if (path != null && mounted) {
-                            changeView(() => audio[item.$1] = path);
-                          }
-                        }),
-                      ],
-                    ),
+                // Own FFmpeg/whisper only matter for transcribing on this computer.
+                if ((voicePathChoice ??
+                        (voiceClouds.contains(status['voice']?['engine'])
+                            ? 'api'
+                            : 'local')) ==
+                    'local') ...[
+                  gap(18),
+                  small(
+                    'Advanced: use your own FFmpeg, whisper-cli and model.',
                   ),
-                button(
-                  'Save voice settings',
-                  () => post('/api/audio-config', audio),
-                  primary: true,
-                  enabled: audio.length == 3,
-                ),
+                  gap(10),
+                  for (final item in [
+                    ('ffmpeg', 'FFmpeg executable'),
+                    ('whisper', 'whisper-cli executable'),
+                    ('model', 'Whisper model'),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              audio[item.$1] ?? item.$2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: muted,
+                              ),
+                            ),
+                          ),
+                          button('Choose ${item.$1}', () async {
+                            final path = await api.chooseFile(item.$2);
+                            if (path != null && mounted) {
+                              changeView(() => audio[item.$1] = path);
+                            }
+                          }),
+                        ],
+                      ),
+                    ),
+                  button(
+                    'Save voice settings',
+                    () => post('/api/audio-config', audio),
+                    primary: true,
+                    enabled: audio.length == 3,
+                  ),
+                ],
               ],
             ),
           ],

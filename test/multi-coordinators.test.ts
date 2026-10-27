@@ -117,6 +117,9 @@ test('delegation is correlated, idempotent, scope checked, and rejects loops',()
     f.router.channelReply(f.claude,'Review completed','final',delegated.requestId);
     const report=f.store.job(`report:${delegated.requestId}`)!;
     assert.equal(report.binding_id,f.codex.id);
+    // The asked coordinator reports back only; the owner hears it from the asking coordinator.
+    assert.equal((f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE body LIKE '%Review completed%'").get() as {n:number}).n,0);
+    assert.match(report.body,/not shown to the owner/);
     assert.throws(()=>f.c.scope.run(f.claude.id,()=>f.c.quiet(report.id)),/another coordinator/);
     f.c.scope.run(f.codex.id,()=>f.c.quiet(report.id,'done'));
     assert.equal(f.store.job('wa:root')?.outcome,'done');

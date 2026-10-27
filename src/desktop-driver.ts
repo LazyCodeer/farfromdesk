@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { fileURLToPath } from 'node:url';
 import { rm } from 'node:fs/promises';
+import {launchServicesNative} from './owner-view/launch-services.js';
 import { createMacNative } from './mac-native.js';
 
 export type DesktopDriver={readonly revision?:number;call(name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<any>;stop():void};
@@ -9,8 +10,8 @@ const nativeRoot=fileURLToPath(new URL('../native/',import.meta.url));
 /** A native app helper parents the vendor daemon so normal macOS TCC attribution applies. */
 export class EmbeddedDesktopDriver implements DesktopDriver {
   private host:ReturnType<typeof createMacNative>;
-  constructor(private nativeDirectory=nativeRoot){
-    this.host=createMacNative(nativeDirectory+'FarFromDesk Accessibility.app/Contents/MacOS/ffd-accessibility',new Set(['DESKTOP_DRIVER_MISSING','DESKTOP_DRIVER_HASH_MISMATCH','DESKTOP_DRIVER_FAILED']));
+  constructor(private nativeDirectory=nativeRoot, helperBundle="FarFromDesk Accessibility.app", viaLaunchServices=false){
+    this.host=viaLaunchServices?launchServicesNative(nativeDirectory+helperBundle):createMacNative(nativeDirectory+helperBundle+'/Contents/MacOS/ffd-accessibility',new Set(['DESKTOP_DRIVER_MISSING','DESKTOP_DRIVER_HASH_MISMATCH','DESKTOP_DRIVER_FAILED']));
   }
   private client?:Client; private transport?:StdioClientTransport; private starting?:Promise<Client>;
   private generation=0; private directory?:string; private idle?:ReturnType<typeof setTimeout>;
