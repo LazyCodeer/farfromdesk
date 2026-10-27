@@ -127,11 +127,11 @@ jobs:
         run: node script/smoke_desktop_driver.mjs
       - run: node script/test_desktop_speech.mjs
         timeout-minutes: 5
-      - name: Report tracked source changes before packaging
+      - name: Verify tracked release source before packaging
         run: |
           git status --short --untracked-files=no
-          git diff --stat
-          git diff --ignore-space-at-eol --stat
+          git diff --stat HEAD --
+          git diff --quiet HEAD --
       - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
       - if: runner.os == 'macOS'
         run: node script/smoke_desktop_driver.mjs 'build/desktop-release/stage/FarFromDesk.app/Contents/Resources/backend/native'

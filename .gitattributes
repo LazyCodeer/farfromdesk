@@ -1,3 +1,9 @@
 # Preserve upstream license text byte-for-byte.
 macos/Sources/SessionBridge/Resources/Fonts/*-OFL.txt -whitespace
 website/assets/fonts/*-OFL.txt -whitespace
+
+# Flutter rewrites plugin registration with LF, including on Windows.
+# Keep checkout bytes stable so generation does not dirty release sources.
+desktop/linux/flutter/generated_* text eol=lf
+desktop/windows/flutter/generated_* text eol=lf
+desktop/macos/Flutter/GeneratedPluginRegistrant.swift text eol=lf
