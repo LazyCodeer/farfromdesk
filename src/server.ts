@@ -1,3 +1,7 @@
+import { saveBrainConfig } from './meta-brain-config.js';
+import { BrowserTabs } from './browser-tabs.js';
+import {RemoteDesktopService} from './remote-desktop/service.js';
+import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
 import { MacControl } from './mac-control.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
@@ -17,6 +21,7 @@ import type { Masters } from './masters.js';
 import type { PowerPolicy } from './power.js';
 import type { Workers } from './workers.js';
 import { Artifacts } from './artifacts.js';
+import { Items, itemOperation } from './items.js';
 import { validateAudioConfig } from './audio.js';
 import { prepareVoiceModel } from './voice-model.js';
 import { cleanKey, isCloud, removeVoiceKey, testVoiceKey, writeVoiceKey } from './voice-cloud.js';
@@ -47,10 +52,12 @@ export function saveBindingCredentials(b:Binding,token:string) {
   const dir=join(stateDir,'bindings');mkdirSync(dir,{recursive:true,mode:0o700});
   writeFileSync(join(dir,`${b.alias}.json`),JSON.stringify({id:b.id,token,alias:b.alias,provider:b.provider,nativeId:b.native_id,cwd:b.cwd}),{mode:0o600});
 }
-export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram;desktopControl?:DesktopControl;macControl?:MacControl}) {
+export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram;desktopControl?:DesktopControl;macControl?:MacControl;remoteDesktop?:RemoteDesktopService;browser?:BrowserTabs}) {
+  const browser=services?.browser??new BrowserTabs();
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
-  const artifacts=new Artifacts(store);
+  const remoteDesktop=services?.remoteDesktop??new RemoteDesktopService({load:()=>{try{return JSON.parse(store.get('remote-desktop-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('remote-desktop-password',JSON.stringify(record)),loadEnabled:()=>store.get('remote-desktop-enabled')==='true',saveEnabled:value=>store.set('remote-desktop-enabled',String(value))});
+  const artifacts=new Artifacts(store),items=new Items(store,b=>router.coordinator?.name(b)??b.alias);
   artifacts.disk.recover();
   const server=createServer((req,res)=>{
     res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');
@@ -66,6 +73,11 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       const scopedId=req.headers['x-binding-id'];
       const binding=typeof scopedId==='string'?store.authBinding(scopedId,token):undefined;
       if(!isAdmin&&!binding){json(res,401,{error:'Use FarFromDesk or provide a valid session token.'});return;}
+      if(path==='/api/remote-desktop') {
+        if(!isAdmin){json(res,403,{error:'Remote Desktop settings require the app.'});return;}
+        if(req.method==='GET'){json(res,200,remoteDesktop.status);return;}
+        if(req.method==='POST'){json(res,200,await remoteDesktop.command(await body(req,4096)));return;}
+      }
       if(path==='/api/session/document'&&req.method==='POST'&&binding) {
         const d=await body(req);
         if(typeof d.requestId!=='string'||typeof d.artifactId!=='string')throw new Error('Request and prepared artifact IDs required.');
@@ -77,6 +89,27 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path.startsWith('/api/master/')) {
         if(!binding||!router.coordinator?.isCoordinator(binding.id)){json(res,403,{error:'Only the WhatsApp master can use this endpoint'});return;}
         return await router.coordinator!.scope.run(binding.id,async()=>{
+        if(path==='/api/master/mac-control'&&req.method==='POST') {
+          const {requestId,...input}=await body(req);
+          router.coordinator!.ownerRequest(requestId);
+          if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
+          let result=await macControl.run(`${binding.id}:${requestId}`,input);
+          router.coordinator!.ownerRequest(requestId);
+          if(input.action==='capture'){const {pngBase64,...evidence}=result as any;const artifact=artifacts.prepare(binding,requestId,'mac-control-screenshot.png',pngBase64);result={...evidence,...artifact,delivery:'prepared, not sent'};}
+          store.audit('mac-control-action',binding.id,input.action);
+          json(res,200,result);return;
+        }
+        if(path==='/api/master/browser'&&req.method==='POST') {
+          if(router.stopped)throw new Error('Background operation is paused.');
+          const {requestId,...input}=await body(req);
+          router.coordinator!.ownerRequest(requestId);
+          const result=await browser.run(`${binding.id}:${requestId}`,input);
+          router.coordinator!.ownerRequest(requestId);
+          store.audit('browser-action',binding.id,input.action);
+          json(res,200,result);return;
+        }
+        if(path==='/api/master/direct'&&req.method==='POST'){const d=await body(req);json(res,200,router.coordinator!.direct(d.requestId,d.target));return;}
+        if(path==='/api/master/items'&&req.method==='POST'){json(res,200,itemOperation(items,await body(req),router.coordinator!.name(binding)));return;}
         if(path==='/api/master/desktop-control'&&req.method==='POST') {
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);
@@ -92,7 +125,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         }
 
         if(path==='/api/master/coordinators'&&req.method==='GET'){json(res,200,{coordinators:router.coordinator!.registry.view()});return;}
-        if(path==='/api/master/delegate'&&req.method==='POST'){const d=await body(req);json(res,200,router.coordinator!.delegate(d.requestId,d.coordinatorId,d.text,d.eventId));return;}
+        if(path==='/api/master/delegate'&&req.method==='POST'){const d=await body(req);json(res,200,router.coordinator!.delegate(d.requestId,d.coordinatorId,d.text,d.eventId,d.itemId===undefined?undefined:Number(d.itemId)));return;}
         if(path==='/api/master/agents'&&req.method==='GET') {json(res,200,{agents:listNamedAgents(store).map(({instructions,...a})=>a)});return;}
         if(path==='/api/master/define-agent'&&req.method==='POST') {const d=await body(req);router.coordinator!.ownerRequest(d.requestId);json(res,200,defineNamedAgent(store,d));return;}
         if(path==='/api/master/assign-agent'&&req.method==='POST') {
@@ -107,7 +140,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         if(path==='/api/master/worker-status'&&req.method==='GET') {if(!services?.workers)throw new Error('Worker creation is unavailable.');json(res,200,{operations:services.workers.view(url.searchParams.get('id')??undefined).filter(o=>o.masterId===binding.id)});return;}
         if(path==='/api/master/recover-worker'&&req.method==='POST') {if(!services?.workers)throw new Error('Worker creation is unavailable.');const d=await body(req);json(res,200,{operation:await services.workers.recover(d.requestId,d.id)});return;}
         if(path==='/api/master/selected'&&req.method==='GET') {json(res,200,{sessions:router.coordinator!.selected().map(b=>({id:b.id,alias:b.alias,name:router.coordinator!.name(b),provider:b.provider,executionMode:store.get(`execution-mode:${b.id}`),connection:router.native.connections?.route(b)?.label}))});return;}
-        if(path==='/api/master/dispatch'&&req.method==='POST') {const d=await body(req);if(!Array.isArray(d.targets)||typeof d.text!=='string'||!d.text.trim()||d.text.length>32000||typeof d.eventId!=='string'||d.attachmentIds!==undefined&&!Array.isArray(d.attachmentIds))throw new Error('Targets, nonempty text, event ID and optional attachment IDs required');json(res,200,{jobs:router.coordinator!.dispatch(d.requestId,d.targets,d.text,d.eventId,d.attachmentIds)});return;}
+        if(path==='/api/master/dispatch'&&req.method==='POST') {const d=await body(req);if(!Array.isArray(d.targets)||typeof d.text!=='string'||!d.text.trim()||d.text.length>32000||typeof d.eventId!=='string'||d.attachmentIds!==undefined&&!Array.isArray(d.attachmentIds))throw new Error('Targets, nonempty text, event ID and optional attachment IDs required');json(res,200,{jobs:router.coordinator!.dispatch(d.requestId,d.targets,d.text,d.eventId,d.attachmentIds,d.itemId===undefined?undefined:Number(d.itemId))});return;}
         if(path==='/api/master/quiet'&&req.method==='POST') {const d=await body(req);json(res,200,router.coordinator!.quiet(d.requestId,d.resolveOutcome));return;}
         if(path==='/api/master/resolve'&&req.method==='POST') {const d=await body(req);router.resolveOwner(d.requestId,d.outcome);json(res,200,{ok:true});return;}
         json(res,404,{error:'Unknown coordinator endpoint'});
@@ -135,6 +168,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{answer});return;
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}
+      if(path==='/api/meta-brain'&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Settings.');json(res,200,saveBrainConfig(store,router.brain.secret,await body(req)));return;}
+      if(path==='/api/meta-brain/tasks'&&req.method==='GET'){if(url.searchParams.get('fresh')==='1')await router.brain.refresh(router);json(res,200,{tasks:router.brain.tasks(),workItems:router.brain.memory.board()});return;}
+      if(path==='/api/meta-brain/verify'&&req.method==='POST'){const d=await body(req);if(d.confirmed!==true||typeof d.requestId!=='string')throw new Error('Owner verification requires an exact request and confirmation.');router.brain.verify(d.requestId);json(res,200,{ok:true});return;}
+
       if(path==='/api/control-channel/disconnect'&&req.method==='POST') {
         json(res,200,await disconnectControlChannel(store,{whatsapp:wa,telegram:services?.telegram},await body(req)));return;
       }
@@ -251,7 +288,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         if(typeof d.fallback==='boolean')store.set('voice-fallback',d.fallback?'1':'0');
         if(d.engine==='local')store.set('voice-engine','local');
         if(isCloud(d.engine)) {
-          const key=cleanKey(d.key);await testVoiceKey(d.engine,key);
+          // The brain's Meta key is reused server-side so it never travels back to the UI.
+          const brainKey=d.engine==='meta'&&d.useBrainKey===true?router.brain.secret.read():undefined;
+          if(d.engine==='meta'&&d.useBrainKey===true&&!brainKey)throw new Error('Save a Meta key in Brain settings first, or paste one here.');
+          const key=cleanKey(brainKey??d.key);await testVoiceKey(d.engine,key);
           writeVoiceKey(d.engine,key);store.set('voice-engine',d.engine);
         }
         json(res,200,audioReadiness(store));return;
@@ -269,7 +309,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/master-abandon'&&req.method==='POST') {const d=await body(req);if(!services)throw new Error('Update the service.');json(res,200,services.masters.abandon(d.operationId));return;}
       if(path==='/api/status'&&req.method==='GET') {
         const c=router.coordinator;
-        json(res,200,{macControl:macControl.view(),desktopControl:desktopControl.view(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        json(res,200,{metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude'].map(provider=>({provider,name:provider==='codex'?'Codex':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');
@@ -318,6 +358,6 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   server.requestTimeout=PREPARATION_TIMEOUT_MS;
   server.keepAliveTimeout=5000;
   server.maxHeadersCount=64;
-  server.on('close',()=>{desktopControl.stop();macControl.stop();});
+  server.on('close',()=>{desktopControl.stop();macControl.stop();void remoteDesktop.suspend().catch(()=>{});});
   server.listen(port,'127.0.0.1');return server;
 }

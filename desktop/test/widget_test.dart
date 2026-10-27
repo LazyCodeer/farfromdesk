@@ -39,35 +39,51 @@ void main() {
     final toggle = find.byKey(const Key('mac-control-enabled'));
     await tester.ensureVisible(toggle);
     expect(tester.widget<Switch>(toggle).value, isFalse);
-    expect(find.text('Open Accessibility settings'), findsNothing);
+    expect(find.byKey(const Key('mac-open-permission')), findsNothing);
     expect(api.macActions, isEmpty);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
     expect(api.macActions, ['enable']);
-    expect(find.text('Open Accessibility settings'), findsOneWidget);
-    final check = find.text('Check permission');
+    expect(find.byKey(const Key('mac-open-permission')), findsOneWidget);
+    final check = find.text('Check again');
     await tester.ensureVisible(check);
     await tester.tap(check);
     await tester.pumpAndSettle();
     expect(api.macActions, ['enable', 'check']);
-    expect(find.text('Accessibility permission needed'), findsOneWidget);
-    final setup = find.text('Open Accessibility settings');
+    expect(find.text('Needs permission'), findsOneWidget);
+    expect(find.text('Screen Recording'), findsOneWidget);
+    final setup = find.byKey(const Key('mac-open-permission'));
     await tester.ensureVisible(setup);
     await tester.tap(setup);
     await tester.pumpAndSettle();
     expect(api.macActions.last, 'permission');
-    final recording = find.text('Screen Recording settings');
+    final recording = find.byKey(const Key('mac-open-capture-permission'));
     await tester.ensureVisible(recording);
     await tester.tap(recording);
     await tester.pumpAndSettle();
     expect(api.macActions.last, 'capture-permission');
-    final stop = find.text('Stop and disable');
+    final stop = find.text('Stop and turn off');
     await tester.ensureVisible(stop);
     await tester.tap(stop);
     await tester.pumpAndSettle();
     expect(api.macActions.last, 'disable');
     expect(tester.widget<Switch>(toggle).value, isFalse);
-    expect(find.text('Mac control is off'), findsOneWidget);
+    expect(find.text('Stop and turn off'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Mac control shows Accessibility and Screen Recording separately', (tester) async {
+    size(tester);
+    final api = MacControlGateway()
+      ..enabled = true
+      ..trusted = true
+      ..captureTrusted = true;
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Screen Recording'));
+    expect(find.text('Allowed'), findsNWidgets(2));
+    expect(find.byKey(const Key('mac-open-capture-permission')), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -313,6 +329,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('not affiliated'), findsNothing);
       expect(find.textContaining('isn\'t affiliated'), findsOneWidget);
+      expect(find.text('dev.meta.ai'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Meta')).dx,
+        lessThan(tester.getTopLeft(find.text('Deepgram')).dx),
+      );
+      await tester.tap(find.text('Deepgram'));
+      await tester.pumpAndSettle();
       expect(find.text('console.deepgram.com'), findsOneWidget);
       await tester.tap(find.text('AssemblyAI'));
       await tester.pumpAndSettle();
@@ -341,6 +364,32 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('Meta voice notes can reuse the Brain key without showing it', (
+    tester,
+  ) async {
+    size(tester);
+    final api = VoiceGateway()..brainKey = true;
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Use an API key'));
+    await tester.tap(find.text('Use an API key'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Meta'));
+    await tester.pumpAndSettle();
+    expect(find.text('dev.meta.ai'), findsOneWidget);
+    final reuse = find.byKey(const Key('voice-use-brain-key'));
+    await tester.ensureVisible(reuse);
+    await tester.tap(reuse);
+    await tester.pumpAndSettle();
+    expect(api.posts['/api/voice-engine'], {
+      'engine': 'meta',
+      'useBrainKey': true,
+    });
+    expect(find.textContaining('Transcribed by Meta'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('Groups load once WhatsApp finishes connecting', (tester) async {
     size(tester);
@@ -1445,6 +1494,7 @@ class VoiceDownloadGateway extends ConnectionGateway {
 }
 
 class VoiceGateway extends ConnectionGateway {
+  bool brainKey = false;
   Map<String, dynamic> voice = {
     'ready': false,
     'local': true,
@@ -1458,6 +1508,7 @@ class VoiceGateway extends ConnectionGateway {
   Future<Map<String, dynamic>> get(String path) async {
     final data = await super.get(path);
     data['voice'] = voice;
+    if (brainKey) data['metaBrain'] = {'enabled': true, 'configured': true};
     return data;
   }
 
@@ -1468,12 +1519,12 @@ class VoiceGateway extends ConnectionGateway {
   ) async {
     if (path == '/api/voice-engine' || path == '/api/voice-model') {
       posts[path] = data;
-      if (data['engine'] == 'deepgram') {
+      if (data['engine'] == 'deepgram' || data['engine'] == 'meta') {
         voice = {
           ...voice,
           'ready': true,
           'local': false,
-          'engine': 'deepgram',
+          'engine': data['engine'],
           'keyHint': 'a91f',
         };
       }
@@ -1488,10 +1539,11 @@ class MacControlGateway extends PreviewGateway {
   final macActions = <String>[];
   bool enabled = false;
   bool? trusted;
+  bool? captureTrusted;
   @override
   Future<Map<String, dynamic>> get(String path) async {
     final data = await super.get(path);
-    if (path == '/api/status') data['macControl'] = {'supported': true, 'enabled': enabled, 'trusted': trusted};
+    if (path == '/api/status') data['macControl'] = {'supported': true, 'enabled': enabled, 'trusted': trusted, 'capture': {'supported': true, 'trusted': captureTrusted}};
     return data;
   }
   @override

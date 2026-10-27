@@ -4,9 +4,12 @@ import { join } from 'node:path';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
 
-export type CloudProvider='deepgram'|'assemblyai';
-export const CLOUD_NAMES:Record<CloudProvider,string>={deepgram:'Deepgram',assemblyai:'AssemblyAI'};
-export const isCloud=(v:unknown):v is CloudProvider=>v==='deepgram'||v==='assemblyai';
+export type CloudProvider='deepgram'|'assemblyai'|'meta';
+export const CLOUD_NAMES:Record<CloudProvider,string>={deepgram:'Deepgram',assemblyai:'AssemblyAI',meta:'Meta'};
+export const isCloud=(v:unknown):v is CloudProvider=>v==='deepgram'||v==='assemblyai'||v==='meta';
+// Verified against dev.meta.ai/docs/api-reference/voice/transcribe, 2026-10-28: mono 16 kHz WAV, at most 10 minutes and 32 MB.
+export const META_VOICE_MODEL='muse-voice-transcribe-1.0';
+export const needsWav=(p:CloudProvider)=>p==='meta';
 type Fetch=typeof fetch;
 
 // The key lives beside admin-token and the WhatsApp credentials: owner-only file in the
@@ -42,9 +45,17 @@ async function call(fetcher:Fetch,provider:CloudProvider,url:string,init:Request
 // Free, read-only calls: they prove the key works without spending credit.
 export async function testVoiceKey(provider:CloudProvider,key:string,fetcher:Fetch=fetch) {
   if(provider==='deepgram')await call(fetcher,provider,'https://api.deepgram.com/v1/projects',{headers:{authorization:`Token ${key}`}},15000);
+  else if(provider==='meta')await call(fetcher,provider,'https://api.meta.ai/v1/models',{redirect:'error',headers:{authorization:`Bearer ${key}`}},15000);
   else await call(fetcher,provider,'https://api.assemblyai.com/v2/transcript?limit=1',{headers:{authorization:key}},15000);
 }
 
+// Muse Voice Transcribe repeats a word in roughly 4 of 10 clips (2026-10-28 trial, all rates and
+// modes): "send me me the summary". Collapse back-to-back repeats of 1 to 3 words.
+// ponytail: also collapses a deliberate "had had"; acceptable for spoken commands.
+export function collapseRepeats(text:string) {
+  let prev;do{prev=text;text=text.replace(/\b(\w+(?:\s+\w+){0,2})(?:\s+\1\b)+/gi,'$1');}while(text!==prev);
+  return text;
+}
 const noSpeech=(text:unknown)=>{
   const t=typeof text==='string'?text.trim():'';
   if(!t||t.length>32000)throw new Error('No clear speech detected.');
@@ -57,6 +68,15 @@ export async function transcribeCloud(provider:CloudProvider,key:string,path:str
     // nova-3 with language=multi handles English, Hindi and code-switched speech.
     const d=await call(fetcher,provider,'https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true',{method:'POST',headers:{authorization:`Token ${key}`,'content-type':mime},body:audio},120000,signal);
     return noSpeech(d?.results?.channels?.[0]?.alternatives?.[0]?.transcript);
+  }
+  if(provider==='meta') {
+    // path is the 16 kHz mono WAV decoded by audio.ts; Meta accepts no other container.
+    // No keywords: in a 2026-10-28 trial, biasing made Meta repeat words ("Codex Codex").
+    const form=new FormData();
+    form.append('request',new Blob([JSON.stringify({model:META_VOICE_MODEL,audioEncoding:'WAV',mode:'PUSH_TO_TALK'})],{type:'application/json'}));
+    form.append('audio',new Blob([audio],{type:'audio/wav'}),'voice.wav');
+    const d=await call(fetcher,provider,'https://api.meta.ai/v1/asr/transcribe',{method:'POST',redirect:'error',headers:{authorization:`Bearer ${key}`,accept:'application/json'},body:form},120000,signal);
+    return noSpeech(collapseRepeats(String(d?.transcript??'')));
   }
   const auth={authorization:key};
   const up=await call(fetcher,provider,'https://api.assemblyai.com/v2/upload',{method:'POST',headers:{...auth,'content-type':'application/octet-stream'},body:audio},60000,signal);

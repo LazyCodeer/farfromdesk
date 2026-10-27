@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync,writeFileSync,readFileSync,rmSync,statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureFfd,runFfd } from '../src/ffd.js';
+import { ensureFfd,runFfd,replyCheck } from '../src/ffd.js';
 import { scopedBridgeCommand } from '../src/reply-args.js';
 
 test('ffd launcher runs the scoped bridge CLI for its own session, and the skill names it',()=>{
@@ -18,6 +18,8 @@ test('ffd launcher runs the scoped bridge CLI for its own session, and the skill
     assert.deepEqual(out,{state,port:'47839',args:['ffd','master-1','reply','tg:1','final',"it's done"]});
     assert.ok(readFileSync(files.skill,'utf8').includes(`FFD below is ${files.ffd}`));
     assert.equal(readFileSync(join(dir,'support/.claude/skills/farfromdesk/SKILL.md'),'utf8'),readFileSync(files.skill,'utf8'));
+    const worker=ensureFfd(join(dir,'home'),state,'worker-1','true',[],false);
+    assert.doesNotMatch(readFileSync(worker.skill,'utf8'),/ffd ask|FFD ask|FFD send|FFD mac/);assert.match(readFileSync(worker.skill,'utf8'),/FFD reply REQ final/);
     assert.throws(()=>ensureFfd(dir,state,'../x','true'),/Invalid/);
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
@@ -39,8 +41,26 @@ test('ffd commands map to bridge calls with content-derived event IDs',async()=>
   await runFfd(['send','tg:1','website redesign','Run tests'],{id:'me'},call,none);
   assert.deepEqual(calls.at(-1).data.targets,['b1']);
   await assert.rejects(runFfd(['send','tg:1','Unknown','x'],{id:'me'},call,none),/not connected/);
-  assert.match(await runFfd(['sessions'],{id:'me'},call,none),/No Claude coordinator is set up/);
+  assert.match(await runFfd(['sessions'],{id:'me'},call,none),/No Claude proxy is set up/);
   assert.equal(await runFfd(['reply','tg:1','final'],{id:'me'},call,()=>'From stdin').then(()=>calls.at(-1).data.text),'From stdin');
   await assert.rejects(runFfd(['reply','tg:1','final'],{id:'me'},call,()=>'  '),/empty/);
   await assert.rejects(runFfd(['reply','tg:1','done','x'],{id:'me'},call,none),/progress\|final/);
+});
+
+test('ffd Mac commands bind the request and refuse raw native targets or forged request IDs',async()=>{
+  const calls:any[]=[];const call=async(path:string,data?:unknown)=>{calls.push({path,data});return {apps:[]};};
+  await runFfd(['mac','tg:mac'],{id:'me'},call,()=>JSON.stringify({action:'discover'}));
+  assert.deepEqual(calls,[{path:'/api/master/mac-control',data:{action:'discover',requestId:'tg:mac'}}]);
+  await assert.rejects(runFfd(['mac','tg:mac'],{id:'me'},call,()=>JSON.stringify({action:'discover',requestId:'forged'})));
+  await assert.rejects(runFfd(['mac','tg:mac'],{id:'me'},call,()=>JSON.stringify({action:'click',pid:3})));
+  assert.equal(calls.length,1);
+});
+
+test('reply check warns about long, technical replies but never blocks them',async()=>{
+  assert.equal(replyCheck('✅ *Export fixed*\n- Tests pass.\nNext: nothing.'),'');
+  const out=replyCheck('Built at /Users/me/app with trusted=null — '+'x'.repeat(900));
+  for(const w of [/characters/,/file path/,/key=value/,/dash/,/still sent/])assert.match(out,w);
+  const calls:any[]=[];
+  const r=await runFfd(['reply','tg:1','final','Staged at ~/Apps/Test.app'],{id:'me'},async(path,data)=>{calls.push(data);return {};},()=>'');
+  assert.equal(calls.length,1);assert.match(r,/Queued.*\n.*file path/s);
 });

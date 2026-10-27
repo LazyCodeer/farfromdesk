@@ -47,8 +47,10 @@ meta=json.loads(meta_file.read_text());meta['buildId']=args.version;meta_file.wr
 shutil.copytree(ROOT/'build/speech',destination.parent/'speech',symlinks=False)
 # CI tests the pinned model; users fetch it once into persistent app data on first use.
 speech=destination.parent/'speech'
-(speech/'ggml-base.bin').unlink()
 speech_manifest=json.loads((speech/'manifest.json').read_text())
+model=speech/speech_manifest['model']
+if model.exists(): model.unlink()
+elif speech_manifest.get('modelDelivery')!='first-use': raise SystemExit('Required bundled speech model is missing')
 speech_manifest['modelDelivery']='first-use'
 (speech/'manifest.json').write_text(json.dumps(speech_manifest,indent=2)+'\n')
 # Remove package-install metadata that is not needed at runtime.
@@ -60,6 +62,14 @@ archive.unlink(missing_ok=True)
 if os_name=='macos':
     # Ad-hoc development signing only. Release signing/notarization is a separate gate.
     sign_bundle(app)
+    # Signing changes executable bytes. Preserve upstream hashes and validate the distributed bytes.
+    speech_manifest['upstreamSHA256']=dict(speech_manifest['sha256'])
+    for name in speech_manifest['sha256']:
+        binary=speech/name
+        if binary.is_file(): speech_manifest['sha256'][name]=hashlib.sha256(binary.read_bytes()).hexdigest()
+    (speech/'manifest.json').write_text(json.dumps(speech_manifest,indent=2)+'\n')
+    subprocess.run(['codesign','--force','--sign','-',str(app)],check=True)
+    subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
     subprocess.run(['ditto','-c','-k','--keepParent',str(app),str(archive)],check=True)
 elif os_name=='linux':
     with tarfile.open(archive,'w:gz',dereference=True) as f:f.add(app,arcname=app.name)
@@ -83,7 +93,8 @@ for asset in archives:
     asset.with_name(asset.name+'.sha256').write_text(f'{digest}  {asset.name}\n')
     artifacts.append({'name':asset.name,'sha256':digest,'bytes':asset.stat().st_size})
 commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-manifest={'schema':1,'version':args.version,'platform':os_name,'architecture':arch,'sourceCommit':commit,'nativeEntry':'main.dart','speechBundled':True,'voiceModelDelivery':'first-use','signing':'ad-hoc' if os_name=='macos' else 'unsigned','notarized':False,'artifacts':artifacts}
+dirty=bool(subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip())
+manifest={'preparationOnly':dirty,'publishable':not dirty,'sourceDirty':dirty,'schema':1,'version':args.version,'platform':os_name,'architecture':arch,'sourceCommit':commit,'nativeEntry':'main.dart','speechBundled':True,'voiceModelDelivery':'first-use','signing':'ad-hoc' if os_name=='macos' else 'unsigned','notarized':False,'artifacts':artifacts}
 (out/f'manifest-{os_name}-{arch}.json').write_text(json.dumps(manifest,indent=2)+'\n')
 install=out/'install';shutil.copytree(ROOT/'install',install,dirs_exist_ok=True)
 for f in install.iterdir():

@@ -1,3 +1,4 @@
+import { MetaBrain } from './meta-brain.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
@@ -6,6 +7,8 @@ import type { Coordinator } from './coordinator.js';
 import { Attachments, type IncomingFile } from './attachments.js';
 import { updateRole, turnEnvelope } from './roles.js';
 import { errorCode, type ReplyContext, type RequestOutcome } from './request-events.js';
+import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
+import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
 export type Incoming = {id:string;text:string;quotedId?:string;source?:'text'|'voice'};
@@ -19,13 +22,17 @@ export const help = `Just tell me what you need.
 Reply to a permission message with “Yes, allow it” or “No, deny it”. Reply to a session’s message to continue in that session. You don’t need commands or session IDs.`;
 export class Router {
   coordinator?:Coordinator;
+  brain:MetaBrain;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
+  // How long a session gets to answer before an uncertain hand-off is reported to the owner.
+  uncertainNoticeMs=120_000;
   attachments:Attachments;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.attachments=new Attachments(store);}
+  private ownerReplyPolicy:OwnerReplyPolicy;
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -71,6 +78,7 @@ export class Router {
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show (?:me )?(?:my )?(?:recent )?sessions|list (?:my |all |recent )?sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
       if(this.coordinator&&!m.quotedId&&browsing) {
+        this.brain.clearChoice();
         queueOwnerReceipt(this.store,m.id,this.coordinator.master(),true);
         let search=text.replace(/^\/sessions\s*/i,'');
         const more=/^(?:(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|\/sessions more)$/i.test(text);
@@ -79,8 +87,11 @@ export class Router {
         this.store.output(undefined,await this.coordinator.list(search,more?'more':back?'back':0),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       const selection=/^(?:(?:\/select|select|choose|pick)\s+)?(\d+(?:(?:\s*,\s*|\s+and\s+|\s+)\d+)*)$/i.exec(text);
-      if(this.coordinator&&!m.quotedId&&selection&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
+      if(this.coordinator&&!m.quotedId&&selection&&!this.brain.hasChoice()&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
         this.store.output(undefined,await this.coordinator.select(selection[1].replace(/\band\b/gi,',')),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
+      }
+      if(!m.quotedId&&backToProxy.test(text)&&endDirect(this.store)) {
+        this.store.output(undefined,'↩️ *Back to your proxy*\nYour next messages go to the proxy again.',`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(text.startsWith('/')) {
         const match=/^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)!;
@@ -89,6 +100,7 @@ export class Router {
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
         else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
         else if(cmd==='use') {const b=this.need(args);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
+        else if(cmd==='talk')this.store.output(undefined,this.talkDirect(this.need(args)),`command:${m.id}`);
         else if(cmd==='to') {const [alias,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /to NAME message');this.queue(m.id,this.need(alias),words.join(' '));}
         else if(cmd==='status')this.store.output(undefined,`Active: ${this.store.binding(this.store.get('active')??'')?.alias??'none'}\nRunning: ${this.busy.size}\nWaiting permissions: ${this.approvals.pending.size}\n${this.store.jobs().slice(0,8).map(j=>`${j.id} · ${this.store.binding(j.binding_id)?.alias} · ${j.status}${j.error?` · ${j.error}`:''}`).join('\n')}`,`command:${m.id}`);
         else if(cmd==='style') {const [name,style,...extra]=args.split(/\s+/);if(extra.length||!style)throw new Error('Use /style NAME friendly|cheerful|professional|coding.');const b=this.need(name==='master'?this.store.get('master')??'':name);updateRole(this.store,b,style);this.store.output(b,`Reply style set to ${style}. It applies from the next work turn.`,`command:${m.id}`);}
@@ -100,18 +112,45 @@ export class Router {
         else throw new Error('Tell me what you need in ordinary words. For example: “Show my recent sessions”.');
       } else {
         let b:Binding|undefined;
+        const named=!m.quotedId?namedItem(text,JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??this.store.get('item-codes')??'{}')):undefined,known=named&&this.coordinator&&this.store.db.prepare('SELECT 1 FROM items WHERE id=?').get(named.id)?named:undefined;
         if(m.quotedId) {
           b=this.store.quotedBinding(m.quotedId);
           if(!b)throw new Error('That reply does not identify a connected session. Tell me the session name and what you need.');
           this.checkQuotedPlatform(text,b);
-        } else if(this.coordinator){this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return {status:'queued',requestId:m.id};}
+          const item=this.store.itemOf(this.store.quotedRequest(m.quotedId));if(item)this.store.linkItem(m.id,item);
+        } else if(known&&this.coordinator) {
+          // A follow-up on a numbered item goes to the session that owns it; the proxy only routes items without one.
+          const items=this.coordinator.items(),item=items.get(known.id),owner=item.binding_id?this.store.binding(item.binding_id):undefined;
+          this.store.linkItem(m.id,item.id);
+          // A replaced or paused owner is explained, never silently swapped for the current proxy.
+          if(item.binding_id&&!owner?.enabled&&item.status!=='done'){const board=this.brain.memory.board().find(i=>i.id===item.id);throw new Error((board&&this.brain.memory.attention(board))??`#${item.id} ${item.title}: its session is paused or was removed, so I didn't send this. Say "start #${item.id} again" to send it to your current proxy.`);}
+          if(owner?.enabled&&!this.coordinator.isCoordinator(owner.id)&&this.coordinator.enabled().includes(owner.provider)){b=owner;items.note(item.id,`Owner follow-up went straight to ${this.coordinator.name(owner).slice(0,60)}.`);}
+          else {this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return {status:'queued',requestId:m.id};}
+        } else if(this.coordinator&&(b=directSession(this.store,id=>this.coordinator!.isCoordinator(id)))) {
+          const item=this.coordinator.items().list().find(i=>i.binding_id===b!.id);if(item)this.store.linkItem(m.id,item.id);
+        } else if(this.coordinator){
+          if(await this.brain.handle(this,m)) {
+            this.store.remember(m.id);this.pump();
+            const blocked=this.brain.get(m.id)?.state==='blocked';
+            return {status:blocked?'blocked':this.store.job(m.id)?'queued':'handled',requestId:m.id,...(blocked?{code:'routing_unavailable'}:{})};
+          }
+          this.coordinator.routeToMaster(m.id,text);this.store.remember(m.id);this.pump();return {status:'queued',requestId:m.id};
+        }
         else b=this.store.binding(this.store.get('active')??'');
-        if(!b)throw new Error('Choose a coordinator in the app, then ask me to show your recent sessions.');
+        if(!b)throw new Error('Choose a proxy in the app, then ask me to show your recent sessions.');
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
     } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`);this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
     this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};
+  }
+  /** Hands this chat to one session until the owner says back, switches, or goes quiet for two hours. */
+  talkDirect(b:Binding,destination?:string|null) {
+    if(!b.enabled)throw new Error('That session is paused. Resume it first.');
+    if(this.coordinator?.isCoordinator(b.id))throw new Error('That is a proxy. Name the session you want to talk to.');
+    startDirect(this.store,b,destination);
+    const name=this.coordinator?.name(b)??b.alias;
+    return `🔀 *Now talking to ${name.replace(/[*_~`]/g,'').slice(0,60)}*\n- Your messages go straight to this session, and it answers you itself. Its permissions do not change.\nYou: say *back* to return to your proxy. After two quiet hours it switches back on its own.`;
   }
   unfinishedChildren(id:string) {
     return !!this.store.db.prepare(`SELECT 1 FROM inbox i JOIN settings s ON s.key='parent:'||i.id
@@ -204,12 +243,15 @@ export class Router {
     try {
       const exists=!!this.store.job(id);
       this.store.enqueue(id,b,text);
+      const item=this.store.itemOf(id),destination=this.store.destination();
+      if(item&&destination)this.store.set(`brain-topic:${destination}`,`item:${item}`);
       if(!exists&&this.coordinator?.isCoordinator(b.id))queueOwnerReceipt(this.store,id,b);
       this.store.db.exec('RELEASE queue_owner');
     }catch(e){this.store.db.exec('ROLLBACK TO queue_owner; RELEASE queue_owner');throw e;}
   }
   pump() {
     if(this.stopped)return;
+    this.brain.tick(this);
     for(const b of this.store.bindings()) {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.store.queued(b.id);if(!job)continue;
@@ -219,7 +261,13 @@ export class Router {
       void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
         this.store.jobState(job.id,'uncertain',(e as Error).message);
-        this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null);
+        // A slow native hand-off often still lands. Internal report deliveries never reach the owner; for
+        // owner messages, warn only if the session has not answered by the time the notice is due.
+        if(job.id.startsWith('report:'))return;
+        const notice=()=>{if(this.stopped||this.store.job(job.id)?.status!=='uncertain')return;
+          this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});};
+        // ponytail: in-memory timer, so a restart inside the window drops the notice; the request stays uncertain.
+        if(this.uncertainNoticeMs>0)setTimeout(notice,this.uncertainNoticeMs).unref?.();else notice();
       }).finally(()=>{this.busy.delete(b.id);this.pump();});
     }
   }
@@ -244,6 +292,8 @@ export class Router {
     if(kind==='final'&&requestId&&(this.hasPendingCreation?.(requestId)||this.unfinishedChildren(requestId)))throw new Error('Delegated work or session creation is still pending. Send progress and keep the owner request open.');
     if(kind==='final'&&!requestId&&this.store.unfinished(b.id).length)throw new Error('This session has open bridge requests. Use respond NAME REQUEST-ID (or whatsapp_reply with requestId) from the original message so the final reply closes the correct request. Use progress for an interim update.');
     if(requestId){const j=this.store.job(requestId);if(!j||j.binding_id!==b.id)throw new Error('Reply request does not belong to this session.');}
+    const coordinator=this.coordinator?.isCoordinator(b.id)===true;
+    if(coordinator&&kind==='final'&&!replyFindings(text)&&(!requestId?.startsWith('report:')||context.outcome==='done'))throw new Error('A final marker is not a verified result. Give the findings and remaining limits, or acknowledge the report without resolving the owner request.');
     if(requestId&&kind==='final') {
       const previous=this.store.get(`final-reply:${requestId}`);
       if(previous!==undefined){if(previous!==text)throw new Error('This request already has a different final reply.');return {accepted:true,newlyQueued:false};}
@@ -252,16 +302,24 @@ export class Router {
     if(requestId?.startsWith('report:')&&kind==='final') {
       this.coordinator?.quiet(requestId,context.outcome);return {accepted:true,newlyQueued:false,acknowledged:true};
     }
+    if(coordinator&&requestId&&this.ownerReplyPolicy.alreadySent(requestId,text)) {
+      this.store.event(requestId,'duplicate_coordinator_suppressed');
+      return {accepted:true,newlyQueued:false,duplicate:true};
+    }
     if(requestId)source=`reply:${kind}:${b.id}:${requestId}:${kind==='final'?'final':context.turnId?hash(context.turnId+':'+text):source??hash(text)}`;
     let queued=false;
+    // A coordinator answering another coordinator's hand-off reports back only; the owner hears it once, from the asking coordinator.
+    const relayOnly=!!requestId&&!!this.coordinator?.delegatedCoordinator(b,requestId);
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
-    queued=this.store.output(b,text,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination(),{...context,requestId,kind:kind==='final'?'final':'progress',origin:'agent'})===true;
+    queued=relayOnly||this.store.output(b,text,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination(),{...context,requestId,kind:kind==='final'?'final':'progress',origin:'agent'})===true;
+    if(queued&&!coordinator&&requestId&&source)this.ownerReplyPolicy.recordWorker(requestId,source,text);
     if(requestId&&kind==='final')this.store.set(`final-reply:${requestId}`,text);
     if(requestId&&kind==='final')this.store.jobState(requestId,'completed',null,context.outcome);
     else if(requestId){const j=this.store.job(requestId)!;if(['uncertain','failed'].includes(j.status))this.store.jobState(requestId,'submitted');else this.store.db.prepare('UPDATE inbox SET updated_at=? WHERE id=?').run(Date.now(),requestId);}
     if(kind==='final')this.store.set(`explicit-final:${b.id}`,String(Date.now()));
-    if(queued&&requestId)this.coordinator?.workerReply(b,text,requestId,false,kind as 'progress'|'final');
+    if(queued&&requestId)this.coordinator?.workerReply(b,text,requestId,false,kind as 'progress'|'final',!relayOnly);
+    if(queued&&requestId&&kind==='final')this.coordinator?.itemReport(b,text,requestId);
     this.store.db.exec('COMMIT');
     }catch(e){this.store.db.exec('ROLLBACK');throw e;}
     if(queued&&this.coordinator)this.pump();return {accepted:true,newlyQueued:queued};

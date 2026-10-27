@@ -95,7 +95,7 @@ test('reply identity cannot be reused across requests, turns, or changed content
 test('hook deduplication requires exact request and real turn; another request survives',()=>{
  const f=fixture();try {
   f.store.enqueue('wa:one',f.a,'one');f.store.enqueue('wa:two',f.a,'two');
-  f.router.channelReply(f.a,'Done','final','wa:one','direct',{turnId:'turn1'});
+  f.router.channelReply(f.a,'The requested check passed.','final','wa:one','direct',{turnId:'turn1'});
   assert.equal(f.store.output(f.a,'Longer native summary','h1',undefined,{requestId:'wa:one',kind:'hook',turnId:'turn1',origin:'hook'}),false);
   assert.equal(f.store.output(f.a,'Other result','h2',undefined,{requestId:'wa:two',kind:'hook',turnId:'turn2',origin:'hook'}),true);
   f.store.event('wa:two','provider_turn_started',{provider:'codex'},'native2');assert.equal(f.store.hookRequest(f.a.id,'native2'),'wa:two');
@@ -133,7 +133,7 @@ test('voice routes commands and tasks once, while failed configuration has safe 
 test('receipts distinguish sent/delivered/read and reject strangers and unrelated IDs',()=>{
  const f=fixture(),wa=new WhatsApp(f.store,f.router);try {
   wa.status='connected';wa.selfJid='123@s.whatsapp.net';wa.owners=[wa.selfJid];
-  f.store.enqueue('wa:p',f.a,'work');f.router.channelReply(f.a,'reply','final','wa:p');
+  f.store.enqueue('wa:p',f.a,'work');f.router.channelReply(f.a,'The requested check passed.','final','wa:p');
   const row=f.store.outbound();f.store.sent(row.id);
   assert.equal(f.store.deliveries('wa:p')[0].delivered_at,null);
   const key={id:row.wa_id,fromMe:true,remoteJid:wa.selfJid};

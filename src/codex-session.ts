@@ -22,6 +22,21 @@ export async function confirmCodexSession(runtime:Pick<CodexSession,'request'>,i
   await requireCodexHistory(thread.path);
 }
 
+/** thread/start configures its runtime, but Desktop's first queued turn can use
+ * separately saved settings. Only call for a newly provisioned, owner-approved
+ * worker, never to reset an existing chat's user-selected permission policy. */
+export async function saveNewCodexWorkerSettings(runtime:Pick<CodexSession,'request'>,id:string,cwd:string) {
+  const workspace=await realpath(cwd);
+  try {
+    await runtime.request('thread/settings/update',{
+      threadId:id,cwd:workspace,approvalPolicy:'on-request',
+      sandboxPolicy:{type:'workspaceWrite',writableRoots:[workspace],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false},
+    });
+  }catch {
+    throw new Error('Codex could not save this new worker’s workspace-editing settings. No task was sent. Update Codex or recover this exact setup; do not create another chat or disable approvals.');
+  }
+}
+
 /** One native app-server transport. No shell, API keys or alternate model client. */
 export class CodexSession extends EventEmitter {
   process:ChildProcessWithoutNullStreams;
@@ -41,8 +56,10 @@ export class CodexSession extends EventEmitter {
       if(m.id!==undefined){const p=this.pending.get(m.id);if(p){clearTimeout(p.timer);this.pending.delete(m.id);m.error?p.reject(new Error(m.error.message??'Native request failed')):p.resolve(m.result);}return;}
       if(m.method)this.emit('notification',m.method,m.params);
     });
-    const gone=()=>{this.alive=false;for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error('Native Codex connection ended; delivery may be uncertain.'));}this.pending.clear();this.emit('closed');};
+    const gone=()=>{if(!this.alive)return;this.alive=false;for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error('Native Codex connection ended; delivery may be uncertain.'));}this.pending.clear();this.emit('closed');};
     this.process.on('error',gone);this.process.on('exit',gone);
+    // Pipe failures are stream errors, not child-process errors. Treat delivery as uncertain, never replay it.
+    this.process.stdin.on('error',()=>{gone();this.close();});
   }
   write(value:any){if(this.alive)this.process.stdin.write(JSON.stringify(value)+'\n');}
   request(method:string,params:any):Promise<any>{
@@ -55,4 +72,18 @@ export class CodexSession extends EventEmitter {
   }
   async initialize(){await this.request('initialize',{clientInfo:{name:'session_bridge',version:'0.3.0'},capabilities:{experimentalApi:true}});this.write({method:'initialized',params:{}});}
   close(){this.process.kill();}
+}
+
+/** Read only: never resume, launch a turn, or treat the latest unrelated turn as this request. */
+export async function observeCodexRequest(runtime:Pick<CodexSession,'request'>,binding:{native_id:string;cwd:string},requestId:string):Promise<{status:string;turnId:string}|undefined> {
+  const result=await runtime.request('thread/read',{threadId:binding.native_id,includeTurns:true});
+  const t=result?.thread;
+  if(t?.id!==binding.native_id||typeof t.cwd!=='string'||await realpath(t.cwd)!==await realpath(binding.cwd))throw new Error('Native observation identity mismatch');
+  const matches=(t.turns??[]).filter((turn:any)=>(turn.items??[]).some((i:any)=>i.type==='userMessage'&&(i.content??[]).some((c:any)=>{
+    if(c.type!=='text'||typeof c.text!=='string')return false;
+    // Envelope metadata is a standalone JSON line. Quoted prose is not identity evidence.
+    return c.text.split('\n').some((line:string)=>{try{return JSON.parse(line).requestId===requestId;}catch{return false;}});
+  })));
+  if(matches.length!==1||typeof matches[0].id!=='string'||!['inProgress','completed','interrupted','failed'].includes(matches[0].status))return undefined;
+  return {status:matches[0].status,turnId:matches[0].id};
 }

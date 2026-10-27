@@ -47,6 +47,42 @@ function fixture(){
 }
 async function settled(f:ReturnType<typeof fixture>){for(let i=0;i<100&&f.masters.operation()?.status==='creating';i++)await new Promise(r=>setTimeout(r,10));}
 
+test('Desktop worker saves settings before opening, and ordinary recovery preserves owner settings',async()=>{
+  const f=fixture(),cwd=mkdtempSync(join(dir,'desktop-worker-'));
+  const b=f.store.register('new-worker','codex','11111111-1111-4111-a111-111111111111',cwd).binding;
+  f.store.set(`execution-mode:${b.id}`,'desktop');f.store.set(`managed-worker:${b.id}`,'true');
+  f.masters.connections.save(b,await f.masters.connections.prepare(b,'desktop',false));
+  const original=CodexSession.prototype.request,calls:string[]=[];
+  CodexSession.prototype.request=function(method,params){calls.push(method);return original.call(this,method,params);};
+  f.masters.openCodex=async(id)=>{assert.equal(id,nativeId);assert.equal(f.store.get(`worker-desktop-settings:${b.id}`),'saved');calls.push('open');};
+  try {
+    await f.masters.provisionWorker(b);
+    assert.ok(calls.indexOf('thread/settings/update')<calls.indexOf('open'));
+    assert.ok(!calls.includes('turn/start'));
+    calls.length=0;
+    await f.masters.recoverWorker(f.store.binding(b.id)!);
+    assert.ok(!calls.includes('thread/settings/update'),'Recovery must preserve subsequent owner permission choices');
+  }finally{CodexSession.prototype.request=original;f.close();}
+});
+
+test('failed Desktop settings retain exact child and recovery never recreates it',async()=>{
+  const f=fixture(),cwd=mkdtempSync(join(dir,'desktop-worker-failure-'));
+  const b=f.store.register('new-worker','codex','11111111-1111-4111-a111-111111111111',cwd).binding;
+  f.store.set(`execution-mode:${b.id}`,'desktop');f.store.set(`managed-worker:${b.id}`,'true');
+  f.masters.connections.save(b,await f.masters.connections.prepare(b,'desktop',false));
+  const original=CodexSession.prototype.request,calls:string[]=[];let rejectSettings=true,opened=0;
+  CodexSession.prototype.request=function(method,params){calls.push(method);if(method==='thread/settings/update'&&rejectSettings)return Promise.reject(new Error('unsupported'));return original.call(this,method,params);};
+  f.masters.openCodex=async()=>{opened++;};
+  try {
+    await assert.rejects(f.masters.provisionWorker(b),/No task was sent/);
+    assert.equal(opened,0);assert.equal(f.store.binding(b.id)?.native_id,nativeId);
+    assert.equal(f.store.get(`worker-desktop-settings:${b.id}`),'pending');
+    rejectSettings=false;calls.length=0;
+    await f.masters.recoverWorker(f.store.binding(b.id)!);
+    assert.equal(opened,1);assert.ok(!calls.includes('thread/start'));assert.ok(calls.includes('thread/settings/update'));
+  }finally{CodexSession.prototype.request=original;f.close();}
+});
+
 test('native creation persists exact identity, scoped tools and friendly instructions without replacing early',async()=>{
   const f=fixture();const old=f.store.register('old-master','codex','11111111-1111-4111-a111-111111111111','/tmp').binding;f.store.set('master',old.id);
   f.masters.connections.save(old,await f.masters.connections.prepare(old,'cli',true));

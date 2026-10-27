@@ -12,13 +12,13 @@ import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js
 import { portableAgents } from './platform.js';
 import type { Store,Binding } from './store.js';
 import type { Approvals } from './approvals.js';
-import { turnEnvelope } from './roles.js';
+import { turnEnvelope,roleConfig } from './roles.js';
 import { Attachments } from './attachments.js';
 import { sameProject, activityTime, claudeHistory, claudeDesktopHistory, type Session } from './session-catalog.js';
 import { claudeDiscoveryBinary, hasClaudeInboxes, claudeDesktopProcesses } from './desktop-claude.js';
 import { SessionActivation,openCodexDesktop } from './session-activation.js';
 import { Connections } from './connections.js';
-import { requireCodexHistory } from './codex-session.js';
+import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
@@ -66,6 +66,12 @@ export class NativeAgents {
   private writeTransportConfig(claudeBinary?:string) {
     const temp=`${this.configPath}.${process.pid}.tmp`;
     writeFileSync(temp,JSON.stringify({claudeBinary,codexBinary:codexBin,coordinationDirectory:join(stateDir,'native-delivery')}),{mode:0o600});renameSync(temp,this.configPath);
+  }
+  async requestStatus(job:{id:string;binding_id:string}) {
+    const b=this.store.binding(job.binding_id);if(!b?.enabled||b.provider!=='codex')return undefined;
+    const runtime=new CodexSession(codexBin,b.cwd,async()=>{throw new Error('Read-only observation cannot approve native actions');});
+    const timer=setTimeout(()=>runtime.close(),8000);
+    try{await runtime.initialize();return await observeCodexRequest(runtime,b,job.id);}finally{clearTimeout(timer);runtime.close();}
   }
   private async desktopConfig() {this.writeTransportConfig(await claudeDiscoveryBinary(claudeBin));}
   async catalog(provider:'codex'|'claude',cursor?:string,options:{fresh?:boolean}={}):Promise<{sessions:Session[];cursor:string|null}> {
@@ -189,7 +195,7 @@ export class NativeAgents {
     const attachments=this.store.job(jobId)?new Attachments(this.store).references(b,jobId,true):[];
     // CLI-reply sessions get the farfromdesk skill and its ffd launcher; a coordinator in its own folder also auto-loads the skill.
     const support=this.store.get(`master-support:${b.id}`),ownFolder=support?.startsWith(coordinatorHome+'/');
-    const reply=managed?{tool:'whatsapp_reply'}:ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[]);
+    const reply=managed?{tool:'whatsapp_reply'}:ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');
@@ -209,7 +215,8 @@ export class NativeAgents {
     const args=['--config',this.configPath,'--coord-dir',dir,...(b.provider==='codex'?['send-codex','--target',b.native_id,'--id',id]:['send-claude','--session',b.native_id]),'--sender',sender,'--file',file];
     try {
       if(b.provider==='claude')await this.desktopConfig();
-      const {stdout}=await exec(helper(),args,{timeout:30000,maxBuffer:1024*1024});
+      // Longer than the helper's own 30-second wait on codex queue, so the helper records the outcome itself.
+      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024});
       const r=JSON.parse(stdout);
       if(r.status!=='submitted'&&r.status!=='received')throw new Error(`Native delivery is ${r.status??'unconfirmed'}. Reference ${id}`);
       envelope.acknowledge();

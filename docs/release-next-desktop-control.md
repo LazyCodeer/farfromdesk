@@ -19,4 +19,4 @@ Release gates:
 
 Comet was live-tested in the lab. Other Chromium adapters need compatibility validation. Safari/Firefox direct-tab actions, visual-model planning and unattended arbitrary-app reliability are not claimed. Ad-hoc signing and permission reapproval remain documented limitations.
 
-This change prepares a candidate; it does not authorize automatic merge or public publication.
+The owner has requested publication after the release gates pass. Main remains owner-controlled; repository protection is not changed by this feature.

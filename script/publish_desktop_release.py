@@ -31,6 +31,8 @@ def validate(root, version, commit):
             if p.is_symlink() or (p.is_file() and not p.stat().st_size):
                 raise ValueError('Unsafe or empty release file')
         data = json.loads(manifest.read_text())
+        if data.get('preparationOnly') or data.get('sourceDirty') or data.get('publishable') is False:
+            raise ValueError('Preparation or dirty-source artifacts cannot be published')
         if (data['schema'], data['version'], data['sourceCommit'], data['platform'], data['architecture']) != (1, version, commit, system, arch):
             raise ValueError('Manifest identity mismatch')
         if data['nativeEntry'] != 'main.dart' or data['speechBundled'] is not True or data.get('voiceModelDelivery') != 'first-use':
@@ -60,6 +62,17 @@ def validate(root, version, commit):
                 raise ValueError('Target installers disagree')
             files[p.name] = p
     return files
+
+
+def release_notes(version, fallback, root=None):
+    root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
+    notes = root / 'docs' / 'releases' / (version + '.md')
+    if not notes.is_file():
+        return fallback
+    text = notes.read_text(encoding='utf-8').strip()
+    if not text:
+        raise ValueError('Release notes are empty')
+    return text + '\n'
 
 
 def verify_remote(release, files):
@@ -108,11 +121,8 @@ def main():
     if state and state['targetCommitish'] != args.commit:
         raise RuntimeError('Draft belongs to another source commit')
     if not state:
-        changes_file = Path(__file__).resolve().parent.parent / 'docs' / 'releases' / f'{args.version}.md'
-        changes = changes_file.read_text(encoding='utf-8').strip() + '\n\n' if changes_file.is_file() else ''
         notes = (f'# FarFromDesk {args.version}\n\n'
-                 'Your coding sessions, one phone message away.\n\n'
-                 + changes +
+                 'Your coding sessions, one WhatsApp message away.\n\n'
                  '## Choose your download\n\n'
                  '| Computer | Asset |\n|---|---|\n'
                  f'| Apple Silicon Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-arm64.dmg` or `.zip` |\n'
@@ -123,9 +133,9 @@ def main():
                  'The automatically generated Source code archives are for contributors, not app installation.\n\n'
                  '## Get started\n\n'
                  '1. Install and open FarFromDesk on your computer.\n'
-                 '2. Choose WhatsApp (QR linking) or Telegram (bot pairing and local confirmation).\n'
-                 '3. Choose your coding platform and coordinator, then message your chosen private chat.\n\n'
-                 'Local voice tools are included. The multilingual model downloads once on first use and stays on your computer for offline transcription. You can alternatively configure your own supported cloud voice API key in Settings. '
+                 '2. Link WhatsApp using the QR code in the app.\n'
+                 '3. Choose your coding platform and coordinator session, then message yourself.\n\n'
+                 'Local voice tools are included. The multilingual model downloads once on first use and stays on your computer for offline transcription. '
                  'Codex/Claude accounts are separate and must have access to the selected runtime. '
                  'Mac supports native Desktop integrations (Python 3 required) and CLI sessions; '
                  'Windows/Linux support CLI sessions. Native permissions still apply.\n\n'
@@ -142,6 +152,7 @@ def main():
                  'platform manifests accompany every app archive. These build and isolated startup/speech '
                  'checks do not establish real-phone/provider-account compatibility on every computer.\n\n'
                  f'Source commit: `{args.commit}`. License: MIT.\n')
+        notes = release_notes(args.version, notes)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'notes.md'; path.write_text(notes)
             gh('release', 'create', tag, '--repo', args.repo, '--target', args.commit,

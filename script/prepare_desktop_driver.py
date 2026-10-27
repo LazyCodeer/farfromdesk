@@ -10,6 +10,15 @@ URL=f'https://github.com/trycua/cua/releases/download/cua-driver-rs-v{VERSION}/c
 def prepare(destination, archive=None):
     root=pathlib.Path(__file__).resolve().parents[1]
     destination=pathlib.Path(destination);destination.mkdir(parents=True,exist_ok=True)
+    cached=root/'native/cua-driver/cua-driver'
+    if archive is None and cached.is_file() and hashlib.sha256(cached.read_bytes()).hexdigest()==BINARY_SHA:
+        subprocess.run(['codesign','--verify','--strict',str(cached)],check=True)
+        if cached.resolve()!=(destination/'cua-driver').resolve():shutil.copy2(cached,destination/'cua-driver')
+        for name in ['LICENSE-MIT.txt','THIRD_PARTY_NOTICES.md']:
+            source=root/'native/cua-driver'/name
+            if source.resolve()!=(destination/name).resolve():shutil.copy2(source,destination/name)
+        (destination/'manifest.json').write_text(json.dumps({'version':VERSION,'source':URL,'archiveSHA256':ARCHIVE_SHA,'binarySHA256':BINARY_SHA,'license':'MIT','vendorSignaturePreserved':True,'verifiedCachedBinary':True},indent=2)+'\n')
+        print(destination);return
     with tempfile.TemporaryDirectory(prefix='ffd-cua-prepare-') as temp:
         archive=pathlib.Path(archive) if archive else pathlib.Path(temp)/'driver.tar.gz'
         if not archive.exists():

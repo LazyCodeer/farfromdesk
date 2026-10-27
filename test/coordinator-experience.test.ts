@@ -118,7 +118,8 @@ test('coordinator role version sends once, keeps the receipt state and renews on
     assert.match(turnEnvelope(f.store,f.master,'Next','wa:changed',{},[],dir).body,/role updated to/);
     const changed={...f.master,native_id:uuid(3)};
     assert.match(turnEnvelope(f.store,changed,'New session','wa:new',{},[],dir).body,/role bootstrap/);
-    assert.ok(roleConfig(f.store,f.master).instructions.length<16000);
+    // Sent once per session and version, then only referenced; message templates and examples make it long.
+    assert.ok(roleConfig(f.store,f.master).instructions.length<24000);
   }finally{f.close();rmSync(dir,{recursive:true,force:true});}
 });
 

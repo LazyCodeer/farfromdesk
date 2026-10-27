@@ -4,6 +4,7 @@ import 'updates.dart';
 final voiceSignupUrls = {
   Uri.parse('https://console.deepgram.com/'),
   Uri.parse('https://www.assemblyai.com/dashboard/'),
+  Uri.parse('https://dev.meta.ai/'),
 };
 
 abstract class Gateway {

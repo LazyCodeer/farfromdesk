@@ -21,7 +21,8 @@ export function receiptState(store:Store,requestId:string) {
 export function formatWhatsAppMessage(text:string, sender:string, _coordinator:boolean, part=1,total=1,kind?:'progress'|'final'|'hook'|'system') {
   const name=sender.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069*_~`]/g,' ').replace(/\s+/g,' ').trim().slice(0,90);
   const footer='— FarFromDesk';
-  const heading=name?`*Session: ${name}*\n\n`:'';
+  // A reply that belongs to an item leads with its number so the owner can follow up by it.
+  const heading=name?/^#\d+ · /.test(name)?`*${name}*\n\n`:`*Session: ${name}*\n\n`:'';
   let body=text.trimEnd().replace(/\n\n— FarFromDesk(?: · [^\n]*)?$/u,'').trimEnd();
   if(heading&&body.startsWith(heading))body=body.slice(heading.length);
   // Presentation must not depend on whether a model follows optional style advice.

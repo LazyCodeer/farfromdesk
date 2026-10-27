@@ -30,6 +30,14 @@ const target=`gui/${process.getuid?.()}/com.sagar.whatsapp-session-bridge`;
 function resolveBin(name:string){if(name.includes('/'))return name;return execFileSync('/usr/bin/which',[name],{encoding:'utf8'}).trim();}
 async function main() {
   if(command==='status'){const d=await api('/api/status');delete d.whatsapp.qr;console.log(JSON.stringify(d,null,2));}
+  else if(command==='mac-status') {
+    if(args.length)throw new Error('Use mac-status without arguments. It only checks permission and never prompts or controls an app.');
+    console.log(JSON.stringify(await api('/api/mac-control',{action:'check'}),null,2));
+  }
+  else if(command==='request-events') {
+    if(args.length!==1||!args[0]||args[0].length>1000)throw new Error('Use request-events REQUEST-ID to read saved events and delivery status.');
+    console.log(JSON.stringify(await api('/api/request-events?id='+encodeURIComponent(args[0])),null,2));
+  }
   else if(command==='sessions'){console.log(JSON.stringify(await api(`/api/catalog?provider=${encodeURIComponent(args[0]??'codex')}`),null,2));}
   else if(command==='register') {
     const [provider,alias,nativeId,cwd,mode='desktop']=args;
@@ -129,10 +137,9 @@ async function main() {
     if(attachmentIndex>=0&&(!attachmentIds?.length||operation!=='dispatch'))throw new Error('Use --attachments ID[,ID] only with master dispatch.');
     const pageIndex=args.findIndex(a=>['--more','--back','--page'].includes(a));
     let page='0';if(operation==='sessions'&&pageIndex>=0){const flag=args.splice(pageIndex,1)[0];page=flag==='--more'?'more':flag==='--back'?'back':args.splice(pageIndex,1)[0];}
-
-    if(operation==='desktop') {
+    if(operation==='browser'||operation==='mac'||operation==='desktop') {
       const input=JSON.parse(readFileSync(0,'utf8'));
-      const r=await fetch(baseUrl+'/api/master/desktop-control',{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({...input,requestId:args[0]}),signal:AbortSignal.timeout(65000)});
+      const r=await fetch(baseUrl+(operation==='desktop'?'/api/master/desktop-control':operation==='mac'?'/api/master/mac-control':'/api/master/browser'),{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({...input,requestId:args[0]}),signal:AbortSignal.timeout(65000)});
       const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));return;
     }
     if(['agents','define-agent','assign-agent'].includes(operation??'')) {
