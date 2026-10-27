@@ -26,11 +26,13 @@ class PreviewGateway extends Gateway {
     );
   }
   @override
-  int get initialScreen => screen == 'activity'
-      ? 1
-      : screen == 'settings'
-      ? 2
-      : 0;
+  int get initialScreen => const [
+    'home',
+    'activity',
+    'items',
+    'brain',
+    'settings',
+  ].indexOf(screen).clamp(0, 4);
   String flow = 'empty';
   String whatsappState = 'disconnected';
   bool chosen = false;
@@ -77,137 +79,200 @@ class PreviewGateway extends Gateway {
   bool get preview => true;
   @override
   String get platform => 'Sample desktop';
-  @override
-  Future<Map<String, dynamic>> get(String path) async => {
-    'channelChosen': chosen,
-    'channelSwitch': {
-      'channel': controlChannel,
-      'requiresConfirmation': controlChannel == 'telegram'
-          ? telegramState != 'disconnected'
-          : whatsappState != 'disconnected',
-      'state':
-          (controlChannel == 'telegram' ? telegramState : whatsappState) ==
-              'connected'
-          ? 'connected'
-          : (controlChannel == 'telegram' ? telegramState : whatsappState) ==
-                'disconnected'
-          ? 'none'
-          : 'setup',
-    },
-    'previewFlow': flow,
-    'controlChannel': controlChannel,
-    'telegram': {
-      'status': telegramState,
-      'configured': telegramState != 'disconnected',
-      'username': 'ffd_sample_bot',
-      'ownerId': '123456789',
-      'ownerName': 'Alex',
-      if (flow == 'telegram-error') 'error': 'Telegram could not connect. Check your bot token and internet connection, then try again.',
-      if (flow == 'telegram-expired')
-        'error':
-            'This pairing link expired. Reconnect to get a new private link.',
-      if (telegramState == 'pairing')
-        'pairingUrl': 'https://t.me/ffd_sample_bot?start=preview',
-      if (telegramState == 'confirm')
-        'candidate': {'id': 123456789, 'name': 'Alex'},
-    },
-    'preferences': {'backgroundEnabled': background, 'keepAwake': false},
-    'whatsapp': {
-      'status': whatsappState,
-      if (whatsappState == 'pairing') 'qr': previewQr,
-      'phoneNumber': '+15551234567',
-    },
-    'destination': {'kind': 'self', 'name': 'Message yourself'},
-    'master': flow == 'empty' || fixture == 'onboarding'
-        ? null
-        : {
-            'id': 'sample-master',
-            'name': 'FarFromDesk coordinator',
-            'provider': 'codex',
-            'executionMode': 'cli',
-          },
-    'apps': [
-      {'provider': 'codex', 'enabled': true},
-      {'provider': 'claude', 'enabled': true},
-    ],
-    'requestCleanup': {'enabled': false, 'afterHours': 24},
-    'voice': {'ready': fixture != 'onboarding'},
-    'selected': [],
-    'jobs': fixture == 'activity'
-        ? [
-            {
-              'id': 'sample-reply',
-              'binding_id': 'sample-worker',
-              'status': 'completed',
-              'created_at': 1792911600000,
-            },
-          ]
-        : [],
-    'bindings': [
+  // Sample memory folder for the Brain page preview.
+  final Map<String, dynamic> memory = {
+    'dir': '/Users/you/Library/Application Support/FarFromDesk/memory',
+    'files': [
       {
-        'id': 'sample-worker',
-        'name': 'Website redesign',
-        'provider': 'codex',
-        'native_id': 'sample-exact-session',
-        'cwd': '/sample/projects/website',
+        'path': 'MEMORY.md',
+        'always': true,
+        'content': '# Memory index\nRead this first. Open a file below only when the message needs it.\n\n- [About you](about-me.md): name, what to call you and the brain, reply style\n- [Words and names](words.md): terms, repos and people you mention\n- [Preferences](preferences.md): when to message you, how much detail\n- [Collaboration](collaboration.md): which platform or session handles which kind of work\n- [Website](projects/website.md): opened when a message is about this project\n',
+      },
+      {
+        'path': 'about-me.md',
+        'always': true,
+        'content': '# About you\n- Name: Sam\n- Call me: Sam\n- Call the brain: Desk\n- Replies: short, English or Hinglish is fine\n',
+      },
+      {
+        'path': 'collaboration.md',
+        'always': true,
+        'content': '# Collaboration\nWhich platform or session handles which kind of work.\n\n- Planning and review: Codex\n- Coding: Claude\n- Website redesign: website-codex session\n',
+      },
+      {
+        'path': 'preferences.md',
+        'always': false,
+        'content':
+            '# Preferences\n- Message me only when work is done or needs me.\n',
+      },
+      {
+        'path': 'projects/website.md',
+        'always': false,
+        'content': '# Website\n- Staging is staging.example.com\n',
+      },
+      {
+        'path': 'words.md',
+        'always': false,
+        'content': '# Words and names\n- ATC means the air-traffic-control repo.\n- Priya reviews design changes.\n',
       },
     ],
-    'pendingJobs': fixture == 'activity'
-        ? [
-            {
-              'id': 'sample-request',
-              'binding_id': 'sample-worker',
-              'status': 'uncertain',
-              'canClose': true,
-              'created_at': 1792911400000,
-              'updated_at': 1792911450000,
-            },
-          ]
-        : [],
-    'approvals': [],
-    'masterSetup': {
-      'platforms': [
-        for (final provider in ['codex', 'claude'])
-          {
-            'provider': provider,
-            'executionMode': 'cli',
-            'available': true,
-            'workspaces': [
-              {
-                'id': '$provider-sample-workspace',
-                'cwd': '/sample/projects/project-1',
-                'name': 'project-1',
-                'available': true,
-              },
-            ],
-            'sessions': List.generate(
-              63,
-              (i) => {
-                'id': '$provider-sample-$i',
-                'name': i == 0 ? 'Website redesign' : 'Project ${i + 1}',
-                'cwd': '/sample/projects/project-${i + 1}',
-                'available': true,
-                'status': 'Sample saved conversation',
-              },
-            ),
-          },
-        for (final provider in ['codex', 'claude'])
-          {
-            'provider': provider,
-            'executionMode': 'desktop',
-            'available': false,
-            'sessions': [],
-            'reason': 'Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.',
-          },
-      ],
-    },
+    'history': [
+      {
+        'id': 2,
+        'at': DateTime.now()
+            .subtract(const Duration(days: 1))
+            .millisecondsSinceEpoch,
+        'path': 'words.md',
+        'source': 'brain:wa:2',
+        'summary': 'Saved "Priya reviews design changes." in words.md',
+      },
+      {
+        'id': 1,
+        'at': DateTime.now()
+            .subtract(const Duration(days: 2))
+            .millisecondsSinceEpoch,
+        'path': 'about-me.md',
+        'source': 'brain:wa:1',
+        'summary': 'Saved "Replies: short, English or Hinglish is fine" in about-me.md',
+      },
+    ],
+    'intro': 'done',
   };
+  @override
+  Future<Map<String, dynamic>> get(String path) async => path == '/api/memory'
+      ? memory
+      : {
+          'channelChosen': chosen,
+          'channelSwitch': {
+            'channel': controlChannel,
+            'requiresConfirmation': controlChannel == 'telegram'
+                ? telegramState != 'disconnected'
+                : whatsappState != 'disconnected',
+            'state':
+                (controlChannel == 'telegram'
+                        ? telegramState
+                        : whatsappState) ==
+                    'connected'
+                ? 'connected'
+                : (controlChannel == 'telegram'
+                          ? telegramState
+                          : whatsappState) ==
+                      'disconnected'
+                ? 'none'
+                : 'setup',
+          },
+          'previewFlow': flow,
+          'controlChannel': controlChannel,
+          'telegram': {
+            'status': telegramState,
+            'configured': telegramState != 'disconnected',
+            'username': 'ffd_sample_bot',
+            'ownerId': '123456789',
+            'ownerName': 'Alex',
+            if (flow == 'telegram-error') 'error': 'Telegram could not connect. Check your bot token and internet connection, then try again.',
+            if (flow == 'telegram-expired') 'error': 'This pairing link expired. Reconnect to get a new private link.',
+            if (telegramState == 'pairing')
+              'pairingUrl': 'https://t.me/ffd_sample_bot?start=preview',
+            if (telegramState == 'confirm')
+              'candidate': {'id': 123456789, 'name': 'Alex'},
+          },
+          'preferences': {'backgroundEnabled': background, 'keepAwake': false},
+          'whatsapp': {
+            'status': whatsappState,
+            if (whatsappState == 'pairing') 'qr': previewQr,
+            'phoneNumber': '+15551234567',
+          },
+          'destination': {'kind': 'self', 'name': 'Message yourself'},
+          'master': flow == 'empty' || fixture == 'onboarding'
+              ? null
+              : {
+                  'id': 'sample-master',
+                  'name': 'FarFromDesk coordinator',
+                  'provider': 'codex',
+                  'executionMode': 'cli',
+                },
+          'apps': [
+            {'provider': 'codex', 'enabled': true},
+            {'provider': 'claude', 'enabled': true},
+          ],
+          'requestCleanup': {'enabled': false, 'afterHours': 24},
+          'voice': {'ready': fixture != 'onboarding'},
+          'selected': [],
+          'jobs': fixture == 'activity'
+              ? [
+                  {
+                    'id': 'sample-reply',
+                    'binding_id': 'sample-worker',
+                    'status': 'completed',
+                    'created_at': 1792911600000,
+                  },
+                ]
+              : [],
+          'bindings': [
+            {
+              'id': 'sample-worker',
+              'name': 'Website redesign',
+              'provider': 'codex',
+              'native_id': 'sample-exact-session',
+              'cwd': '/sample/projects/website',
+            },
+          ],
+          'pendingJobs': fixture == 'activity'
+              ? [
+                  {
+                    'id': 'sample-request',
+                    'binding_id': 'sample-worker',
+                    'status': 'uncertain',
+                    'canClose': true,
+                    'created_at': 1792911400000,
+                    'updated_at': 1792911450000,
+                  },
+                ]
+              : [],
+          'approvals': [],
+          'masterSetup': {
+            'platforms': [
+              for (final provider in ['codex', 'claude'])
+                {
+                  'provider': provider,
+                  'executionMode': 'cli',
+                  'available': true,
+                  'workspaces': [
+                    {
+                      'id': '$provider-sample-workspace',
+                      'cwd': '/sample/projects/project-1',
+                      'name': 'project-1',
+                      'available': true,
+                    },
+                  ],
+                  'sessions': List.generate(
+                    63,
+                    (i) => {
+                      'id': '$provider-sample-$i',
+                      'name': i == 0 ? 'Website redesign' : 'Project ${i + 1}',
+                      'cwd': '/sample/projects/project-${i + 1}',
+                      'available': true,
+                      'status': 'Sample saved conversation',
+                    },
+                  ),
+                },
+              for (final provider in ['codex', 'claude'])
+                {
+                  'provider': provider,
+                  'executionMode': 'desktop',
+                  'available': false,
+                  'sessions': [],
+                  'reason': 'Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.',
+                },
+            ],
+          },
+        };
   @override
   Future<Map<String, dynamic>> post(
     String path,
     Map<String, dynamic> data,
   ) async {
     calls.add(path);
+    if (path.startsWith('/api/memory')) return memory;
     if (path == '/api/control-channel') {
       setFlow(data['channel'] == 'telegram' ? 'telegram' : 'whatsapp-setup');
     }

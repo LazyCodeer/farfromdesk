@@ -6,10 +6,40 @@ import 'package:farfromdesk/preview.dart';
 class MetaGateway extends PreviewGateway {
   Map<String, dynamic>? submitted;
   bool fail = false;
+  final posts = <String>[];
+  Map<String, dynamic> saved = {};
+  Map<String, dynamic> files = {
+    'dir': '/tmp/memory',
+    'files': [
+      {'path': 'MEMORY.md', 'content': '# Memory index\n', 'always': true},
+      {
+        'path': 'about-me.md',
+        'content': '# About you\n- Call me:\n',
+        'always': true,
+      },
+      {
+        'path': 'collaboration.md',
+        'content': '# Collaboration\nWho handles which work.\n\n- Planning and review: Codex\n',
+        'always': true,
+      },
+      {'path': 'words.md', 'content': '# Words and names\n', 'always': false},
+    ],
+    'history': [
+      {
+        'id': 7,
+        'at': 0,
+        'path': 'words.md',
+        'source': 'brain:wa:1',
+        'summary': 'Saved "ATC is the air-traffic repo" in words.md',
+      },
+    ],
+    'intro': 'pending',
+  };
   String? lastGet;
   @override
   Future<Map<String, dynamic>> get(String path) async {
     lastGet = path;
+    if (path == '/api/memory') return files;
     return {
       'tasks': [],
       'workItems': [
@@ -29,6 +59,9 @@ class MetaGateway extends PreviewGateway {
     String path,
     Map<String, dynamic> data,
   ) async {
+    posts.add(path);
+    if (path == '/api/memory') saved = data;
+    if (path.startsWith('/api/memory')) return files;
     submitted = data;
     if (fail) throw Exception('raw provider error must not be displayed');
     return {'configured': true};
@@ -54,11 +87,13 @@ void main() {
             ),
           ),
         );
-        final input = find.byType(TextField);
+        final input = find.byWidgetPredicate(
+          (w) => w is TextField && w.obscureText,
+        );
         expect(tester.widget<TextField>(input).obscureText, isTrue);
         expect(tester.widget<TextField>(input).autocorrect, isFalse);
         await tester.enterText(input, 'synthetic-widget-key');
-        final save = find.text('Save');
+        final save = find.text('Save changes');
         await tester.ensureVisible(save);
         await tester.tap(save);
         await tester.pumpAndSettle();
@@ -77,7 +112,7 @@ void main() {
     );
   }
   testWidgets(
-    'management is owner-controlled and fallback defaults to existing routing',
+    'turning the brain on lets it route, keep items and answer status',
     (tester) async {
       final api = MetaGateway();
       await tester.pumpWidget(
@@ -86,27 +121,23 @@ void main() {
             body: SingleChildScrollView(
               child: MetaBrainPanel(
                 gateway: api,
-                saved: const {'enabled': true},
+                saved: const {'enabled': false},
                 onSaved: () async {},
               ),
             ),
           ),
         ),
       );
-      final toggle = find.widgetWithText(
-        SwitchListTile,
-        'Keep your item list',
-      );
-      expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
-      await tester.ensureVisible(toggle);
-      await tester.tap(toggle);
+      await tester.tap(find.byKey(const Key('brain-enabled')));
       await tester.pumpAndSettle();
-      final save = find.text('Save');
-      await tester.ensureVisible(save);
-      await tester.tap(save);
-      await tester.pumpAndSettle();
-      expect(api.submitted?['policy']['allowManagement'], isTrue);
-      expect(api.submitted?['policy']['failure'], 'legacy');
+      final policy = api.submitted?['policy'];
+      expect(policy['enabled'], isTrue);
+      expect(policy['allowRouting'], isTrue);
+      expect(policy['allowManagement'], isTrue);
+      expect(policy['allowStatus'], isTrue);
+      expect(policy['failure'], 'legacy');
+      expect(find.text('What it may do'), findsNothing);
+      expect(find.text('First hello'), findsNothing);
     },
   );
   testWidgets(
@@ -136,4 +167,54 @@ void main() {
       expect(find.textContaining('invoice-worker'), findsOneWidget);
     },
   );
+  testWidgets('memory cards add, remove, edit as text and undo', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 2600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final api = MetaGateway();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MetaBrainPanel(
+              gateway: api,
+              saved: const {'enabled': false},
+              onSaved: () async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('memory-card-MEMORY.md')), findsNothing);
+    expect(find.text('Always read'), findsNWidgets(2));
+    expect(find.text('Codex'), findsWidgets);
+    await tester.enterText(
+      find.byKey(const Key('memory-add-words.md')),
+      'Priya reviews design',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(api.posts.last, '/api/memory');
+    expect(api.saved['content'], '# Words and names\n- Priya reviews design\n');
+    expect(api.saved['summary'], 'Added "Priya reviews design" to words.md');
+    await tester.tap(find.byKey(const Key('memory-remove-collaboration.md-3')));
+    await tester.pumpAndSettle();
+    expect(api.saved['content'], isNot(contains('Planning and review')));
+    await tester.tap(find.byKey(const Key('memory-text-about-me.md')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('memory-editor')),
+      '# About you\n- Call me: Sam\n',
+    );
+    await tester.tap(find.byKey(const Key('memory-save')));
+    await tester.pumpAndSettle();
+    expect(api.saved['path'], 'about-me.md');
+    expect(find.textContaining('from your message'), findsWidgets);
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+    expect(api.posts.last, '/api/memory/undo');
+  });
 }

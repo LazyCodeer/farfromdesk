@@ -40,13 +40,21 @@ class _DeskState extends State<Desk> {
   String? error, actionError;
   bool ready = false, busy = false, polling = false, startup = false;
   bool macTrialPressed = false;
-  void _macUpdate(VoidCallback change) { if (mounted) setState(change); }
+  void _macUpdate(VoidCallback change) {
+    if (mounted) setState(change);
+  }
+
   int section = 0, page = 0;
   String platform = 'codex:cli',
       setupAction = 'new',
       selectedNativeId = '',
       activityFilter = 'All',
-      activityQuery = '';
+      activityQuery = '',
+      itemFilter = 'Open',
+      itemQuery = '';
+  bool editingVoice = false;
+  // Item board from the brain; the 3s status poll doesn't carry it.
+  List<dynamic> loadedItems = [];
   bool coordinatorNameEdited = false, showGroups = false, loadingGroups = false;
   bool setupFormRequested = false,
       refreshing = false,
@@ -104,6 +112,7 @@ class _DeskState extends State<Desk> {
           unawaited(loadGroups());
         }
       }
+      unawaited(loadItems());
       timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
       await WidgetsBinding.instance.endOfFrame;
       if (mounted && error == null) await api.reportReady();
@@ -406,7 +415,11 @@ class _DeskState extends State<Desk> {
   }
 
   void changeView(VoidCallback update) => setState(update);
-  void go(int index) => setState(() => section = index);
+  void go(int index) {
+    setState(() => section = index);
+    if (index == 2) unawaited(loadItems());
+  }
+
   Widget button(
     String title,
     VoidCallback action, {

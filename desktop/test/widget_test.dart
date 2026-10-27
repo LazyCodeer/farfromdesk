@@ -536,8 +536,7 @@ void main() {
       await tester.pumpAndSettle();
       for (final title in [
         'Keep your computer available',
-        'Your account & permissions',
-        'Voice notes',
+        'Who can send tasks',
       ]) {
         await tester.scrollUntilVisible(
           find.text(title),
@@ -613,7 +612,10 @@ void main() {
       expect(find.text('Copy instructions'), findsNothing);
       expect(find.text('+ Add coordinator'), findsOneWidget);
       expect(find.text('Make default'), findsOneWidget);
-      expect(find.text('Change'), findsNWidgets(2));
+      expect(
+        find.descendant(of: find.byType(Dialog), matching: find.text('Change')),
+        findsNWidgets(2),
+      );
       expect(find.byTooltip('Close'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.tap(find.byTooltip('Close'));

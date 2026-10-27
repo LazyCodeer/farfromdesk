@@ -16,7 +16,7 @@ const styles:Record<CompanionStyle,string>={
   coding:'Be a coding-focused colleague. Prioritize the change, verification, blocker and next action. Explain technical detail only when useful.',
 };
 export { companionOperatingInstructions } from './role-instructions.js';
-import { companionOperatingInstructions } from './role-instructions.js';
+import { companionOperatingInstructions, ownerMemoryRule } from './role-instructions.js';
 import { agentDefinition } from './named-agents.js';
 
 
@@ -33,7 +33,7 @@ export function roleConfig(store:Store,b:Binding,kind:'master'|'worker'=b.id===s
   const cliReply=b.mode!=='channel'&&route?.transport!=='managed-cli',cliOnly=kind==='master'&&cliReply;
   // Only Claude Desktop has a native start_session that checks the owner asked directly.
   const desktopStart=kind==='master'&&b.provider==='claude'&&(route?.executionMode??store.get(`execution-mode:${b.id}`))==='desktop';
-  const instructions=[companionOperatingInstructions,messagingChannelRule,...(kind==='master'?[platformCoordinatorPolicy]:[]),agent.instructions,...(cliReply?[cliReplyRule]:[]),...(cliOnly?[masterCliTools]:[]),...(desktopStart?[desktopStartRule]:[]),styles[style]].join('\n\n');
+  const instructions=[companionOperatingInstructions,messagingChannelRule,...(kind==='master'?[platformCoordinatorPolicy]:[]),agent.instructions,...(cliReply?[cliReplyRule]:[]),...(cliOnly?[masterCliTools]:[]),...(desktopStart?[desktopStartRule]:[]),ownerMemoryRule(join(privateRoot(),'memory'),kind),styles[style]].join('\n\n');
   const version=createHash('sha256').update(JSON.stringify([ROLE_SCHEMA_VERSION,kind,style,config.revision,instructions])).digest('hex').slice(0,20);
   return {style,revision:config.revision,kind,version,instructions,agentName:agent.name};
 }

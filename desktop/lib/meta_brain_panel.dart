@@ -1,17 +1,45 @@
 import 'package:flutter/material.dart';
 
+import 'bridge_theme.dart';
 import 'gateway.dart';
+import 'memory_panel.dart';
 
-/// Native Settings is the only credential input. Status responses never contain a key.
+/// Small (i) button whose tooltip says what a feature does and why.
+Widget infoTip(String message, {String label = 'About this'}) => Tooltip(
+  message: message,
+  preferBelow: true,
+  waitDuration: const Duration(milliseconds: 250),
+  constraints: const BoxConstraints(maxWidth: 280),
+  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+  textStyle: const TextStyle(fontSize: 12, height: 1.45, color: ink),
+  decoration: BoxDecoration(
+    color: dialogColor,
+    borderRadius: BorderRadius.circular(10),
+    border: Border.all(color: line2),
+  ),
+  child: Semantics(
+    label: label,
+    button: true,
+    child: const Padding(
+      padding: EdgeInsets.all(4),
+      child: Icon(Icons.info_outline_rounded, size: 15, color: muted),
+    ),
+  ),
+);
+
+/// The Brain page. Native Settings is the only credential input; status
+/// responses never contain a key.
 class MetaBrainPanel extends StatefulWidget {
   final Gateway gateway;
   final Map<String, dynamic> saved;
   final Future<void> Function() onSaved;
+  final VoidCallback? openItems;
   const MetaBrainPanel({
     super.key,
     required this.gateway,
     required this.saved,
     required this.onSaved,
+    this.openItems,
   });
   @override
   State<MetaBrainPanel> createState() => _MetaBrainPanelState();
@@ -19,11 +47,11 @@ class MetaBrainPanel extends StatefulWidget {
 
 class _MetaBrainPanelState extends State<MetaBrainPanel> {
   final keyInput = TextEditingController();
-  late bool enabled, routing, summaries, management;
+  late bool enabled, routing, summaries, management, learn;
   late String model, failure;
   late Set<String> providers;
-  bool saving = false;
-  String? message;
+  bool saving = false, replacingKey = false;
+  String? message, taskMessage;
   List<Map<String, dynamic>>? tasks;
   List<Map<String, dynamic>> workItems = [];
   @override
@@ -37,6 +65,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     model = s['model'] as String? ?? 'muse-spark-1.3';
     failure = s['failure'] as String? ?? 'legacy';
     providers = Set<String>.from(s['providers'] ?? []);
+    learn = s['learn'] != false;
   }
 
   @override
@@ -61,16 +90,17 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           'allowManagement': management,
           'providers': providers.toList(),
           'failure': failure,
+          'notes': widget.saved['notes'] as String? ?? '',
+          'learn': learn,
         },
         if (!remove && keyInput.text.isNotEmpty) 'key': keyInput.text,
         if (remove) 'removeKey': true,
       });
-      if (mounted) {
-        keyInput.clear();
-      }
+      if (mounted) keyInput.clear();
       await widget.onSaved();
       if (mounted) {
         setState(() {
+          replacingKey = false;
           message = 'Saved. No API call was made.';
         });
       }
@@ -84,11 +114,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     } finally {
       if (mounted) {
         keyInput.clear();
-      }
-      if (mounted) {
-        setState(() {
-          saving = false;
-        });
+        setState(() => saving = false);
       }
     }
   }
@@ -108,9 +134,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       }
     } catch (_) {
       if (mounted) {
-        setState(() {
-          message = 'Could not load the task ledger.';
-        });
+        setState(() => taskMessage = 'Could not load the task history.');
       }
     }
   }
@@ -121,7 +145,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       builder: (context) => AlertDialog(
         title: const Text('Verify this task is complete?'),
         content: Text(
-          'Confirm only after reviewing the work and its evidence. A coordinator report alone is not owner verification.\n\n${task['original']}',
+          'Confirm only after reviewing the work and its evidence. A proxy report alone is not owner verification.\n\n${task['original']}',
         ),
         actions: [
           TextButton(
@@ -144,22 +168,147 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       await loadTasks();
     } catch (_) {
       if (mounted) {
-        setState(() {
-          message = 'Verification could not be saved.';
-        });
+        setState(() => message = 'Verification could not be saved.');
       }
     }
   }
 
-  Widget label(String text) => Padding(
-    padding: const EdgeInsets.only(top: 18, bottom: 4),
-    child: Text(
-      text,
-      style: const TextStyle(
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-        color: Color(0xffa8a69c),
-      ),
+  Widget box(Widget child) => Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
+    decoration: BoxDecoration(
+      color: toneCharcoal,
+      borderRadius: BorderRadius.circular(18),
+      border: Border.all(color: hairline),
+    ),
+    child: Material(color: Colors.transparent, child: child),
+  );
+
+  Widget heading(String title, String tip, {String? subtitle, Widget? end}) =>
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 2),
+                    infoTip(tip, label: 'About $title'),
+                  ],
+                ),
+                if (subtitle != null)
+                  Text(
+                    subtitle,
+                    style: const TextStyle(fontSize: 12, color: muted),
+                  ),
+              ],
+            ),
+          ),
+          ?end,
+        ],
+      );
+
+  Widget row(String title, String detail, Widget control, {String? tip}) =>
+      Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: hairline)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (tip != null) infoTip(tip, label: 'About $title'),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    detail,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.45,
+                      color: muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 16),
+            control,
+          ],
+        ),
+      );
+
+  Widget calloutNote(IconData icon, String bold, String text) => Container(
+    margin: const EdgeInsets.only(top: 14),
+    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+    decoration: BoxDecoration(
+      color: canvas,
+      borderRadius: BorderRadius.circular(14),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: muted),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              children: [
+                if (bold.isNotEmpty)
+                  TextSpan(
+                    text: '$bold ',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                TextSpan(text: text),
+              ],
+            ),
+            style: const TextStyle(fontSize: 12.5, height: 1.5, color: muted),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget saveRow(String label) => Padding(
+    padding: const EdgeInsets.only(top: 16),
+    child: Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        FilledButton(
+          onPressed: saving ? null : () => save(),
+          child: Text(label),
+        ),
+        Text(
+          message ?? "Saved on this computer. Saving doesn't call Meta.",
+          style: const TextStyle(fontSize: 12, color: muted),
+        ),
+      ],
     ),
   );
 
@@ -170,110 +319,163 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     ValueChanged<bool> change,
   ) => SwitchListTile(
     contentPadding: EdgeInsets.zero,
-    title: Text(title),
-    subtitle: Text(detail),
+    title: Text(
+      title,
+      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+    ),
+    subtitle: Text(
+      detail,
+      style: const TextStyle(fontSize: 12, height: 1.45, color: muted),
+    ),
     value: value,
     onChanged: saving ? null : change,
   );
 
-  @override
-  Widget build(BuildContext context) {
-    final configured = widget.saved['configured'] == true;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        toggle(
-          'Use the brain',
-          'It reads each phone message, keeps your item list and picks which session should answer.',
-          enabled,
-          (v) => setState(() => enabled = v),
-        ),
-        if (enabled) ...[
-          label('Model'),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              DropdownButton<String>(
-                value: model,
-                items: [
-                  for (final m
-                      in (widget.saved['models'] ?? ['muse-spark-1.3']))
-                    DropdownMenuItem(
-                      value: m as String,
-                      child: Text('Meta · $m'),
-                    ),
-                ],
-                onChanged: saving ? null : (v) => setState(() => model = v!),
-              ),
-              Text(
-                configured ? 'Key saved. Stored only on this computer.' : 'No key yet. Until you save one, messages use normal routing.',
-              ),
-              if (configured)
-                TextButton(
-                  onPressed: saving ? null : () => save(remove: true),
-                  child: const Text('Remove key'),
-                ),
-            ],
-          ),
-          TextField(
-            controller: keyInput,
-            obscureText: true,
-            enableSuggestions: false,
-            autocorrect: false,
-            decoration: InputDecoration(
-              labelText: configured
-                  ? 'Replace Meta Model API key'
-                  : 'Meta Model API key',
-              hintText: configured
-                  ? 'Leave blank to keep the saved key'
-                  : 'Paste your key',
+  Widget keyField() => TextField(
+    controller: keyInput,
+    obscureText: true,
+    enableSuggestions: false,
+    autocorrect: false,
+    decoration: const InputDecoration(
+      labelText: 'Meta Model API key',
+      hintText: 'Paste your key',
+    ),
+  );
+
+  Widget header(bool configured) {
+    final (title, detail) = !enabled
+        ? (
+            'Brain is off',
+            'Your proxy gets every message as it is. Your item list is kept.',
+          )
+        : configured
+        ? (
+            'Brain is on',
+            'Meta $model. Reads each phone message and picks which session answers.',
+          )
+        : (
+            'Brain needs a key',
+            'Until a key is saved, your messages use normal routing.',
+          );
+    return box(
+      Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: accentWash,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.psychology_outlined,
+              color: accent,
+              size: 22,
             ),
           ),
-          label('What it may do'),
-          toggle(
-            'Send messages to your proxy and its sessions',
-            'Only sessions you already set up. It never starts new ones or changes permissions.',
-            routing,
-            (v) => setState(() => routing = v),
+          const SizedBox(width: 14),
+          Expanded(
+            child: heading(
+              title,
+              'The brain reads each phone message first, keeps your item list and picks which session should answer. It never runs commands or approves anything itself.',
+              subtitle: detail,
+            ),
           ),
-          toggle(
-            'Keep your item list',
-            'Add, number and close items, and pause or resume a session you name.',
-            management,
-            (v) => setState(() => management = v),
-          ),
-          toggle(
-            'Answer "where are we"',
-            'Replies from the saved item list. To get fresh news it asks the session first.',
-            summaries,
-            (v) => setState(() => summaries = v),
-          ),
-          label('Sessions it can send to'),
-          Wrap(
-            spacing: 8,
-            children: [
-              for (final p in const {
-                'codex': 'Codex',
-                'claude': 'Claude',
-              }.entries)
-                FilterChip(
-                  label: Text(p.value),
-                  selected: providers.contains(p.key),
-                  onSelected: saving
-                      ? null
-                      : (v) => setState(() {
-                          if (v) {
-                            providers.add(p.key);
-                          } else {
-                            providers.remove(p.key);
-                          }
-                        }),
+          if (enabled && !configured) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: warning.withValues(alpha: .15),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Text(
+                'Needs a key',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: warning,
                 ),
-            ],
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Switch(
+            key: const Key('brain-enabled'),
+            value: enabled,
+            onChanged: saving
+                ? null
+                : (v) {
+                    // The brain's permissions are no longer separate switches: on means it may
+                    // route to your connected platforms, keep your items and answer status.
+                    setState(() {
+                      enabled = v;
+                      if (v) {
+                        routing = summaries = management = true;
+                        providers = {'codex', 'claude'};
+                      }
+                    });
+                    save();
+                  },
           ),
-          label("If the brain can't answer"),
+        ],
+      ),
+    );
+  }
+
+  Widget modelTab(bool configured) => box(
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        heading(
+          'Model and key',
+          'The brain sends each phone message to Meta to understand it, using your own key. Usage is billed to your Meta account. A new model applies to your next message.',
+        ),
+        const SizedBox(height: 8),
+        row(
+          'Model',
+          'Reads each phone message.',
+          DropdownButton<String>(
+            value: model,
+            underline: const SizedBox(),
+            items: [
+              for (final m in (widget.saved['models'] ?? ['muse-spark-1.3']))
+                DropdownMenuItem(value: m as String, child: Text('Meta · $m')),
+            ],
+            onChanged: saving ? null : (v) => setState(() => model = v!),
+          ),
+        ),
+        row(
+          'Meta Model API key',
+          configured
+              ? 'Saved. Stored only on this computer.'
+              : 'Stored only on this computer.',
+          configured
+              ? Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    OutlinedButton(
+                      onPressed: saving
+                          ? null
+                          : () => setState(() => replacingKey = !replacingKey),
+                      child: Text(
+                        replacingKey ? 'Keep saved key' : 'Replace key',
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: saving ? null : () => save(remove: true),
+                      child: const Text('Remove key'),
+                    ),
+                  ],
+                )
+              : const SizedBox(),
+        ),
+        if (!configured || replacingKey) keyField(),
+        row(
+          "If the brain can't answer",
+          failure == 'legacy'
+              ? 'Normal routing sends the message to your proxy as if the brain were off.'
+              : 'You get a short note on your phone and nothing is sent.',
           SegmentedButton<String>(
             segments: const [
               ButtonSegment(value: 'block', label: Text('Stop and tell me')),
@@ -285,66 +487,123 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                 ? null
                 : (v) => setState(() => failure = v.first),
           ),
-          const SizedBox(height: 6),
-          Text(
-            failure == 'legacy'
-                ? 'Normal routing sends the message to your proxy as if the brain were off.'
-                : 'You get a short note on your phone and nothing is sent.',
-            style: const TextStyle(fontSize: 12, color: Color(0xffa8a69c)),
-          ),
-          const ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: Text('What it sees'),
-            subtitle: Text(
-              'Sent to Meta with each message. Usage is billed to your Meta account.',
-            ),
-            expandedCrossAxisAlignment: CrossAxisAlignment.start,
-            childrenPadding: EdgeInsets.only(bottom: 12),
-            children: [
-              Text(
-                'The message you just sent, your open item titles and their numbers, and your last 12 messages and the replies to them. Never your files, keys or session transcripts. macOS and coding app approvals still ask you.',
-              ),
-            ],
-          ),
-        ] else
-          const Text(
-            'Off. Your proxy gets every message as it is. Your item list is kept.',
-            style: TextStyle(fontSize: 12, color: Color(0xffa8a69c)),
-          ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            FilledButton(
-              onPressed: saving ? null : () => save(),
-              child: const Text('Save'),
-            ),
-            const Text(
-              "Saving doesn't call Meta.",
-              style: TextStyle(fontSize: 12, color: Color(0xffa8a69c)),
-            ),
-            TextButton(
-              onPressed: loadTasks,
-              child: const Text('View task history'),
-            ),
-          ],
+          tip:
+              'Used when Meta is down, the key fails or the answer is unclear.',
         ),
-        if (message != null) Text(message!),
+      ],
+    ),
+  );
+
+  Widget instructionsTab() => box(
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        heading(
+          'Instructions',
+          'The brain follows these built-in rules for every phone message. What it knows about you lives in your memory files.',
+          subtitle: 'The built-in rules every message follows.',
+        ),
+        const SizedBox(height: 8),
+        if (widget.saved['instructions'] is String)
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text(
+                'Built-in instructions',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'Read only. Teach it your words in the memory files instead.',
+                style: TextStyle(fontSize: 12, color: muted),
+              ),
+              children: [
+                Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(maxHeight: 320),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: canvas,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      widget.saved['instructions'] as String,
+                      style: const TextStyle(
+                        fontFamily: 'Menlo',
+                        fontSize: 12,
+                        height: 1.6,
+                        color: muted,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        calloutNote(
+          Icons.lock_outline_rounded,
+          "Always on, can't be changed.",
+          "The brain only follows the message you just sent. It never takes instructions from worker replies or quoted text, never says something was done when it wasn't, and can't change macOS or coding app approvals.",
+        ),
+      ],
+    ),
+  );
+
+  Widget memoryTab() => box(
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        toggle(
+          'Learn from your messages',
+          'When you tell it something new, it saves it in the right file and tells you on WhatsApp so you can reply "undo". Session replies, quoted text and files never change it.',
+          learn,
+          (v) {
+            setState(() => learn = v);
+            save();
+          },
+        ),
+        const SizedBox(height: 12),
+        MemoryFiles(gateway: widget.gateway),
+        const SizedBox(height: 12),
+        row(
+          'Recent conversation',
+          'Your last 12 messages and the replies. Helps it understand "that one" or "1".',
+          const SizedBox(),
+        ),
+        row(
+          'Item codes and open items',
+          'Titles and numbers of your open items, and codes like P1 from the last list you saw.',
+          OutlinedButton(
+            onPressed: widget.openItems,
+            child: const Text('Open Items'),
+          ),
+        ),
+        row(
+          'Task history',
+          'What the brain understood from each message and what happened next.',
+          OutlinedButton(
+            onPressed: loadTasks,
+            child: const Text('View task history'),
+          ),
+        ),
+        if (taskMessage != null) Text(taskMessage!),
         if (workItems.isNotEmpty) ...[
-          const Text('Shared to-dos and session ownership'),
+          const SizedBox(height: 8),
           for (final item in workItems)
             ListTile(
+              contentPadding: EdgeInsets.zero,
               title: Text('#${item['id']} ${item['title']}'),
               subtitle: Text(
-                '${item['status']} • execution: ${item['executionState']} • ${item['session'] ?? 'coordinator assignment pending'}',
+                '${item['status']} • execution: ${item['executionState']} • ${item['session'] ?? 'no session yet'}',
               ),
             ),
         ],
         if (tasks != null) ...[
-          if (tasks!.isEmpty) const Text('No Meta-tracked tasks yet.'),
+          if (tasks!.isEmpty) const Text('No tasks yet.'),
           for (final task in tasks!)
             ExpansionTile(
+              tilePadding: EdgeInsets.zero,
               title: Text(
                 task['original'] as String,
                 maxLines: 2,
@@ -355,11 +614,11 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
               ),
               children: [
                 ListTile(
-                  title: const Text('Original owner text'),
+                  title: const Text('What you sent'),
                   subtitle: SelectableText(task['original'] as String),
                 ),
                 ListTile(
-                  title: const Text('Normalized wording, advisory only'),
+                  title: const Text('How the brain read it'),
                   subtitle: SelectableText(
                     task['normalized'] as String? ?? 'Not available',
                   ),
@@ -367,7 +626,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                 ListTile(
                   title: const Text('Saved evidence'),
                   subtitle: SelectableText(
-                    'Request: ${task['id']}\nCoordinator: ${task['coordinator_id'] ?? 'none'}\n${task['reason'] ?? ''}\n${task['evidence']}',
+                    'Request: ${task['id']}\nProxy: ${task['coordinator_id'] ?? 'none'}\n${task['reason'] ?? ''}\n${task['evidence']}',
                   ),
                 ),
                 if (task['nativeOutcome'] == 'done' &&
@@ -379,6 +638,59 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
               ],
             ),
         ],
+      ],
+    ),
+  );
+
+  Widget section(
+    String title,
+    String subtitle,
+    IconData icon,
+    Widget child, {
+    bool open = false,
+  }) => Theme(
+    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+    child: ExpansionTile(
+      key: Key('brain-section-$title'),
+      initiallyExpanded: open,
+      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+      childrenPadding: EdgeInsets.zero,
+      leading: Icon(icon, color: accent, size: 20),
+      title: Text(
+        title,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(fontSize: 12, color: muted),
+      ),
+      children: [child],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final configured = widget.saved['configured'] == true;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        header(configured),
+        if (enabled) modelTab(configured),
+        if (enabled)
+          section(
+            'Instructions',
+            'The built-in rules every message follows',
+            Icons.notes_rounded,
+            instructionsTab(),
+          ),
+        section(
+          'Memory',
+          'Memory files every session can read',
+          Icons.history_rounded,
+          memoryTab(),
+          open: true,
+        ),
+        if (enabled) saveRow('Save changes'),
       ],
     );
   }
