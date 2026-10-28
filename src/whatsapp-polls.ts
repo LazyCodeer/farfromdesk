@@ -20,7 +20,8 @@ export class WhatsAppPolls {
       this.store.db.prepare('INSERT INTO whatsapp_choice_polls VALUES(?,?)').run(originalId,poll.id);
       // Session list labels already carry their list number; numbering them again would read "1. 7. name".
       // All or none: numbering only some could make two options identical, and a vote maps to the first match.
-      const labels=(JSON.parse(row.choices) as {label:string}[]).map(c=>c.label),numbered=labels.every(l=>/^\d+\. /.test(l));
+      // Options must stay unique: a vote is matched to the first option with the same text.
+      const labels=(JSON.parse(row.choices) as {label:string}[]).map(c=>c.label),numbered=labels.every(l=>/^\d+\. /.test(l))&&new Set(labels).size===labels.length;
       const values=numbered?labels:labels.map((l,i)=>`${i+1}. ${l}`);
       const message={messageContextInfo:{messageSecret:randomBytes(32)},pollCreationMessageV3:{name:row.body.split('\n')[0].slice(0,180)+'\nOr reply by number to the original message.',options:values.map(optionName=>({optionName})),selectableOptionsCount:1}};
       this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(message,BufferJSON.replacer),poll.id);

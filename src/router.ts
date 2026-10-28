@@ -71,9 +71,10 @@ export class Router {
     this.receiving.add(m.id);
     try{
       // History is best effort: a failure to label or record it must not fail a turn that already ran, or Telegram re-polls it.
-      let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch{}
+      const failed=(e:unknown)=>{try{this.store.event(m.id,'owner_history_failed',{code:errorCode(e)});}catch{}};
+      let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch(e){failed(e);}
       const result=await this.receiveOnce(m);
-      try{if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch{}
+      try{if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
       return result;
     }finally{this.receiving.delete(m.id);}
   }
@@ -85,7 +86,7 @@ export class Router {
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     let ownerReply=false;
     try {

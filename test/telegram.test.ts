@@ -445,3 +445,14 @@ test('failed stale-link guidance cannot block polling the real owner pairing mes
   assert.equal(f.store.get('telegram-owner'),undefined);
  }finally{f.close();}
 });
+
+test('bare /claude on Telegram switches to the default coordinator with one plain line',async()=>{
+ const f=fixture();try{
+  await f.pair();const c=f.store.register('claude-coord','claude','44444444-4444-4444-8444-444444444444',f.root,'channel').binding;
+  f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});f.store.set('master','');f.router.coordinator.registry.register(c);f.store.set(`name:${c.id}`,'atlas Super Ai');
+  await f.tg.receive(f.message(1300,'/claude'));for(let i=0;i<3;i++)await f.tg.flush();
+  assert.equal(JSON.parse(f.store.get(`owner-target:${telegramDestination(bot,owner)}`)!).id,c.id);
+  const sent=f.calls.filter(x=>x.method==='sendMessage').at(-1)!.body;
+  assert.equal(sent.text,'Now talking to atlas Super Ai. /back to leave.');assert.equal(sent.reply_markup,undefined);assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});

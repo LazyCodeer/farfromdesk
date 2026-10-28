@@ -178,3 +178,29 @@ test('WhatsApp session list polls are numbered once and the text never mentions 
   assert.deepEqual(poll.options.map((o:any)=>o.optionName),['1. claude-a','2. claude-b']);
  }finally{f.close();}
 });
+
+test('a paused default coordinator fails closed even when another coordinator of that provider is enabled',async()=>{
+ const f=fixture();try{
+  const desk=f.store.register('claude-desktop','claude','44444444-4444-4444-8444-444444444444','/synthetic','channel').binding,cli=f.store.register('claude-cli','claude','55555555-5555-4555-8555-555555555555','/synthetic','channel').binding;
+  f.store.set(`execution-mode:${desk.id}`,'desktop');f.store.set('platform-preference:claude',JSON.stringify({executionMode:'cli'}));
+  f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});f.router.coordinator.registry.register(desk);f.router.coordinator.registry.register(cli);
+  assert.equal(f.store.get('master'),desk.id);f.store.set(`name:${desk.id}`,'Desk coordinator');f.store.enable(desk.id,false);
+  await f.wa.receiveMessage(f.msg('P1','/claude'));
+  const body=(f.store.db.prepare("SELECT body FROM outbox WHERE source='command-error:wa:P1:0'").get() as any).body;
+  assert.equal(body,'Your default Claude coordinator, Desk coordinator, is paused. Resume it in the FarFromDesk desktop app. Or send /claude list to choose a connected session.');
+  assert.equal(f.store.get(`owner-target:${owner}`),undefined);assert.equal(f.store.jobs().length,0);
+  // An unknown argument with no list points to /claude list instead of a list that does not exist.
+  await f.wa.receiveMessage(f.msg('P2','/claude bogus'));
+  assert.match((f.store.db.prepare("SELECT body FROM outbox WHERE source='command:wa:P2:0'").get() as any).body,/^Send \/claude list/);
+ }finally{f.close();}
+});
+
+test('duplicate pre-numbered choice labels still give unique poll options',async()=>{
+ const f=fixture();try{
+  f.store.set('whatsapp-choice-polls','true');f.store.enqueue('wa:dup',f.binding,'Choose',owner);
+  f.store.output(f.binding,'Which?','dup-choice',owner,{requestId:'wa:dup',kind:'final',origin:'agent',options:{choices:[{id:'a',label:'1. Same'},{id:'b',label:'1. Same'}],expiresInSeconds:900}});
+  await f.wa.flush();await f.wa.flush();
+  const options=f.sends.find(s=>s.message?.pollCreationMessageV3)!.message.pollCreationMessageV3.options.map((o:any)=>o.optionName);
+  assert.equal(new Set(options).size,2);
+ }finally{f.close();}
+});
