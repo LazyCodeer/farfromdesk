@@ -363,6 +363,9 @@ export class MetaBrain {
       // A session the owner named in their own words routes there; the model never picks it alone.
       const lower=m.text.toLowerCase(),sessions=this.memory.candidates(router).filter(b=>{const n=(this.store.get(`name:${b.id}`)??b.alias).trim().toLowerCase();return n.length>=3&&n!=='codex'&&n!=='claude'&&new RegExp(`(?:^|\\W)${n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\W|$)`).test(lower);});
       if(sessions.length>1)throw new Error('Your message names more than one session. Please choose one.');
+      // A sentence that names a session and also negates or excludes asks first, whatever the model says, so an excluded session never gets the request.
+      const named0=sessions[0]&&(this.store.get(`name:${sessions[0].id}`)??sessions[0].alias).trim().toLowerCase();
+      if(named0&&lower.split(/[.!?;\n]+/).some(t=>t.includes(named0)&&/\b(?:not|never|no|don'?t|do not|doesn'?t|except|excluding|exclude|without|instead of|rather than|nor|away from|skip)\b/.test(t)))throw new Error(`Your message mentions ${this.store.get(`name:${sessions[0].id}`)??sessions[0].alias} with a "not" or "except". Please say directly which session should do this.`);
       // A literal mention routes only when the interpretation agrees it addresses that session; an exclusion or passing mention asks first.
       if(sessions.length&&decision.sessionId!==sessions[0].id)throw new Error(`Your message mentions ${this.store.get(`name:${sessions[0].id}`)??sessions[0].alias}. Should this go to that session? Please say so directly, or name the session you want.`);
       const provider=named[0]??sessions[0]?.provider??(decision.provider==='unspecified'?undefined:decision.provider);

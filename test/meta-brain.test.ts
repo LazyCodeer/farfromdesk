@@ -429,6 +429,20 @@ test('an unassigned item goes to the session the owner names, and a named platfo
     assert.equal(f.store.job('wa:plat'),undefined);assert.match(String((f.out().at(-1) as any).body),/another platform/);
   }finally{f.close();}
 });
+test('an excluded session never gets the request, even when the model names it',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    f.respond(async()=>({...decision(),sessionId:worker.id}));
+    const texts=['Do not send this to Payments API. Ask the coordinator to inspect the webhook.','don\'t give "Payments API" this one','Never use payments api for this','Everyone except Payments API should look','Ask the coordinator, not Payments API','Use the coordinator instead of PAYMENTS API','Keep it away from payments api, no changes there'];
+    for(const [i,text] of texts.entries()){
+      await f.router.receive({id:`wa:x${i}`,text});
+      assert.equal(f.store.job(`wa:x${i}`),undefined,text);
+    }
+    await f.router.receive({id:'wa:ok',text:'Payments API: add logging. Do not touch the database.'});
+    assert.equal(f.store.job('wa:ok')?.binding_id,worker.id);
+  }finally{f.close();}
+});
 test('a session mentioned only to exclude it gets nothing, and casing or quotes still route a real request',async()=>{
   const f=fixture();try{
     const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
