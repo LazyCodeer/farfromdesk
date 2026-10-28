@@ -6,7 +6,7 @@ import {decodeSignal,encodeSignal,sdpToSignal,signalToSdp} from './signal-codec.
 
 type State='idle'|'offered'|'connecting'|'connected'|'ended';
 type Session={id:string;pc:RTCPeerConnection;control:RTCDataChannel;frames:RTCDataChannel;expiresAt:number;abort:AbortController;watch?:ReturnType<typeof setInterval>;
- token?:string;backend?:DesktopBackend;authing:boolean;locked:boolean;paused?:boolean;activeAt:number;loginBy?:number;transcribing?:boolean;voice?:{id:string;mime:string;chunks:Buffer[];bytes:number};attempts:number;misses:number;frameId:number;frame?:DesktopFrame;prev?:DesktopFrame;pulling:boolean;seen:Set<string>;queue:Promise<void>};
+ token?:string;backend?:DesktopBackend;authing:boolean;locked:boolean;paused?:boolean;epoch:number;activeAt:number;loginBy?:number;transcribing?:boolean;voice?:{id:string;mime:string;chunks:Buffer[];bytes:number};attempts:number;misses:number;frameId:number;frame?:DesktopFrame;prev?:DesktopFrame;pulling:boolean;seen:Set<string>;queue:Promise<void>};
 const MAX_BUFFERED=1<<20,MAX_ATTEMPTS=5,READY_MISSES=3,CAPTURE_TRIES=3,RESUME_MS=10*60_000;
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
@@ -29,7 +29,7 @@ export class P2PHost{
   const control=pc.createDataChannel(CONTROL_CHANNEL.label,{negotiated:true,id:CONTROL_CHANNEL.id,ordered:true});
   const frames=pc.createDataChannel(FRAME_CHANNEL.label,{negotiated:true,id:FRAME_CHANNEL.id,ordered:true});
   const id=randomBytes(12).toString('base64url'),expiresAt=this.now()+OFFER_TTL_MS;
-  const s:Session={id,pc,control,frames,expiresAt,abort:new AbortController(),authing:false,locked:false,activeAt:0,attempts:0,misses:0,frameId:0,pulling:false,seen:new Set(),queue:Promise.resolve()};
+  const s:Session={id,pc,control,frames,expiresAt,abort:new AbortController(),authing:false,locked:false,epoch:0,activeAt:0,attempts:0,misses:0,frameId:0,pulling:false,seen:new Set(),queue:Promise.resolve()};
   this.session=s;this.state='offered';this.reason=undefined;this.detail=undefined;this.opts.access.setReady(true);
   pc.connectionStateChange.subscribe(st=>{if(st==='failed'||st==='closed')this.end(s,'CONNECTION_LOST');});
   control.stateChanged.subscribe(st=>{if(st==='open'&&this.session===s)this.state='connected';else if(st==='closed')this.end(s,'CONNECTION_LOST');});
@@ -87,7 +87,8 @@ export class P2PHost{
   // Enforced here too: an unattended phone (its screen kept on by the page) must not stay in control.
   if(this.now()-s.activeAt>MAC_IDLE_MS)return this.end(s,'IDLE_TIMEOUT');
   // In the input queue: the driver drops its connection after any failed call, which would kill an input in flight.
-  let r=false as boolean|'locked';await this.serial(s,async()=>{r=await s.backend!.ready().catch(()=>false);});
+  let r=false as boolean|'locked';const e=s.epoch;await this.serial(s,async()=>{r=await s.backend!.ready().catch(()=>false);});
+  if(this.session!==s||s.epoch!==e||!s.token)return;
   if((r==='locked')!==s.locked){s.locked=r==='locked';this.send(s,{t:'locked',locked:s.locked});}
   // One slow permission probe is not a loss; end only after several in a row.
   s.misses=r?0:s.misses+1;
@@ -99,6 +100,8 @@ export class P2PHost{
  /** Phone screen off: log out but keep the connection, so the password brings the same session back. */
  private pause(s:Session){
   this.forget();this.opts.access.disconnect(s.token!);s.token=undefined;
+  // A new epoch: nothing queued, captured or transcribed before the pause may act or send after it.
+  s.epoch++;s.abort.abort();s.abort=new AbortController();s.pulling=false;
   s.backend?.stop();s.backend=undefined;s.voice=undefined;s.authing=false;s.paused=true;s.loginBy=this.now()+PAUSE_MS;
  }
  private async onControl(s:Session,data:string|Buffer){
@@ -140,7 +143,7 @@ export class P2PHost{
   if(m?.t==='ready'){
    if(m.frameId!==s.frameId||s.pulling)return;
    s.pulling=true;
-   return this.serial(s,async()=>{try{await this.sendFrame(s,await this.capture(s));}finally{s.pulling=false;}});
+   return this.serial(s,async e=>{try{await this.sendFrame(s,await this.capture(s),e);}finally{s.pulling=false;}});
   }
   if(m?.t==='input'){
    const id=typeof m.id==='string'?m.id.slice(0,64):'',error=inputError(m);
@@ -179,12 +182,14 @@ export class P2PHost{
   if(v.bytes>MAX_VOICE_BYTES)return fail('VOICE_TOO_LONG');
   v.chunks.push(b);
   if(m.last!==true)return;
-  s.voice=undefined;s.transcribing=true;
+  s.voice=undefined;s.transcribing=true;const e=s.epoch,signal=s.abort.signal;
   try{
    // Checked again now, uncached, in case the Mac locked while the phone was recording.
+   // Only a positive unlocked answer counts: an unknown state could be the lock screen.
    let r=false as boolean|'locked';await this.serial(s,async()=>{r=await s.backend!.ready(true).catch(()=>false);});
-   if(r==='locked')return fail('MAC_LOCKED');
-   const text=await t.transcribe(Buffer.concat(v.chunks),v.mime,s.abort.signal);if(this.session===s)this.send(s,{t:'voice-text',id,text:text.slice(0,2000)});
+   if(s.epoch!==e||!s.token)return;
+   if(r!==true)return fail(r==='locked'?'MAC_LOCKED':'MAC_UNAVAILABLE');
+   const text=await t.transcribe(Buffer.concat(v.chunks),v.mime,signal);if(this.session===s&&s.epoch===e)this.send(s,{t:'voice-text',id,text:text.slice(0,2000)});
   }catch(e){fail('TRANSCRIBE_FAILED',String((e as Error).message??'').slice(0,200));}
   finally{s.transcribing=false;}
  }
@@ -193,10 +198,11 @@ export class P2PHost{
   s.activeAt=this.now();s.paused=false;
   const secret=this.keep(s.token!);
   s.backend=this.opts.backend();
-  return this.serial(s,async()=>{
+  s.epoch++;
+  return this.serial(s,async e=>{
    // The phone needs the lock state before it shows the type field, not 2s later.
    s.locked=await s.backend!.ready(true).catch(()=>false)==='locked';
-   const f=await this.capture(s);this.send(s,{t:'auth-ok',locked:s.locked,width:f.width,height:f.height,resume:secret,...s.backend!.desktops?{desktops:true as const}:{},...this.opts.transcriber?{voice:this.opts.transcriber.engine}:{},idle:MAC_IDLE_MS});await this.sendFrame(s,f);});
+   const f=await this.capture(s);if(s.epoch!==e)return;this.send(s,{t:'auth-ok',locked:s.locked,width:f.width,height:f.height,resume:secret,...s.backend!.desktops?{desktops:true as const}:{},...this.opts.transcriber?{voice:this.opts.transcriber.engine}:{},idle:MAC_IDLE_MS});await this.sendFrame(s,f,e);});
  }
  /** A single failed screenshot is usually transient; retry briefly before giving up. */
  private async capture(s:Session){
@@ -206,18 +212,19 @@ export class P2PHost{
   }
  }
  /** Capture and act share one queue, so an input always runs against the frame its id names. */
- private serial(s:Session,job:()=>Promise<void>){
-  // No backend means paused: work queued before the pause is dropped.
-  s.queue=s.queue.then(async()=>{if(this.session!==s||!s.backend)return;try{await job();}catch(e){this.end(s,'DESKTOP_UNAVAILABLE',(e as Error).message);}});
+ private serial(s:Session,job:(epoch:number)=>Promise<void>){
+  // Jobs belong to the epoch they were queued in; work queued before a pause or a new login is dropped.
+  const e=s.epoch;
+  s.queue=s.queue.then(async()=>{if(this.session!==s||s.epoch!==e||!s.backend)return;try{await job(e);}catch(e){this.end(s,'DESKTOP_UNAVAILABLE',(e as Error).message);}});
   return s.queue;
  }
- private async sendFrame(s:Session,f:DesktopFrame){
-  if(this.session!==s)return;
+ private async sendFrame(s:Session,f:DesktopFrame,epoch:number){
+  if(this.session!==s||s.epoch!==epoch)return;
   s.frameId++;s.prev=s.frame;s.frame=f;const chunks=chunkFrame(s.frameId,f.width,f.height,f.jpeg);
   for(const c of chunks){
    // ponytail: polls bufferedAmount; switch to bufferedAmountLow events if 20ms granularity ever matters.
-   while(s.frames.bufferedAmount>MAX_BUFFERED){if(this.session!==s)return;await sleep(20);}
-   if(this.session!==s)return;
+   while(s.frames.bufferedAmount>MAX_BUFFERED){if(this.session!==s||s.epoch!==epoch)return;await sleep(20);}
+   if(this.session!==s||s.epoch!==epoch)return;
    s.frames.send(Buffer.from(c.buffer,c.byteOffset,c.byteLength));
   }
  }

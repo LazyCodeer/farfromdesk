@@ -69,7 +69,8 @@ function finish(kind,message){
 }
 paint({scene:'code',done:1,title:'Control your Mac'});say('Getting ready…');
 
-let pc=null,control=null,ended=false,authed=false,live=false,paused=false,offerId=null,aliveTimer=null,wake=null;
+// epoch: bumped on every pause, so a decode, tap or ack from before it can't land after it.
+let pc=null,control=null,ended=false,authed=false,live=false,paused=false,epoch=0,offerId=null,aliveTimer=null,wake=null;
 const send=m=>{if(!ended&&control?.readyState==='open')control.send(JSON.stringify(m));};
 
 function end(message,kind='failed'){
@@ -216,7 +217,9 @@ document.addEventListener('visibilitychange',()=>{
 // Screen off or page in the background: the Mac logs this phone out but keeps the connection.
 // Coming back needs the password, so whoever picks up this phone can't carry on from it.
 function pause(){
-  if(paused||!authed)return;paused=true;store.drop(KEEP);store.set(PAUSED,{at:Date.now()});send({t:'pause'});
+  if(paused||!authed)return;paused=true;epoch++;shown=null;
+  for(const w of waiting.values())w({ok:false,error:'ENDED'});waiting.clear();
+  store.drop(KEEP);store.set(PAUSED,{at:Date.now()});send({t:'pause'});
   // Wipe the picture, not just cover it: nothing of the Mac's screen stays on this phone while it is logged out.
   canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);previews.clear();$('session').classList.add('paused');
   stopVoice(true);clearInterval(idleTimer);$('idle').hidden=true;wake?.release().catch(()=>{});wake=null;parked=null;
@@ -242,10 +245,10 @@ let shown=null,parked=null;
 // Pull the next frame only while this page is visible, so a locked phone doesn't keep the Mac capturing.
 const pull=id=>{if(document.hidden)parked=id;else send({t:'ready',frameId:id});};
 async function onChunk(data){
-  const f=assembler.push(data);if(!f||ended)return;
-  let bmp;
-  try{bmp=await createImageBitmap(new Blob([f.jpeg],{type:'image/jpeg'}));}catch{pull(f.frameId);return;}
-  if(ended){bmp.close();return;}
+  const f=assembler.push(data);if(!f||ended||paused)return;
+  const e=epoch;let bmp;
+  try{bmp=await createImageBitmap(new Blob([f.jpeg],{type:'image/jpeg'}));}catch{if(e===epoch)pull(f.frameId);return;}
+  if(ended||paused||e!==epoch){bmp.close();return;}
   if(canvas.width!==bmp.width||canvas.height!==bmp.height){canvas.width=bmp.width;canvas.height=bmp.height;layout();}
   canvas.getContext('2d').drawImage(bmp,0,0);bmp.close();
   if(shown===null)liveStatus('Live','good');
@@ -289,14 +292,14 @@ function act(data){
   if(ended||!authed)return Promise.resolve(null);
   if(viewOnly&&POINTER.has(data.kind)){toast('View only is on. Turn it off to click or scroll.');return Promise.resolve(null);}
   if(shown===null){toast('Wait for the screen to appear.');return Promise.resolve(null);}
-  const frameId=shown;
+  const frameId=shown,e=epoch;
   return chain=chain.then(async()=>{
-    if(ended)return null;
+    if(ended||paused||e!==epoch)return null;
     const id=crypto.randomUUID();
     const ack=new Promise(r=>{waiting.set(id,r);setTimeout(()=>{if(waiting.delete(id))r({ok:false,error:'NO_REPLY'});},15_000);});
     send({t:'input',id,frameId,...data});
     const a=await ack;
-    if(!ended&&!a.ok&&a.error!=='ENDED')toast(explain(a.error));
+    if(!ended&&e===epoch&&!a.ok&&a.error!=='ENDED')toast(explain(a.error));
     return a;
   });
 }
