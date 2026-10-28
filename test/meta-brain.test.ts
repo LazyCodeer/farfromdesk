@@ -454,7 +454,7 @@ test('an excluded coordinator never gets the request: platform, alias, short nam
     for(const [i,[text,setup,pick]] of cases.entries()){
       setup();f.respond(async()=>pick());
       await f.router.receive({id:`wa:ex${i}`,text});
-      assert.equal(f.store.job(`wa:ex${i}`),undefined,text);assert.match(body(),/Please confirm: send this to .*Nothing was sent/,text);
+      assert.equal(f.store.job(`wa:ex${i}`),undefined,text);assert.match(body(),/Please clarify where this should go\. Did you mean .*Nothing was sent/,text);
     }
     // A coordinator-owned item, excluded by reference without any name.
     f.respond(async()=>decision());
@@ -462,46 +462,12 @@ test('an excluded coordinator never gets the request: platform, alias, short nam
     const item=f.store.itemOf('wa:item')!;assert.ok(f.store.job('wa:item'));
     f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
     await f.router.receive({id:'wa:ref',text:'Do not send this to the session that previously worked on this item.'});
-    assert.equal(f.store.job('wa:ref'),undefined);assert.match(body(),/as a follow-up to item #/);
-    // Any other answer drops the question, so a later "yes" sends nothing.
+    assert.equal(f.store.job('wa:ref'),undefined);assert.match(body(),/won't be filed under item #/);
+    // Nothing is held for a later "yes": it is a new message, and the stale question never sends.
     f.respond(async()=>({...decision(),intent:'chat',reply:'ok'}));
-    await f.router.receive({id:'wa:no',text:'leave it for now'});
     await f.router.receive({id:'wa:late',text:'yes'});
-    assert.equal(f.store.job('wa:ref'),undefined);assert.equal(f.store.job('wa:late'),undefined);
+    assert.equal(f.store.job('wa:ref'),undefined);assert.equal(f.store.job('wa:late'),undefined);assert.equal(f.store.get(`brain-confirm:${f.store.destination()}`),undefined);
   }finally{f.close();}
-});
-test('"yes" sends exactly the confirmed request to the named session, links its item, and only once',async()=>{
-  const f=fixture();try{
-    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
-    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
-    f.respond(async()=>({...decision(),sessionId:f.codex.id}));
-    await f.router.receive({id:'wa:named',text:'Payments API: add logging'});
-    assert.equal(f.store.job('wa:named'),undefined);assert.match(String((f.out().at(-1) as any).body),/send this to Payments API\?/);
-    await f.router.receive({id:'wa:yes',text:'Yes'});
-    assert.equal(f.store.job('wa:named')?.binding_id,worker.id);assert.equal(f.store.job('wa:named')?.body,'Payments API: add logging');
-    const item=f.store.itemOf('wa:named')!;assert.ok(item);assert.equal(f.store.job('wa:yes'),undefined);
-    await f.router.receive({id:'wa:yes2',text:'yes'});
-    assert.equal(f.store.jobs().filter(j=>j.binding_id===worker.id).length,1);
-    // A follow-up that names the item's session keeps the item link after confirmation (the /to advice lost it).
-    f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
-    await f.router.receive({id:'wa:follow',text:'Payments API, also log retries'});
-    assert.equal(f.store.job('wa:follow'),undefined);
-    await f.router.receive({id:'wa:yes3',text:'yes'});
-    assert.equal(f.store.job('wa:follow')?.binding_id,worker.id);assert.equal(f.store.itemOf('wa:follow'),item);
-  }finally{f.close();}
-});
-test('a confirmation never sends after it expires or after the session is paused or changed',async()=>{
-  for(const change of ['expired','paused','identity']){const f=fixture();try{
-    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
-    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
-    await f.router.receive({id:'wa:named',text:'Payments API: add logging'});
-    const key=`brain-confirm:${f.store.destination()}`,p=JSON.parse(f.store.get(key)!);
-    if(change==='expired')f.store.set(key,JSON.stringify({...p,expires:Date.now()-1}));
-    if(change==='paused')f.store.enable(worker.id,false);
-    if(change==='identity')f.store.set(key,JSON.stringify({...p,targetKey:'{"other":true}'}));
-    await f.router.receive({id:'wa:yes',text:'yes'});
-    assert.equal(f.store.job('wa:named'),undefined,change);assert.match(String((f.out().at(-1) as any).body),/Nothing was sent/,change);
-  }finally{f.close();}}
 });
 test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
   for(const by of ['Owner','codex-proxy',undefined]){

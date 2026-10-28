@@ -284,9 +284,6 @@ export class MetaBrain {
     if(prior){if(prior.original!==m.text||prior.destination!==this.store.destination())throw new Error('Owner event identity was reused.');if(prior.state==='interpreting')this.stop(m.id,'Interpretation was interrupted. No automatic retry was made; send a new message when ready.');return true;}
     this.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run(m.id,m.text,m.source??'text',this.store.destination(),Date.now());
     this.memory.synchronize();
-    // Any answer claims the pending question, so a later "yes" can never send it.
-    const asked=this.store.get(`brain-confirm:${this.store.destination()}`);
-    if(asked&&asked!=='null'){this.store.set(`brain-confirm:${this.store.destination()}`,'null');if(/^(?:yes|y|yes please|send it|confirm)[.!]?$/i.test(m.text.trim()))return this.confirm(router,m,JSON.parse(asked));}
     if(await this.localIntent(router,m))return true;
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
@@ -370,7 +367,7 @@ export class MetaBrain {
       const mentioned=this.memory.candidates(router).filter(b=>[this.label(b),b.alias].map(norm).some(n=>n&&n!=='codex'&&n!=='claude'&&hit(n)));
       if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
-      // next to destination words, is ambiguous: the owner confirms the exact session before anything is sent.
+      // next to destination words, is ambiguous: the owner is asked and nothing is sent.
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
       const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
       const destinationWord=/\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|codex|claude|anywhere|anyone|someone|elsewhere)\b|[发给派]/;
@@ -393,33 +390,13 @@ export class MetaBrain {
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
       if(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id))throw new Error('The owning session is not connected. Connect that exact session first.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
-      if(ambiguous){
-        this.store.set(`brain-confirm:${this.store.destination()}`,JSON.stringify({id:m.id,target:target.id,targetKey:JSON.stringify(c.registry.identity(target)),coordinator:coordinator.id,key:c.registry.identity(coordinator).key,topic:topic?`item:${topic.id}`:null,expires:Date.now()+10*60000}));
-        throw new Error(`Please confirm: send this to ${this.label(target)}${topic?` as a follow-up to item #${topic.id}`:''}? Reply yes within 10 minutes to send it. Otherwise say where it should go, or choose with /claude list or /codex list. Nothing was sent.`);
-      }
-    }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|confirm|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
+      // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
+      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);
+    }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
     this.send(router,m.id,m.text,target,coordinator,topic);
     return true;
   }
   private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}
-  /** "yes" sends exactly the request it answers, to the session and item it named, if nothing about them changed since. */
-  private confirm(router:Router,m:Incoming,p:{id:string;target:string;targetKey:string;coordinator:string;key:string;topic:string|null;expires:number}) {
-    const policy=brainPolicy(this.store),c=router.coordinator,original=this.get(p.id);
-    const target=this.store.binding(p.target),coordinator=this.store.binding(p.coordinator);
-    let topic:ReturnType<BrainMemory['resolve']>|undefined;
-    try {
-      if(!c||!original||original.state!=='clarification'||original.destination!==this.store.destination()||Date.now()>p.expires)throw new Error('That confirmation expired. Send the task again. Nothing was sent.');
-      if(!policy.allowRouting||router.stopped)throw new Error('Routing is paused or disabled. Nothing was sent.');
-      if(!target?.enabled||!coordinator?.enabled||JSON.stringify(c.registry.identity(target))!==p.targetKey||c.registry.identity(coordinator).key!==p.key||c.registry.entry(coordinator.id)?.key!==p.key)throw new Error('That session changed since you were asked. Send the task again. Nothing was sent.');
-      if(!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error('The selected platform is paused or denied by your routing policy.');
-      if(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target.id))throw new Error('The owning session is not connected. Connect that exact session first.');
-      if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
-      if(p.topic){topic=this.memory.resolve(p.topic);const stale=this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);}
-    }catch(e){this.stop(m.id,(e as Error).message);return true;}
-    this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
-    if(this.send(router,p.id,original.original,target,coordinator,topic))this.store.outputBrain(m.id,`Sent to ${this.label(target)}.`);
-    return true;
-  }
   private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>) {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
