@@ -116,9 +116,29 @@ class _DeskState extends State<Desk> {
       timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
       await WidgetsBinding.instance.endOfFrame;
       if (mounted && error == null) await api.reportReady();
+      unawaited(showUpdateOutcome());
     } catch (e) {
       if (mounted) setState(() => error = clean(e));
     }
+  }
+
+  Future<void> showUpdateOutcome() async {
+    Map<String, dynamic>? result;
+    try {
+      result = await api.updateOutcome();
+    } catch (_) {
+      return; // A missing/unreadable receipt must not break normal startup.
+    }
+    if (!mounted || result == null) return;
+    final outcome = result;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(outcome['phase'] == 'complete' ? 'Update complete' : 'Update needs attention'),
+        content: Text(outcome['message']?.toString() ?? 'Check the update status before retrying.'),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+      ),
+    );
   }
 
   String clean(Object e) => e.toString().replaceFirst('Bad state: ', '');

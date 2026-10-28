@@ -1,0 +1,116 @@
+name: Windows upgrade verification (no publish)
+on:
+  pull_request:
+    paths: ['src/*updater.ts', 'desktop/lib/native_gateway.dart', 'script/test_windows_upgrade.mjs', '.github/workflows/windows-upgrade.yml']
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: 'Local test build version, not a release'
+        required: true
+        default: '0.9.1'
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: windows-upgrade-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  upgrade:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      WSB_TARGET_ARCH: x86_64
+      FFD_CANDIDATE: ${{ inputs.candidate || '0.9.1' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - name: Validate test version
+        shell: pwsh
+        run: |
+          if ($env:FFD_CANDIDATE -notmatch '^0\.9\.[1-9][0-9]*$') { throw 'Choose an unpublished local test version above 0.9.0.' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.20.0', cache: npm}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with: {flutter-version: '3.47.7', channel: stable, cache: true}
+      - if: runner.os == 'Windows'
+        id: msys
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: UCRT64
+          install: make mingw-w64-ucrt-x86_64-gcc
+      - run: npm ci
+      - run: npm run check
+      - run: npx tsx --test test/app-updater.test.ts test/windows-updater.test.ts
+      - run: python -m unittest discover -s script/tests
+      - run: npm run test:portable
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install/install.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+          ./install/install.ps1 -DryRun
+      - run: flutter pub get
+        working-directory: desktop
+      - run: flutter build windows --release --build-name $env:FFD_CANDIDATE --build-number 9001 --dart-define=FFD_VERSION=$env:FFD_CANDIDATE
+        working-directory: desktop
+      - name: Restore pinned speech build cache
+        id: speech-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          key: speech-v1-windows-2022-${{ hashFiles('script/build_speech_runtime.py', 'script/speech_cpu/**') }}
+          path: |
+            build/speech-toolchain*
+            build/speech-runtime*
+      - name: Build bundled local speech
+        env:
+          FFD_MSYS_BASH: ${{ steps.msys.outputs.msys2-location }}/usr/bin/bash.exe
+        run: python script/build_speech_runtime.py
+      - name: Save compiled pinned speech tools
+        if: steps.speech-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          key: ${{ steps.speech-cache.outputs.cache-primary-key }}
+          path: |
+            build/speech-toolchain*
+            build/speech-runtime*
+      - run: npm run desktop:backend
+      - run: node script/smoke_desktop_backend.mjs
+      - run: node script/test_desktop_speech.mjs
+        timeout-minutes: 5
+      - name: Package local candidate
+        run: python script/package_desktop.py --version $env:FFD_CANDIDATE
+      - name: Fetch and verify the real previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/previous | Out-Null
+          gh release download v0.8.0 --repo LazyCodeer/farfromdesk --pattern 'FarFromDesk-0.8.0-windows-x64-setup.exe*' --dir build/previous
+          if ($LASTEXITCODE -ne 0) { throw 'Previous release download failed' }
+          $file = 'build/previous/FarFromDesk-0.8.0-windows-x64-setup.exe'
+          $sum = (Get-Content "$file.sha256" -Raw).Trim()
+          if ($sum -notmatch '^([a-fA-F0-9]{64})\s+\*?FarFromDesk-0\.8\.0-windows-x64-setup\.exe$') { throw 'Invalid checksum file' }
+          if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $Matches[1]) { throw 'Previous installer checksum mismatch' }
+      - name: Upgrade with the old UI and backend running
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          node script/test_windows_upgrade.mjs build/previous/FarFromDesk-0.8.0-windows-x64-setup.exe 0.8.0 "build/desktop-release/FarFromDesk-$env:FFD_CANDIDATE-windows-x64-setup.exe" $env:FFD_CANDIDATE
+          if ($LASTEXITCODE -ne 0) { throw 'Real Windows upgrade test failed' }
+      - name: Retain installer and test diagnostics (no account state)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-updater-candidate
+          path: |
+            build/desktop-release/*-setup.exe
+            build/desktop-release/*-setup.exe.sha256
+            build/desktop-release/manifest-windows-x64.json
+            build/windows-upgrade-evidence/*.json
+            build/windows-upgrade-evidence/*.log
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn

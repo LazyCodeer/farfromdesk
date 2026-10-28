@@ -14,7 +14,27 @@ The authenticated update-shutdown endpoint is administrator-only. The installed 
 
 Checks retain the existing six-hour cache, manual rate limit and small public GitHub metadata request. No provider credentials, messages or machine identifiers are sent. Offline/error responses are not reported as proof that the app is up to date.
 
-Local versions such as `0.7.1-local.2023` treat `0.7.1` as their public baseline: they do not offer the same public version or previews, and can upgrade to a newer stable core version. Preview builds retain semantic ordering. macOS uses ZIP for automatic installation. Windows and Linux still use their explicit manual download flow; unattended installation on those platforms is not implemented here.
+Local versions such as `0.7.1-local.2023` treat `0.7.1` as their public baseline: they do not offer the same public version or previews, and can upgrade to a newer stable core version. Preview builds retain semantic ordering. macOS uses ZIP for automatic installation. Windows x64 EXE installations use the Windows flow below. Linux and portable Windows ZIP installations require a manual update.
+
+## Windows EXE updates
+
+The native Windows UI offers **Update and restart** for an official x64 EXE release. It copies the updater modules and bundled Node executable to a unique directory under the user's saved state before starting the helper. Neither the updater executable nor its working directory lives in the installation being replaced. This avoids the previous problem where the application or backend kept files locked during setup.
+
+The helper checks that the running UI and backend belong to the same existing, per-user Inno installation, with one matching uninstall entry and the expected old build identity. Multiple open copies, a portable installation, linked folders and mismatched registry paths fail before shutdown. Downloads use the existing bounded HTTPS and SHA-256 checks; the shipped CLI has no custom-feed or local-package override. Unsigned releases still rely on the official GitHub release and checksum channel, not independent publisher signing.
+
+After downloading, the authenticated shutdown endpoint refuses active requests, pending approvals or session creation. The helper waits for the backend to exit, copies the application and request database into the attempt's recovery directory, then sends a normal window-close request to the exact UI process after rechecking its start time and executable. It waits for that process to exit too. It never uses a blanket process kill or automatically answers a native prompt.
+
+The verified EXE runs with the existing installation directory, suppressed installer wizard, no forced application closing, and no automatic reboot. The existing AppId remains unchanged. The helper verifies the resulting uninstall entry, build version and revision, reopens the app with the same saved-state location, and checks authenticated backend health against that version and revision. The restarted UI displays the saved completion or error result. This check confirms backend startup, not reconnection to every messaging provider.
+
+Failures before installer execution leave the original installation in place. If its UI is still open, it reconnects to the original backend; if it exited, the helper reopens it. Once the installer runs, a failure or uncertain outcome retains the installer log, previous application and database snapshot. It does not replay the installer or restore a database that could contain older requests. Code 3010 asks the owner to restart Windows. A stalled helper retains its lock for diagnosis rather than allowing a competing update. Recovery files contain private account data and must not be uploaded as public artifacts.
+
+### Verification
+
+`test/windows-updater.test.ts` exercises installation identity, package selection, shutdown ordering, process-exit failures, installer errors and startup failure. Flutter tests cover the restart outcome dialog and existing explicit-click/progress flow. These tests do not prove a native Windows upgrade works.
+
+The no-publish workflow `.github/workflows/windows-upgrade.yml` builds a disposable candidate and verifies the published v0.8.0 EXE's checksum. `script/test_windows_upgrade.mjs` installs that older release into a disposable folder, starts the actual native UI and backend with synthetic account state, enables background forwarding, then runs the real updater against the candidate. Only release transport is supplied by the test; installation, registry checks, native window closing, process waiting, restart and authenticated health are real. Assertions cover the new build, saved connection record and request history, preferences, unchanged admin token, database backup and Start menu shortcut target. The harness refuses an account with an existing installation. Run it in a disposable Windows user/runner, never over an owner's app.
+
+The native Windows test must pass before shipping this change. Versions through 0.9.0 contain the manual Windows download flow; they need one manual upgrade to acquire the in-app updater.
 
 Already-installed builds containing only the download notifier need one update to acquire this functionality. A future published compatible release is required to exercise a real production upgrade. Local checks use mocked HTTP, disposable files/app bundles, real macOS sandboxed ZIP extraction and native packaged-app smoke testing; they do not invent a release or downgrade the user's app.
 

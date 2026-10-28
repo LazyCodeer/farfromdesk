@@ -16,6 +16,7 @@ abstract class Gateway {
   Future<void> setStartup(bool enabled);
   Future<void> previewFlow(String flow) async {}
   Future<void> reportReady() async {}
+  Future<Map<String, dynamic>?> updateOutcome() async => null;
   Future<UpdateCheck> checkUpdates({bool manual = false}) async =>
       const UpdateCheck();
   Future<void> openReleasePage(Uri uri) async {}
