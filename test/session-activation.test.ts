@@ -4,7 +4,7 @@ import { mkdtempSync,rmSync,realpathSync,symlinkSync,mkdirSync,unlinkSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { SessionActivation,codexDesktopUrl } from '../src/session-activation.js';
+import { SessionActivation,codexDesktopUrl,CLAUDE_DESKTOP_READY_TIMEOUT_MS,DesktopReadinessError } from '../src/session-activation.js';
 import type { Session } from '../src/session-catalog.js';
 
 test('Codex opening and queue wake target only the exact existing thread',()=>{
@@ -61,5 +61,24 @@ test('existing project aliases reopen correctly, but a retargeted alias stops ac
   assert.equal((await activation.ready(saved)).cwd,project);assert.equal(opens,1);
   unlinkSync(alias);symlinkSync(other,alias);
   await assert.rejects(activation.ready(saved),/account or project changed/);assert.equal(opens,1);
+ }finally{f.close();}
+});
+
+
+test('a slow Desktop inbox is still awaited past the old 20-second deadline without another open',async()=>{
+ const f=fixture();try {
+  let now=0,opens=0;
+  const clock={now:()=>now,sleep:async(ms:number)=>{now+=ms;}};
+  const activation=new SessionActivation(f.store,async()=>[{...f.saved,...(now>=45_000?{activation:undefined,live:true}:{})}],async()=>{opens++;},undefined,clock);
+  const session=await activation.ready(f.saved);
+  assert.equal(CLAUDE_DESKTOP_READY_TIMEOUT_MS,180_000);assert.equal(session.live,true);assert.equal(now,45_000);assert.equal(opens,1);
+ }finally{f.close();}
+});
+test('readiness expires at the bounded window with a definitely-not-submitted error',async()=>{
+ const f=fixture();try {
+  let now=0,opens=0;
+  const activation=new SessionActivation(f.store,async()=>[f.saved],async()=>{opens++;},undefined,{now:()=>now,sleep:async(ms:number)=>{now+=ms;}});
+  await assert.rejects(activation.ready(f.saved),e=>e instanceof DesktopReadinessError&&e.notSubmitted&&/No task was sent/.test(e.message));
+  assert.equal(now,180_000);assert.equal(opens,1);
  }finally{f.close();}
 });

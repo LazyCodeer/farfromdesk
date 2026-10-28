@@ -26,6 +26,8 @@ class NativeGateway extends Gateway {
       port = int.parse(Platform.environment['WSB_PORT'] ?? '47831');
   @override
   String get platform => Platform.operatingSystem;
+  @override
+  String get computerName => Platform.localHostname;
   static String stateDirectory() {
     final e = Platform.environment;
     if (e['WSB_STATE_DIR'] != null) return e['WSB_STATE_DIR']!;

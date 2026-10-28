@@ -1,6 +1,6 @@
 // Diagnostics deliberately exclude message content, arbitrary paths and provider errors.
 export type RequestOutcome='done'|'blocked'|'reviewed'|'cancelled';
-export type ReplyContext={options?:import('./message-options.js').MessageOptions;requestId?:string;kind?:'progress'|'final'|'hook'|'system';turnId?:string;outcome?:RequestOutcome;origin?:'agent'|'hook'|'system'};
+export type ReplyContext={plain?:true;options?:import('./message-options.js').MessageOptions;requestId?:string;kind?:'progress'|'final'|'hook'|'system';turnId?:string;outcome?:RequestOutcome;origin?:'agent'|'hook'|'system'};
 export type VoiceStage='download'|'decode'|'transcribe'|'route';
 export type VoiceStageEvent={stage:VoiceStage;state:'started'|'completed'|'failed';durationMs?:number;code?:string;audioSeconds?:number;engine?:string;model?:string};
 export function errorCode(error:unknown) {
@@ -16,7 +16,7 @@ export function errorCode(error:unknown) {
   if(/session.*(?:paused|missing)|selected session changed|not been connected/i.test(text))return 'routing_unavailable';
   return 'unknown';
 }
-const codes=new Set(['configuration_missing','authentication_required','timeout','cancelled','no_speech','integrity_failed','unsupported_format','permission_required','routing_unavailable','unknown']);
+const codes=new Set(['configuration_missing','authentication_required','timeout','cancelled','no_speech','integrity_failed','unsupported_format','permission_required','routing_unavailable','provider_rejected','provider_unavailable','invalid_response','unknown']);
 export function safeEventDetails(input:Record<string,unknown>={}) {
   const result:Record<string,string|number|boolean>={};
   for(const key of ['durationMs','audioSeconds','inputTokens','outputTokens','costUsd']) {

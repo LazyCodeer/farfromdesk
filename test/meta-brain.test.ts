@@ -11,6 +11,7 @@ import { Approvals } from '../src/approvals.js';
 import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
+import { BrainMemory } from '../src/brain-memory.js';
 
 const decision=(provider:Interpretation['provider']='unspecified',normalized='Corrected wording'):Interpretation=>({intent:'task',provider,normalized,taskIds:[]});
 const call=(name:string,args:unknown,id='call_1')=>new Response(JSON.stringify({id:'r',created:0,model:'muse-spark-1.3',choices:[{index:0,finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]}}]}),{headers:{'content-type':'application/json'}});
@@ -75,7 +76,7 @@ test('task, transport evidence and owner verification persist through restart',a
   }finally{f.close();}
 });
 test('status selects saved evidence, ignores fabricated task IDs and scopes recipient routes',async()=>{
-  const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/Fix it: in progress.*queued/);
+  const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/Fix it \(codex-proxy\): in progress, queued/);
     await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task)/);
   }finally{f.close();}
 });
@@ -226,6 +227,23 @@ test('exact owner session pause/resume is durable and does not switch messaging 
     f.store.db.prepare('DELETE FROM seen WHERE id=?').run('wa:pause');await f.router.receive({id:'wa:pause',text:'Pause session invoice-worker'});assert.equal(f.store.binding(worker.id)?.enabled,1);
   }finally{f.close();}
 });
+test('"pause the NAME session" works and a paused coordinator can resume itself',async()=>{
+  const f=fixture();try{
+    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});f.store.set(`name:${f.claude.id}`,'Mobile app');
+    f.respond(async()=>({...decision(),intent:'manage',operation:'pause_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:pause-c',text:'pause the Mobile app session'});assert.equal(f.store.binding(f.claude.id)?.enabled,0);
+    f.respond(async()=>({...decision(),intent:'manage',operation:'resume_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:resume-c',text:'resume session Mobile app'});assert.equal(f.store.binding(f.claude.id)?.enabled,1);
+  }finally{f.close();}
+});
+test('a rejected key tells the owner to replace it',async()=>{
+  const f=fixture();try{
+    f.respond(async()=>{throw Object.assign(new Error('Meta interpretation unavailable.'),{code:'authentication_required'});});
+    await f.router.receive({id:'wa:badkey',text:'Fix invoice export'});
+    assert.match(String((f.out().at(-1) as any).body),/Meta rejected your API key/);assert.equal(f.store.jobs().length,0);
+    assert.match(String((f.store.db.prepare("SELECT details FROM request_events WHERE request_id='wa:badkey' AND event='brain_interpretation_failed'").get() as any).details),/authentication_required/);
+  }finally{f.close();}
+});
 test('missing key and failed API use legacy routing with the new default policy',async()=>{
   for(const mode of ['missing','timeout']) {const f=fixture();try{
     saveBrainConfig(f.store,f.secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex','claude']}});
@@ -373,6 +391,117 @@ test('brain wording is used only for chat and clarify, never dispatching work',a
 test('Meta request asks for low reasoning effort and allows chat replies',async()=>{
   let body:any;const model=new MetaModel((async(_u,init)=>{body=JSON.parse(init!.body as string);return call('decide',{...decision(),intent:'chat',reply:'Hi.'});}) as typeof fetch);
   const r=await model.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]});
-  assert.equal(r.reply,'Hi.');assert.equal(body.reasoning_effort,'low');assert.equal(body.tool_choice,'required');assert.ok(body.tools[0].function.parameters.properties.intent.enum.includes('chat'));
+  assert.equal(r.reply,'Hi.');assert.equal(body.reasoning_effort,'low');assert.equal(body.tool_choice,'auto');assert.ok(body.tools[0].function.parameters.properties.intent.enum.includes('chat'));
+});
+test('a rejected Meta request records a safe failure code, never the provider text',async()=>{
+  const rejected=new MetaModel((async()=>new Response(JSON.stringify({error:{message:'only "auto" is supported for tool_choice'}}),{status:400})) as typeof fetch);
+  await assert.rejects(rejected.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]}),(e:any)=>e.code==='provider_rejected'&&!/tool_choice/.test(e.message));
+  const down=new MetaModel((async()=>new Response('{}',{status:503})) as typeof fetch);
+  await assert.rejects(down.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]}),(e:any)=>e.code==='provider_unavailable');
 });
 
+test('status quotes what a blocked session asked, and the owner answer moves it back to in progress',async()=>{
+  const f=fixture(decision('codex'));try{
+    await f.router.receive({id:'wa:t1',text:'Codex, fix the export'});
+    f.store.jobState('wa:t1','completed',null,'blocked');
+    const owner=f.store.binding(f.store.job('wa:t1')!.binding_id)!;
+    f.store.output(owner,'Which format do you want, CSV or XLSX?',undefined,f.store.destination(),{requestId:'wa:t1',kind:'final',origin:'agent',outcome:'blocked'});
+    f.respond(async()=>({...decision(),intent:'status',taskIds:['item:1']}));
+    await f.router.receive({id:'wa:s1',text:'Does anything need me?'});
+    assert.match(String((f.out().at(-1) as any).body),/Codex, fix the export \(\S+\): blocked\. It asked: "Which format do you want, CSV or XLSX\?"/);
+    f.respond(async()=>({...decision(),taskIds:['item:1']}));
+    await f.router.receive({id:'wa:a1',text:'CSV please'});
+    assert.equal(f.store.job('wa:a1')?.binding_id,owner.id);
+    assert.equal((f.store.db.prepare('SELECT status FROM items WHERE id=1').get() as any).status,'in progress');
+  }finally{f.close();}
+});
+test('an unassigned item goes to the session the owner names, and a named platform must match it',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    new BrainMemory(f.store).add('wa:todo','add retry to the webhook');
+    f.respond(async()=>({...decision(),taskIds:['item:1'],sessionId:worker.id}));
+    await f.router.receive({id:'wa:own',text:'Payments API: do the webhook retry'});
+    assert.equal(f.store.job('wa:own')?.binding_id,worker.id);
+    assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,worker.id);
+    f.respond(async()=>({...decision('codex'),taskIds:[],sessionId:worker.id}));
+    await f.router.receive({id:'wa:plat',text:'Payments API, codex should add a new endpoint'});
+    assert.equal(f.store.job('wa:plat'),undefined);assert.match(String((f.out().at(-1) as any).body),/another platform/);
+  }finally{f.close();}
+});
+test('an excluded session never gets the request, even when the model names it',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    f.respond(async()=>({...decision(),sessionId:worker.id}));
+    const texts=['Do not send this to Payments API. Ask the coordinator to inspect the webhook.','don\'t give "Payments API" this one','Never use payments api for this','Everyone except Payments API should look','Ask the coordinator, not Payments API','Use the coordinator instead of PAYMENTS API','Keep it away from payments api, no changes there',
+      'Avoid Payments API for this task','Do not send to:\nPayments API','Do not send to:\n"Payments API"','Anyone other than Payments API should inspect the webhook','Don\u2019t send this to Payments API','Tell the coordinator about payments api'];
+    for(const [i,text] of texts.entries()){
+      await f.router.receive({id:`wa:x${i}`,text});
+      assert.equal(f.store.job(`wa:x${i}`),undefined,text);
+    }
+    await f.router.receive({id:'wa:ok',text:'Payments API: add logging. Do not touch the database.'});
+    assert.equal(f.store.job('wa:ok')?.binding_id,worker.id);
+    await f.router.receive({id:'wa:ok2',text:'send the payments api session: add retry'});
+    assert.equal(f.store.job('wa:ok2')?.binding_id,worker.id);
+    const inc=f.store.register('payments-inc','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${inc.id}`,'Payments API. Inc');f.store.set('selected',JSON.stringify([inc.id]));
+    f.respond(async()=>({...decision(),sessionId:inc.id}));
+    await f.router.receive({id:'wa:inc',text:'Do not send this to Payments API. Inc'});
+    assert.equal(f.store.job('wa:inc'),undefined);
+    await f.router.receive({id:'wa:inc2',text:'Payments API. Inc: add logging'});
+    assert.equal(f.store.job('wa:inc2')?.binding_id,inc.id);
+  }finally{f.close();}
+});
+test('a session mentioned only to exclude it gets nothing, and casing or quotes still route a real request',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    await f.router.receive({id:'wa:not',text:'Do not send this to Payments API. Ask the coordinator to inspect the webhook.'});
+    assert.equal(f.store.job('wa:not'),undefined);assert.match(String((f.out().at(-1) as any).body),/mentions Payments API/);
+    f.respond(async()=>({...decision(),sessionId:randomUUID()}));
+    await f.router.receive({id:'wa:other',text:'payments api, check the logs'});
+    assert.equal(f.store.job('wa:other'),undefined);
+    f.respond(async()=>({...decision(),sessionId:worker.id}));
+    await f.router.receive({id:'wa:caps',text:'"PAYMENTS API": add logging to the webhook'});
+    assert.equal(f.store.job('wa:caps')?.binding_id,worker.id);
+  }finally{f.close();}
+});
+test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
+  for(const by of ['Owner','codex-proxy',undefined]){
+    const f=fixture(decision('codex'));try{
+      await f.router.receive({id:'wa:b1',text:'Codex, fix the export'});
+      new BrainMemory(f.store).items.setStatus(1,'blocked',by);
+      f.respond(async()=>({...decision(),taskIds:['item:1']}));
+      await f.router.receive({id:'wa:b2',text:'try again with CSV'});
+      assert.equal((f.store.db.prepare('SELECT status FROM items WHERE id=1').get() as any).status,'blocked',String(by));
+    }finally{f.close();}
+  }
+});
+test('a connected worker session is visible to the brain before its first task',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set('selected',JSON.stringify([worker.id]));
+    assert.ok(new BrainMemory(f.store).candidates(f.router).some(b=>b.id===worker.id));
+  }finally{f.close();}
+});
+test('a plain-text Meta answer is retried once before failing',async()=>{
+  let n=0;const text=()=>new Response(JSON.stringify({id:'r',created:0,model:'m',choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'Hello!'}}]}),{headers:{'content-type':'application/json'}});
+  const model=new MetaModel(async()=>++n===1?text():call('decide',decision()));
+  assert.deepEqual(await model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Hello',source:'text',tasks:[]}),decision());assert.equal(n,2);
+});
+test('a session named in the owner\'s words gets the task, and two names ask first',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    const other=f.store.register('billing-ui','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set(`name:${other.id}`,'Billing UI');f.store.set('selected',JSON.stringify([worker.id,other.id]));
+    f.respond(async()=>({...decision(),sessionId:worker.id}));
+    await f.router.receive({id:'wa:named',text:'send the payments api session: add retry to the webhook'});
+    assert.equal(f.store.job('wa:named')?.binding_id,worker.id);
+    await f.router.receive({id:'wa:two',text:'payments api and billing ui both need this'});
+    assert.equal(f.store.job('wa:two'),undefined);assert.match(String((f.out().at(-1) as any).body),/more than one session/);
+    f.respond(async()=>({...decision(),taskIds:['item:1'],sessionId:other.id}));
+    await f.router.receive({id:'wa:moved',text:'Billing UI: take the webhook retry'});
+    assert.equal(f.store.job('wa:moved'),undefined);assert.match(String((f.out().at(-1) as any).body),/belongs to another session/);
+  }finally{f.close();}
+});

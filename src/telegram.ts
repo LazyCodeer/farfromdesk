@@ -1,3 +1,4 @@
+import { TELEGRAM_COMMANDS, telegramCommand } from './owner-commands.js';
 import { optionsMarkup } from './message-options.js';
 import { randomBytes, createHash } from 'node:crypto';
 import { constants, existsSync, openSync, closeSync, fstatSync, readFileSync, writeFileSync, fchmodSync, ftruncateSync, mkdirSync, unlinkSync } from 'node:fs';
@@ -30,10 +31,11 @@ export function telegramHTML(text:string) {
 }
 
 type Candidate={id:number;name:string};
+type Pairing={botId:number;secret:string;expires:number;candidate?:Candidate};
 export class Telegram {
-  status='disconnected'; error?:string; closed=true;
+  status='disconnected'; error?:string; menuError?:string; closed=true;
   private token?:string; private bot?:{id:number;username:string};
-  private pairing?:{secret:string;expires:number;candidate?:Candidate};
+  private pairing?:Pairing;
   private controller?:AbortController; private timer?:NodeJS.Timeout;
   private flushing=false; private configuring=false; private generation=0;
   private media=new Set<AbortController>();
@@ -54,21 +56,33 @@ export class Telegram {
     try{const s=fstatSync(fd);if(!s.isFile()||s.nlink!==1)throw new Error('Invalid token file.');fchmodSync(fd,0o600);ftruncateSync(fd,0);writeFileSync(fd,token);
     }finally{closeSync(fd);}
   }
+  private pendingPairing(botId:number):Pairing {
+    const now=Date.now();
+    try {
+      const saved=JSON.parse(this.store.get('telegram-pairing')??'null') as Pairing|null;
+      if(saved?.botId===botId&&typeof saved.secret==='string'&&/^[A-Za-z0-9_-]{32}$/.test(saved.secret)&&Number.isFinite(saved.expires)&&saved.expires>=now&&saved.expires<=now+600000&&(!saved.candidate||(validId(saved.candidate.id)&&typeof saved.candidate.name==='string'&&saved.candidate.name.length<=80)))return saved;
+    } catch { /* Invalid pending state is replaced, never accepted as an owner. */ }
+    const pairing={botId,secret:randomBytes(24).toString('base64url'),expires:now+600000};
+    this.store.set('telegram-pairing',JSON.stringify(pairing));return pairing;
+  }
+  private clearPairing() {
+    this.pairing=undefined;this.store.db.prepare("DELETE FROM settings WHERE key='telegram-pairing'").run();
+  }
   switchState():'none'|'setup'|'saved'|'connected' {
     if(this.status==='connected')return 'connected';
     if(this.store.get('telegram-bot-id')||existsSync(this.path))return this.store.get('telegram-owner')?'saved':'setup';
     return this.configuring||this.pairing?'setup':'none';
   }
   view() {
-    if(this.pairing&&Date.now()>this.pairing.expires){this.pairing=undefined;if(!this.store.get('telegram-owner'))this.status='pairing expired';}
-    return {status:this.status,error:this.error,configured:!!this.store.get('telegram-bot-id'),username:this.bot?.username??this.store.get('telegram-username'),ownerId:this.store.get('telegram-user-id'),ownerName:this.store.get('telegram-owner-name'),
+    if(this.pairing&&Date.now()>this.pairing.expires){this.clearPairing();if(!this.store.get('telegram-owner'))this.status='pairing expired';}
+    return {status:this.status,error:this.error??this.menuError,menuError:this.menuError,configured:!!this.store.get('telegram-bot-id'),username:this.bot?.username??this.store.get('telegram-username'),ownerId:this.store.get('telegram-user-id'),ownerName:this.store.get('telegram-owner-name'),
       ...(this.pairing?{pairingUrl:`https://t.me/${this.bot!.username}?start=${this.pairing.secret}`,expiresAt:this.pairing.expires,candidate:this.pairing.candidate}:{}),
       maxDownloadBytes:TELEGRAM_DOWNLOAD_BYTES,maxDocumentBytes:TELEGRAM_DOCUMENT_BYTES};
   }
   private async call(method:string,body:Record<string,unknown>|FormData={},signal?:AbortSignal,token=this.token) {
     if(!token)throw new TelegramError(401);
     try {
-      const res=await this.fetcher(`https://api.telegram.org/bot${token}/${method}`,{method:'POST',headers:body instanceof FormData?undefined:{'Content-Type':'application/json'},body:body instanceof FormData?body:JSON.stringify(body),redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(method==='getUpdates'?35000:['getMe','getWebhookInfo','getFile'].includes(method)?15000:60000),...(signal?[signal]:[])])});
+      const res=await this.fetcher(`https://api.telegram.org/bot${token}/${method}`,{method:'POST',headers:body instanceof FormData?undefined:{'Content-Type':'application/json'},body:body instanceof FormData?body:JSON.stringify(body),redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(method==='getUpdates'?35000:['getMe','getWebhookInfo','getFile','setMyCommands'].includes(method)?15000:60000),...(signal?[signal]:[])])});
       const data:any=await res.json();
       if(!res.ok||data.ok!==true)throw new TelegramError(Number(data.error_code)||res.status,Math.min(3600,Math.max(1,Number(data.parameters?.retry_after)||1)));
       return data.result;
@@ -88,8 +102,10 @@ export class Telegram {
       if(generation!==this.generation)return;
       this.saveToken(token);this.token=token;this.bot={id:bot.id,username:bot.username};
       this.store.set('telegram-bot-id',String(bot.id));this.store.set('telegram-username',bot.username);
-      if(!this.store.get('telegram-owner'))this.pairing={secret:randomBytes(24).toString('base64url'),expires:Date.now()+600000};
+      if(!this.store.get('telegram-owner'))this.pairing=this.pendingPairing(bot.id);else this.clearPairing();
       this.status=this.store.get('telegram-owner')?'connected':'pairing';this.closed=false;this.controller=new AbortController();
+      await this.call('setMyCommands',{commands:TELEGRAM_COMMANDS,scope:{type:'all_private_chats'}},this.controller.signal).then(()=>{this.menuError=undefined;}).catch(()=>{this.menuError='Telegram command menu could not be updated. Typed commands still work.';});
+      if(generation!==this.generation)return;
       this.timer=setInterval(()=>{void this.flush();},1500);this.timer.unref();
       void this.poll(this.controller.signal);
     }catch(e){if(generation===this.generation){this.status='disconnected';this.error=e instanceof TelegramError?e.message:e instanceof Error?e.message:'Telegram connection failed.';}throw e;}
@@ -101,13 +117,13 @@ export class Telegram {
     const owner=telegramDestination(this.bot.id,p.candidate.id);
     this.store.set('telegram-user-id',String(p.candidate.id));this.store.set('telegram-owner-name',p.candidate.name);this.store.set('telegram-owner',owner);
     this.store.set('telegram-paired-at',String(Math.floor(Date.now()/1000)));
-    this.pairing=undefined;this.status='connected';this.error=undefined;
+    this.clearPairing();this.status='connected';this.error=undefined;
     this.store.output(undefined,'✅ *Connected*\nYour Telegram account is linked. Ask me to show your sessions or check your work.',`telegram-paired:${randomBytes(8).toString('hex')}`,owner);
     return this.view();
   }
   close() {++this.generation;this.closed=true;this.controller?.abort();clearInterval(this.timer);this.timer=undefined;for(const c of this.media)c.abort();}
   disconnect() {
-    ++this.generation;this.close();this.pairing=undefined;this.token=undefined;this.bot=undefined;
+    ++this.generation;this.close();this.clearPairing();this.token=undefined;this.bot=undefined;
     try{unlinkSync(this.path);}catch(e:any){if(e.code!=='ENOENT')throw new Error('Could not remove the Telegram token.');}
     for(const key of ['telegram-bot-id','telegram-username','telegram-user-id','telegram-owner-name','telegram-owner','telegram-paired-at'])this.store.db.prepare('DELETE FROM settings WHERE key=?').run(key);
     this.status='disconnected';this.error=undefined;
@@ -141,15 +157,31 @@ export class Telegram {
     }
     const m=update?.message;
     if(this.closed||!this.bot||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(m.from?.id)||m.from.is_bot||m.chat.id!==m.from.id||!validId(m.message_id))return;
-    const text=typeof m.text==='string'?m.text:'';
-    const p=this.pairing;
-    if(p&&!p.candidate&&Date.now()<=p.expires&&text===`/start ${p.secret}`){p.candidate={id:m.from.id,name:String(m.from.first_name??'Telegram account').replace(/[\x00-\x1f]/g,' ').slice(0,80)};return;}
-    const destination=telegramDestination(this.bot.id,m.chat.id);
-    if(this.router.stopped||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner')||!Number.isFinite(m.date)||m.date<Number(this.store.get('telegram-paired-at')??0))return;
+    let text=typeof m.text==='string'?m.text:'';
+    const ownerIntent=!m.reply_to_message&&!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.quote&&!m.via_bot&&!m.document&&!m.photo;
+    const ownerCommand=ownerIntent&&!m.voice;
     const id=telegramMessageId(this.bot.id,m.chat.id,m.message_id);
     if(this.store.seen(id))return;
+    if(!this.store.get('telegram-owner')&&ownerCommand){
+      const normalized=telegramCommand(text,this.bot.username);
+      const start=normalized===null?null:/^\/start(?:\s+([\s\S]*))?$/.exec(normalized.trim());
+      if(start){
+        const p=this.pairing;
+        if(p&&Date.now()<=p.expires&&start[1]===p.secret){
+          if(!p.candidate){p.candidate={id:m.from.id,name:String(m.from.first_name??'Telegram account').replace(/[\x00-\x1f]/g,' ').slice(0,80)};this.store.set('telegram-pairing',JSON.stringify(p));}
+        }else{
+          // Optional guidance must not pin the polling offset ahead of the owner's real /start.
+          this.store.remember(id);
+          await this.call('sendMessage',{chat_id:m.chat.id,text:start[1]?'This pairing link is out of date. Open the newest link from the FarFromDesk app.':'Open the pairing link from the FarFromDesk app.'},this.controller?.signal).catch(()=>{});
+        }
+        this.store.remember(id);return;
+      }
+    }
+    const destination=telegramDestination(this.bot.id,m.chat.id);
+    if(this.router.stopped||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner')||!Number.isFinite(m.date)||m.date<Number(this.store.get('telegram-paired-at')??0))return;
     const quotedId=m.reply_to_message?.from?.id===this.bot.id&&validId(m.reply_to_message?.message_id)?telegramMessageId(this.bot.id,m.chat.id,m.reply_to_message.message_id):undefined;
-    const incoming:Incoming={id,text:text==='/start'?'Show my recent sessions':text,quotedId};
+    if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
+    const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice&&!m.document&&!m.photo};
     await this.store.destinationContext.run(destination,async()=>{
       const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
@@ -175,14 +207,14 @@ export class Telegram {
   }
   private async processMedia(m:any,incoming:Incoming,file:any,destination:string,signal:AbortSignal) {
     let downloaded:DownloadedMedia|undefined;const voice=!!m.voice,table=voice?'audio_inbox':'media_inbox';
-    const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected')]);const original=routing();
+    const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected'),this.store.get(`owner-target:${destination}`),this.store.get(`direct:${destination}`)]);const original=routing();
     try {
       if(voice){
         this.store.output(undefined,voiceEngine(this.store)==='local'?'Voice note received. I’m transcribing it locally on your computer.':'Voice note received. I’m transcribing it with your configured speech provider.',`audio-progress:${incoming.id}`,destination);
         const text=await this.transcribe(this.store,{mimetype:file.mime_type??'audio/ogg',seconds:file.duration,fileLength:file.file_size},signal,e=>this.store.voiceEvent(incoming.id,e),async()=>this.download(file,'voice.bin',signal));
         if(routing()!==original)throw new Error('The selected session changed. Resend to the intended session.');
         if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions.');
-        incoming={...incoming,text,source:'voice'};
+        incoming={...incoming,text,source:'voice',ownerCommand:false};
       }else{
         incoming={...incoming,text:typeof m.caption==='string'?m.caption:''};
       }

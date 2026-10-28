@@ -5,6 +5,7 @@ import { brainPolicy, brainView, MetaSecret } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
 import { mentionedItems } from './owner-routing.js';
 import { OwnerMemory } from './owner-memory.js';
+import { errorCode } from './request-events.js';
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
@@ -165,7 +166,10 @@ export class MetaBrain {
       const observed=native&&Date.now()-native.at<30000?(native.status==='interrupted'?'Native turn interrupted; no automatic retry':native.status==='failed'?'Native turn failed; check the session':native.status==='completed'?'Native turn ended; no recorded answer':undefined):undefined;
       const approval=latest&&[...router.approvals.pending.values()].some(p=>p.binding.id===latest.binding_id);
       const stale=this.memory.attention(i);if(stale)return stale;
-      return `#${i.id} ${i.title}: ${i.status}${i.session?`; ${i.session}`:''}. ${approval?'Waiting for your native approval':observed??i.executionState}.`;
+      const b=this.store.binding(String(latest?.binding_id??i.binding_id)),session=b?` (${this.store.get(`name:${b.id}`)??b.alias})`:'';
+      const asked=latest?.outcome==='blocked'?this.store.get(`blocked-text:${latest.id}`):undefined;
+      const state=approval?'waiting for your native approval':observed??i.executionState;
+      return `#${i.id} ${i.title.slice(0,80)}${session}: ${i.status}${state===i.status?'':`, ${state}`}.${asked?` It asked: "${asked}"`:''}`;
     }).join('\n')||'No matching tracked tasks.';
   }
   /** Fast paths are literal, read-only owner intents. They never reinterpret consent. */
@@ -271,7 +275,7 @@ export class MetaBrain {
       }catch(e){this.store.db.exec('ROLLBACK TO brain_watch; RELEASE brain_watch');throw e;}
     }
   }
-  async handle(router:Router,m:Incoming):Promise<boolean> {
+  async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
     const policy=brainPolicy(this.store);
     if(!policy.enabled)return false;
     // IDs from internal delegation/reports cannot masquerade as owner input.
@@ -285,21 +289,25 @@ export class MetaBrain {
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
     try {
-      const key=this.secret.read();if(!key)throw new Error('Meta API key is missing. Configure it in desktop Settings.');
+      const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const memoryTool=(i:Parameters<MemoryTool>[0])=>this.owner.command(i,`brain:${m.id}`,policy.learn&&!router.stopped&&JSON.stringify(brainPolicy(this.store))===JSON.stringify(policy));
       decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
-    }catch {
-      this.store.event(m.id,'brain_interpretation_failed',{code:'unavailable',durationMs:Date.now()-interpretationStarted});
+    }catch(e) {
+      const raw=(e as {code?:unknown})?.code,code=typeof raw==='string'?raw:errorCode(e);
+      this.store.event(m.id,'brain_interpretation_failed',{code,durationMs:Date.now()-interpretationStarted});
       if(this.get(m.id)?.state!=='interpreting')return true;
       // Policy changes during an HTTP call revoke its result; never silently resume under old consent.
       if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
-      if(policy.failure==='legacy'){
+      if(policy.failure==='legacy'&&!strict){
         this.store.db.prepare("UPDATE brain_tasks SET state='legacy',permission='legacy',reason='Meta unavailable; owner-selected legacy fallback' WHERE id=?").run(m.id);
         return false;
       }
-      this.stop(m.id,this.secret.present()?'Meta interpretation is unavailable. Check Settings, or send a new message when ready.':'Meta API key is missing. Add it in desktop Settings, or disable the Meta brain.');return true;
+      this.stop(m.id,!this.secret.present()?'Meta API key is missing. Add it in the Brain page, or turn the brain off.'
+        :code==='authentication_required'?'Meta rejected your API key. Replace it in the Brain page, then send your message again.'
+        :code==='timeout'?'Meta took too long to answer. Send your message again.'
+        :'Meta could not read that message right now. Send it again in a moment.');return true;
     }
     if(this.get(m.id)?.state!=='interpreting')return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);
@@ -352,12 +360,26 @@ export class MetaBrain {
       const named=[...new Set((m.text.match(/\b(?:codex|claude)\b/gi)??[]).map(v=>v.toLowerCase()))];
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
-      const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
+      // A session routes only when the message opens by addressing it ("Payments API: …", "send the payments api session: …") and the interpretation agrees.
+      // Any other mention, such as an exclusion, asks first. This is an allowlist, so a phrasing nobody listed fails closed instead of reaching that session.
+      const norm=(t:string)=>t.normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"').replace(/\s+/g,' ').trim().toLowerCase();
+      const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
+      const label=(b:Binding)=>this.store.get(`name:${b.id}`)??b.alias;
+      let mentioned=this.memory.candidates(router).filter(b=>{const n=norm(label(b));return n.length>=3&&n!=='codex'&&n!=='claude'&&new RegExp(`(?:^|\\W)${esc(n)}(?:\\W|$)`).test(said);});
+      // "Payments API" inside a mentioned "Payments API. Inc" is the longer name, not a second session.
+      for(const b of [...mentioned])if(mentioned.some(o=>o!==b&&norm(label(o)).includes(norm(label(b)))))mentioned.splice(mentioned.indexOf(b),1);
+      if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one.');
+      const sessions=mentioned.filter(b=>new RegExp(`^(?:please )?(?:(?:send|tell|ask|give|forward)(?: this| it)?(?: to)? )?(?:the )?["']?${esc(norm(label(b)))}["']?(?: session)? ?[:,]`).test(said));
+      if(mentioned.length&&(!sessions.length||decision.sessionId!==sessions[0].id))throw new Error(`Your message mentions ${label(mentioned[0])}. To send it there, start with "${label(mentioned[0])}:". Otherwise say which session should do this.`);
+      const provider=named[0]??sessions[0]?.provider??(decision.provider==='unspecified'?undefined:decision.provider);
+      if(sessions.length&&named.length&&sessions[0].provider!==named[0])throw new Error('That session is on another platform. Please clarify.');
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
-      if(!named.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
+      if(!named.length&&!sessions.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
-      target=topic?this.memory.owner(topic,router):undefined;
+      // An item nobody owns yet goes to the session the owner named, never the default coordinator.
+      target=(topic?this.memory.owner(topic,router):undefined)??sessions[0];
+      if(topic&&sessions.length&&target&&target.id!==sessions[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
       if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
@@ -375,7 +397,8 @@ export class MetaBrain {
       const item=topic??this.memory.add(m.id,m.text);
       this.memory.link(m.id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
-      if(['not started','done','waiting on owner'].includes(item.status))this.memory.items.setStatus(item.id,'in progress','Brain');
+      // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.
+      if(['not started','done','waiting on owner'].includes(item.status)||item.status==='blocked'&&this.memory.items.statusBy(item.id)==='Brain evidence')this.memory.items.setStatus(item.id,'in progress','Brain');
       this.store.set(topicKey,`item:${item.id}`);
       this.store.db.prepare("UPDATE brain_tasks SET coordinator_id=?,target_session_id=?,state='queued',permission='allowed' WHERE id=?").run(coordinator!.id,target.id,m.id);
       this.store.remember(m.id);

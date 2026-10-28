@@ -37,7 +37,11 @@ export class MacControl {
   view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',trusted:this.permission,error:this.lastError,screenRecordingRequired:false,capture:{supported:this.platform==='darwin'?this.captureSupported:false,trusted:this.capturePermission,screenRecordingRequired:true}};}
   async status(prompt=false){
     if(this.platform!=='darwin')return this.view();
-    try{const r=await this.native({action:prompt?'requestPermission':'status'});this.permission=r.trusted===true;this.capturePermission=typeof r.captureTrusted==='boolean'?r.captureTrusted:null;this.captureSupported=typeof r.captureSupported==='boolean'?r.captureSupported:null;this.lastError=null;}
+    try{let r=await this.native({action:prompt?'requestPermission':'status'});
+      // macOS applies a new grant only to processes started after it, so a long-lived helper keeps
+      // answering "not allowed". Re-ask on a fresh helper, never while an action is in flight.
+      if(!prompt&&!this.pending&&this.native.stop&&(r.trusted!==true||r.captureTrusted===false)){this.native.stop();r=await this.native({action:'status'});}
+      this.permission=r.trusted===true;this.capturePermission=typeof r.captureTrusted==='boolean'?r.captureTrusted:null;this.captureSupported=typeof r.captureSupported==='boolean'?r.captureSupported:null;this.lastError=null;}
     catch(e){this.permission=null;this.lastError=(e as Error).message;}
     return this.view();
   }

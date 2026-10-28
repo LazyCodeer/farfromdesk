@@ -1,3 +1,4 @@
+import { WhatsAppPolls } from './whatsapp-polls.js';
 import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,normalizeMessageContent,Browsers,proto,type WASocket} from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { join } from 'node:path';
@@ -31,10 +32,11 @@ export class WhatsApp {
   mediaControllers=new Set<AbortController>();
   downloadFile=(media:any,kind:AttachmentKind,signal?:AbortSignal)=>this.router.attachments.download(media,kind,signal);
   artifacts:Artifacts;
+  readonly polls:WhatsAppPolls;
   sendDocument=sendDiskDocument;
   transcribe=(audio:any,signal?:AbortSignal,observe?:AudioObserver)=>transcribeAudio(this.store,audio,signal,observe);
   constructor(private store:Store,private router:Router,private authDirectory=join(stateDir,'whatsapp-auth')) {
-    this.artifacts=new Artifacts(store);
+    this.artifacts=new Artifacts(store);this.polls=new WhatsAppPolls(store);
     router.attachments.interrupt('The bridge restarted while downloading your attachment. Please resend it.');
     router.attachments.cleanup();this.artifacts.cleanup();
   }
@@ -199,7 +201,7 @@ export class WhatsApp {
     const msg=normalizeMessageContent(m.message),audio=msg?.audioMessage;
     const media=msg?.imageMessage??msg?.documentMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
     let text=msg?.conversation??msg?.extendedTextMessage?.text;
-    if(!text&&!audio&&!media)return;
+    if(!text&&!audio&&!media&&!msg?.pollUpdateMessage)return;
     // With a group selected, the self chat only accepts the /self escape back to it.
     if(self&&destination?.endsWith('@g.us')&&text?.trim()!=='/self')return;
     this.receiving.add(id);
@@ -208,12 +210,13 @@ export class WhatsApp {
       if(this.closed||this.loggingOut||this.router.stopped)return;
       const origin=self?this.selfJid!:destination!;
       await this.store.destinationContext.run(origin,async()=>{
+        if(msg?.pollUpdateMessage){const vote=this.polls.vote({...m,message:msg},origin,this.owners);if(vote)await this.router.receive(vote);return;}
         if(media) {
           if(!this.store.db.prepare("INSERT OR IGNORE INTO media_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now()).changes)return;
           const controller=new AbortController();let file:IncomingFile|undefined;
           try {
             incomingMetadata(media,kind);
-            const incoming={id,text:media.caption??'',quotedId:media.contextInfo?.stanzaId??undefined};
+            const incoming={id,text:media.caption??'',quotedId:media.contextInfo?.stanzaId??undefined,ownerCommand:false};
             const target=this.router.attachmentTarget(incoming);
             if(this.mediaControllers.size>=2)throw new Error('Two attachments are already downloading. Please wait, then resend this one.');
             this.mediaControllers.add(controller);
@@ -236,7 +239,7 @@ export class WhatsApp {
           if(!claimed.changes)return;
           let started=false,routingStarted:number|undefined;const controller=new AbortController();
           this.store.event(id,'voice_received',{audioSeconds:Number(audio.seconds),...(voiceEngine(this.store)==='local'?{engine:'whisper.cpp',model:this.store.get('audio-origin')==='bundled'?'bundled':'custom'}:{engine:voiceEngine(this.store)})});
-          const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected')]);
+          const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected'),this.store.get(`owner-target:${origin}`),this.store.get(`direct:${origin}`)]);
           const originalRouting=routing();
           try {
             audioFormat(audio);
@@ -251,7 +254,9 @@ export class WhatsApp {
             if(routing()!==originalRouting)throw new Error('The selected session changed during transcription. Please resend the note to the intended session.');
             if(!text?.trim()||text.length>32000)throw new Error('No clear speech detected. Please resend or type your message.');
             if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions explicitly; voice transcription may mishear them.');
-            const result=await this.router.receive({id,text,quotedId:audio.contextInfo?.stanzaId??undefined,source:'voice'});
+            const context=audio.contextInfo;
+            const ownerIntent=!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
+            const result=await this.router.receive({id,text,quotedId:context?.stanzaId??undefined,source:'voice',ownerCommand:false,ownerIntent});
             const routed=result.status==='queued'||result.status==='handled';
             this.store.voiceEvent(id,{stage:'route',state:routed?'completed':'failed',durationMs:performance.now()-routingStarted,...(!routed?{code:result.code??'routing_unavailable'}:{})});
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routed?'processed':'routing_blocked',id);
@@ -268,10 +273,12 @@ export class WhatsApp {
           }finally{if(started)this.audioBusy--;this.audioControllers.delete(controller);}
           return;
         }
-        if(self&&text!.trim()==='/self') {
+        const context=msg?.extendedTextMessage?.contextInfo;
+        const ownerCommand=!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
+        if(self&&ownerCommand&&text!.trim()==='/self') {
           await this.selectDestination();this.store.output(undefined,'Switched to Message yourself. You can continue here.',`self-switch:${m.key.id}`,origin);this.store.remember(id);return;
         }
-        await this.router.receive({id,text:text!,quotedId:msg?.extendedTextMessage?.contextInfo?.stanzaId??undefined});
+        await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand,ownerChoice:!context?.isForwarded&&!context?.forwardingScore});
       });
     }finally{this.receiving.delete(id);}
   }
@@ -287,6 +294,11 @@ export class WhatsApp {
           const sock:GuardedSocket=this.sock;
           if(destination!==this.selfJid)await this.verifyGroup(destination);
           if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
+          const poll=this.polls.message(m.id);
+          if(poll){
+            this.store.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(m.id);
+            await sock.relayMessage(destination,poll,{messageId:m.wa_id});this.store.sent(m.id);continue;
+          }
           let content:any={text:m.body},sent:any;
           if(m.artifact_id) {
             const a=this.store.db.prepare('SELECT * FROM artifacts WHERE id=? AND binding_id=?').get(m.artifact_id,m.binding_id) as any;
@@ -302,9 +314,9 @@ export class WhatsApp {
           }
           if(!sent)sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
           if(sent?.message)this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(sent.message,BufferJSON.replacer),m.id);
-          this.store.sent(m.id);
+          this.store.sent(m.id);this.polls.queue(m.id);
         }
-        catch(e){this.error=(e as Error).message;if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
+        catch(e){this.error=(e as Error).message;if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
       }
     } finally {this.flushing=false;}
   }

@@ -36,6 +36,7 @@ export const BRAIN_PROMPT=`You are the FarFromDesk brain. The owner sends short 
 - Unclear acronyms or words (for example "read ATC") mean clarify. Do not guess.
 - Never answer status from your own memory. Status and update text is written by code from saved data, so leave reply empty for those.
 - Only use ids that appear in tasks or sessions.
+- sessionId for a task: the id of the one session the owner asks to do it by name ("send the payments api session…"). A session the owner mentions only to exclude it ("not Payments API") or in passing is not addressed: leave sessionId "".
 - Unused fields: operation none, sessionId "", title "", itemStatus unchanged, reply "".
 
 # Memory
@@ -60,10 +61,10 @@ const MemoryInput=z.object({command:z.enum(['view','create','str_replace','inser
 export class MetaModel {
   constructor(private fetcher:typeof fetch=fetch,private timeoutMs=30000) {}
   async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool):Promise<Interpretation> {
-    const signal=AbortSignal.timeout(this.timeoutMs);
+    const signal=AbortSignal.timeout(this.timeoutMs);let status=0;
     // Bound streamed bytes and never follow redirects with the key attached.
     const guarded:typeof fetch=async(url,init)=>{
-      const response=await this.fetcher(url,{...init,redirect:'error'});
+      const response=await this.fetcher(url,{...init,redirect:'error'});status=response.status;
       if(!response.ok)throw new Error(response.status===401||response.status===403?'Meta authentication failed.':`Meta API unavailable (HTTP ${response.status}).`);
       const reader=response.body?.getReader();if(!reader)throw new Error('Meta returned no response.');
       let size=0;const chunks:Uint8Array[]=[];
@@ -72,20 +73,25 @@ export class MetaModel {
     };
     try {
       const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
-      const result=await generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'required',
+      const ask=()=>generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400
         providerOptions:{meta:{reasoningEffort:'low'}},
         tools:{
           ...(memory?{memory:tool({description:'View, create or edit the owner\'s memory files.',inputSchema:MemoryInput,execute:async(i)=>memory(i)})}:{}),
           decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation}),
         },
         stopWhen:[hasToolCall('decide'),stepCountIs(6)]});
+      let result=await ask();
+      // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
+      if(!result.steps.some(s=>s.toolCalls.length))result=await ask();
       const call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
       if(!call)throw new Error('Meta interpretation was incomplete.');
       return Interpretation.parse(call!.input);
     } catch(e) {
       if(signal.aborted)throw new Error('Meta interpretation timed out.');
-      // Fetch exceptions and validation errors may contain credentials or raw model text.
-      throw new Error('Meta interpretation unavailable. Check configuration or try a new message.');
+      // Fetch exceptions and validation errors may contain credentials or raw model text, so only a code leaves here.
+      const failure=new Error('Meta interpretation unavailable. Check configuration or try a new message.') as Error&{code:string};
+      failure.code=status===401||status===403?'authentication_required':status>=500?'provider_unavailable':status>=400?'provider_rejected':status===200?'invalid_response':'provider_unavailable';
+      throw failure;
     }
   }
 }

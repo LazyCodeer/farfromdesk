@@ -43,7 +43,59 @@ extension _BridgeScreens on _DeskState {
   );
   Widget gap([double size = 18]) => SizedBox(height: size);
   Widget buildDesk(BuildContext context) {
-    final titles = ['Home', 'Activity', 'Items', 'Brain', 'Settings'];
+    final link = status[usingTelegram ? 'telegram' : 'whatsapp']?['status'];
+    // Startup and reconnects pass through 'connecting'; show that instead of
+    // flashing the not-connected setup screen.
+    if (error == null &&
+        (!ready ||
+            !connected &&
+                !onboardingSkipped &&
+                section == 0 &&
+                (link == 'connecting' || link == 'reconnecting'))) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: 22, height: 22, child: spinner(muted)),
+              gap(14),
+              Text(
+                ready ? 'Connecting to $channelName…' : 'Starting FarFromDesk…',
+                key: const Key('startup-loader'),
+                style: const TextStyle(color: muted, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (ready && !connected && !onboardingSkipped && section == 0) {
+      return Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              if (error != null || actionError != null)
+                Container(
+                  key: const Key('onboarding-error'),
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: sand,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: SelectableText(
+                    error ?? actionError!,
+                    style: const TextStyle(color: warning),
+                  ),
+                ),
+              Expanded(child: onboardingScreen()),
+            ],
+          ),
+        ),
+      );
+    }
+    final titles = ['Overview', 'Inbox', 'Items', 'Brain', 'Settings'];
     final pending = (status['pendingJobs'] ?? []).length;
     final count = pending + (status['approvals'] ?? []).length;
     return Scaffold(
@@ -98,29 +150,29 @@ extension _BridgeScreens on _DeskState {
                       ),
                     ),
                   Expanded(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(32, 24, 32, 48),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (!ready) ...[
-                            if (error == null)
-                              const Center(child: CircularProgressIndicator())
-                            else
-                              button('Try again', boot),
-                          ] else if (section == 0)
-                            ...homeScreen()
-                          else if (section == 1)
-                            ...activityScreen()
-                          else if (section == 2)
-                            ...itemsScreen()
-                          else if (section == 3)
-                            brainScreen()
-                          else
-                            ...settingsScreen(),
-                        ],
-                      ),
-                    ),
+                    child:
+                        (ready ? paneScreen() : null) ??
+                        SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(24, 22, 24, 28),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (!ready) ...[
+                                if (error == null)
+                                  const Center(
+                                    child: CircularProgressIndicator(),
+                                  )
+                                else
+                                  button('Try again', boot),
+                              ] else if (section == 0)
+                                ...homeScreen()
+                              else if (section == 1)
+                                ...activityScreen()
+                              else
+                                brainScreen(),
+                            ],
+                          ),
+                        ),
                   ),
                 ],
               ),
@@ -131,154 +183,327 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
+  String get macName {
+    final host = api.computerName.replaceFirst(RegExp(r'\.local$'), '');
+    return host.isEmpty ? 'This $computer' : host.replaceAll('-', ' ');
+  }
+
+  String get replyPlace {
+    if (usingTelegram) return 'your Telegram bot chat';
+    if (status['destination']?['kind'] != 'group') return 'your own chat';
+    final g = groups
+        .where((g) => g['id'] == status['destination']?['jid'])
+        .firstOrNull;
+    return g?['name'] ?? 'your private group';
+  }
+
+  Widget navBadge(int n) => Container(
+    constraints: const BoxConstraints(minWidth: 20),
+    height: 18,
+    padding: const EdgeInsets.symmetric(horizontal: 6),
+    alignment: Alignment.center,
+    decoration: BoxDecoration(
+      color: const Color(0xff222222),
+      borderRadius: BorderRadius.circular(9),
+    ),
+    child: Text(
+      '$n',
+      style: const TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        color: Color(0xffe5e5e5),
+      ),
+    ),
+  );
+
+  Widget navItem(int i, String title, IconData icon, int badge) {
+    final on = section == i;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Tooltip(
+        message: title,
+        waitDuration: const Duration(seconds: 1),
+        child: Material(
+          color: on ? const Color(0xff181818) : Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: on
+                ? const BorderSide(color: Color(0xff232323))
+                : BorderSide.none,
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            hoverColor: hover,
+            onTap: () => go(i),
+            child: SizedBox(
+              height: 34,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 16, color: on ? ink : faint),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: on ? ink : muted,
+                        ),
+                      ),
+                    ),
+                    if (badge > 0) navBadge(badge),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget navGroup(String label) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 14, 8, 6),
+    child: Text(
+      label,
+      style: const TextStyle(
+        fontSize: 11.5,
+        fontWeight: FontWeight.w500,
+        color: faint2,
+      ),
+    ),
+  );
+
+  Widget sidebarBox(Widget child, {Color? tint, VoidCallback? onTap}) =>
+      Material(
+        color: tint == null
+            ? const Color(0xff111111)
+            : tint.withValues(alpha: .07),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: tint == null ? line2 : tint.withValues(alpha: .3),
+          ),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Padding(padding: const EdgeInsets.all(10), child: child),
+        ),
+      );
+
+  Widget statusDot(Color color) => Container(
+    width: 6,
+    height: 6,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
+
+  // The bridge is the local backend; it is offline when status stops loading.
+  Widget bridgeLine() => Tooltip(
+    message: macName,
+    child: Row(
+      children: [
+        statusDot(error == null ? success : faint),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            error == null ? 'Bridge running' : 'Bridge offline',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              color: error == null ? success : faint,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget channelBox() {
+    const divider = Padding(
+      padding: EdgeInsets.symmetric(vertical: 9),
+      child: Divider(height: 1, thickness: 1, color: hairline),
+    );
+    if (!hasChannelChoice || !connected) {
+      return sidebarBox(
+        tint: accent,
+        onTap: () => changeView(() {
+          onboardingSkipped = false;
+          section = 0;
+        }),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                statusDot(accent),
+                const SizedBox(width: 7),
+                const Expanded(
+                  child: Text(
+                    'Not connected',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: accentSoft,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Link WhatsApp or Telegram to start sending tasks.',
+              style: TextStyle(fontSize: 11.5, height: 16 / 11.5, color: muted),
+            ),
+            divider,
+            bridgeLine(),
+          ],
+        ),
+      );
+    }
+    final Object account = usingTelegram
+        ? (status['telegram']?['username'] == null
+              ? 'Your bot'
+              : '@${status['telegram']['username']}')
+        : (status['whatsapp']?['phoneNumber'] ?? 'Your account');
+    return sidebarBox(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Tooltip(
+            message: 'Replies in $replyPlace',
+            child: Row(
+              children: [
+                logoTile(usingTelegram ? 'telegram' : 'whatsapp', size: 22),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        channelName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        '$account',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: faint),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          divider,
+          bridgeLine(),
+        ],
+      ),
+    );
+  }
+
   Widget sidebar(List<String> titles, int count) => Container(
     key: const ValueKey('navigation-rail'),
-    width: 216,
-    padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
+    width: 140,
     decoration: const BoxDecoration(
+      color: sidebarColor,
       border: Border(right: BorderSide(color: hairline)),
     ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(
-          height: 64,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 20, 8, 14),
           child: Row(
             children: [
-              const SizedBox(width: 8),
-              Image.asset(
-                'assets/ffd-icon.png',
-                key: const ValueKey('header-logo'),
-                width: 28,
-                height: 28,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Image.asset(
+                  'assets/ffd-icon.png',
+                  key: const ValueKey('header-logo'),
+                  width: 22,
+                  height: 22,
+                ),
               ),
-              const SizedBox(width: 10),
-              const Text(
-                'FarFromDesk',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -.2,
+              const SizedBox(width: 8),
+              const Flexible(
+                child: Text(
+                  'FarFromDesk',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -.3,
+                  ),
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 6),
-        for (var i = 0; i < titles.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 2),
-            child: Tooltip(
-              message: titles[i],
-              child: Material(
-                color: section == i ? panelColor : Colors.transparent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: section == i
-                      ? const BorderSide(color: line2)
-                      : BorderSide.none,
-                ),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  hoverColor: hover,
-                  onTap: () => go(i),
-                  child: SizedBox(
-                    height: 40,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          Icon(
-                            [
-                              Icons.home_outlined,
-                              Icons.show_chart_rounded,
-                              Icons.checklist_rounded,
-                              Icons.psychology_outlined,
-                              Icons.settings_outlined,
-                            ][i],
-                            size: 18,
-                            color: section == i ? accent : muted,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              titles[i],
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: section == i
-                                    ? FontWeight.w600
-                                    : FontWeight.w500,
-                                color: section == i ? ink : muted,
-                              ),
-                            ),
-                          ),
-                          if (i == 1 && count > 0 ||
-                              i == 2 && itemsNeedingYou > 0)
-                            Container(
-                              constraints: const BoxConstraints(minWidth: 20),
-                              height: 20,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                              ),
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: warning,
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: Text(
-                                '${i == 1 ? count : itemsNeedingYou}',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: toneInk,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        const Spacer(),
-        if (update.release != null) ...[
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: panelColor,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: line2),
-            ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'Update available',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                ),
-                gap(6),
-                Text(
-                  'Version ${update.release!.version} installs after your current work finishes.',
-                  style: const TextStyle(fontSize: 11.5, color: muted),
-                ),
-                gap(10),
-                FilledButton(
-                  onPressed: showUpdate,
-                  style: FilledButton.styleFrom(minimumSize: const Size(0, 34)),
-                  child: const Text('Update now'),
-                ),
+                navGroup('Workspace'),
+                navItem(0, titles[0], Icons.home_outlined, 0),
+                navItem(1, titles[1], Icons.inbox_outlined, count),
+                navItem(2, titles[2], Icons.grid_view_rounded, itemsNeedingYou),
+                navGroup('Assistant'),
+                navItem(3, titles[3], Icons.psychology_outlined, 0),
+                navItem(4, titles[4], Icons.tune_rounded, 0),
               ],
             ),
           ),
-          gap(10),
-        ],
-        Container(
-          padding: const EdgeInsets.fromLTRB(6, 10, 6, 0),
-          decoration: const BoxDecoration(
-            border: Border(top: BorderSide(color: hairline)),
+        ),
+        if (update.release != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            child: sidebarBox(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Update available',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  gap(6),
+                  Text(
+                    'Version ${update.release!.version} installs after your current work finishes.',
+                    style: const TextStyle(fontSize: 11.5, color: muted),
+                  ),
+                  gap(10),
+                  FilledButton(
+                    onPressed: showUpdate,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 32),
+                    ),
+                    child: const Text('Update now'),
+                  ),
+                ],
+              ),
+            ),
           ),
+        if (ready)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: channelBox(),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
           child: Row(
             children: [
               InkWell(
@@ -288,30 +513,24 @@ extension _BridgeScreens on _DeskState {
                     Uri.parse('https://github.com/LazyCodeer/farfromdesk'),
                   ),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Image.asset(
-                      'assets/logo-github.png',
-                      width: 16,
-                      height: 16,
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'GitHub',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: muted,
-                      ),
-                    ),
-                  ],
+                child: const Text(
+                  'GitHub',
+                  style: TextStyle(fontSize: 11.5, color: faint2),
                 ),
               ),
-              const Spacer(),
-              const Text(
-                'v$installedVersion',
-                style: TextStyle(fontSize: 12, color: muted),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'v$installedVersion',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.end,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: faint2,
+                    fontFamily: 'Menlo',
+                  ),
+                ),
               ),
             ],
           ),
@@ -321,43 +540,27 @@ extension _BridgeScreens on _DeskState {
   );
 
   Widget topBar(List<String> titles) => Container(
-    constraints: const BoxConstraints(minHeight: 64),
-    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 10),
+    height: 58,
+    padding: const EdgeInsets.symmetric(horizontal: 22),
     decoration: const BoxDecoration(
       border: Border(bottom: BorderSide(color: hairline)),
     ),
     child: Row(
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                titles[section],
-                style: Theme.of(context).textTheme.headlineLarge,
-              ),
-              const SizedBox(height: 2),
-              Text(
-                [
-                  'Your messaging connection and coding assistant.',
-                  'See which session answered and what needs your attention.',
-                  'The work your proxies are tracking, and which session owns each piece.',
-                  'How your phone messages are read and routed before a session sees them.',
-                  'Decide when FarFromDesk runs and how this $computer stays available.',
-                ][section],
-                style: const TextStyle(fontSize: 12, color: muted),
-              ),
-            ],
-          ),
+        const Text('Workspace', style: TextStyle(fontSize: 13, color: faint)),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 10),
+          child: Text('/', style: TextStyle(color: Color(0xff3a3a3a))),
         ),
+        Text(
+          titles[section],
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        ),
+        const Spacer(),
         if (ready && hasChannelChoice) ...[
-          if (connected) ...[
-            tag('Connected', good: true),
-            const SizedBox(width: 12),
-            spinButton('Refresh connection', 'Refreshing…', refresh),
-          ] else ...[
-            tag('Not connected', tint: warning),
-            const SizedBox(width: 12),
+          if (connected)
+            spinButton('Refresh connection', 'Refreshing…', refresh)
+          else
             button(
               usingTelegram
                   ? 'Set up Telegram'
@@ -370,8 +573,8 @@ extension _BridgeScreens on _DeskState {
                     }
                   : connectPhone,
               primary: true,
+              compact: true,
             ),
-          ],
         ],
       ],
     ),
@@ -437,65 +640,10 @@ extension _BridgeScreens on _DeskState {
     }
   }
 
-  List<Widget> homeScreen() {
-    final wa = status['whatsapp'] ?? {};
-    if (!hasChannelChoice) {
-      return [if (api.preview) previewFlows(), messagingEmptyState()];
-    }
-    Widget left(bool stretch) => usingTelegram
-        ? telegramCard()
-        : connected
-        ? Column(
-            children: [
-              whatsappCard(wa),
-              if (stretch)
-                Expanded(child: destinationCard())
-              else
-                destinationCard(),
-            ],
-          )
-        : pairingCard(wa);
-    return [
-      if (api.preview) previewFlows(),
-      if (!connected)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: button(
-              'Choose another app',
-              switchMessagingApp,
-              compact: true,
-            ),
-          ),
-        ),
-      LayoutBuilder(
-        builder: (context, box) => box.maxWidth >= 860
-            ? IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(child: left(true)),
-                    const SizedBox(width: 12),
-                    Expanded(child: codingPlatformsCard()),
-                  ],
-                ),
-              )
-            : Column(children: [left(false), codingPlatformsCard()]),
-      ),
-      if (!usingTelegram && wa['error'] != null)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Text(wa['error'], style: const TextStyle(color: warning)),
-        ),
-      if (!connected)
-        nextSteps()
-      else ...[
-        card(coordinatorSummary()),
-        voiceCard(),
-      ],
-    ];
-  }
+  List<Widget> homeScreen() => [
+    if (api.preview) previewFlows(),
+    ...(connected ? overviewScreen() : welcomeOverview()),
+  ];
 
   Widget previewFlows() => Padding(
     padding: const EdgeInsets.only(bottom: 16),
@@ -585,18 +733,6 @@ extension _BridgeScreens on _DeskState {
       groupsLoaded = false;
     });
   }
-
-  Widget messagingSettingsHint() => Wrap(
-    crossAxisAlignment: WrapCrossAlignment.center,
-    spacing: 4,
-    children: [
-      small('Want to receive messages in another app?'),
-      TextButton(
-        onPressed: () => go(4),
-        child: const Text('Messaging settings'),
-      ),
-    ],
-  );
 
   Widget messagingAppSettings() => panel(
     'Messaging app',
@@ -704,124 +840,6 @@ extension _BridgeScreens on _DeskState {
     });
   }
 
-  Widget messagingEmptyState() {
-    Widget option(String id, String name, String detail, String action) =>
-        Material(
-          color: surface,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: const BorderSide(color: line2),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: busy ? null : () => chooseMessagingApp(id),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  logoTile(id),
-                  gap(20),
-                  Text(
-                    name,
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  gap(8),
-                  Text(
-                    detail,
-                    style: const TextStyle(
-                      color: muted,
-                      fontSize: 13,
-                      height: 1.6,
-                    ),
-                  ),
-                  gap(24),
-                  Row(
-                    children: [
-                      Text(
-                        action,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: accent,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Icon(Icons.arrow_forward, size: 17, color: accent),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-    return card(
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            tag('Let’s get connected'),
-            gap(20),
-            const Text(
-              'Your coding sessions,\none message away.',
-              style: TextStyle(
-                fontSize: 30,
-                height: 1.2,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            gap(12),
-            const Text(
-              'Choose the app you want to use from your phone.\nConnect it once, then ask for updates or get work started.',
-              style: TextStyle(color: muted, height: 1.6),
-            ),
-            gap(28),
-            LayoutBuilder(
-              builder: (context, box) {
-                final options = [
-                  option(
-                    'whatsapp',
-                    'WhatsApp',
-                    'Use your own account. Scan a QR code and send requests in your private chat.',
-                    'Continue with WhatsApp',
-                  ),
-                  option(
-                    'telegram',
-                    'Telegram',
-                    'Use a private bot. Add its token and confirm the account that can control it.',
-                    'Continue with Telegram',
-                  ),
-                ];
-                return box.maxWidth >= 640
-                    ? IntrinsicHeight(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(child: options[0]),
-                            const SizedBox(width: 16),
-                            Expanded(child: options[1]),
-                          ],
-                        ),
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [options[0], gap(16), options[1]],
-                      );
-              },
-            ),
-            gap(20),
-            small(
-              'Change your messaging app later in Settings. Your coding coordinators stay with you.',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget telegramCard() {
     final tg = Map<String, dynamic>.from(status['telegram'] ?? {});
     final candidate = tg['candidate'] as Map?;
@@ -886,8 +904,6 @@ extension _BridgeScreens on _DeskState {
             small(
               'Replies return to the chat that requested the work. Telegram bots use cloud chats, not end-to-end encrypted Secret Chats.',
             ),
-            gap(12),
-            messagingSettingsHint(),
           ] else if (candidate != null) ...[
             const Text(
               'Confirm your Telegram account',
@@ -1022,7 +1038,7 @@ extension _BridgeScreens on _DeskState {
                   ),
                   const Text(
                     'Linked WhatsApp account',
-                    style: TextStyle(color: onPineMuted),
+                    style: TextStyle(color: muted),
                   ),
                 ],
               ),
@@ -1033,17 +1049,13 @@ extension _BridgeScreens on _DeskState {
         gap(16),
         const Text(
           'Only this account can control FarFromDesk.',
-          style: TextStyle(color: onPineMuted),
+          style: TextStyle(color: muted),
         ),
-        gap(12),
-        messagingSettingsHint(),
       ],
     ),
-    tone: tonePine,
   );
 
   Widget pairingCard(Map wa) => card(
-    tone: tonePine,
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1061,7 +1073,7 @@ extension _BridgeScreens on _DeskState {
                   ),
                   Text(
                     'A one-time setup. Your phone stays the only account that can control FarFromDesk.',
-                    style: TextStyle(color: onPineMuted),
+                    style: TextStyle(color: muted),
                   ),
                 ],
               ),
@@ -1130,7 +1142,7 @@ extension _BridgeScreens on _DeskState {
                         style: const TextStyle(
                           fontSize: 11,
                           height: 1.4,
-                          color: onPineMuted,
+                          color: muted,
                         ),
                       ),
                     ],
@@ -1140,69 +1152,6 @@ extension _BridgeScreens on _DeskState {
       ],
     ),
   );
-
-  Widget nextSteps() {
-    Widget step(String n, String title, String detail) => Expanded(
-      child: CustomPaint(
-        painter: _DashedBorder(),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 24,
-                height: 24,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: surface,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: line2),
-                ),
-                child: Text(
-                  n,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              gap(10),
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-              gap(4),
-              small(detail),
-            ],
-          ),
-        ),
-      ),
-    );
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          step(
-            '1',
-            'Connect $channelName',
-            usingTelegram
-                ? 'Link your bot and confirm your Telegram account.'
-                : 'Scan the QR code above with your phone.',
-          ),
-          const SizedBox(width: 12),
-          step(
-            '2',
-            'Set up a coordinator',
-            'Pick Claude or Codex to handle your messages.',
-          ),
-          const SizedBox(width: 12),
-          step(
-            '3',
-            usingTelegram ? 'Message your bot' : 'Message yourself',
-            'Ask for an update or start work from your phone.',
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget voiceCard() {
     final v = Map<String, dynamic>.from(status['voice'] ?? {});
@@ -3164,388 +3113,7 @@ extension _BridgeScreens on _DeskState {
         ),
       ];
     }
-    final query = activityQuery.trim().toLowerCase();
-    final jobs =
-        allJobs
-            .where(
-              (j) =>
-                  includeJob(j, activityFilter) &&
-                  '${requestTitle(j)} ${requestBinding(j)?['name'] ?? ''} ${j['id']}'
-                      .toLowerCase()
-                      .contains(query),
-            )
-            .toList()
-          ..sort(
-            (a, b) =>
-                (b['created_at'] as num).compareTo(a['created_at'] as num),
-          );
-    final eligibleIds = jobs
-        .where((j) => j['canClose'] == true)
-        .take(500)
-        .map((j) => j['id'] as String)
-        .toSet();
-    final allSelected =
-        eligibleIds.isNotEmpty && chosen.containsAll(eligibleIds);
-    final someSelected = eligibleIds.any(chosen.contains);
-    void toggleSelection() => changeView(() {
-      if (allSelected) {
-        chosen.removeAll(eligibleIds);
-      } else {
-        chosen.addAll(eligibleIds);
-      }
-    });
-    const filters = ['All', 'Waiting', 'Needs review', 'Answered', 'Closed'];
-    final rows = <Widget>[];
-    String? lastDay;
-    for (final j in jobs) {
-      final day = dayLabel(j['created_at']);
-      if (day != lastDay) {
-        rows.add(
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
-            child: Text(
-              day,
-              style: const TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                color: muted,
-              ),
-            ),
-          ),
-        );
-        lastDay = day;
-      }
-      rows.add(activityRow(j, selectable: eligibleIds.isNotEmpty));
-    }
-    return [
-      for (final a in approvals)
-        panel(
-          '${a['alias']} needs your input',
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: toneInk.withValues(alpha: .08),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: SelectableText(
-                  a['question'],
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12.5,
-                    color: toneInk,
-                  ),
-                ),
-              ),
-              gap(14),
-              Wrap(
-                spacing: 10,
-                children: [
-                  if (a['kind'] == 'approval') ...[
-                    button(
-                      'Allow once',
-                      () => post('/api/action', {
-                        'command': '/approve ${a['code']}',
-                      }),
-                      primary: true,
-                    ),
-                    button(
-                      'Deny',
-                      () => post('/api/action', {
-                        'command': '/deny ${a['code']}',
-                      }),
-                    ),
-                  ] else
-                    button('Send answer', () async {
-                      final answer = await ask(a['question']);
-                      if (answer != null && answer.isNotEmpty) {
-                        await post('/api/action', {
-                          'command': '/answer ${a['code']} $answer',
-                        });
-                      }
-                    }, primary: true),
-                ],
-              ),
-            ],
-          ),
-          tone: toneAmber,
-          light: true,
-        ),
-      card(
-        Row(
-          children: [
-            const Icon(Icons.history_rounded, size: 18, color: accent),
-            const SizedBox(width: 12),
-            Expanded(
-              child: small(
-                '${(status['pendingJobs'] ?? []).length} unfinished · Requests are saved on this $computer',
-              ),
-            ),
-            TextButton(
-              onPressed: recoveryGuide,
-              child: const Text('How recovery works'),
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-      ),
-      if (List<Map>.from(status['voiceRequests'] ?? []).any(
-        (v) =>
-            ['failed', 'routing_blocked', 'interrupted'].contains(v['status']),
-      ))
-        panel(
-          'Voice notes needing attention',
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              small(
-                'Transcription and routing are tracked separately. Check the problem before resending.',
-              ),
-              for (final v
-                  in List<Map>.from(status['voiceRequests'] ?? [])
-                      .where(
-                        (v) => [
-                          'failed',
-                          'routing_blocked',
-                          'interrupted',
-                        ].contains(v['status']),
-                      )
-                      .take(5))
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(
-                    v['status'] == 'routing_blocked'
-                        ? 'Transcribed · routing blocked'
-                        : 'Voice note ${v['status']}',
-                  ),
-                  subtitle: small(v['id']),
-                  trailing: button(
-                    'Details',
-                    () => requestTimeline(v['id']),
-                    compact: true,
-                  ),
-                ),
-            ],
-          ),
-        ),
-      if ((status['unlinkedUpdates'] ?? []).isNotEmpty)
-        panel(
-          'Native updates saved for review',
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              small(
-                'These updates have no verified request link. They stay on this computer to avoid sending a duplicate or addressing the wrong request. Latest 50 · retained for 7 days.',
-              ),
-              for (final u in List<Map>.from(
-                status['unlinkedUpdates'],
-              ).take(10))
-                ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  title: Text(
-                    List<Map>.from(status['bindings'] ?? [])
-                            .where((b) => b['id'] == u['binding_id'])
-                            .firstOrNull?['name'] ??
-                        'Native session update',
-                  ),
-                  subtitle: small(
-                    DateTime.fromMillisecondsSinceEpoch(u['at'])
-                        .toLocal()
-                        .toString(),
-                  ),
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: button(
-                        'Read local update',
-                        () => readLocalUpdate(u['id']),
-                        compact: true,
-                      ),
-                    ),
-                  ],
-                ),
-            ],
-          ),
-        ),
-      card(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Request history',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      gap(2),
-                      small(
-                        'Every request, which session took it and what happened.',
-                      ),
-                    ],
-                  ),
-                ),
-                SizedBox(
-                  width: 260,
-                  child: TextField(
-                    onChanged: (value) =>
-                        changeView(() => activityQuery = value),
-                    decoration: InputDecoration(
-                      hintText: 'Search requests or sessions',
-                      prefixIcon: const Icon(
-                        Icons.search,
-                        size: 18,
-                        color: muted,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 11,
-                      ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(999),
-                        borderSide: const BorderSide(color: line2),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(999),
-                        borderSide: const BorderSide(color: line2),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(999),
-                        borderSide: const BorderSide(color: accent, width: 1.5),
-                      ),
-                    ),
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                ),
-              ],
-            ),
-            gap(16),
-            Row(
-              children: [
-                Flexible(
-                  child: segmented(
-                    filters,
-                    activityFilter,
-                    (filter) => changeView(() => activityFilter = filter),
-                    key: const ValueKey('activity-filter-group'),
-                    compact: true,
-                    counts: {
-                      for (final f in filters)
-                        f: allJobs.where((j) => includeJob(j, f)).length,
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                if (eligibleIds.isNotEmpty || chosen.isNotEmpty)
-                  Tooltip(
-                    message: 'Select reviewable requests in this list',
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: eligibleIds.isEmpty ? null : toggleSelection,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Checkbox(
-                            key: const ValueKey('select-visible-requests'),
-                            tristate: true,
-                            value: allSelected
-                                ? true
-                                : someSelected
-                                ? null
-                                : false,
-                            onChanged: eligibleIds.isEmpty
-                                ? null
-                                : (_) => toggleSelection(),
-                          ),
-                          const Text(
-                            'Select all',
-                            style: TextStyle(fontSize: 12.5),
-                          ),
-                          const SizedBox(width: 8),
-                        ],
-                      ),
-                    ),
-                  ),
-                if (chosen.isNotEmpty) ...[
-                  TextButton(
-                    onPressed: () => changeView(chosen.clear),
-                    child: const Text('Clear'),
-                  ),
-                  button(
-                    'Close selected (${chosen.length})…',
-                    bulkClose,
-                    compact: true,
-                  ),
-                ],
-              ],
-            ),
-            gap(14),
-            Container(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: hairline)),
-              ),
-              child: Row(
-                children: [
-                  SizedBox(width: eligibleIds.isNotEmpty ? 80 : 48),
-                  Expanded(child: small('Request')),
-                  SizedBox(width: 92, child: small('Received')),
-                  SizedBox(width: 190, child: small('Status')),
-                  const SizedBox(width: 40),
-                ],
-              ),
-            ),
-            if (jobs.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 36),
-                child: Center(
-                  child: Column(
-                    children: [
-                      Text(
-                        query.isNotEmpty || activityFilter != 'All'
-                            ? 'No matching requests'
-                            : 'No requests here yet',
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      gap(6),
-                      small(
-                        query.isNotEmpty || activityFilter != 'All'
-                            ? 'Try another filter or search.'
-                            : 'Send a task in your connected chat to get started.',
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ...rows,
-            gap(14),
-            Row(
-              children: [
-                Expanded(
-                  child: small('Showing ${jobs.length} of ${allJobs.length}'),
-                ),
-                small('All unfinished + latest 100'),
-              ],
-            ),
-          ],
-        ),
-      ),
-    ];
+    return [];
   }
 
   String dayLabel(num at) {
@@ -3566,195 +3134,6 @@ extension _BridgeScreens on _DeskState {
   String clock(num at) {
     final t = DateTime.fromMillisecondsSinceEpoch(at.toInt()).toLocal();
     return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-  }
-
-  Widget activityRow(Map job, {bool selectable = false}) {
-    final binding = requestBinding(job);
-    final st = '${job['status']}';
-    final waiting = ['queued', 'dispatched', 'submitted'].contains(st);
-    final review =
-        ['uncertain', 'failed'].contains(st) || job['outcome'] == 'blocked';
-    final blocked = job['outcome'] == 'blocked';
-    final closed = ['reviewed', 'replaced', 'auto_closed'].contains(st);
-    final selected = chosen.contains(job['id']);
-    final app =
-        '${{'claude': 'Claude', 'codex': 'Codex'}[binding?['provider']] ?? 'Coding'} ${{'desktop': 'Desktop', 'cli': 'CLI'}[binding?['executionMode']] ?? 'session'}';
-    final session = binding?['name'] ?? binding?['alias'] ?? 'Coding session';
-    final received = clock(job['created_at']);
-    final sending = ['queued', 'dispatched'].contains(st);
-    final chip = waiting
-        ? tag(requestState(job), spinning: true)
-        : blocked
-        ? tag('Blocked', tint: danger)
-        : review
-        ? tag(requestState(job), tint: warning)
-        : st == 'completed'
-        ? tag(requestState(job), good: true)
-        : tag(requestState(job));
-    return Container(
-      margin: const EdgeInsets.only(top: 2),
-      child: Material(
-        color: selected ? accent.withValues(alpha: .08) : Colors.transparent,
-        borderRadius: BorderRadius.circular(14),
-        clipBehavior: Clip.antiAlias,
-        child: ExpansionTile(
-          key: PageStorageKey('request-${job['id']}'),
-          tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-          childrenPadding: const EdgeInsets.fromLTRB(62, 0, 14, 14),
-          backgroundColor: const Color(0x0af4f1ea),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: hairline),
-          ),
-          collapsedShape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-          ),
-          title: Row(
-            children: [
-              if (selectable) ...[
-                SizedBox(
-                  width: 24,
-                  child: job['canClose'] != true
-                      ? null
-                      : Checkbox(
-                          value: selected,
-                          onChanged: (value) => changeView(() {
-                            if (value == true) {
-                              chosen.add(job['id']);
-                            } else {
-                              chosen.remove(job['id']);
-                            }
-                          }),
-                        ),
-                ),
-                const SizedBox(width: 8),
-              ],
-              logoTile(
-                binding?['provider'] == 'claude' ? 'claude' : 'openai',
-                size: 34,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      requestTitle(job),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(
-                      '${requestKind(job)} · $app · $session',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11.5, color: muted),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 14),
-              SizedBox(width: 92, child: small(received)),
-              SizedBox(
-                width: 190,
-                child: Align(alignment: Alignment.centerLeft, child: chip),
-              ),
-            ],
-          ),
-          children: [
-            stepRow('Received from your chat', detail: received, state: 'done'),
-            stepRow(
-              sending ? 'Sending to session' : 'Sent to session',
-              detail: '$session · $app',
-              state: sending ? 'now' : 'done',
-            ),
-            stepRow(
-              sending
-                  ? 'Reply'
-                  : st == 'submitted'
-                  ? 'Awaiting reply'
-                  : requestState(job),
-              detail: sending
-                  ? 'Sent to the original chat when the session answers'
-                  : review && job['outcome'] == null
-                  ? (job['error'] ??
-                        'Delivery or completion could not be confirmed. Check the native chat before sending anything again. This request will not be resent automatically.')
-                  : job['error'],
-              state: sending
-                  ? 'pending'
-                  : st == 'submitted'
-                  ? 'now'
-                  : blocked
-                  ? 'fail'
-                  : review
-                  ? 'wait'
-                  : 'done',
-            ),
-            if (job['last_error'] != null && job['error'] == null) ...[
-              gap(8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: small(
-                  'Earlier error (cleared after a later response): ${job['last_error']}',
-                ),
-              ),
-            ],
-            gap(10),
-            Row(
-              children: [
-                Expanded(
-                  // SelectableText has an internal scroll position that shares
-                  // the ExpansionTile's PageStorage bucket (bool vs. double).
-                  child: SelectionArea(
-                    child: Text(
-                      'Request ID ${job['id']} · Session ${binding?['native_id'] ?? 'unknown'} · ${binding?['cwd'] ?? 'Project unavailable'}',
-                      style: const TextStyle(fontSize: 11, color: muted),
-                    ),
-                  ),
-                ),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    if (job['canClose'] == true)
-                      button(
-                        'Mark reviewed',
-                        () async {
-                          if (await confirm(
-                            'Close this request after review?',
-                            'This ends tracking for the exact request. History is kept; native work is not stopped or marked successful.',
-                          )) {
-                            await post('/api/request-review', {
-                              'requestId': job['id'],
-                              'expectedStatus': job['status'],
-                              'confirmed': true,
-                            });
-                          }
-                        },
-                        primary: true,
-                        compact: true,
-                      ),
-                    if (!closed && st != 'completed')
-                      button(
-                        'Send reviewed document',
-                        () => document(job),
-                        compact: true,
-                      ),
-                    button(
-                      'Timing and delivery',
-                      () => requestTimeline(job['id']),
-                      compact: true,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Future<void> readLocalUpdate(String id) async {
@@ -3856,33 +3235,6 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
-  Future<void> bulkClose() async {
-    final snapshot = allJobs
-        .where((j) => chosen.contains(j['id']) && j['canClose'] == true)
-        .toList();
-    if (snapshot.isEmpty) return;
-    if (await confirm(
-      'Close ${snapshot.length} selected requests?',
-      'Close tracking only if their answers arrived or you no longer need their replies. History is kept. This does not stop native work, resend tasks or mark them successful. If any selected request changes, nothing will be closed.',
-    )) {
-      await act(() async {
-        await api.post('/api/request-review-bulk', {
-          'confirmed': true,
-          'requests': snapshot
-              .map(
-                (j) => {
-                  'requestId': j['id'],
-                  'expectedStatus': j['status'],
-                  'expectedUpdatedAt': j['updated_at'] ?? j['created_at'],
-                },
-              )
-              .toList(),
-        });
-        chosen.clear();
-      });
-    }
-  }
-
   Widget settingRow(String title, String detail, Widget control) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 12),
     child: Row(
@@ -3911,276 +3263,311 @@ extension _BridgeScreens on _DeskState {
       ],
     ),
   );
-  List<Widget> settingsScreen() {
+
+  /// Settings groups: (title, subtitle, icon, cards). The pane shows them
+  /// under a sub-nav that scrolls to each group.
+  List<(String, String, IconData, List<Widget>)> settingsSections() {
     final cleanup =
         status['requestCleanup'] ?? {'enabled': false, 'afterHours': 24};
     return [
-      messagingAppSettings(),
-      brainLinkCard(),
-      if (status['macControl']?['supported'] == true) macControlPanel(),
-      panel(
-        'On this $computer',
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            settingRow(
-              'Run in the background',
-              'Receive tasks while the window is closed. Turning this off disconnects messaging and pauses forwarding.',
-              Switch(
-                value: preferences['backgroundEnabled'] == true,
-                onChanged: busy
-                    ? null
-                    : (v) {
-                        if (v) {
-                          enableBackground();
-                        } else {
-                          post('/api/preferences', {
-                            'backgroundEnabled': false,
-                            'keepAwake': false,
-                          });
-                        }
-                      },
-              ),
-            ),
-            const Divider(height: 1),
-            settingRow(
-              'Open at login',
-              'Launch FarFromDesk when you sign in to this $computer.',
-              Switch(
-                value: startup,
-                onChanged: busy
-                    ? null
-                    : (v) => act(() async {
-                        await api.setStartup(v);
-                        startup = await api.startupEnabled();
-                      }),
-              ),
-            ),
-            const Divider(height: 1),
-            settingRow(
-              'Keep awake while locked',
-              'Keep work running with the lid open, even when the screen is locked or off. Your password and lock screen stay enabled.',
-              Switch(
-                value: preferences['keepAwake'] == true,
-                onChanged: busy || preferences['backgroundEnabled'] != true
-                    ? null
-                    : (v) async {
-                        if (!v ||
-                            await confirm(
-                              'Keep this $computer awake while locked?',
-                              'This uses battery and does not bypass your password, native approvals, manual sleep or lid-close sleep. Turn it off to restore normal idle sleep.',
-                            )) {
-                          await post('/api/preferences', {
-                            'backgroundEnabled': true,
-                            'keepAwake': v,
-                          });
-                        }
-                      },
-              ),
-            ),
-            if (preferences['backgroundEnabled'] != true) ...[
-              gap(10),
-              small('Enable background access to use sleep prevention.'),
-            ],
-            if (preferences['assertionActive'] == true) ...[
-              gap(10),
-              tag('Keep-awake active · screen may lock', good: true),
-            ],
-            if (preferences['error'] != null) ...[
-              gap(10),
-              Text(
-                preferences['error'],
-                style: const TextStyle(fontSize: 11, color: warning),
-              ),
-            ],
+      (
+        'Messaging',
+        'Where your tasks come from and replies go.',
+        Icons.chat_bubble_outline_rounded,
+        [
+          messagingAppSettings(),
+          if (connected && usingTelegram) telegramCard(),
+          if (connected && !usingTelegram) ...[
+            whatsappCard(status['whatsapp'] ?? {}),
+            destinationCard(),
           ],
-        ),
-        trailing: tag(
-          error == null ? 'Bridge running' : 'Bridge offline',
-          good: error == null,
-        ),
+        ],
       ),
-      panel(
-        'Request cleanup',
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            settingRow(
-              'Auto-close stale requests',
-              'Close tracking after no recorded updates for the chosen period. Keeps history; never stops native work or marks a task successful.',
-              Switch(
-                value: cleanup['enabled'] == true,
-                onChanged: busy
-                    ? null
-                    : (v) async {
-                        if (!v ||
-                            await confirm(
-                              'Enable automatic request cleanup?',
-                              'Eligible requests with no recorded updates for ${cleanup['afterHours']} hours will be marked Auto-closed, including existing old requests. History is kept and native work continues.',
-                            )) {
-                          await post('/api/request-cleanup', {
-                            'enabled': v,
-                            'afterHours': cleanup['afterHours'],
+      (
+        'This $computer',
+        'Decide when FarFromDesk runs and how this $computer stays available.',
+        Icons.laptop_mac_rounded,
+        [
+          panel(
+            'On this $computer',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                settingRow(
+                  'Run in the background',
+                  'Receive tasks while the window is closed. Turning this off disconnects messaging and pauses forwarding.',
+                  Switch(
+                    value: preferences['backgroundEnabled'] == true,
+                    onChanged: busy
+                        ? null
+                        : (v) {
+                            if (v) {
+                              enableBackground();
+                            } else {
+                              post('/api/preferences', {
+                                'backgroundEnabled': false,
+                                'keepAwake': false,
+                              });
+                            }
+                          },
+                  ),
+                ),
+                const Divider(height: 1),
+                settingRow(
+                  'Open at login',
+                  'Launch FarFromDesk when you sign in to this $computer.',
+                  Switch(
+                    value: startup,
+                    onChanged: busy
+                        ? null
+                        : (v) => act(() async {
+                            await api.setStartup(v);
+                            startup = await api.startupEnabled();
+                          }),
+                  ),
+                ),
+                const Divider(height: 1),
+                settingRow(
+                  'Keep awake while locked',
+                  'Keep work running with the lid open, even when the screen is locked or off. Your password and lock screen stay enabled.',
+                  Switch(
+                    value: preferences['keepAwake'] == true,
+                    onChanged: busy || preferences['backgroundEnabled'] != true
+                        ? null
+                        : (v) async {
+                            if (!v ||
+                                await confirm(
+                                  'Keep this $computer awake while locked?',
+                                  'This uses battery and does not bypass your password, native approvals, manual sleep or lid-close sleep. Turn it off to restore normal idle sleep.',
+                                )) {
+                              await post('/api/preferences', {
+                                'backgroundEnabled': true,
+                                'keepAwake': v,
+                              });
+                            }
+                          },
+                  ),
+                ),
+                if (preferences['backgroundEnabled'] != true) ...[
+                  gap(10),
+                  small('Enable background access to use sleep prevention.'),
+                ],
+                if (preferences['assertionActive'] == true) ...[
+                  gap(10),
+                  tag('Keep-awake active · screen may lock', good: true),
+                ],
+                if (preferences['error'] != null) ...[
+                  gap(10),
+                  Text(
+                    preferences['error'],
+                    style: const TextStyle(fontSize: 11, color: warning),
+                  ),
+                ],
+              ],
+            ),
+            trailing: tag(
+              error == null ? 'Bridge running' : 'Bridge offline',
+              good: error == null,
+            ),
+          ),
+          panel(
+            'Access & availability',
+            Column(
+              children: [
+                settingsDisclosure(
+                  icon: Icons.laptop_mac,
+                  title: 'Keep your $computer available',
+                  subtitle: 'Lock screen, sleep and closed-lid behaviour',
+                  children: [
+                    settingRow(
+                      'Lock screen',
+                      'Work keeps running while the screen is locked.',
+                      tag('Works', good: true),
+                    ),
+                    settingRow(
+                      'Sleep',
+                      preferences['keepAwake'] == true
+                          ? 'This $computer stays awake while work is running.'
+                          : 'Turn on Keep awake while locked to stop idle sleep.',
+                      preferences['keepAwake'] == true
+                          ? tag('Covered', good: true)
+                          : tag('Off'),
+                    ),
+                    settingRow(
+                      'Closed lid',
+                      'Keep an operating laptop ventilated, never in a bag. Sleep prevention does not override manual sleep, lid-close sleep or low-battery protection. If this $computer sleeps or loses internet, your messages cannot reach it.',
+                      tag('Pauses'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      if (status['macControl']?['supported'] == true)
+        (
+          'Mac control',
+          'Let your proxy use apps in the window you pick from your phone.',
+          Icons.desktop_mac_outlined,
+          [macControlPanel()],
+        ),
+      if (remoteSupported)
+        (
+          'Remote control',
+          'See and use this $computer from your phone.',
+          Icons.phone_iphone_rounded,
+          remoteControlPanels(),
+        ),
+      (
+        'Platforms',
+        'The apps that run your coding sessions.',
+        Icons.terminal_rounded,
+        [codingPlatformsCard()],
+      ),
+      (
+        'Brain',
+        'Reads each message first and keeps your item list.',
+        Icons.psychology_outlined,
+        [brainLinkCard()],
+      ),
+      (
+        'Requests',
+        'How long requests stay tracked.',
+        Icons.inbox_outlined,
+        [
+          panel(
+            'Request cleanup',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                settingRow(
+                  'Auto-close stale requests',
+                  'Close tracking after no recorded updates for the chosen period. Keeps history; never stops native work or marks a task successful.',
+                  Switch(
+                    value: cleanup['enabled'] == true,
+                    onChanged: busy
+                        ? null
+                        : (v) async {
+                            if (!v ||
+                                await confirm(
+                                  'Enable automatic request cleanup?',
+                                  'Eligible requests with no recorded updates for ${cleanup['afterHours']} hours will be marked Auto-closed, including existing old requests. History is kept and native work continues.',
+                                )) {
+                              await post('/api/request-cleanup', {
+                                'enabled': v,
+                                'afterHours': cleanup['afterHours'],
+                              });
+                            }
+                          },
+                  ),
+                ),
+                gap(14),
+                Row(
+                  children: [
+                    const Text('Close after no updates for'),
+                    const Spacer(),
+                    dropdown<int>(
+                      width: 180,
+                      value: [24, 72, 168].contains(cleanup['afterHours'])
+                          ? cleanup['afterHours']
+                          : 24,
+                      items: const [
+                        DropdownMenuItem(value: 24, child: Text('24 hours')),
+                        DropdownMenuItem(value: 72, child: Text('3 days')),
+                        DropdownMenuItem(value: 168, child: Text('7 days')),
+                      ],
+                      onChanged: (hours) {
+                        if (hours != null) {
+                          post('/api/request-cleanup', {
+                            'enabled': cleanup['enabled'] == true,
+                            'afterHours': hours,
                           });
                         }
                       },
-              ),
+                    ),
+                  ],
+                ),
+                gap(10),
+                small(
+                  'Queued requests, known active deliveries, pending bridge permissions and unfinished delegated work are excluded. A submitted session may still be working without sending updates; auto-close only ends tracking. Late replies are still accepted.',
+                ),
+                TextButton(
+                  onPressed: () => go(1),
+                  child: const Text('Review or bulk-close in Inbox'),
+                ),
+              ],
             ),
-            gap(14),
+          ),
+        ],
+      ),
+      (
+        'Updates',
+        'Keep FarFromDesk current.',
+        Icons.download_rounded,
+        [
+          panel(
+            'App updates',
             Row(
               children: [
-                const Text('Close after no updates for'),
-                const Spacer(),
-                dropdown<int>(
-                  width: 180,
-                  value: [24, 72, 168].contains(cleanup['afterHours'])
-                      ? cleanup['afterHours']
-                      : 24,
-                  items: const [
-                    DropdownMenuItem(value: 24, child: Text('24 hours')),
-                    DropdownMenuItem(value: 72, child: Text('3 days')),
-                    DropdownMenuItem(value: 168, child: Text('7 days')),
-                  ],
-                  onChanged: (hours) {
-                    if (hours != null) {
-                      post('/api/request-cleanup', {
-                        'enabled': cleanup['enabled'] == true,
-                        'afterHours': hours,
-                      });
-                    }
-                  },
-                ),
-              ],
-            ),
-            gap(10),
-            small(
-              'Queued requests, known active deliveries, pending bridge permissions and unfinished delegated work are excluded. A submitted session may still be working without sending updates; auto-close only ends tracking. Late replies are still accepted.',
-            ),
-            TextButton(
-              onPressed: () => go(1),
-              child: const Text('Review or bulk-close in Activity'),
-            ),
-          ],
-        ),
-      ),
-      panel(
-        'Access & availability',
-        Column(
-          children: [
-            settingsDisclosure(
-              icon: Icons.laptop_mac,
-              title: 'Keep your $computer available',
-              subtitle: 'Lock screen, sleep and closed-lid behaviour',
-              children: [
-                settingRow(
-                  'Lock screen',
-                  'Work keeps running while the screen is locked.',
-                  tag('Works', good: true),
-                ),
-                settingRow(
-                  'Sleep',
-                  preferences['keepAwake'] == true
-                      ? 'This $computer stays awake while work is running.'
-                      : 'Turn on Keep awake while locked to stop idle sleep.',
-                  preferences['keepAwake'] == true
-                      ? tag('Covered', good: true)
-                      : tag('Off'),
-                ),
-                settingRow(
-                  'Closed lid',
-                  'Keep an operating laptop ventilated, never in a bag. Sleep prevention does not override manual sleep, lid-close sleep or low-battery protection. If this $computer sleeps or loses internet, your messages cannot reach it.',
-                  tag('Pauses'),
-                ),
-              ],
-            ),
-            gap(10),
-            settingsDisclosure(
-              icon: Icons.shield_outlined,
-              title: 'Who can send tasks',
-              subtitle: 'Your account, proxies and native approvals',
-              children: [
-                settingRow(
-                  'Owner account',
-                  usingTelegram
-                      ? '${status['telegram']?['ownerName'] ?? 'Your confirmed Telegram account'} is the only Telegram account that can send tasks.'
-                      : '${status['whatsapp']?['phoneNumber'] ?? 'Your linked WhatsApp account'} is the only WhatsApp account that can send tasks.',
-                  connected ? tag('Linked', good: true) : tag('Not linked'),
-                ),
-                settingRow(
-                  'Coordinators',
-                  'Choose the coding app that answers your messages.',
-                  button('Manage', openManage, compact: true),
-                ),
-                settingRow(
-                  'Native approvals',
-                  'Prompts shown by Claude or Codex still need you at this $computer. Pausing the bridge does not stop work already running.',
-                  tag('Always on'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      panel(
-        'App updates',
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    checkingUpdates
-                        ? 'Checking for updates…'
-                        : update.release != null
-                        ? 'Version ${update.release!.version} is available'
-                        : update.problem ??
-                              (update.checkedAt == null
-                                  ? 'Checked when the app opens'
-                                  : 'You are up to date'),
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        checkingUpdates
+                            ? 'Checking for updates…'
+                            : update.release != null
+                            ? 'Version ${update.release!.version} is available'
+                            : update.problem ??
+                                  (update.checkedAt == null
+                                      ? 'Checked when the app opens'
+                                      : 'You are up to date'),
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      gap(2),
+                      small(
+                        update.release != null
+                            ? 'Installs after your current work finishes.'
+                            : 'Updates are checked when the app opens, then every hour.',
+                      ),
+                    ],
                   ),
-                  gap(2),
-                  small(
-                    update.release != null
-                        ? 'Installs after your current work finishes.'
-                        : 'Updates are checked when the app opens, then every hour.',
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton(
+                  onPressed: checkingUpdates || busy
+                      ? null
+                      : () => checkUpdates(manual: true),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (checkingUpdates) ...[
+                        SizedBox(width: 13, height: 13, child: spinner(ink)),
+                        const SizedBox(width: 8),
+                      ],
+                      Text(checkingUpdates ? 'Checking…' : 'Check for updates'),
+                    ],
                   ),
+                ),
+                if (update.release != null) ...[
+                  const SizedBox(width: 10),
+                  button('Update now', showUpdate, primary: true),
                 ],
-              ),
+              ],
             ),
-            const SizedBox(width: 12),
-            OutlinedButton(
-              onPressed: checkingUpdates || busy
-                  ? null
-                  : () => checkUpdates(manual: true),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (checkingUpdates) ...[
-                    SizedBox(width: 13, height: 13, child: spinner(ink)),
-                    const SizedBox(width: 8),
-                  ],
-                  Text(checkingUpdates ? 'Checking…' : 'Check for updates'),
-                ],
-              ),
+            trailing: small('v$installedVersion'),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+            child: small(
+              'This $computer and your agent provider must be online. Queued replies are retained during outages.',
             ),
-            if (update.release != null) ...[
-              const SizedBox(width: 10),
-              button('Update now', showUpdate, primary: true),
-            ],
-          ],
-        ),
-        trailing: small('v$installedVersion'),
-      ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
-        child: small(
-          'This $computer and your agent provider must be online. Queued replies are retained during outages.',
-        ),
+          ),
+        ],
       ),
     ];
   }
@@ -4221,31 +3608,9 @@ extension _BridgeScreens on _DeskState {
   }
 }
 
-class _DashedBorder extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final path = Path()
-      ..addRRect(
-        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(18)),
-      );
-    final paint = Paint()
-      ..color = line
-      ..style = PaintingStyle.stroke;
-    for (final metric in path.computeMetrics()) {
-      for (var d = 0.0; d < metric.length; d += 9) {
-        canvas.drawPath(metric.extractPath(d, d + 5), paint);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_) => false;
-}
-
 extension _BrainAndItems on _DeskState {
   List<Map<String, dynamic>> get workItems => [
-    for (final i in loadedItems)
-      Map<String, dynamic>.from(i as Map),
+    for (final i in loadedItems) Map<String, dynamic>.from(i as Map),
   ];
   int get itemsNeedingYou => workItems
       .where((i) => ['waiting on owner', 'blocked'].contains(i['status']))
@@ -4318,228 +3683,1328 @@ extension _BrainAndItems on _DeskState {
       ),
     );
   }
+}
 
-  List<Widget> itemsScreen() {
-    final all = workItems;
-    bool needs(Map i) => ['waiting on owner', 'blocked'].contains(i['status']);
-    final counts = {
-      'Open': all.where((i) => i['status'] != 'done').length,
-      'Needs you': all.where(needs).length,
-      'Done': all.where((i) => i['status'] == 'done').length,
-      'All': all.length,
-    };
-    final q = itemQuery.toLowerCase();
-    final shown = all.where((i) {
-      final keep = switch (itemFilter) {
-        'Needs you' => needs(i),
-        'Done' => i['status'] == 'done',
-        'All' => true,
-        _ => i['status'] != 'done',
-      };
-      return keep &&
-          '${i['title']} ${i['session'] ?? ''}'.toLowerCase().contains(q);
-    }).toList();
-    final brainOn = status['metaBrain']?['enabled'] == true;
-    return [
-      card(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+/// Overview, ported from the FarFromDesk Studio design. Only real data is
+/// shown: no trends, search, notifications or machine switcher.
+extension _Overview on _DeskState {
+  num jobAt(Map j) => (j['created_at'] as num?) ?? 0;
+  bool needsReview(Map j) =>
+      ['uncertain', 'failed'].contains(j['status']) ||
+      j['outcome'] == 'blocked';
+  bool inProgress(Map j) =>
+      ['queued', 'dispatched', 'submitted'].contains(j['status']);
+
+  Widget studioCard(Widget child, {EdgeInsets? padding, Key? key}) => Container(
+    key: key,
+    width: double.infinity,
+    padding: padding ?? const EdgeInsets.all(18),
+    decoration: BoxDecoration(
+      color: panelColor,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: line2),
+    ),
+    child: Material(color: Colors.transparent, child: child),
+  );
+
+  Widget cardHead(IconData icon, String title, {Widget? trailing}) => Row(
+    children: [
+      Icon(icon, size: 16, color: ink2),
+      const SizedBox(width: 9),
+      Expanded(
+        child: Text(
+          title,
+          style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
+        ),
+      ),
+      ?trailing,
+    ],
+  );
+
+  Widget kpi(
+    IconData icon,
+    String label,
+    String value,
+    String note, {
+    Color? noteTint,
+    String? chip,
+  }) => studioCard(
+    padding: const EdgeInsets.all(16),
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            Row(
+            Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: const Color(0xff1a1a1a),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: Icon(icon, size: 14, color: ink2),
+            ),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(fontSize: 13, color: muted)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 24,
+            height: 30 / 24,
+            fontWeight: FontWeight.w600,
+            letterSpacing: -.48,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 22,
+          child: Row(
+            children: [
+              if (chip != null) ...[
+                tag(chip, tint: noteTint ?? muted),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Text(
+                  note,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: faint),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget stateChip(Map j) {
+    final s = requestState(j);
+    if (inProgress(j)) return tag('Working', tint: ink2, spinning: true);
+    if (needsReview(j)) return tag('Needs review', tint: warning);
+    if (j['status'] == 'completed') return tag('Answered', good: true);
+    return tag(s);
+  }
+
+  Widget pipeNode(
+    Widget logo,
+    String title,
+    String detail, {
+    bool strong = false,
+  }) => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: strong ? const Color(0xff161616) : raised,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(
+        color: strong ? const Color(0xff2e2e2e) : const Color(0xff232323),
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        logo,
+        const SizedBox(height: 10),
+        Text(
+          title,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+        ),
+        Text(
+          detail,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 11.5, color: faint),
+        ),
+      ],
+    ),
+  );
+
+  Widget dashes() => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 6),
+    child: Row(
+      children: [
+        for (var i = 0; i < 3; i++)
+          Container(
+            width: 4,
+            height: 2,
+            margin: const EdgeInsets.only(right: 3),
+            color: line,
+          ),
+      ],
+    ),
+  );
+
+  Widget livePipeline() {
+    final entries = coordinatorEntries;
+    final main =
+        entries.where((e) => e['isDefault'] == true).firstOrNull ??
+        entries.firstOrNull;
+    final pending = List<Map>.from(status['pendingJobs'] ?? []);
+    final sessions = List<Map>.from(status['bindings'] ?? []).take(3).toList();
+    final working = pending.where(inProgress).firstOrNull;
+    return studioCard(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          cardHead(
+            Icons.alt_route_rounded,
+            'Live pipeline',
+            trailing: Row(
               children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: connected ? success : faint,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 7),
+                Text(
+                  connected ? 'Live' : 'Offline',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: connected ? success : faint,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                flex: 10,
+                child: pipeNode(
+                  logoTile(usingTelegram ? 'telegram' : 'whatsapp', size: 32),
+                  'Your phone',
+                  usingTelegram ? 'Telegram' : replyPlace,
+                ),
+              ),
+              dashes(),
+              Expanded(
+                flex: 10,
+                child: pipeNode(
+                  logoTile(
+                    main?['provider'] == 'claude' ? 'claude' : 'openai',
+                    size: 32,
+                    dim: main == null,
+                  ),
+                  main?['name'] ?? 'No coordinator',
+                  main == null ? 'Set one up below' : 'Default coordinator',
+                  strong: true,
+                ),
+              ),
+              dashes(),
+              Expanded(
+                flex: 14,
+                child: Column(
+                  children: [
+                    if (sessions.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(8),
+                        child: Text(
+                          'Sessions you connect appear here.',
+                          style: TextStyle(fontSize: 12, color: faint),
+                        ),
+                      ),
+                    for (final b in sessions) sessionLine(b, pending),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (working != null) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: fieldColor,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: line2),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.bolt_rounded, size: 15, color: muted),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text:
+                                requestBinding(working)?['name'] ?? 'A session',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          TextSpan(
+                            text: ' is working on "${requestTitle(working)}"',
+                            style: const TextStyle(color: muted),
+                          ),
+                        ],
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12.5),
+                    ),
+                  ),
+                  Text(
+                    clock(jobAt(working)),
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: faint,
+                      fontFamily: 'Menlo',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget sessionLine(Map b, List<Map> pending) {
+    final busyNow = pending.any(
+      (j) => j['binding_id'] == b['id'] && inProgress(j),
+    );
+    return Container(
+      height: 36,
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: busyNow ? raised : fieldColor,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: busyNow ? const Color(0xff2e2e2e) : line2),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: busyNow ? ink : success,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              b['name'] ?? 'Session',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+          Text(
+            busyNow ? 'Working' : 'Idle',
+            style: TextStyle(fontSize: 11.5, color: busyNow ? ink2 : faint),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget needsYouCard(List<Map> approvals, List<Map> reviews) {
+    final total = approvals.length + reviews.length;
+    return studioCard(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          cardHead(
+            Icons.shield_outlined,
+            'Needs you',
+            trailing: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: total > 0 ? sand : const Color(0xff1a1a1a),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                '$total',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: total > 0 ? warning : faint,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          if (total == 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 28),
+              child: Center(
+                child: Column(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: const BoxDecoration(
+                        color: successWash,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.check_rounded,
+                        size: 17,
+                        color: success,
+                      ),
+                    ),
+                    gap(10),
+                    const Text(
+                      'All clear',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    gap(4),
+                    const Text(
+                      'Permission prompts and replies to review land here.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: faint),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          for (final a in approvals.take(2)) approvalTile(a),
+          for (final j in reviews.take(3))
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+              decoration: BoxDecoration(
+                color: fieldColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: line2),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: const BoxDecoration(
+                      color: warning,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          requestTitle(j),
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          '${requestState(j)} · ${clock(jobAt(j))}',
+                          style: const TextStyle(fontSize: 11.5, color: faint),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => go(1),
+                    child: const Text('Review'),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget approvalTile(Map a) => Container(
+    margin: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: fieldColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: const Color(0xff232323)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          a['kind'] == 'approval' ? 'Allow a command?' : 'A question for you',
+          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+        ),
+        Text(
+          '${a['alias'] ?? 'A session'}',
+          style: const TextStyle(fontSize: 11.5, color: faint),
+        ),
+        gap(10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xff141414),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: SelectableText(
+            '${a['question']}',
+            maxLines: 4,
+            style: const TextStyle(
+              fontFamily: 'Menlo',
+              fontSize: 12.5,
+              color: ink2,
+            ),
+          ),
+        ),
+        gap(10),
+        Row(
+          children: [
+            if (a['kind'] == 'approval') ...[
+              Expanded(
+                child: button(
+                  'Allow once',
+                  () =>
+                      post('/api/action', {'command': '/approve ${a['code']}'}),
+                  primary: true,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: button(
+                  'Deny',
+                  () => post('/api/action', {'command': '/deny ${a['code']}'}),
+                ),
+              ),
+            ] else
+              Expanded(
+                child: button('Send answer', () async {
+                  final answer = await ask('${a['question']}');
+                  if (answer != null && answer.isNotEmpty) {
+                    await post('/api/action', {
+                      'command': '/answer ${a['code']} $answer',
+                    });
+                  }
+                }, primary: true),
+              ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  Widget recentRequests(List<Map> jobs) {
+    Widget head(String t, {int flex = 1}) => Expanded(
+      flex: flex,
+      child: Text(t, style: const TextStyle(fontSize: 12, color: faint)),
+    );
+    return studioCard(
+      padding: EdgeInsets.zero,
+      Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 12, 10),
+            child: cardHead(
+              Icons.inbox_outlined,
+              'Recent requests',
+              trailing: TextButton(
+                onPressed: () => go(1),
+                child: const Text('View all'),
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: hairline)),
+            ),
+            child: Row(
+              children: [
+                head('Request', flex: 5),
+                head('Session', flex: 3),
+                head('Status', flex: 2),
+                const SizedBox(
+                  width: 48,
+                  child: Text(
+                    'Time',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: 12, color: faint),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (jobs.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(22),
+              child: Text(
+                'Send a task from your phone and it shows up here.',
+                style: TextStyle(fontSize: 12.5, color: faint),
+              ),
+            ),
+          for (final j in jobs.take(5))
+            InkWell(
+              onTap: () => go(1),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 11,
+                ),
+                decoration: const BoxDecoration(
+                  border: Border(bottom: BorderSide(color: hairline)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 5,
+                      child: Text(
+                        requestTitle(j),
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 3,
+                      child: Text(
+                        requestBinding(j)?['name'] ?? requestKind(j),
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12.5, color: muted),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: stateChip(j),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        clock(jobAt(j)),
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: faint,
+                          fontFamily: 'Menlo',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> overviewScreen() {
+    final now = DateTime.now();
+    final weekAgo = now
+        .subtract(const Duration(days: 7))
+        .millisecondsSinceEpoch;
+    final jobs = [...allJobs]..sort((a, b) => jobAt(b).compareTo(jobAt(a)));
+    final week = jobs.where((j) => jobAt(j) >= weekAgo).toList();
+    final answered = week.where((j) => j['status'] == 'completed').length;
+    final working = jobs.where(inProgress).length;
+    final approvals = List<Map>.from(status['approvals'] ?? []);
+    final reviews = jobs.where(needsReview).toList();
+    final needs = approvals.length + reviews.length;
+    final hello = now.hour < 12
+        ? 'Good morning'
+        : now.hour < 18
+        ? 'Good afternoon'
+        : 'Good evening';
+    final sub = [
+      week.isEmpty
+          ? 'No requests this week yet.'
+          : '${week.length} request${week.length == 1 ? '' : 's'} this week.',
+      needs == 0
+          ? 'Nothing needs you.'
+          : '$needs need${needs == 1 ? 's' : ''} you.',
+    ].join(' ');
+    Widget twoUp(Widget a, Widget b, {int fa = 155, int fb = 100}) =>
+        LayoutBuilder(
+          builder: (context, box) => box.maxWidth >= 900
+              ? IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(flex: fa, child: a),
+                      const SizedBox(width: 12),
+                      Expanded(flex: fb, child: b),
+                    ],
+                  ),
+                )
+              : Column(children: [a, gap(12), b]),
+        );
+    return [
+      Text(hello, style: Theme.of(context).textTheme.headlineLarge),
+      gap(4),
+      Text(sub, style: const TextStyle(fontSize: 13.5, color: muted)),
+      gap(16),
+      if (needs > 0) ...[
+        Container(
+          height: 42,
+          padding: const EdgeInsets.only(left: 14, right: 6),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xff2a1207), Color(0xff1a0b05)],
+              stops: [0, .8],
+            ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0x59ff6b2c)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.auto_awesome_outlined, size: 15, color: accent),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '$needs request${needs == 1 ? ' is' : 's are'} waiting on a permission or a review.',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xffe5e5e5),
+                  ),
+                ),
+              ),
+              OutlinedButton(
+                onPressed: () => go(1),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, 30),
+                  backgroundColor: windowColor,
+                  side: const BorderSide(color: line),
+                ),
+                child: const Text('View requests'),
+              ),
+            ],
+          ),
+        ),
+        gap(16),
+      ],
+      LayoutBuilder(
+        builder: (context, box) {
+          final tiles = [
+            kpi(
+              Icons.inbox_outlined,
+              'Requests',
+              '${week.length}',
+              'last 7 days',
+            ),
+            kpi(
+              Icons.check_rounded,
+              'Answered',
+              week.isEmpty ? '–' : '${(answered * 100 / week.length).round()}%',
+              '$answered repl${answered == 1 ? 'y' : 'ies'}',
+            ),
+            kpi(
+              Icons.schedule_rounded,
+              'In progress',
+              '$working',
+              working == 0 ? 'nothing running' : 'sessions working now',
+            ),
+            kpi(
+              Icons.shield_outlined,
+              'Needs you',
+              '$needs',
+              needs == 0
+                  ? 'nothing waiting'
+                  : 'oldest ${clock(reviews.isEmpty ? now.millisecondsSinceEpoch : jobAt(reviews.last))}',
+              chip: needs == 0 ? 'Clear' : 'Action',
+              noteTint: needs == 0 ? success : warning,
+            ),
+          ];
+          final cols = box.maxWidth >= 860 ? 4 : 2;
+          return Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              for (final t in tiles)
+                SizedBox(
+                  width: (box.maxWidth - 12 * (cols - 1)) / cols,
+                  child: t,
+                ),
+            ],
+          );
+        },
+      ),
+      gap(12),
+      twoUp(livePipeline(), needsYouCard(approvals, reviews)),
+      gap(12),
+      twoUp(recentRequests(jobs), studioCard(coordinatorSummary())),
+      gap(12),
+      voiceCard(),
+    ];
+  }
+}
+
+/// First-run screens from the FarFromDesk Studio design: steps on the left,
+/// the live connection card on a grid on the right.
+extension _Onboarding on _DeskState {
+  Widget obStep(int n, String title, String detail, String state, bool last) {
+    final done = state == 'done', now = state == 'now';
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Column(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: done
+                      ? ink
+                      : now
+                      ? const Color(0xff222222)
+                      : Colors.transparent,
+                  shape: BoxShape.circle,
+                  border: done || now
+                      ? null
+                      : Border.all(color: const Color(0xff2a2a2a), width: 1.5),
+                ),
+                child: done
+                    ? const Icon(
+                        Icons.check_rounded,
+                        size: 14,
+                        color: Color(0xff0a0a0a),
+                      )
+                    : Text(
+                        '$n',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: now ? ink : faint,
+                        ),
+                      ),
+              ),
+              if (!last)
+                Expanded(
+                  child: Container(
+                    width: 1.5,
+                    constraints: const BoxConstraints(minHeight: 14),
+                    color: done
+                        ? const Color(0xff3a3a3a)
+                        : const Color(0xff1e1e1e),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(top: 2, bottom: last ? 0 : 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
+                      color: done || now ? ink : muted,
+                    ),
+                  ),
+                  Text(
+                    detail,
+                    style: const TextStyle(fontSize: 12, color: faint),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget chooseCard() {
+    Widget option(String id, String name, String detail) => Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: panelColor,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: line2),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: busy ? null : () => chooseMessagingApp(id),
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Row(
+              children: [
+                logoTile(id, size: 52),
+                const SizedBox(width: 18),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Text(
-                            '${counts['Open']} open, ${counts['Needs you']} need you',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          infoTip(
-                            'Items are work your proxies follow up on. Each has a number you can use from your phone, like "update on 6". Done items stay in the All list.',
-                            label: 'About items',
-                          ),
-                        ],
+                      Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                      gap(2),
-                      small(
-                        'Proxies add items for work that needs follow-up. Ask "where are we" on your phone to get this list.',
+                      gap(4),
+                      Text(
+                        detail,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          height: 1.45,
+                          color: muted,
+                        ),
                       ),
                     ],
                   ),
                 ),
-                SizedBox(
-                  width: 260,
-                  child: TextField(
-                    onChanged: (v) => changeView(() => itemQuery = v),
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      prefixIcon: Icon(Icons.search, size: 18),
-                      hintText: 'Search items or sessions',
+                const SizedBox(width: 12),
+                const Icon(Icons.arrow_forward_rounded, size: 16, color: faint),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    return Column(
+      children: [
+        option(
+          'whatsapp',
+          'WhatsApp',
+          'Use your own account. Scan a QR code and send requests in your private chat.',
+        ),
+        option(
+          'telegram',
+          'Telegram',
+          'Use a private bot. Add its token and confirm the account that can control it.',
+        ),
+      ],
+    );
+  }
+
+  Widget onboardingScreen() {
+    final wa = status['whatsapp'] ?? {};
+    final tg = status['telegram']?['status'];
+    final confirming = ['pairing', 'confirm', 'pairing expired'].contains(tg);
+    final (String kicker, String title, String sub) = !hasChannelChoice
+        ? (
+            'Get started',
+            'Your coding sessions,\none message away.',
+            'Choose the app you want to use from your phone. Connect it once, then ask for updates or start work.',
+          )
+        : usingTelegram
+        ? confirming
+              ? (
+                  'Step 3 of 4',
+                  'Confirm your\nTelegram account',
+                  'Check that you were the one who opened the pairing link.',
+                )
+              : (
+                  'Step 2 of 4',
+                  'Connect your\nTelegram bot',
+                  'Only the account you confirm can control it. The token is saved on this $computer only.',
+                )
+        : (
+            'Step 2 of 4',
+            'Link this $computer\nto WhatsApp',
+            'A one-time setup. Your phone stays the only account that can control FarFromDesk.',
+          );
+    final steps = usingTelegram && hasChannelChoice
+        ? [
+            ('Choose Telegram', 'Use a private bot', 'done'),
+            (
+              'Connect your bot',
+              'Paste the BotFather token',
+              confirming ? 'done' : 'now',
+            ),
+            (
+              'Confirm your account',
+              'Open the pairing link',
+              confirming ? 'now' : 'pending',
+            ),
+            ('Set up a coordinator', 'Claude or Codex', 'pending'),
+          ]
+        : [
+            (
+              'Choose a messaging app',
+              'WhatsApp or Telegram',
+              hasChannelChoice ? 'done' : 'now',
+            ),
+            (
+              'Scan the QR code',
+              'WhatsApp › Linked devices',
+              hasChannelChoice ? 'now' : 'pending',
+            ),
+            ('Pick where replies go', 'Yourself or a private group', 'pending'),
+            ('Set up a coordinator', 'Claude or Codex', 'pending'),
+          ];
+    final right = !hasChannelChoice
+        ? chooseCard()
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (usingTelegram) telegramCard() else pairingCard(wa),
+              if (!usingTelegram && wa['error'] != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    '${wa['error']}',
+                    style: const TextStyle(color: danger),
+                  ),
+                ),
+              Center(
+                child: TextButton(
+                  onPressed: busy ? null : switchMessagingApp,
+                  child: const Text('Choose another app'),
+                ),
+              ),
+            ],
+          );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          width: 500,
+          padding: const EdgeInsets.fromLTRB(52, 24, 52, 32),
+          decoration: const BoxDecoration(
+            border: Border(right: BorderSide(color: hairline)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.asset(
+                      'assets/ffd-icon.png',
+                      key: const ValueKey('header-logo'),
+                      width: 30,
+                      height: 30,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'FarFromDesk',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 40),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          kicker,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: muted,
+                          ),
+                        ),
+                        gap(12),
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 38,
+                            height: 44 / 38,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -1.33,
+                          ),
+                        ),
+                        gap(12),
+                        Text(
+                          sub,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            height: 24 / 15,
+                            color: muted,
+                          ),
+                        ),
+                        gap(28),
+                        for (var i = 0; i < steps.length; i++)
+                          obStep(
+                            i + 1,
+                            steps[i].$1,
+                            steps[i].$2,
+                            steps[i].$3,
+                            i == steps.length - 1,
+                          ),
+                      ],
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
-                spinButton(
-                  'Refresh',
-                  'Refreshing…',
-                  () => loadItems(fresh: true),
-                ),
-              ],
-            ),
-            gap(16),
-            segmented(
-              counts.keys.toList(),
-              itemFilter,
-              (v) => changeView(() => itemFilter = v),
-              counts: counts,
-              compact: true,
-            ),
-            gap(14),
-            tableHeader(const [
-              (30.0, '#'),
-              (null, 'Item'),
-              (200.0, 'Session'),
-              (150.0, 'Status'),
-            ]),
-            if (shown.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 36),
-                child: Center(
+              ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Change your messaging app later in Settings. Your coordinators stay with you.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.5,
+                        color: faint2,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => changeView(() => onboardingSkipped = true),
+                    child: const Text('Skip for now'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: CustomPaint(
+            painter: _Grid(),
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(32),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
                   child: Column(
-                    children: [
-                      const Text(
-                        'No items here',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      gap(4),
-                      small(
-                        brainOn
-                            ? 'Say "add this" on your phone while asking for work.'
-                            : 'Turn on the brain to keep an item list.',
-                      ),
-                      if (!brainOn) ...[
-                        gap(10),
-                        button('Open Brain', () => go(3), compact: true),
-                      ],
-                    ],
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [if (api.preview) previewFlows(), right],
                   ),
                 ),
-              )
-            else
-              for (final i in shown) itemRow(i),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Grid extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()
+      ..color = const Color(0x05ffffff)
+      ..strokeWidth = 1;
+    for (double x = 0; x < size.width; x += 40) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), p);
+    }
+    for (double y = 0; y < size.height; y += 40) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_) => false;
+}
+
+extension _Welcome on _DeskState {
+  List<Widget> welcomeOverview() {
+    Widget step(
+      IconData icon,
+      String title,
+      String detail,
+      Widget? end, {
+      bool first = false,
+      bool dim = false,
+    }) => Opacity(
+      opacity: dim ? .55 : 1,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+        decoration: BoxDecoration(
+          border: first ? null : const Border(top: BorderSide(color: hairline)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xff1a1a1a),
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Icon(icon, size: 18, color: ink2),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  gap(3),
+                  Text(
+                    detail,
+                    style: const TextStyle(fontSize: 13, color: muted),
+                  ),
+                ],
+              ),
+            ),
+            ?end,
           ],
         ),
       ),
-    ];
-  }
-
-  /// Shared table header for Activity and Items: one tinted strip.
-  Widget tableHeader(List<(double?, String)> columns) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-    decoration: BoxDecoration(
-      color: surface,
-      borderRadius: BorderRadius.circular(10),
-    ),
-    child: Row(
-      children: [
-        for (final (i, c) in columns.indexed) ...[
-          if (i > 0) const SizedBox(width: 14),
-          c.$1 == null
-              ? Expanded(child: headerText(c.$2))
-              : SizedBox(
-                  width: c.$1,
-                  child: headerText(c.$2, right: i == 0),
-                ),
-        ],
-        const SizedBox(width: 30),
-      ],
-    ),
-  );
-  Widget headerText(String t, {bool right = false}) => Text(
-    t,
-    textAlign: right ? TextAlign.right : TextAlign.left,
-    style: const TextStyle(
-      fontSize: 12,
-      fontWeight: FontWeight.w600,
-      color: muted,
-    ),
-  );
-
-  Widget itemRow(Map<String, dynamic> i) {
-    final status = '${i['status']}';
-    final needs = ['waiting on owner', 'blocked'].contains(status);
-    final label = status.isEmpty
-        ? 'Unknown'
-        : status[0].toUpperCase() + status.substring(1);
-    return Container(
-      margin: const EdgeInsets.only(top: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: needs ? warning.withValues(alpha: .07) : null,
-        borderRadius: BorderRadius.circular(10),
-        border: needs ? null : const Border(top: BorderSide(color: hairline)),
-      ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 30,
-            child: Text(
-              '${i['id']}',
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontWeight: FontWeight.w700, color: muted),
-            ),
+    );
+    Widget bubble(String text, bool mine) => Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 230),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: mine ? tonePine : const Color(0xff1a1a1a),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(14),
+            topRight: const Radius.circular(14),
+            bottomLeft: Radius.circular(mine ? 14 : 4),
+            bottomRight: Radius.circular(mine ? 4 : 14),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 13,
+            height: 19 / 13,
+            color: mine ? ink : ink2,
+          ),
+        ),
+      ),
+    );
+    const later = TextStyle(fontSize: 12.5, color: faint2);
+    final setupCard = studioCard(
+      padding: EdgeInsets.zero,
+      Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: hairline)),
+            ),
+            child: const Row(
               children: [
-                Text(
-                  '${i['title']}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
+                Expanded(
+                  child: Text(
+                    'Finish setting up',
+                    style: TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-                if (i['executionState'] != null)
-                  small('Work: ${i['executionState']}'),
+                Text(
+                  '0 of 3 done',
+                  style: TextStyle(fontSize: 12.5, color: muted),
+                ),
               ],
             ),
           ),
-          const SizedBox(width: 14),
-          SizedBox(
-            width: 200,
-            child: Text(
-              '${i['session'] ?? 'No session yet'}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12.5),
+          step(
+            Icons.chat_bubble_outline_rounded,
+            'Connect your chat',
+            'Scan a QR code with WhatsApp, or link a Telegram bot.',
+            button(
+              'Connect',
+              () => changeView(() => onboardingSkipped = false),
+              primary: true,
+              compact: true,
             ),
+            first: true,
           ),
-          const SizedBox(width: 14),
-          SizedBox(
-            width: 150,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: status == 'done'
-                  ? tag('Done', good: true)
-                  : status == 'blocked'
-                  ? tag('Blocked', tint: danger)
-                  : needs
-                  ? tag(label, tint: warning)
-                  : status == 'in progress'
-                  ? tag(label, spinning: true)
-                  : tag(label),
-            ),
+          step(
+            Icons.visibility_outlined,
+            'Set up a coordinator',
+            'Pick Claude or Codex to read your messages.',
+            const Text('After step 1', style: later),
+            dim: true,
           ),
-          const SizedBox(width: 30),
+          step(
+            Icons.auto_awesome_outlined,
+            'Send your first task',
+            'Message yourself from your phone and watch it land in Inbox.',
+            const Text('After step 2', style: later),
+            dim: true,
+          ),
         ],
       ),
     );
+    final example = studioCard(
+      padding: const EdgeInsets.all(20),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'What it looks like',
+            style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
+          ),
+          gap(14),
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+            decoration: BoxDecoration(
+              color: windowColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: hairline),
+            ),
+            child: Column(
+              children: [
+                bubble(
+                  'Claude, run the tests on website and tell me what fails',
+                  true,
+                ),
+                bubble(
+                  '2 failing in checkout.spec.ts. Want me to fix them?',
+                  false,
+                ),
+              ],
+            ),
+          ),
+          gap(14),
+          Text(
+            'Send a task from your phone. Your coordinator hands it to the right session on this $computer and replies in the same chat.',
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 19 / 12.5,
+              color: muted,
+            ),
+          ),
+        ],
+      ),
+    );
+    return [
+      Text(
+        'Welcome to FarFromDesk',
+        style: Theme.of(context).textTheme.headlineLarge,
+      ),
+      gap(4),
+      const Text(
+        'Three steps and your coding sessions are one message away.',
+        style: TextStyle(fontSize: 13.5, color: muted),
+      ),
+      gap(20),
+      LayoutBuilder(
+        builder: (context, box) => box.maxWidth >= 860
+            ? Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: setupCard),
+                  const SizedBox(width: 16),
+                  SizedBox(width: 320, child: example),
+                ],
+              )
+            : Column(children: [setupCard, gap(16), example]),
+      ),
+    ];
   }
 }

@@ -16,7 +16,7 @@ import { turnEnvelope,roleConfig } from './roles.js';
 import { Attachments } from './attachments.js';
 import { sameProject, activityTime, claudeHistory, claudeDesktopHistory, type Session } from './session-catalog.js';
 import { claudeDiscoveryBinary, hasClaudeInboxes, claudeDesktopProcesses } from './desktop-claude.js';
-import { SessionActivation,openCodexDesktop } from './session-activation.js';
+import { SessionActivation,DesktopReadinessError,openCodexDesktop } from './session-activation.js';
 import { Connections } from './connections.js';
 import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
 
@@ -42,6 +42,9 @@ export function mergeClaudeSessions(history:Session[],desktopHistory:Session[],l
     if(other&&!other.live)all.set(otherKey,{...other,activation:undefined,available:false,status:`This session is running in ${mode==='desktop'?'Desktop':'CLI'}. Use that runtime or close it there before switching.`});
   }
   return all;
+}
+function waitingForDesktopInbox(s:Session) {
+  return s.activation==='desktop-open'||(s.provider==='claude'&&s.executionMode==='desktop'&&s.live===true&&s.available===false&&!!s.desktopId&&!!s.accountScope);
 }
 export class NativeAgents {
   wakeCodex=(id:string)=>openCodexDesktop(id,true);
@@ -159,6 +162,21 @@ export class NativeAgents {
       await requireCodexHistory(row.rollout_path);
     }}finally{db.close();}
   }
+  /** Owner-target selection may warm this exact Desktop chat. Never submits a task,
+   * never falls back to CLI, and consumes its own rejection. Dispatch still validates anew. */
+  warmDesktop(b:Binding):void {
+    void (async()=>{
+      if(b.provider!=='claude'||!this.store.binding(b.id)?.enabled)return;
+      this.beforeRun?.(b);await this.connections.assert(b);
+      const route=this.connections.route(b);
+      if(route?.transport!=='native-session'||route.executionMode!=='desktop')return;
+      const s=(await this.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===b.native_id&&sameProject(s.cwd,b.cwd)&&s.executionMode==='desktop');
+      if(!s||route.accountScope&&s.accountScope!==route.accountScope||!waitingForDesktopInbox(s))return;
+      this.beforeRun?.(b);
+      if(!this.store.binding(b.id)?.enabled||JSON.stringify(this.connections.route(b))!==JSON.stringify(route))return;
+      await this.activation.ready({...s,activation:'desktop-open'});
+    })().catch(()=>{});
+  }
   async run(b:Binding,text:string,jobId:string) {
     this.beforeRun?.(b);
     await this.connections.assert(b);
@@ -175,8 +193,24 @@ export class NativeAgents {
     }
     if(b.provider==='claude'&&route.transport==='native-session') {
       let s=(await this.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===b.native_id&&sameProject(s.cwd,b.cwd)&&s.executionMode===route!.executionMode);
-      if(!s||s.available!==true||s.executionMode!==route.executionMode||(route.accountScope&&s.accountScope!==route.accountScope))throw new Error('Selected Claude session is unavailable or its platform/account changed. No CLI/Desktop fallback was used.');
-      if(s.activation==='desktop-open')s=await this.activation.ready(s);
+      if(!s||(s.available!==true&&!waitingForDesktopInbox(s))||s.executionMode!==route.executionMode||(route.accountScope&&s.accountScope!==route.accountScope))throw new Error('Selected Claude session is unavailable or its platform/account changed. No CLI/Desktop fallback was used.');
+      if(waitingForDesktopInbox(s)) {
+        const job=this.store.job(jobId);
+        // This notice precedes readiness polling; a queued receipt is not submission.
+        // The exact original destination and durable source prevent retargeting or repeats.
+        const notice=`native-opening:${jobId}`;
+        if(job&&/^(wa|tg):/.test(jobId)&&job.destination&&!this.store.db.prepare('SELECT 1 FROM reply_receipts WHERE source=?').get(notice)) {
+          const name=this.store.get(`name:${b.id}`)??b.alias;
+          this.store.output(undefined,`Opening ${name} in Claude Desktop. Your message will be sent when it is ready.`,notice,job.destination,{requestId:jobId,kind:'system',origin:'system'});
+        }
+        try {s=await this.activation.ready({...s,activation:'desktop-open'});}catch(error) {
+          throw error instanceof DesktopReadinessError?error:new DesktopReadinessError(error instanceof Error?error.message:'Claude Desktop could not be opened. No task was sent.');
+        }
+        // Readiness is not permission to revive a request closed while the app opened.
+        const current=job?this.store.job(jobId):undefined;
+        if(JSON.stringify(this.connections.route(b))!==JSON.stringify(route))throw new DesktopReadinessError('The selected connection changed while Claude Desktop opened. No task was sent.');
+        if(job&&(!current||current.binding_id!==b.id||current.body!==job.body||current.status!=='dispatched'))throw new DesktopReadinessError('This request changed while Claude Desktop opened. No task was sent.');
+      }
       if(s.activation==='cli-resume') {
         const preference=JSON.parse(this.store.get('platform-preference:claude')??'null');
         const next=await this.connections.prepare(b,'cli',true);

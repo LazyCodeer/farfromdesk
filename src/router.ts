@@ -1,3 +1,5 @@
+import { DesktopReadinessError } from './session-activation.js';
+import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel } from './owner-commands.js';
 import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
@@ -12,7 +14,7 @@ import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
-export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice'};
+export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean};
 export const help = `Just tell me what you need.
 
 • Show my recent sessions.
@@ -44,12 +46,12 @@ export class Router {
     } else if(m.quotedId) {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
       this.checkQuotedPlatform(text,b);
-    } else b=this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??'');
+    } else b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
     if(!b)throw new Error('Choose an exact session before sending an attachment.');
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
     return {binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
-      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel()])};
+      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel(),this.store.get(`owner-target:${this.store.destination()}`)])};
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
     if(this.stopped||this.store.seen(m.id))return;
@@ -68,24 +70,46 @@ export class Router {
   async receive(m:Incoming):Promise<RouteResult> {
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
-    try{return await this.receiveOnce(m);}finally{this.receiving.delete(m.id);}
+    try{
+      // History is best effort: a failure to label or record it must not fail a turn that already ran, or Telegram re-polls it.
+      const failed=(e:unknown)=>{try{this.store.event(m.id,'owner_history_failed',{code:errorCode(e)});}catch{}};
+      let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch(e){failed(e);}
+      const result=await this.receiveOnce(m);
+      try{if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
+      return result;
+    }finally{this.receiving.delete(m.id);}
   }
   private async receiveOnce(m:Incoming):Promise<RouteResult> {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
+    if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
     const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    // Natural-language controls may be spoken; slash commands must be typed.
+    const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
+    let ownerReply=false;
     try {
+      // Replies to owner commands and session picks, errors included, go out without the session header and footer.
+      ownerReply=true;const targetReply=pickOwnerTarget(this,m);ownerReply=false;
+      if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
         const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>this.queue(m.id,this.need(bindingId),body));
         if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      // A quoted native answer is data even when it starts with a slash.
+      if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
+      ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
+      if(commandReply!==undefined){this.store.output(undefined,commandReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      if(authenticatedOwner(this,m)&&ownerIntent&&!m.quotedId&&backToProxy.test(text)&&this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'){
+        clearOwnerTarget(this);this.store.output(undefined,'Back to normal routing.',`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};
+      }
+      if(this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'&&!text.startsWith('/')&&await routeOwnerTarget(this,m)){this.store.remember(m.id);this.pump();return {status:this.brain.get(m.id)?.state==='blocked'?'blocked':this.store.job(m.id)?'queued':'handled',requestId:m.id};}
       const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show (?:me )?(?:my )?(?:recent )?sessions|list (?:my |all |recent )?sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
-      if(this.coordinator&&!m.quotedId&&browsing) {
+      if(this.coordinator&&!m.quotedId&&ownerIntent&&browsing) {
         this.brain.clearChoice();
         queueOwnerReceipt(this.store,m.id,this.coordinator.master(),true);
         let search=text.replace(/^\/sessions\s*/i,'');
@@ -95,10 +119,10 @@ export class Router {
         this.store.output(undefined,await this.coordinator.list(search,more?'more':back?'back':0),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       const selection=/^(?:(?:\/select|select|choose|pick)\s+)?(\d+(?:(?:\s*,\s*|\s+and\s+|\s+)\d+)*)$/i.exec(text);
-      if(this.coordinator&&!m.quotedId&&selection&&!this.brain.hasChoice()&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
+      if(this.coordinator&&!m.quotedId&&ownerIntent&&selection&&!this.brain.hasChoice()&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
         this.store.output(undefined,await this.coordinator.select(selection[1].replace(/\band\b/gi,',')),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
-      if(!m.quotedId&&backToProxy.test(text)&&endDirect(this.store)) {
+      if(!m.quotedId&&ownerIntent&&backToProxy.test(text)&&endDirect(this.store)) {
         this.store.output(undefined,'↩️ *Back to your proxy*\nYour next messages go to the proxy again.',`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(text.startsWith('/')) {
@@ -107,7 +131,7 @@ export class Router {
         if(cmd==='help')this.store.output(undefined,help,`command:${m.id}`);
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
         else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
-        else if(cmd==='use') {const b=this.need(args);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
+        else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
         else if(cmd==='talk')this.store.output(undefined,this.talkDirect(this.need(args)),`command:${m.id}`);
         else if(cmd==='to') {const [alias,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /to NAME message');this.queue(m.id,this.need(alias),words.join(' '));}
         else if(cmd==='status')this.store.output(undefined,`Active: ${this.store.binding(this.store.get('active')??'')?.alias??'none'}\nRunning: ${this.busy.size}\nWaiting permissions: ${this.approvals.pending.size}\n${this.store.jobs().slice(0,8).map(j=>`${j.id} · ${this.store.binding(j.binding_id)?.alias} · ${j.status}${j.error?` · ${j.error}`:''}`).join('\n')}`,`command:${m.id}`);
@@ -149,14 +173,14 @@ export class Router {
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
-    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`);this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
+    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`,undefined,ownerReply?{plain:true}:{});this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
     this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};
   }
   /** Hands this chat to one session until the owner says back, switches, or goes quiet for two hours. */
   talkDirect(b:Binding,destination?:string|null) {
     if(!b.enabled)throw new Error('That session is paused. Resume it first.');
     if(this.coordinator?.isCoordinator(b.id))throw new Error('That is a proxy. Name the session you want to talk to.');
-    startDirect(this.store,b,destination);
+    clearOwnerTarget(this);startDirect(this.store,b,destination);
     const name=this.coordinator?.name(b)??b.alias;
     return `🔀 *Now talking to ${name.replace(/[*_~`]/g,'').slice(0,60)}*\n- Your messages go straight to this session, and it answers you itself. Its permissions do not change.\nYou: say *back* to return to your proxy. After two quiet hours it switches back on its own.`;
   }
@@ -272,6 +296,7 @@ export class Router {
         // A slow native hand-off often still lands. Internal report deliveries never reach the owner; for
         // owner messages, warn only if the session has not answered by the time the notice is due.
         if(job.id.startsWith('report:'))return;
+        if(e instanceof DesktopReadinessError){this.store.output(b,e.message,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});return;}
         const notice=()=>{if(this.stopped||this.store.job(job.id)?.status!=='uncertain')return;
           this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});};
         // ponytail: in-memory timer, so a restart inside the window drops the notice; the request stays uncertain.

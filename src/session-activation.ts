@@ -19,6 +19,7 @@ export async function openCodexDesktop(id:string,wakeOnly=false) {
 }
 /** Open the exact native Desktop identity without creating a CLI runtime. */
 export async function openClaudeDesktop(session:Session) {
+  if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
   if(process.platform!=='darwin')throw new Error('Automatic Claude Desktop reopening is not supported by this OS adapter.');
   if(!/^local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.desktopId??''))throw new Error('An exact native Desktop ID is required to reopen this chat.');
   await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://claude.ai/epitaxy/${session.desktopId}`],{timeout:10000,maxBuffer:65536});
@@ -36,9 +37,17 @@ export async function focusClaudeDesktop() {
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
   await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop'],{timeout:10000,maxBuffer:65536});
 }
+export const CLAUDE_DESKTOP_READY_TIMEOUT_MS=180_000;
+/** Readiness failed before a native message was submitted. The router can report
+ * this immediately instead of applying its ambiguous-submission grace period. */
+export class DesktopReadinessError extends Error {
+  readonly notSubmitted=true;
+}
+type ActivationClock={now:()=>number;sleep:(ms:number)=>Promise<void>};
+const realClock:ActivationClock={now:()=>Date.now(),sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))};
 export class SessionActivation {
   private pending=new Map<string,Promise<Session>>();
-  constructor(private store:Store,private catalog:()=>Promise<Session[]>,private open=openClaudeDesktop,private timeoutMs=20000) {}
+  constructor(private store:Store,private catalog:()=>Promise<Session[]>,private open=openClaudeDesktop,private timeoutMs=CLAUDE_DESKTOP_READY_TIMEOUT_MS,private clock:ActivationClock=realClock) {}
   ready(session:Session):Promise<Session> {
     if(session.activation!=='desktop-open')return Promise.resolve(session);
     const key=`desktop-wake:${session.id}`;
@@ -48,12 +57,13 @@ export class SessionActivation {
   }
   private async activate(key:string,session:Session) {
     if(session.provider!=='claude'||session.executionMode!=='desktop'||!session.desktopId||!session.accountScope||!/^[0-9a-f-]{36}$/i.test(session.id))throw new Error('Desktop resume requires an exact saved session and account scope.');
+    const until=this.clock.now()+this.timeoutMs;
     const project=realpathSync(session.cwd);
     const prior=JSON.parse(this.store.get(key)??'null');
     if(prior&&((prior.project?prior.project!==project:prior.cwd!==session.cwd)||prior.accountScope!==session.accountScope))throw new Error('Desktop resume account or project changed.');
     const current=()=>this.catalog().then(rows=>{
       const row=rows.find(s=>s.id===session.id&&s.executionMode==='desktop');
-      if(!row||realpathSync(session.cwd)!==project||realpathSync(row.cwd)!==project||row.executionMode!=='desktop'||row.accountScope!==session.accountScope)throw new Error('Desktop resume identity or account changed. No message was sent.');
+      if(!row||realpathSync(session.cwd)!==project||realpathSync(row.cwd)!==project||row.provider!=='claude'||row.executionMode!=='desktop'||row.accountScope!==session.accountScope||(row.desktopId&&row.desktopId!==session.desktopId))throw new Error('Desktop resume identity or account changed. No message was sent.');
       return row;
     });
     const already=await current();if(already.available===true&&!already.activation)return already;
@@ -62,12 +72,11 @@ export class SessionActivation {
       this.store.set(key,JSON.stringify({cwd:session.cwd,project,accountScope:session.accountScope,status:'opening',at:Date.now()}));
       try {await this.open(session);}catch{throw new Error('Claude Desktop reopen was not confirmed. Check its login or native prompt; no CLI fallback or task submission occurred.');}
     }
-    const until=Date.now()+this.timeoutMs;
     do {
       const row=await current();
       if(row.available===true&&!row.activation){this.store.set(key,JSON.stringify({cwd:session.cwd,project,accountScope:session.accountScope,status:'ready',at:Date.now()}));return row;}
-      if(Date.now()<until)await new Promise(r=>setTimeout(r,750));
-    }while(Date.now()<until);
-    throw new Error('Claude Desktop was asked to reopen this exact chat, but its inbox is not live yet. A native login, folder prompt or app action may still be required. No task was sent and the open command will not be repeated automatically.');
+      if(this.clock.now()<until)await this.clock.sleep(Math.min(750,until-this.clock.now()));
+    }while(this.clock.now()<until);
+    throw new DesktopReadinessError('Claude Desktop was asked to reopen this exact chat, but its inbox is not live after waiting up to three minutes. Check its login, folder prompt or native app. No task was sent and the open command will not be repeated automatically.');
   }
 }

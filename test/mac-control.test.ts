@@ -96,3 +96,11 @@ test('Window query errors propagate and never become a successful empty list',as
 });
 
 test('successful reads renew idle lease but never extend the hard request lifetime',async()=>{const f=fixture(),id=await selected(f);f.setTime(110000);await f.service.run('owner:1',{action:'read',windowRef:id});f.setTime(150000);await f.service.run('owner:1',{action:'read',windowRef:id});for(const n of [250000,350000,450000,550000]){f.setTime(n);await f.service.run('owner:1',{action:'read',windowRef:id});}f.setTime(601001);await assert.rejects(f.service.run('owner:1',{action:'read',windowRef:id}),/STALE/);});
+
+test('status re-asks a fresh helper so a grant made after it started shows up',async()=>{
+  let launches=0,trusted=false;const native=(async()=>({trusted,captureTrusted:trusted,captureSupported:true})) as MacNative;
+  native.stop=()=>{launches++;trusted=true;};
+  const service=new MacControl({get:()=>undefined,set:()=>{}},native,'darwin');
+  assert.equal((await service.status()).trusted,true);assert.equal(launches,1);
+  await service.status();assert.equal(launches,1);
+});

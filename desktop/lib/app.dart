@@ -13,6 +13,8 @@ import 'updates.dart';
 import 'bridge_theme.dart';
 part 'screens.dart';
 part 'mac_control_panel.dart';
+part 'remote_control_panel.dart';
+part 'studio_panes.dart';
 
 class FarFromDeskApp extends StatelessWidget {
   final Gateway gateway;
@@ -39,7 +41,8 @@ class _DeskState extends State<Desk> {
   Map<String, dynamic> status = {};
   String? error, actionError;
   bool ready = false, busy = false, polling = false, startup = false;
-  bool macTrialPressed = false;
+  // Lets the owner reach the app before linking a chat; not persisted.
+  bool onboardingSkipped = false;
   void _macUpdate(VoidCallback change) {
     if (mounted) setState(change);
   }
@@ -50,8 +53,20 @@ class _DeskState extends State<Desk> {
       selectedNativeId = '',
       activityFilter = 'All',
       activityQuery = '',
-      itemFilter = 'Open',
-      itemQuery = '';
+      itemQuery = '',
+      settingsTab = 'Messaging';
+  // A stable binding identity, never a request title or session display name.
+  String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
+  String inboxTab = 'Requests';
+  List<Map> inboxAttention = [];
+  bool inboxAttentionLoaded = false;
+  List<Map>? inboxGroups;
+  final inboxThreads = <String, Map<String, dynamic>>{};
+  final inboxScrolls = <String, ScrollController>{};
+  bool inboxLoading = false, inboxOlderLoading = false, inboxShowThread = false;
+  int inboxEpoch = 0;
+  Timer? inboxSearchTimer;
+  final settingsKeys = <String, GlobalKey>{};
   bool editingVoice = false;
   // Item board from the brain; the 3s status poll doesn't carry it.
   List<dynamic> loadedItems = [];
@@ -74,13 +89,23 @@ class _DeskState extends State<Desk> {
   StateSetter? get modalUpdate =>
       modalContext?.mounted == true ? modalSetter : null;
   final search = TextEditingController();
-  final chosen = <String>{};
   final audio = <String, String>{};
   // Voice setup choices; null follows the saved engine.
   String? voicePathChoice, voiceProviderChoice;
   bool replacingVoiceKey = false;
   final voiceKey = TextEditingController();
   Timer? timer, updateTimer;
+  DateTime macCheckedAt = DateTime(0);
+  bool macChecking = false;
+  Map<String, dynamic> remoteLink = {}, phoneRemote = {};
+  List<dynamic> phoneApps = [], phoneWindows = [];
+  int? phonePid, phoneWindowId;
+  String? phoneAddress, remoteError;
+  bool remoteBusy = false, changingRemotePassword = false;
+  int remoteEpoch = 0;
+  bool phoneAddressInitialized = false;
+  final remotePassword = TextEditingController(),
+      remoteConfirm = TextEditingController();
   UpdateCheck update = const UpdateCheck();
   bool checkingUpdates = false;
   bool installingUpdate = false;
@@ -134,9 +159,21 @@ class _DeskState extends State<Desk> {
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(outcome['phase'] == 'complete' ? 'Update complete' : 'Update needs attention'),
-        content: Text(outcome['message']?.toString() ?? 'Check the update status before retrying.'),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+        title: Text(
+          outcome['phase'] == 'complete'
+              ? 'Update complete'
+              : 'Update needs attention',
+        ),
+        content: Text(
+          outcome['message']?.toString() ??
+              'Check the update status before retrying.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
       ),
     );
   }
@@ -145,11 +182,17 @@ class _DeskState extends State<Desk> {
   @override
   void dispose() {
     timer?.cancel();
+    inboxSearchTimer?.cancel();
+    for (final controller in inboxScrolls.values) {
+      controller.dispose();
+    }
     updateTimer?.cancel();
     api.closeUpdates();
     search.dispose();
     customName.dispose();
     telegramToken.dispose();
+    remotePassword.dispose();
+    remoteConfirm.dispose();
     super.dispose();
   }
 
@@ -337,6 +380,18 @@ class _DeskState extends State<Desk> {
           error = null;
         });
         modalUpdate?.call(() {});
+        if (section == 1) unawaited(loadInbox());
+        if (section == 4 &&
+            next['macControl']?['supported'] == true &&
+            !remoteBusy) {
+          unawaited(loadRemote());
+        }
+        // macOS has no permission-change event, so re-ask while Settings is open.
+        if (section == 4 &&
+            next['macControl']?['enabled'] == true &&
+            DateTime.now().difference(macCheckedAt).inSeconds >= 5) {
+          unawaited(checkMac());
+        }
         // Groups can only be read once WhatsApp is connected; the first status
         // poll often lands before the socket is up, so load on the first
         // connected poll instead of failing at startup.
@@ -351,6 +406,20 @@ class _DeskState extends State<Desk> {
       if (mounted) setState(() => error = clean(e));
     } finally {
       polling = false;
+    }
+  }
+
+  Future<void> checkMac() async {
+    if (macChecking) return;
+    macCheckedAt = DateTime.now();
+    if (mounted) setState(() => macChecking = true);
+    try {
+      final next = await api.post('/api/mac-control', {'action': 'check'});
+      if (mounted) setState(() => status['macControl'] = next);
+    } catch (_) {
+      // The next poll shows the backend's own error state.
+    } finally {
+      if (mounted) setState(() => macChecking = false);
     }
   }
 
@@ -438,6 +507,7 @@ class _DeskState extends State<Desk> {
   void go(int index) {
     setState(() => section = index);
     if (index == 2) unawaited(loadItems());
+    if (index == 1) unawaited(loadInbox());
   }
 
   Widget button(
@@ -447,6 +517,7 @@ class _DeskState extends State<Desk> {
     bool primary = false,
     bool compact = false,
     bool destructive = false,
+    bool ignoreBusy = false,
     IconData? icon,
     Key? key,
   }) {
@@ -458,14 +529,14 @@ class _DeskState extends State<Desk> {
             ),
             textStyle: WidgetStatePropertyAll(
               TextStyle(
-                fontFamily: 'DMSans',
+                fontFamily: 'Onest',
                 fontSize: 12.5,
                 fontWeight: FontWeight.w600,
               ),
             ),
           )
         : null;
-    final onPressed = busy || !enabled ? null : action;
+    final onPressed = (busy && !ignoreBusy) || !enabled ? null : action;
     final label = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -489,9 +560,9 @@ class _DeskState extends State<Desk> {
       onPressed: onPressed,
       style: destructive
           ? OutlinedButton.styleFrom(
-              backgroundColor: const Color(0x24e85d50),
-              foregroundColor: const Color(0xffffb4ab),
-              side: const BorderSide(color: Color(0x73ff8a80)),
+              backgroundColor: const Color(0x14f87171),
+              foregroundColor: danger,
+              side: const BorderSide(color: Color(0x59f87171)),
             ).merge(size)
           : size,
       child: label,
@@ -515,7 +586,7 @@ class _DeskState extends State<Desk> {
     Color? tone,
     bool light = false,
     Key? key,
-    EdgeInsets padding = const EdgeInsets.fromLTRB(22, 20, 22, 20),
+    EdgeInsets padding = const EdgeInsets.fromLTRB(18, 18, 18, 18),
   }) => Container(
     key: key,
     width: double.infinity,
@@ -523,8 +594,10 @@ class _DeskState extends State<Desk> {
     padding: padding,
     decoration: BoxDecoration(
       color: tone ?? toneCharcoal,
-      borderRadius: BorderRadius.circular(18),
-      border: tone == null ? Border.all(color: hairline) : null,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(
+        color: tone == null ? line2 : tone.withValues(alpha: .9),
+      ),
     ),
     child: Material(
       color: Colors.transparent,
@@ -556,7 +629,7 @@ class _DeskState extends State<Desk> {
         const SizedBox(height: 4),
         Text(
           subtitle,
-          style: TextStyle(fontSize: 12, color: light ? toneMuted : muted),
+          style: TextStyle(fontSize: 12.5, color: light ? toneMuted : muted),
         ),
       ],
       const SizedBox(height: 14),
@@ -578,12 +651,13 @@ class _DeskState extends State<Desk> {
           tint ?? (good ? (light ? const Color(0xff1f4d3f) : success) : muted);
       final plain = !good && tint == null;
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        height: 22,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
           color: plain
-              ? const Color(0x297f7f78)
-              : color.withValues(alpha: light ? .13 : .15),
-          borderRadius: BorderRadius.circular(999),
+              ? const Color(0xff1a1a1a)
+              : color.withValues(alpha: light ? .13 : .12),
+          borderRadius: BorderRadius.circular(7),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -599,12 +673,16 @@ class _DeskState extends State<Desk> {
               ),
               const SizedBox(width: 7),
             ],
-            Text(
-              text,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w700,
-                color: color,
+            Flexible(
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: plain ? ink2 : color,
+                ),
               ),
             ),
           ],
@@ -683,8 +761,8 @@ class _DeskState extends State<Desk> {
       'done' => Container(
         width: 18,
         height: 18,
-        decoration: const BoxDecoration(color: accent, shape: BoxShape.circle),
-        child: const Icon(Icons.check, size: 12, color: accentInk),
+        decoration: const BoxDecoration(color: success, shape: BoxShape.circle),
+        child: const Icon(Icons.check, size: 12, color: Color(0xff0a0a0a)),
       ),
       'now' => Padding(
         padding: const EdgeInsets.all(2),
@@ -694,12 +772,13 @@ class _DeskState extends State<Desk> {
         width: 18,
         height: 18,
         decoration: BoxDecoration(
-          color: state == 'wait' ? warning : const Color(0xffe85d50),
+          color: state == 'wait' ? warning : danger,
           shape: BoxShape.circle,
           boxShadow: [
             BoxShadow(
-              color: (state == 'wait' ? warning : const Color(0xffe85d50))
-                  .withValues(alpha: .18),
+              color: (state == 'wait' ? warning : danger).withValues(
+                alpha: .18,
+              ),
               spreadRadius: 4,
             ),
           ],
@@ -721,7 +800,7 @@ class _DeskState extends State<Desk> {
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
         decoration: BoxDecoration(
           color: state == 'fail'
-              ? const Color(0x14e85d50)
+              ? const Color(0x14f87171)
               : highlighted
               ? canvas
               : null,
@@ -767,26 +846,30 @@ class _DeskState extends State<Desk> {
     bool compact = false,
   }) => Container(
     key: key,
-    padding: const EdgeInsets.all(4),
+    padding: const EdgeInsets.all(3),
     decoration: BoxDecoration(
-      color: panelColor,
-      borderRadius: BorderRadius.circular(999),
+      color: fieldColor,
+      borderRadius: BorderRadius.circular(9),
       border: Border.all(color: line2),
     ),
     child: Wrap(
-      spacing: 4,
+      spacing: 2,
       children: [
         for (final option in options)
           Material(
-            color: option == value ? accent : Colors.transparent,
-            shape: const StadiumBorder(),
+            color: option == value
+                ? const Color(0xff222222)
+                : Colors.transparent,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+            ),
             child: InkWell(
-              customBorder: const StadiumBorder(),
+              borderRadius: BorderRadius.circular(6),
               onTap: busy ? null : () => onChanged(option),
               child: Padding(
                 padding: EdgeInsets.symmetric(
-                  horizontal: compact ? 14 : 16,
-                  vertical: compact ? 7 : 9,
+                  horizontal: compact ? 12 : 14,
+                  vertical: compact ? 5 : 7,
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -794,9 +877,9 @@ class _DeskState extends State<Desk> {
                     Text(
                       option,
                       style: TextStyle(
-                        fontSize: compact ? 13 : 14,
-                        fontWeight: FontWeight.w600,
-                        color: option == value ? accentInk : muted,
+                        fontSize: compact ? 12.5 : 13,
+                        fontWeight: FontWeight.w500,
+                        color: option == value ? ink : faint,
                       ),
                     ),
                     if (counts != null) ...[
@@ -808,7 +891,7 @@ class _DeskState extends State<Desk> {
                         ),
                         decoration: BoxDecoration(
                           color: option == value
-                              ? accentInk.withValues(alpha: .16)
+                              ? const Color(0xff2e2e2e)
                               : canvas,
                           borderRadius: BorderRadius.circular(999),
                         ),
@@ -816,7 +899,7 @@ class _DeskState extends State<Desk> {
                           '${counts[option] ?? 0}',
                           style: TextStyle(
                             fontSize: 11.5,
-                            color: option == value ? accentInk : muted,
+                            color: option == value ? ink : faint,
                           ),
                         ),
                       ),
@@ -840,11 +923,11 @@ class _DeskState extends State<Desk> {
     double? width,
   }) => Container(
     width: width,
-    height: 44,
-    padding: const EdgeInsets.only(left: 16, right: 12),
+    height: 40,
+    padding: const EdgeInsets.only(left: 12, right: 10),
     decoration: BoxDecoration(
-      color: panelColor,
-      borderRadius: BorderRadius.circular(14),
+      color: fieldColor,
+      borderRadius: BorderRadius.circular(9),
       border: Border.all(color: line2),
     ),
     child: DropdownButtonHideUnderline(
@@ -857,18 +940,18 @@ class _DeskState extends State<Desk> {
             : Text(
                 hint,
                 style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
                   color: ink,
                 ),
               ),
-        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: muted),
-        dropdownColor: panelColor,
-        borderRadius: BorderRadius.circular(14),
+        icon: const Icon(Icons.keyboard_arrow_down_rounded, color: faint),
+        dropdownColor: raised,
+        borderRadius: BorderRadius.circular(10),
         style: const TextStyle(
-          fontFamily: 'DMSans',
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
+          fontFamily: 'Onest',
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
           color: ink,
         ),
         items: items,

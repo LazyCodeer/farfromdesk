@@ -229,6 +229,29 @@ class PreviewGateway extends Gateway {
                 ]
               : [],
           'approvals': [],
+          'workItems': fixture == 'activity'
+              ? [
+                  {
+                    'id': 7,
+                    'title': 'Approve the build for the hero fix',
+                    'session': 'Website redesign',
+                    'status': 'waiting on owner',
+                  },
+                  {
+                    'id': 6,
+                    'title': 'Fix hero spacing on mobile',
+                    'session': 'Website redesign',
+                    'status': 'in progress',
+                  },
+                  {'id': 8, 'title': 'Draft release notes', 'status': 'open'},
+                  {
+                    'id': 4,
+                    'title': 'Bump the Flutter SDK',
+                    'session': 'Website redesign',
+                    'status': 'done',
+                  },
+                ]
+              : [],
           'masterSetup': {
             'platforms': [
               for (final provider in ['codex', 'claude'])

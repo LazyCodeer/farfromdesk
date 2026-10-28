@@ -34,6 +34,7 @@ abstract class Gateway {
 
   void closeUpdates() {}
   String get platform;
+  String get computerName => '';
   bool get preview => false;
   int get initialScreen => 0;
 }
