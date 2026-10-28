@@ -209,21 +209,23 @@ test('duplicate pre-numbered choice labels still give unique poll options',async
  }finally{f.close();}
 });
 
-test('picking a Claude Desktop target warms that exact chat once, and a warm-up failure does not break the pick',async()=>{
+test('a pick warms the chosen session exactly once, and a warm-up failure does not break the pick',async()=>{
  const f=fixture();try{
   const c=f.store.register('claude-desk','claude','66666666-6666-4666-8666-666666666666','/synthetic','channel').binding;
-  f.store.set('selected',JSON.stringify([c.id]));f.store.set(`execution-mode:${c.id}`,'desktop');
-  const row={id:c.native_id,provider:'claude',cwd:'/synthetic',executionMode:'desktop',available:true,activation:'desktop-open'};
-  const warmed:any[]=[];let fail=false;
-  Object.assign(f.router.native,{connections:{route:()=>undefined},catalog:async()=>({sessions:[row],cursor:null}),activation:{ready:async(s:any)=>{warmed.push(s.id);if(fail)throw Error('inbox is not live yet');return s;}}});
+  f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});f.router.coordinator.registry.register(c);
+  f.store.set('selected',JSON.stringify([c.id]));
+  const warmed:string[]=[];let fail=false;
+  (f.router.native as any).warmDesktop=(b:any)=>{warmed.push(b.id);if(fail)throw Error('synthetic warm-up failure');};
   const errors:string[]=[],log=console.error;console.error=(m:string)=>errors.push(m);
   try{
-   await f.wa.receiveMessage(f.msg('W1','/claude list'));await new Promise(r=>setImmediate(r));
-   assert.deepEqual(warmed,[c.native_id]); // a single candidate is picked straight away
-   fail=true;await f.wa.receiveMessage(f.msg('W2','/back'));await f.wa.receiveMessage(f.msg('W3','/claude list'));await new Promise(r=>setImmediate(r));
-   assert.equal(warmed.length,2);assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
+   await f.wa.receiveMessage(f.msg('W1','/claude'));
+   assert.deepEqual(warmed,[c.id]);
+   fail=true;await f.wa.receiveMessage(f.msg('W2','/back'));await f.wa.receiveMessage(f.msg('W3','/claude list'));
+   assert.deepEqual(warmed,[c.id,c.id]);assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
    assert.deepEqual(errors,['Desktop warm-up failed: unknown']);
-   assert.equal(f.store.jobs().length,0); // warm-up never submits a task
+   // A paused session fails the pick before any warm-up.
+   await f.wa.receiveMessage(f.msg('W4','/back'));f.store.enable(c.id,false);await f.wa.receiveMessage(f.msg('W5','/claude'));
+   assert.equal(warmed.length,2);assert.equal(f.store.jobs().length,0);
   }finally{console.error=log;}
  }finally{f.close();}
 });
