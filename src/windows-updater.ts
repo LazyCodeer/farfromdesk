@@ -14,6 +14,15 @@ export type WindowsUpdateRequest={app:string;state:string;port:number;current:st
 type ProcessIdentity={pid:number;path:string;started:string};
 type Inventory={installs:{path:string;version:string}[];processes:ProcessIdentity[]};
 const samePath=(a:string,b:string)=>win32.resolve(a).toLowerCase()===win32.resolve(b).toLowerCase();
+export async function canonicalWindowsInventory(value:Inventory,canonical:(path:string)=>Promise<string>=realpath):Promise<Inventory> {
+ // Registry/Temp can use DOS 8.3 names while CIM reports the expanded path.
+ // Keep every registry entry: canonicalization must never conceal a duplicate.
+ const path=async(p:string)=>{try{return await canonical(p);}catch{return p;}};
+ return {
+  installs:await Promise.all(value.installs.map(async entry=>({...entry,path:await path(entry.path)}))),
+  processes:await Promise.all(value.processes.map(async entry=>({...entry,path:await path(entry.path)}))),
+ };
+}
 export function validateWindowsInstall(app:string,current:string,inventory:Inventory,uiPid:number) {
  if(!win32.isAbsolute(app)||app.startsWith('\\\\')||win32.parse(app).root===app)throw new Error('Updates require a local, per-user EXE installation.');
  if(inventory.installs.length!==1||!samePath(inventory.installs[0].path,app)||inventory.installs[0].version!==current)
@@ -42,7 +51,7 @@ $processes=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('farfro
 @{installs=$entries;processes=$processes}|ConvertTo-Json -Depth 4 -Compress`;
  const powershell=join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
  const result=await exec(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,timeout:30000,maxBuffer:1024*1024});
- return JSON.parse(result.stdout.replace(/^\uFEFF/,''));
+ return canonicalWindowsInventory(JSON.parse(result.stdout.replace(/^\uFEFF/,'')));
 }
 function alive(pid:number){try{process.kill(pid,0);return true;}catch(e){if((e as NodeJS.ErrnoException).code==='ESRCH')return false;throw e;}}
 async function waitExit(pid:number,label:string) {

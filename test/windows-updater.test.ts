@@ -1,10 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {releaseAsset} from '../src/app-updater.js';
-import {validateWindowsInstall,installerArguments,installWindowsUpdate} from '../src/windows-updater.js';
+import {validateWindowsInstall,installerArguments,installWindowsUpdate,canonicalWindowsInventory} from '../src/windows-updater.js';
 
 const app='C:\\Users\\Test User\\AppData\\Local\\Programs\\FarFromDesk';
 const inventory=()=>({installs:[{path:app+'\\',version:'0.8.0'}],processes:[{pid:42,path:app+'\\farfromdesk.exe',started:'2026-10-28T00:00:00Z'}]});
+test('short Windows folder names are resolved without hiding duplicate installations',async()=>{
+ const short='C:\\Users\\TESTUS~1\\AppData\\Local\\Programs\\FarFromDesk';
+ const value=inventory();value.installs[0].path=short;
+ const canonical=async(p:string)=>p===short?app:p;
+ const normalized=await canonicalWindowsInventory(value,canonical);
+ assert.equal(validateWindowsInstall(app,'0.8.0',normalized,42).pid,42);
+ value.installs.push({path:app,version:'0.8.0'});
+ const duplicates=await canonicalWindowsInventory(value,canonical);
+ assert.throws(()=>validateWindowsInstall(app,'0.8.0',duplicates,42),/existing/);
+});
 test('Windows updater requires the existing registered installation and one exact UI',()=>{
  assert.equal(validateWindowsInstall(app,'0.8.0',inventory(),42).pid,42);
  assert.throws(()=>validateWindowsInstall('C:\\Portable','0.8.0',inventory(),42),/existing/);
