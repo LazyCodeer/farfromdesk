@@ -72,13 +72,16 @@ export class MetaModel {
     };
     try {
       const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
-      const result=await generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400
+      const ask=()=>generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400
         providerOptions:{meta:{reasoningEffort:'low'}},
         tools:{
           ...(memory?{memory:tool({description:'View, create or edit the owner\'s memory files.',inputSchema:MemoryInput,execute:async(i)=>memory(i)})}:{}),
           decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation}),
         },
         stopWhen:[hasToolCall('decide'),stepCountIs(6)]});
+      let result=await ask();
+      // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
+      if(!result.steps.some(s=>s.toolCalls.length))result=await ask();
       const call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
       if(!call)throw new Error('Meta interpretation was incomplete.');
       return Interpretation.parse(call!.input);

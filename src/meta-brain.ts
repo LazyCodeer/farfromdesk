@@ -166,7 +166,10 @@ export class MetaBrain {
       const observed=native&&Date.now()-native.at<30000?(native.status==='interrupted'?'Native turn interrupted; no automatic retry':native.status==='failed'?'Native turn failed; check the session':native.status==='completed'?'Native turn ended; no recorded answer':undefined):undefined;
       const approval=latest&&[...router.approvals.pending.values()].some(p=>p.binding.id===latest.binding_id);
       const stale=this.memory.attention(i);if(stale)return stale;
-      return `#${i.id} ${i.title}: ${i.status}${i.session?`; ${i.session}`:''}. ${approval?'Waiting for your native approval':observed??i.executionState}.`;
+      const b=this.store.binding(String(latest?.binding_id??i.binding_id)),session=b?` (${this.store.get(`name:${b.id}`)??b.alias})`:'';
+      const asked=latest?.outcome==='blocked'?this.store.get(`blocked-text:${latest.id}`):undefined;
+      const state=approval?'waiting for your native approval':observed??i.executionState;
+      return `#${i.id} ${i.title.slice(0,80)}${session}: ${i.status}${state===i.status?'':`, ${state}`}.${asked?` It asked: "${asked}"`:''}`;
     }).join('\n')||'No matching tracked tasks.';
   }
   /** Fast paths are literal, read-only owner intents. They never reinterpret consent. */
@@ -357,12 +360,17 @@ export class MetaBrain {
       const named=[...new Set((m.text.match(/\b(?:codex|claude)\b/gi)??[]).map(v=>v.toLowerCase()))];
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
-      const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
+      // A session the owner named in their own words routes there; the model never picks it alone.
+      const lower=m.text.toLowerCase(),sessions=this.memory.candidates(router).filter(b=>{const n=(this.store.get(`name:${b.id}`)??b.alias).trim().toLowerCase();return n.length>=3&&new RegExp(`(?:^|\\W)${n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\W|$)`).test(lower);});
+      if(sessions.length>1)throw new Error('Your message names more than one session. Please choose one.');
+      const provider=named[0]??sessions[0]?.provider??(decision.provider==='unspecified'?undefined:decision.provider);
+      if(sessions.length&&named.length&&sessions[0].provider!==named[0])throw new Error('That session is on another platform. Please clarify.');
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
-      if(!named.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
+      if(!named.length&&!sessions.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
-      target=topic?this.memory.owner(topic,router):undefined;
+      target=topic?this.memory.owner(topic,router):sessions[0];
+      if(topic&&sessions.length&&target&&target.id!==sessions[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
       if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
@@ -380,7 +388,8 @@ export class MetaBrain {
       const item=topic??this.memory.add(m.id,m.text);
       this.memory.link(m.id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
-      if(['not started','done','waiting on owner'].includes(item.status))this.memory.items.setStatus(item.id,'in progress','Brain');
+      // The owner's follow-up answers a block the Brain recorded; a block the owner set stays.
+      if(['not started','done','waiting on owner'].includes(item.status)||item.status==='blocked'&&this.memory.items.statusBy(item.id)!=='Owner')this.memory.items.setStatus(item.id,'in progress','Brain');
       this.store.set(topicKey,`item:${item.id}`);
       this.store.db.prepare("UPDATE brain_tasks SET coordinator_id=?,target_session_id=?,state='queued',permission='allowed' WHERE id=?").run(coordinator!.id,target.id,m.id);
       this.store.remember(m.id);

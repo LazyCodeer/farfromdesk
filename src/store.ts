@@ -162,6 +162,8 @@ export class Store {
     if(context.origin==='hook'&&context.requestId&&context.turnId&&this.db.prepare("SELECT 1 FROM reply_receipts WHERE binding_id=? AND request_id=? AND turn_id=? AND origin='agent' AND kind='final'").get(binding?.id??null,context.requestId,context.turnId)) {
       this.event(context.requestId,'duplicate_hook_suppressed',{},context.turnId);return false;
     }
+    // The Brain quotes what a blocked session asked; outbox bodies are already formatted for chat.
+    if(context.outcome==='blocked'&&context.origin==='agent'&&request)this.set(`blocked-text:${request.id}`,text.replace(/\s+/g,' ').trim().slice(0,240));
     if(!options&&context.origin==='agent'&&context.kind==='final'&&context.requestId&&context.turnId&&this.db.prepare("SELECT 1 FROM reply_receipts WHERE binding_id=? AND request_id=? AND turn_id=? AND origin='hook'").get(binding?.id??null,context.requestId,context.turnId)) {
       // A native final already queued for this exact turn. Retain explicit outcome
       // tracking without sending another copy, regardless of arrival order.
