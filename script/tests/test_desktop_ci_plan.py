@@ -87,6 +87,8 @@ class AutomaticReleaseVersionTests(unittest.TestCase):
         self.assertIn("'desktop/**'", workflow)
         self.assertIn('Read release history', workflow)
         self.assertIn('Require the current main commit', workflow)
+        # Builds start alongside the checks, so publishing must still wait for them.
+        self.assertIn('needs: [version, checks, desktop]', workflow)
         self.assertNotIn('  pull_request:', workflow)
         self.assertNotIn('  push:', checks)
         self.assertIn('  pull_request:', checks)
