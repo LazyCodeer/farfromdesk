@@ -360,26 +360,19 @@ export class MetaBrain {
       const named=[...new Set((m.text.match(/\b(?:codex|claude)\b/gi)??[]).map(v=>v.toLowerCase()))];
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
-      // A session routes only when the message opens by addressing it ("Payments API: …", "send the payments api session: …") and the interpretation agrees.
-      // Any other mention, such as an exclusion, asks first. This is an allowlist, so a phrasing nobody listed fails closed instead of reaching that session.
-      const norm=(t:string)=>t.normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"').replace(/\s+/g,' ').trim().toLowerCase();
+      // A free-form message never picks a session by name: "Payments API: don't send this to Payments API" has no safe reading.
+      // Any mention asks the owner to choose with /claude or /codex, so neither the model nor wording decides where work goes.
+      const norm=(t:string)=>t.normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
       const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
       const label=(b:Binding)=>this.store.get(`name:${b.id}`)??b.alias;
-      let mentioned=this.memory.candidates(router).filter(b=>{const n=norm(label(b));return n.length>=3&&n!=='codex'&&n!=='claude'&&new RegExp(`(?:^|\\W)${esc(n)}(?:\\W|$)`).test(said);});
-      // "Payments API" inside a mentioned "Payments API. Inc" is the longer name, not a second session.
-      for(const b of [...mentioned])if(mentioned.some(o=>o!==b&&norm(label(o)).includes(norm(label(b)))))mentioned.splice(mentioned.indexOf(b),1);
-      if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one.');
-      const sessions=mentioned.filter(b=>new RegExp(`^(?:please )?(?:(?:send|tell|ask|give|forward)(?: this| it)?(?: to)? )?(?:the )?["']?${esc(norm(label(b)))}["']?(?: session)? ?[:,]`).test(said));
-      if(mentioned.length&&(!sessions.length||decision.sessionId!==sessions[0].id))throw new Error(`Your message mentions ${label(mentioned[0])}. To send it there, start with "${label(mentioned[0])}:". Otherwise say which session should do this.`);
-      const provider=named[0]??sessions[0]?.provider??(decision.provider==='unspecified'?undefined:decision.provider);
-      if(sessions.length&&named.length&&sessions[0].provider!==named[0])throw new Error('That session is on another platform. Please clarify.');
+      const mentioned=this.memory.candidates(router).find(b=>{const n=norm(label(b));return n.length>=3&&n!=='codex'&&n!=='claude'&&new RegExp(`(?:^|\\W)${esc(n)}(?:\\W|$)`).test(said);});
+      if(mentioned)throw new Error(`Your message mentions ${label(mentioned)}. To send work to one session, choose it with /claude list or /codex list. Nothing was sent.`);
+      const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
-      if(!named.length&&!sessions.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
+      if(!named.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
-      // An item nobody owns yet goes to the session the owner named, never the default coordinator.
-      target=(topic?this.memory.owner(topic,router):undefined)??sessions[0];
-      if(topic&&sessions.length&&target&&target.id!==sessions[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
+      target=topic?this.memory.owner(topic,router):undefined;
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
       if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
