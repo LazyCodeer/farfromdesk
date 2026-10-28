@@ -102,3 +102,24 @@ test('a memory save from an editor opened before a newer change keeps the newer 
     assert.match(m.read('preferences.md')??'',/Learned later[\s\S]*Typed in editor/);
   }finally{await new Promise<void>(r=>server.close(()=>r()));store.close();rmSync(root,{recursive:true,force:true});}
 });
+
+test('more than 100 unfinished watches in this chat still let a later one fire',async()=>{
+  const t=await setup();
+  try{
+    const brain=new t.MetaBrain(t.store,t.secret,{interpret:async()=>{throw Error('unused');}} as any);
+    const b=t.store.register('worker','codex','11111111-1111-4111-8111-111111111111',t.root).binding;
+    const insert=t.store.db.prepare('INSERT INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)');
+    for(let n=0;n<101;n++){
+      const id='local:job-'+n;t.store.enqueue(id,b,'Synthetic task','synthetic-owner');
+      const item=brain.memory.add(id,'Synthetic task '+n);t.store.jobState(id,n===100?'failed':'submitted');
+      t.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,'text','synthetic-owner','answered','allowed',?)").run('local:watch-'+n,'Notify me when this finishes',n);
+      insert.run('local:watch-'+n,'synthetic-owner',item.id,id,n);
+    }
+    // The failed item is the newest; make it the oldest so it also falls outside the 100-row board view.
+    t.store.db.prepare("UPDATE items SET updated_at=0 WHERE id=(SELECT item_id FROM brain_watches WHERE request_id='local:watch-100')").run();
+    for(let n=0;n<2;n++)brain.tick(router());
+    const state=(id:string)=>(t.store.db.prepare('SELECT state FROM brain_watches WHERE request_id=?').get(id) as any).state;
+    assert.equal(state('local:watch-100'),'notified');
+    assert.equal(state('local:watch-0'),'waiting'); // unfinished work stays watched
+  }finally{t.done();}
+});

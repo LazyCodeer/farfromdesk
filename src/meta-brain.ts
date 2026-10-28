@@ -11,7 +11,7 @@ type Task={id:string;original:string;normalized:string|null;source:string;destin
 export class MetaBrain {
   readonly memory:BrainMemory;
   readonly owner:OwnerMemory;
-  private refreshTurn=0;
+  private refreshTurn=0;private watchTurn=0;
   constructor(private store:Store,readonly secret=new MetaSecret(),private model:Pick<MetaModel,'interpret'>=new MetaModel()) {
     store.db.exec(`CREATE TABLE IF NOT EXISTS brain_tasks(id TEXT PRIMARY KEY,original TEXT NOT NULL,normalized TEXT,source TEXT NOT NULL,destination TEXT,coordinator_id TEXT,state TEXT NOT NULL,permission TEXT NOT NULL,reason TEXT,verified_at INTEGER,created_at INTEGER NOT NULL);`);
     this.memory=new BrainMemory(store);
@@ -247,9 +247,11 @@ export class MetaBrain {
     this.memory.synchronize();
     // Filtered and retired before the limit, so rows that can never fire don't hold back current ones.
     this.store.db.prepare("UPDATE brain_watches SET state='gone' WHERE state='waiting' AND (NOT EXISTS(SELECT 1 FROM items i WHERE i.id=item_id) OR NOT EXISTS(SELECT 1 FROM inbox j WHERE j.id=job_id))").run();
-    const watches=this.store.db.prepare("SELECT * FROM brain_watches WHERE state='waiting' AND destination=? ORDER BY created_at LIMIT 100").all(this.store.destination());
+    // 100 per tick, taking turns, so unfinished watches never hold back the ones after them.
+    const watches=this.store.db.prepare("SELECT * FROM brain_watches WHERE state='waiting' AND destination=? ORDER BY created_at,request_id LIMIT 100 OFFSET ?").all(this.store.destination(),this.watchTurn);
+    this.watchTurn=watches.length<100?0:this.watchTurn+watches.length;
     for(const w of watches){
-      const item=this.memory.board(String(w.destination)).find(i=>i.id===w.item_id),job=this.store.job(String(w.job_id));if(!item||!job)continue;
+      const item=this.memory.item(Number(w.item_id),String(w.destination)),job=this.store.job(String(w.job_id));if(!item||!job)continue;
       const jobs=item.jobs.filter(j=>Number(j.created_at)>=job.created_at);
       const terminal=(j:typeof jobs[number])=>['completed','reviewed','auto_closed','replaced'].includes(String(j.status));
       const blocked=jobs.some(j=>j.outcome==='blocked'||['failed','uncertain'].includes(String(j.status)));
