@@ -1,3 +1,4 @@
+import { DesktopReadinessError } from './session-activation.js';
 import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel } from './owner-commands.js';
 import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
@@ -295,6 +296,7 @@ export class Router {
         // A slow native hand-off often still lands. Internal report deliveries never reach the owner; for
         // owner messages, warn only if the session has not answered by the time the notice is due.
         if(job.id.startsWith('report:'))return;
+        if(e instanceof DesktopReadinessError){this.store.output(b,e.message,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});return;}
         const notice=()=>{if(this.stopped||this.store.job(job.id)?.status!=='uncertain')return;
           this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});};
         // ponytail: in-memory timer, so a restart inside the window drops the notice; the request stays uncertain.
