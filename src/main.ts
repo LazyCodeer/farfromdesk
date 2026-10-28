@@ -30,7 +30,7 @@ const approvals=new Approvals(store),native=portableAgents?new PortableNative(st
 const coordinator=new Coordinator(store,native,router);router.coordinator=coordinator;
 const masters=new Masters(store,router),power=new PowerPolicy(store,router,wa,undefined,telegram);
 const workers=new Workers(store,router,masters);router.hasPendingCreation=id=>workers.pending(id);
-router.workspaceCommand=args=>{if(args==='revoke')return workers.revoke();if(args)throw new Error('Use /workspace or /workspace revoke.');return workers.workspace()?`Approved project workspace: ${workers.root}\n/workspace revoke pauses bridge-created workers and removes this approval.`:`No project workspace approved. Ask the master to create a project; approval will appear here for ${workers.root}.`;};
+router.workspaceCommand=args=>{if(args==='revoke')return workers.revoke();if(args)throw new Error('Use /workspace or /workspace revoke.');return workers.workspaceSummary();};
 native.beforeRun=b=>{if(store.get(`managed-worker:${b.id}`)==='true')workers.ensureRun(b);};
 native.managedActive=b=>!!(masters.runtimes.get(b.id)?.alive||masters.claudeRuntimes.get(b.id)?.alive);
 native.managedRun=(b,message,jobId)=>{if(store.get(`managed-worker:${b.id}`)==='true')workers.ensureRun(b);return masters.run(b,message,jobId);};
