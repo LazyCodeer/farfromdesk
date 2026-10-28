@@ -1,3 +1,4 @@
+import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
@@ -11,7 +12,7 @@ import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
-export type Incoming = {id:string;text:string;quotedId?:string;source?:'text'|'voice'};
+export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice'};
 export const help = `Just tell me what you need.
 
 • Show my recent sessions.
@@ -25,6 +26,7 @@ export class Router {
   brain:MetaBrain;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
+  remoteControl?:(text:string)=>Promise<string|undefined>;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
@@ -72,8 +74,14 @@ export class Router {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    // Screen-control links and the phone's answer code are handled before any routing.
+    if(this.remoteControl&&!m.quotedId){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     try {
+      if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
+        const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>this.queue(m.id,this.need(bindingId),body));
+        if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
+      }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show (?:me )?(?:my )?(?:recent )?sessions|list (?:my |all |recent )?sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
@@ -281,7 +289,9 @@ export class Router {
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
   }
-  channelReply(b:Binding,text:string,kind:string,requestId?:string,source?:string,context:Pick<ReplyContext,'turnId'|'outcome'>={}) {
+  channelReply(b:Binding,text:string,kind:string,requestId?:string,source?:string,context:Pick<ReplyContext,'turnId'|'outcome'|'options'>={}) {
+    if(context.options!==undefined)context={...context,options:parseMessageOptions(context.options)};
+    const replyIdentity=context.options?JSON.stringify([text,context.options]):text;
     if(!['progress','final'].includes(kind))throw new Error('Use progress or final');
     if(typeof text!=='string'||!text.trim()||text.length>100000)throw new Error('Reply text must be nonempty and under 100,000 characters');
     if(context.turnId!==undefined&&(typeof context.turnId!=='string'||!context.turnId.length||context.turnId.length>200||/[\x00-\x20]/.test(context.turnId)))throw new Error('Invalid provider turn ID.');
@@ -296,25 +306,26 @@ export class Router {
     if(coordinator&&kind==='final'&&!replyFindings(text)&&(!requestId?.startsWith('report:')||context.outcome==='done'))throw new Error('A final marker is not a verified result. Give the findings and remaining limits, or acknowledge the report without resolving the owner request.');
     if(requestId&&kind==='final') {
       const previous=this.store.get(`final-reply:${requestId}`);
-      if(previous!==undefined){if(previous!==text)throw new Error('This request already has a different final reply.');return {accepted:true,newlyQueued:false};}
+      if(previous!==undefined){if(previous!==replyIdentity)throw new Error('This request already has a different final reply.');return {accepted:true,newlyQueued:false};}
       if(this.store.job(requestId)?.status==='completed')return {accepted:true,newlyQueued:false};
     }
     if(requestId?.startsWith('report:')&&kind==='final') {
       this.coordinator?.quiet(requestId,context.outcome);return {accepted:true,newlyQueued:false,acknowledged:true};
     }
-    if(coordinator&&requestId&&this.ownerReplyPolicy.alreadySent(requestId,text)) {
+    if(!context.options&&coordinator&&requestId&&this.ownerReplyPolicy.alreadySent(requestId,text)) {
       this.store.event(requestId,'duplicate_coordinator_suppressed');
       return {accepted:true,newlyQueued:false,duplicate:true};
     }
-    if(requestId)source=`reply:${kind}:${b.id}:${requestId}:${kind==='final'?'final':context.turnId?hash(context.turnId+':'+text):source??hash(text)}`;
+    if(requestId)source=`reply:${kind}:${b.id}:${requestId}:${kind==='final'?'final':context.turnId?hash(context.turnId+':'+replyIdentity):source??hash(replyIdentity)}`;
     let queued=false;
     // A coordinator answering another coordinator's hand-off reports back only; the owner hears it once, from the asking coordinator.
     const relayOnly=!!requestId&&!!this.coordinator?.delegatedCoordinator(b,requestId);
+    if(relayOnly&&context.options)throw new Error('Message choices must be offered by the owner-facing proxy, not a relay-only reply.');
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
     queued=relayOnly||this.store.output(b,text,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination(),{...context,requestId,kind:kind==='final'?'final':'progress',origin:'agent'})===true;
     if(queued&&!coordinator&&requestId&&source)this.ownerReplyPolicy.recordWorker(requestId,source,text);
-    if(requestId&&kind==='final')this.store.set(`final-reply:${requestId}`,text);
+    if(requestId&&kind==='final')this.store.set(`final-reply:${requestId}`,replyIdentity);
     if(requestId&&kind==='final')this.store.jobState(requestId,'completed',null,context.outcome);
     else if(requestId){const j=this.store.job(requestId)!;if(['uncertain','failed'].includes(j.status))this.store.jobState(requestId,'submitted');else this.store.db.prepare('UPDATE inbox SET updated_at=? WHERE id=?').run(Date.now(),requestId);}
     if(kind==='final')this.store.set(`explicit-final:${b.id}`,String(Date.now()));

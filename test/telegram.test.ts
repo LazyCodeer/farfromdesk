@@ -171,3 +171,19 @@ test('long emoji replies stay within Telegram text limits without breaking surro
  for(const row of rows){assert.ok(row.body.length<=4096);assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(row.body));}
  }finally{f.close();}
 });
+
+test('inline keyboard callbacks bind owner, exact message and choice, and dispatch once',async()=>{
+ const f=fixture();try{await f.pair();const dest=telegramDestination(bot,owner);
+ f.store.enqueue('choice-request',f.binding,'Inspect',dest);
+ f.router.channelReply(f.binding,'What next?','progress','choice-request','choices',{options:{choices:[{id:'a',label:'Inspect'},{id:'b',label:'Wait'}],expiresInSeconds:60}});
+ await f.tg.flush();const send=f.calls.find(c=>c.method==='sendMessage')!;
+ const data=send.body.reply_markup.inline_keyboard[0][0].callback_data;
+ assert.ok(Buffer.byteLength(data)<=64);
+ const callback=(id:string,user=owner,msg=10)=>({callback_query:{id,data,from:{id:user},message:{message_id:msg,chat:{type:'private',id:owner},from:{id:bot}}}});
+ await f.tg.receive(callback('spoof',other));assert.equal(f.store.jobs().length,1);
+ await f.tg.receive(callback('wrong-message',owner,900));assert.equal(f.store.jobs().length,1);
+ await f.tg.receive(callback('tap'));await f.tg.receive(callback('tap-again'));
+ assert.equal(f.store.jobs().length,2);assert.match(f.store.job(`tg-choice:${bot}:tap`)!.body,/Inspect/);
+ assert.ok(f.calls.some(c=>c.method==='answerCallbackQuery'));
+ }finally{f.close();}
+});

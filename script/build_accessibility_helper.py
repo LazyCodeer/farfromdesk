@@ -23,3 +23,6 @@ subprocess.run(['xcrun', 'swiftc', '-O', '-framework', 'AppKit', '-framework', '
 }))
 subprocess.run(['codesign', '--force', '--sign', '-', '--identifier', args.bundle_id, str(app)], check=True)
 print(app)
+
+# Probe the active console session without asking for or changing permissions.
+subprocess.run(['xcrun', 'swiftc', '-O', '-framework', 'CoreGraphics', '-framework', 'Security', str(root / 'native/owner-view/session-state.swift'), '-o', str(destination / 'session-state')], check=True)

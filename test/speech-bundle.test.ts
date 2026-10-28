@@ -5,8 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import {VOICE_MODEL} from '../src/voice-model.js';
-import { Store } from '../src/store.js';
-import { installBundledAudio,audioReadiness,selectSpeechVariant } from '../src/speech-bundle.js';
+// Load configuration only after assigning a test-owned state directory.
+// A fresh-install test must never depend on the developer's saved voice key.
+const stateRoot=mkdtempSync(join(tmpdir(),'speech-bundle-state-'));
+process.env.WSB_STATE_DIR=stateRoot;
+test.after(()=>rmSync(stateRoot,{recursive:true,force:true}));
+const {Store}=await import('../src/store.js');
+const {installBundledAudio,audioReadiness,selectSpeechVariant}=await import('../src/speech-bundle.js');
 
 const suffix=process.platform==='win32'?'.exe':'';
 function fixture(){

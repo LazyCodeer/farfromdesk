@@ -1,6 +1,9 @@
 import { saveBrainConfig } from './meta-brain-config.js';
 import { BrowserTabs } from './browser-tabs.js';
+import {PhoneRemoteService} from './remote-desktop/phone-service.js';
 import {RemoteDesktopService} from './remote-desktop/service.js';
+import {RemoteControlService,voiceTranscriber} from './remote-p2p/service.js';
+import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
 import { MacControl } from './mac-control.js';
@@ -57,6 +60,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
   const remoteDesktop=services?.remoteDesktop??new RemoteDesktopService({load:()=>{try{return JSON.parse(store.get('remote-desktop-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('remote-desktop-password',JSON.stringify(record)),loadEnabled:()=>store.get('remote-desktop-enabled')==='true',saveEnabled:value=>store.set('remote-desktop-enabled',String(value))});
+  const phoneRemote=new PhoneRemoteService({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))});
+  // Same remote password as Phone access; the chat command sends a peer-to-peer link.
+  const remoteControl=new RemoteControlService(new RemotePasswordAccess({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))}),undefined,text=>store.output(undefined,text,`remote-reconnect:${Date.now()}`),voiceTranscriber(store));
+  router.remoteControl=text=>remoteControl.chat(text);
   const artifacts=new Artifacts(store),items=new Items(store,b=>router.coordinator?.name(b)??b.alias);
   artifacts.disk.recover();
   const server=createServer((req,res)=>{
@@ -73,6 +80,16 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       const scopedId=req.headers['x-binding-id'];
       const binding=typeof scopedId==='string'?store.authBinding(scopedId,token):undefined;
       if(!isAdmin&&!binding){json(res,401,{error:'Use FarFromDesk or provide a valid session token.'});return;}
+      if(path==='/api/remote-control') {
+        if(!isAdmin){json(res,403,{error:'Remote control settings require the app.'});return;}
+        if(req.method==='GET'){json(res,200,remoteControl.status);return;}
+        if(req.method==='POST'){remoteControl.stop();json(res,200,remoteControl.status);return;}
+      }
+      if(path==='/api/phone-remote') {
+        if(!isAdmin){json(res,403,{error:'Phone Remote settings require the app.'});return;}
+        if(req.method==='GET'){json(res,200,phoneRemote.status);return;}
+        if(req.method==='POST'){json(res,200,await phoneRemote.command(await body(req,4096)));return;}
+      }
       if(path==='/api/remote-desktop') {
         if(!isAdmin){json(res,403,{error:'Remote Desktop settings require the app.'});return;}
         if(req.method==='GET'){json(res,200,remoteDesktop.status);return;}
@@ -151,7 +168,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         if(!b?.enabled)throw new Error('Registered session is missing or paused');
         if(typeof d.text!=='string'||!d.text.trim()||d.text.length>100000)throw new Error('Reply text must be nonempty and under 100,000 characters');
         if(d.kind!==undefined&&!['progress','final'].includes(d.kind))throw new Error('Use progress or final');
-        const result=router.channelReply(b,d.text,d.kind??'final',d.requestId,`direct:${b.id}:${d.eventId??randomUUID()}`,{turnId:d.turnId,outcome:d.outcome});json(res,200,result);return;
+        const result=router.channelReply(b,d.text,d.kind??'final',d.requestId,`direct:${b.id}:${d.eventId??randomUUID()}`,{turnId:d.turnId,outcome:d.outcome,options:d.options});json(res,200,result);return;
       }
       if(path==='/api/session/poll'&&req.method==='POST'&&binding) {
         const d=await body(req);if(typeof d.clientId!=='string')throw new Error('Client ID required');
@@ -367,6 +384,6 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   server.requestTimeout=PREPARATION_TIMEOUT_MS;
   server.keepAliveTimeout=5000;
   server.maxHeadersCount=64;
-  server.on('close',()=>{desktopControl.stop();macControl.stop();void remoteDesktop.suspend().catch(()=>{});});
+  server.on('close',()=>{remoteControl.stop();phoneRemote.stop();desktopControl.stop();macControl.stop();void remoteDesktop.suspend().catch(()=>{});});
   server.listen(port,'127.0.0.1');return server;
 }

@@ -145,6 +145,12 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     assert.equal((await fetch(url+'/api/master/sessions?page=-1',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,400);
     const replacement=store.register('other-master','codex','33333333-3333-4333-a333-333333333333','/tmp');router.coordinator.registry.register(replacement.binding);
     assert.equal((await post('/api/master/connect',connect)).status,403);
+    store.set('whatsapp-owner','owner@s.whatsapp.net');store.enqueue('choice-http',a.binding,'Choose test','owner@s.whatsapp.net');
+    const choices={choices:[{id:'inspect',label:'Inspect'},{id:'wait',label:'Wait'}],expiresInSeconds:60};
+    assert.equal((await reply({text:'Choose',requestId:'job-b',kind:'progress',options:choices})).status,400);
+    assert.equal((await reply({text:'Choose',requestId:'choice-http',kind:'progress',options:{choices:[]}})).status,400);
+    const optionReply=await reply({text:'Choose',requestId:'choice-http',kind:'progress',options:choices});assert.equal(optionReply.status,200,await optionReply.text());
+    assert.equal(store.db.prepare('SELECT count(*) AS n FROM message_options').get()!.n,1);
     store.enable(a.binding.id,false);assert.equal((await post('/api/session/document',{requestId:'job-a',artifactId})).status,401);
     const pendingBefore=store.pendingJobs().map(j=>j.id);
     let shutdownRequested=false;server.once('ffd-shutdown',()=>{shutdownRequested=true;});

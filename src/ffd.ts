@@ -1,3 +1,4 @@
+import { parseMessageOptions } from './message-options.js';
 import { desktopInput } from './desktop-control.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
@@ -19,6 +20,7 @@ description: Reply to the owner through FarFromDesk about the task this session 
 FFD below is ${ffd}. Run it as given; it already knows your session, the app and its port. REQ is the requestId from the current envelope. Text goes as one single-quoted argument, or on stdin when you leave it out.
 
 - Send a prepared request-bound image/document: FFD file REQ ARTIFACT-ID with caption on stdin; check its returned delivery ID using FFD delivery DELIVERY-ID. Queued is not delivered. No paths or recipient overrides.
+- Offer choices: FFD reply-options REQ progress with JSON {"text":"Choose next","options":{"choices":[{"id":"inspect","label":"Inspect first"},{"id":"continue","label":"Continue"}],"expiresInSeconds":900}} on stdin. Telegram uses buttons; WhatsApp uses quoted numbered replies. Choices are not native permission grants.
 - Reply to the owner: FFD reply REQ progress 'text' for a meaningful update, FFD reply REQ final 'text' only when the request is done or clearly blocked.
 - You are a worker: you do not contact other sessions, proxies or platforms. If the task needs another session, say so in your reply and your proxy decides.
 
@@ -36,6 +38,7 @@ description: Reply to the owner and hand work to other sessions or proxies throu
 FFD below is ${ffd}. Run it as given; it already knows your session, the app and its port. REQ is the requestId from the current envelope. Text goes as one single-quoted argument, or on stdin when you leave it out.
 
 - Send a prepared request-bound image/document: FFD file REQ ARTIFACT-ID with caption on stdin; check its returned delivery ID using FFD delivery DELIVERY-ID. Queued is not delivered. No paths or recipient overrides.
+- Offer choices: FFD reply-options REQ progress with JSON {"text":"Choose next","options":{"choices":[{"id":"inspect","label":"Inspect first"},{"id":"continue","label":"Continue"}],"expiresInSeconds":900}} on stdin. Telegram uses buttons; WhatsApp uses quoted numbered replies. Choices are not native permission grants.
 - Reply to the owner: FFD reply REQ progress 'text' for a meaningful update, FFD reply REQ final 'text' only when the request is done or clearly blocked.
 - Ask another platform's proxy (for example the owner says Claude, or a voice note says "cloud"): FFD ask claude REQ 'task' or FFD ask codex REQ 'task'. Give the owner's request and what you already know. If that proxy is not set up, ffd says so; tell the owner to add it in FarFromDesk, Coding platforms.
 - List sessions: FFD sessions [search words]. It lists your platform's sessions and shows which proxy handles the other platforms.
@@ -93,6 +96,15 @@ export async function runFfd(args:string[],self:{id:string},call:Call,stdin:()=>
     if(args.length!==1||!args[0])throw new Error('Use ffd desktop REQUEST-ID with action JSON on stdin.');
     const input=desktopInput.parse(JSON.parse(stdin()));
     return JSON.stringify(await call('/api/master/desktop-control',{...input,requestId:args[0]}),null,2);
+  }
+  if(op==='reply-options'){
+    const [req,kind,...extra]=args;
+    if(!req||!['progress','final'].includes(kind)||extra.length)throw new Error('Use ffd reply-options REQ progress|final with JSON {text,options} on stdin.');
+    const payload=JSON.parse(stdin());
+    if(typeof payload.text!=='string'||!payload.text.trim())throw new Error('Reply text is required.');
+    const options=parseMessageOptions(payload.options);
+    await call('/api/session/reply',{text:payload.text,options,requestId:req,kind,eventId:`ffd-${hash(req,kind,JSON.stringify([payload.text,options]))}`});
+    return 'Queued reply with choices. Live delivery is not yet confirmed.';
   }
   if(op==='reply') {
     const [req,kind,...rest]=args;

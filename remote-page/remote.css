@@ -1,0 +1,195 @@
+:root{
+  --bg:#0a0a0a;--card:#141414;--line:#262626;--text:#f4f1ea;--muted:#9a958c;
+  --accent:#ff6b2c;--good:#3fd68c;--warn:#f5c451;--bad:#ff8a80;--mint:#8acbb0;
+  --glass:rgba(18,18,18,.92);--glass-line:rgba(255,255,255,.08);
+  font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:var(--bg);color-scheme:dark;
+  -webkit-text-size-adjust:100%;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg)}
+body{overscroll-behavior:none}
+[hidden]{display:none!important}
+.defs{position:absolute;width:0;height:0}
+svg{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+button,.button,input,textarea{font:inherit;color:inherit}
+button,.button{
+  min-height:52px;padding:10px 16px;border-radius:16px;border:0;box-shadow:inset 0 0 0 1px var(--line);background:#181818;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;text-decoration:none;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+}
+button:active,.button:active{transform:scale(.97)}
+button:disabled{opacity:.45}
+button:focus-visible,.button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input:focus{outline:0;box-shadow:inset 0 0 0 1.5px var(--accent)}
+.primary{background:var(--accent);box-shadow:none;color:#1a0d05;font-weight:650}
+.primary svg{stroke-width:2.2}
+.quiet{background:none;box-shadow:none;color:var(--muted);min-height:40px}
+.link{background:none;box-shadow:none;color:var(--muted);min-height:36px;padding:6px 4px;font-size:15px}
+.icon{min-height:0;width:40px;height:40px;padding:0;border-radius:11px}
+input,textarea{width:100%;border:0;border-radius:16px;background:#111;box-shadow:inset 0 0 0 1px var(--line);padding:12px 14px}
+textarea{display:block;font:12.5px/1.45 ui-monospace,Menlo,monospace;word-break:break-all;resize:none;color:#bdb8ae}
+
+/* Setup and recovery: app bar, illustration, copy, then the actions pinned to the bottom. */
+#setup{min-height:100%;max-width:520px;margin:0 auto;display:flex;flex-direction:column;
+  padding:max(10px,env(safe-area-inset-top)) 24px max(24px,env(safe-area-inset-bottom))}
+.appbar{display:flex;align-items:center;gap:10px;height:44px;margin:0 -4px;font-size:15px;font-weight:650;letter-spacing:-.01em}
+.appbar img{border-radius:7px;box-shadow:0 0 0 1px var(--glass-line)}
+.spacer{flex:1}
+.content{flex:1;display:flex;flex-direction:column;padding-top:10px;--tint:var(--accent)}
+/* Status screens with nothing to fill in sit centred above the buttons. */
+.content.center{justify-content:center;text-align:center;padding-bottom:20px}
+.content.center .status{justify-content:center}
+.content[data-tone=good]{--tint:var(--good)}
+.content[data-tone=warn]{--tint:var(--warn)}
+.content[data-tone=bad]{--tint:var(--bad)}
+.content[data-tone=quiet]{--tint:var(--muted)}
+.progress{display:flex;gap:6px;margin-bottom:14px}
+.progress span{flex:1;height:4px;border-radius:2px;background:var(--line)}
+.progress[data-done="1"] span:nth-child(-n+1),.progress[data-done="2"] span:nth-child(-n+2),.progress[data-done="3"] span{background:var(--accent)}
+
+.art{width:calc(100% + 16px);height:170px;margin:0 -8px 8px;color:var(--tint);stroke:none}
+.art .glow{fill:currentColor;opacity:.07}
+.art .body{fill:#161616;stroke:#3a3a3a;stroke-width:2}
+.art .glass{fill:#202020}
+.art .dim{fill:#3a3a3a}
+.art .tint{fill:currentColor;opacity:.8}
+.art .mint{fill:var(--mint);opacity:.8}
+.art .base{fill:#2a2a2a;stroke:#3a3a3a;stroke-width:2;stroke-linejoin:round}
+.art .link{fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round}
+.art .crack{fill:none;stroke:currentColor;stroke-width:2.4;opacity:.7}
+.art[data-link=dashed] .whole{stroke-dasharray:2 7}
+.art[data-link=broken] .whole,.art:not([data-link=broken]) .broken{display:none}
+.art .badge{fill:color-mix(in srgb,currentColor 9%,#111);stroke:currentColor;stroke-width:2}
+.art .glyph{stroke:currentColor;stroke-width:2.4}
+
+.kicker{margin:0 0 6px;font-size:13px;font-weight:600;color:var(--tint)}
+h1{font-size:27px;line-height:1.15;font-weight:700;letter-spacing:-.02em;margin:0 0 10px}
+.sub{margin:0 0 18px;font-size:15.5px;line-height:1.5;color:var(--muted)}
+.codebox{position:relative}
+.codebox textarea{padding:13px 52px 13px 16px;height:81px;overflow:hidden}
+.codebox .icon,.field .icon{position:absolute;right:10px;top:10px;width:34px;height:34px;background:#1d1d1d;box-shadow:none}
+.field{position:relative}
+.field input{height:56px;padding-right:56px;font-size:18px}
+.field .icon{top:8px;width:40px;height:40px;background:none;color:var(--muted)}
+#login[data-bad] input{box-shadow:inset 0 0 0 1.5px var(--bad)}
+.nextsteps{list-style:none;margin:0;padding:16px;border-radius:18px;background:var(--card);box-shadow:inset 0 0 0 1px var(--line);display:grid;gap:12px;counter-reset:n;text-align:left}
+.nextsteps li{display:flex;gap:12px;align-items:flex-start;font-size:15px;line-height:1.45;color:#cfcac0;counter-increment:n}
+.nextsteps li::before{content:counter(n);flex:none;width:24px;height:24px;border-radius:50%;background:#1f1f1f;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:650;color:var(--text)}
+.status{display:flex;gap:10px;align-items:center;margin:14px 0 0;font-size:14.5px;color:var(--muted)}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 4px color-mix(in srgb,var(--muted) 18%,transparent)}
+[data-tone=good]>.dot{background:var(--good);box-shadow:0 0 0 4px color-mix(in srgb,var(--good) 18%,transparent)}
+[data-tone=warn]>.dot{background:var(--warn);animation:pulse 1.2s ease-in-out infinite}
+[data-tone=bad]>.dot{background:var(--bad);box-shadow:0 0 0 4px color-mix(in srgb,var(--bad) 18%,transparent)}
+.status[data-tone=bad]{color:var(--bad)}
+@keyframes pulse{50%{opacity:.35}}
+.actions,#sendacts,#openacts{display:grid;gap:10px}
+.actions .row{display:flex;justify-content:center}
+
+/* Live view: the Mac screen fills the phone, controls float over it. */
+#session{position:fixed;inset:0;background:#000;display:flex;flex-direction:column}
+#viewport{position:relative;flex:1;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#stage{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+#screen{display:block;width:100%;height:100%;image-rendering:auto}
+#ripples{position:absolute;inset:0;pointer-events:none}
+.ripple{position:absolute;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;border:2px solid var(--accent);box-shadow:0 0 0 6px rgba(255,107,44,.18);animation:ripple .45s ease-out forwards}
+.ripple.right{border-style:dashed}
+@keyframes ripple{from{transform:scale(.4);opacity:1}to{transform:scale(1.4);opacity:0}}
+
+.topbar{position:absolute;left:0;right:0;top:0;display:flex;gap:6px;align-items:center;padding:max(8px,env(safe-area-inset-top)) 10px 8px;pointer-events:none}
+.topbar>*{pointer-events:auto}
+.pill{min-height:30px;height:30px;margin:0;padding:0 11px;border-radius:999px;background:rgba(22,22,22,.82);box-shadow:inset 0 0 0 1px rgba(255,255,255,.09);
+  font-size:13.5px;font-weight:550;display:inline-flex;align-items:center;gap:7px;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.pill svg{width:16px;height:16px}
+.pill .dot{width:7px;height:7px;box-shadow:none}
+.pill.on{background:rgba(60,28,14,.9);color:var(--accent)}
+.pill.danger{background:rgba(48,20,20,.86);color:var(--bad)}
+
+.toast,.banner{position:absolute;top:calc(max(8px,env(safe-area-inset-top)) + 42px);margin:0;border-radius:14px;font-size:14px;z-index:4}
+.toast{left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100% - 24px);padding:9px 14px;background:rgba(24,24,24,.94);box-shadow:inset 0 0 0 1px var(--line),0 8px 24px rgba(0,0,0,.4);text-align:center}
+.banner{left:12px;right:12px;display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(40,32,12,.92);box-shadow:inset 0 0 0 1px rgba(245,196,81,.25);color:var(--warn)}
+.spin{flex:none;width:12px;height:12px;border-radius:50%;border:2px solid var(--warn);border-right-color:transparent;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(1turn)}}
+
+/* Sheets and the dock float as glass cards over the black area below the screen. */
+.sheet,.dock{margin:0 12px 8px;border-radius:22px;background:var(--glass);box-shadow:inset 0 0 0 1px var(--glass-line),0 8px 30px rgba(0,0,0,.5)}
+.sheet{padding:10px}
+.row{display:flex;gap:8px}
+.row input{flex:1;height:44px;border-radius:13px}
+.row .icon{width:44px;height:44px;border-radius:13px}
+.keys{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:8px}
+.keys button{min-height:38px;height:38px;padding:0 4px;border-radius:11px;background:#1b1b1b;box-shadow:none;font-size:13.5px;font-weight:550;color:#cfcac0}
+.grab{display:block;width:36px;height:4px;border-radius:2px;background:#333;margin:-2px auto 10px}
+.shortcuts{display:flex;gap:10px;align-items:flex-start}
+.shortcuts .keys{flex:1;margin:0}
+.keys.arrows{flex:none;grid-template-columns:repeat(3,38px)}
+
+.pill[aria-pressed=true]{background:rgba(60,28,14,.9);color:var(--accent)}
+.sheethead{display:flex;align-items:baseline;justify-content:space-between;margin:0 2px 10px;font-size:16px;font-weight:700}
+.sheethead span+span{font-size:12.5px;font-weight:400;color:var(--muted)}
+.desklist{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.deskcard{flex-direction:column;align-items:stretch;gap:0;min-height:0;padding:6px;border-radius:15px;background:#161616;box-shadow:inset 0 0 0 1px var(--line);text-align:left}
+.deskcard[aria-current=true]{background:rgba(255,107,44,.08);box-shadow:inset 0 0 0 2px var(--accent)}
+.deskcard.busy{opacity:.6}
+.deskcard canvas,.deskcard .blank{display:block;width:100%;aspect-ratio:16/9;border-radius:9px;background:#111}
+.deskcard .blank{box-shadow:inset 0 0 0 1px var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--muted);font-size:11.5px;text-align:center}
+.deskcard .label{display:flex;align-items:center;justify-content:space-between;height:30px;padding:0 4px;font-size:14px;font-weight:600}
+.chip{height:20px;padding:0 7px;border-radius:999px;background:rgba(255,107,44,.16);color:var(--accent);font-size:11.5px;font-weight:650;display:flex;align-items:center}
+.desknote{margin:0 2px;font-size:13.5px;color:var(--muted)}
+.rowbtn{width:100%;justify-content:flex-start;gap:12px;margin-top:10px;padding:10px 12px;border-radius:14px;background:#1b1b1b;box-shadow:none;text-align:left}
+.rowbtn .ic{width:34px;height:34px;border-radius:10px;background:#242424;display:flex;align-items:center;justify-content:center}
+.rowbtn .txt{flex:1;display:grid}
+.rowbtn b{font-size:14.5px;font-weight:600}
+.rowbtn small{font-size:12.5px;color:var(--muted)}
+.rowbtn .chev{color:var(--muted);font-size:18px}
+
+.dock{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px;margin-bottom:max(14px,env(safe-area-inset-bottom))}
+.dock button{flex-direction:column;gap:3px;min-height:52px;padding:4px;border-radius:14px;background:none;box-shadow:none;font-size:11.5px;font-weight:550;color:#b8b3a9}
+.dock svg{width:21px;height:21px}
+.dock [aria-pressed=true]{color:var(--accent);background:rgba(255,107,44,.14)}
+
+/* Encryption explainer: one overlay for both setup and the live session. */
+.secureline{align-self:center;margin-top:auto;min-height:36px;padding:8px 10px;background:none;box-shadow:none;gap:7px;font-size:13px;font-weight:500;color:var(--muted)}
+.secureline svg,.pill .mini{width:13px;height:13px;flex:none}
+.pill .mini{margin-left:-2px;opacity:.75}
+.overlay{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.6)}
+.overlay[hidden]{display:none}
+.overlay .card{margin:0 10px max(12px,env(safe-area-inset-bottom));padding:12px 16px 16px;max-height:88vh;overflow:auto}
+.card h2{margin:2px 0 12px;font-size:19px}
+.facts{list-style:none;margin:0 0 14px;padding:0;display:grid;gap:10px}
+.facts li{font-size:13.5px;line-height:1.4;color:var(--muted);padding-left:14px;border-left:2px solid rgba(63,214,140,.45)}
+.facts b{display:block;color:var(--text);font-size:14.5px;margin-bottom:2px}
+.card .primary,.card .quiet{width:100%}
+#text.masked{-webkit-text-security:disc}
+.card .quiet{margin-top:8px}
+.idlesub{margin:0 0 16px;font-size:15px;line-height:1.45;color:var(--muted)}
+#idlesecs{color:var(--warn);font-variant-numeric:tabular-nums}
+/* Idle warning: a notice over the top of the screen, not a dialog, so the screen stays usable underneath. */
+.notice{position:fixed;left:10px;right:10px;top:max(10px,env(safe-area-inset-top));z-index:11;display:flex;align-items:center;gap:8px;padding:10px 10px 10px 14px;border-radius:16px;background:rgba(40,32,12,.96);box-shadow:inset 0 0 0 1px rgba(245,196,81,.35),0 6px 20px rgba(0,0,0,.45)}
+.notice[hidden]{display:none}
+.notice span{flex:1;font-size:13px;color:var(--muted)}
+.notice span>b:first-child{display:block;font-size:14.5px;color:var(--warn)}
+.notice .pill{flex:none}
+#session.paused #viewport,#session.paused .lockbar{visibility:hidden}
+#paused{-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+#resumepw{height:52px;margin:0 0 12px;font-size:17px}
+.idlesub.bad{color:var(--bad);margin-top:-4px}
+/* Mic: recording is the one moment that needs to be unmistakable. */
+#mic{background:#1b1b1b;box-shadow:none;color:#cfcac0}
+#mic[aria-pressed=true]{background:var(--bad);color:#1a0a08;animation:rec 1.2s ease-in-out infinite}
+#mic:disabled{opacity:.45}
+@keyframes rec{50%{box-shadow:0 0 0 6px rgba(255,138,128,.25)}}
+/* Locked Mac: the lock screen stays live, this only says what to do. */
+.lockbar{position:absolute;left:12px;right:12px;top:calc(max(8px,env(safe-area-inset-top)) + 42px);z-index:3;display:flex;align-items:center;gap:12px;padding:10px 10px 10px 14px;border-radius:16px;background:rgba(40,32,12,.94);box-shadow:inset 0 0 0 1px rgba(245,196,81,.28)}
+.lockbar[hidden]{display:none}
+.lockbar>svg{width:20px;height:20px;flex:none;color:var(--warn)}
+.lockbar span{flex:1;display:grid;font-size:12.5px;color:var(--muted)}
+.lockbar b{font-size:14.5px;color:var(--warn)}
+.lockbar .pill{flex:none}
+@media (orientation:landscape) and (max-height:500px){
+  .dock{position:absolute;right:max(14px,env(safe-area-inset-right));top:50%;transform:translateY(-50%);margin:0;width:76px;grid-template-columns:1fr}
+  #viewport{margin-right:104px}
+  .topbar{right:104px}
+  .sheet{position:absolute;left:0;right:104px;bottom:0}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

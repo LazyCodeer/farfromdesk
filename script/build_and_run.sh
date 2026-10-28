@@ -2,6 +2,11 @@
 set -euo pipefail
 BRIDGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-run}"
+# Explicit local phone trial never stops/replaces the production app.
+if [[ "$MODE" == "--phone-preview" ]]; then
+  shift
+  exec python3 "$BRIDGE_ROOT/script/build_phone_preview.py" "$@"
+fi
 case "$MODE" in run|--verify|--build-only|--debug|--logs|--telemetry) ;; *) echo "Unknown mode: $MODE" >&2; exit 2;; esac
 cd "$BRIDGE_ROOT"
 # Stop only the UI executable; the Node background bridge retains its connection.
