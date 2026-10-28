@@ -3,6 +3,8 @@ import { hash, type Binding } from './store.js';
 import type { Router, Incoming } from './router.js';
 import { brainPolicy } from './meta-brain-config.js';
 import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
+import { sameProject } from './session-catalog.js';
+import { errorCode } from './request-events.js';
 
 export const TELEGRAM_COMMANDS=[
   {command:'claude',description:'Talk to your Claude coordinator'},
@@ -121,8 +123,18 @@ Reply to this message with a number, or send /${cmd} NUMBER. This list expires i
   }catch(e){r.store.db.exec('ROLLBACK TO owner_target_list; RELEASE owner_target_list');throw e;}
   return ''; // The paged messages above already carry their buttons and number fallback.
 }
+/** Best effort: reopen the picked Claude Desktop chat so its inbox is live before the
+ * first message. Opens through the same once-only activation dispatch uses; sends nothing. */
+function warm(r:Router,b:Binding) {
+  if(b.provider!=='claude')return;
+  void Promise.resolve().then(async()=>{
+    if((r.native.connections.route(b)?.executionMode??r.store.get(`execution-mode:${b.id}`))!=='desktop')return;
+    const s=(await r.native.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===b.native_id&&sameProject(s.cwd,b.cwd)&&s.executionMode==='desktop'&&s.available===true);
+    if(s?.activation==='desktop-open')await r.native.activation.ready(s);
+  }).catch(e=>console.error(`Desktop warm-up failed: ${errorCode(e)}`));
+}
 function activateTarget(r:Router,target:Extract<Target,{kind:'session'}>,short=false) {
-  const b=session(r,target);clear(r);r.store.set(routeKey(r),JSON.stringify(target));
+  const b=session(r,target);clear(r);r.store.set(routeKey(r),JSON.stringify(target));warm(r,b);
   if(short)return `Now talking to ${name(r,b)}. /back to leave.`;
   return `Now talking to ${name(r,b)} (${b.provider}). Your next messages go to this exact session. Permissions, account and runtime are unchanged. Use /back to leave.`;
 }
