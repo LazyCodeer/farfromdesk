@@ -9,7 +9,7 @@ export interface AccessStore{load():PasswordRecord|undefined;save(record:Passwor
 export class RemotePasswordAccess {
  // Token -> the password hash it was issued against. Several instances can share one stored record
  // (local preview and P2P), so a password changed through any of them ends every token here too.
- private sessions=new Map<string,string>();private failures=0;private retryAt=0;private busy=false;
+ private sessions=new Map<string,string>();private failures=0;private retryAt=0;private countedFor?:string;private busy=false;
  private enabled=false;private ready=false;private generation=0;
  constructor(private store:AccessStore,private now=Date.now){this.enabled=store.loadEnabled?.()===true&&!!store.load();}
  get status(){return {passwordSet:!!this.store.load(),enabled:this.enabled,ready:this.ready,connected:this.sessions.size>0,retryAfterMs:Math.max(0,this.retryAt-this.now()),durationLimitMinutes:null};}
@@ -28,8 +28,10 @@ export class RemotePasswordAccess {
  disconnect(token:string){this.sessions.delete(token);}
  async authenticate(password:unknown){
   if(!this.enabled||!this.ready)throw Error('MAC_UNAVAILABLE');
-  if(this.busy||this.now()<this.retryAt)throw Error('WAIT_BEFORE_RETRY');
   const record=this.store.load();if(!record)throw Error('MAC_UNAVAILABLE');
+  // A new password, set through any instance sharing the record, starts the wrong-password count again.
+  if(record.hash!==this.countedFor){this.countedFor=record.hash;this.failures=0;this.retryAt=0;}
+  if(this.busy||this.now()<this.retryAt)throw Error('WAIT_BEFORE_RETRY');
   this.busy=true;const generation=this.generation;
   try{
    const validShape=typeof password==='string'&&password.length<=256;

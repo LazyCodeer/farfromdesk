@@ -106,3 +106,23 @@ test('a login revoked while a capture is running sends no pixels',{timeout:30_00
   assert.equal(frames.length,0);assert.equal(host.status.reason,'ACCESS_ENDED');
  }finally{host.stop('TEST_DONE');}
 });
+
+test('asking for a link to something else is not taken as a screen request',async()=>{
+ const {RemoteControlService}=await import('../src/remote-p2p/service.js');
+ const svc=new RemoteControlService({status:{passwordSet:false},enable(){}} as any);
+ for(const text of ['Send me the remote access details for the prod server','Give me the desktop link for the new build','Give me a computer access link, then rotate the staging keys'])
+  assert.equal(await svc.chat(text),undefined,text);
+ for(const text of ['send me the screen link','give me remote access','control my screen'])assert.notEqual(await svc.chat(text),undefined,text);
+});
+
+test('a new password set in the app lifts a phone lockout from the old one',{timeout:60_000},async()=>{
+ let record:PasswordRecord|undefined;const store={load:()=>record,save:(r:PasswordRecord)=>record=r};
+ const local=new PhoneRemoteService(store),p2p=new RemotePasswordAccess(store);
+ try{
+  await local.command({action:'password',password:pw});p2p.enable(true);p2p.setReady(true);
+  for(let i=0;i<5;i++)await assert.rejects(p2p.authenticate('wrong-synthetic-password'),/INCORRECT_PASSWORD/);
+  await assert.rejects(p2p.authenticate(pw),/WAIT_BEFORE_RETRY/);
+  await local.command({action:'password',password:'fresh-synthetic-password'});p2p.enable(true);
+  assert.ok(await p2p.authenticate('fresh-synthetic-password'));
+ }finally{local.stop();p2p.stop();}
+});

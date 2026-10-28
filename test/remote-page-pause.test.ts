@@ -67,3 +67,33 @@ test('a clip still being read when the phone pauses is not uploaded after the pa
  read(new Uint8Array([1,2,3]).buffer);await stopped;
  assert.deepEqual(p.sent,[]);
 });
+
+// Phone page review on 135a47f.
+const el=()=>({hidden:false,textContent:'',classList:{add(){},remove(){}},replaceChildren(){this.cleared=true;},focus(){},cleared:false} as any);
+function pageStore(){const data=new Map<string,unknown>([['keep',{secret:'s'}],['paused',{at:1}]]);return {data,get:(k:string)=>data.get(k),set:(k:string,v:unknown)=>data.set(k,v),drop:(k:string)=>data.delete(k)};}
+
+test('an idle close or End on the notice forgets the reconnect secret',()=>{
+ const store=pageStore(),els=new Map<string,any>(),context=vm.createContext({ended:false,live:true,waiting:new Map(),store,KEEP:'keep',PAUSED:'paused',
+  aliveTimer:0,idleTimer:0,wake:null,pc:null,$:(id:string)=>els.get(id)??els.set(id,el()).get(id),finish(){},clearInterval(){}});
+ vm.runInContext(page('function end(','function readOffer('),context);
+ vm.runInContext("end('closed','ended')",context);
+ assert.equal(store.data.size,0);
+});
+
+test('a pause during transcription frees the mic and removes desktop previews',()=>{
+ const els=new Map<string,any>(),mic:any[]=[];
+ const context=vm.createContext({paused:false,authed:true,epoch:0,shown:1,waiting:new Map(),store:pageStore(),KEEP:'keep',PAUSED:'paused',send(){},
+  canvas:{width:1,height:1,getContext:()=>({clearRect(){}})},previews:new Map(),$:(id:string)=>els.get(id)??els.set(id,el()).get(id),
+  stopVoice(){},voiceId:'clip-1',micState:(...a:unknown[])=>mic.push(a),idleTimer:0,clearInterval(){},wake:null,parked:null,liveStatus(){}});
+ vm.runInContext(page('function pause(){',"$('resumeform')"),context);
+ vm.runInContext('pause()',context);
+ assert.equal(context.voiceId,'');assert.deepEqual(mic,[[false,false]]);assert.equal(els.get('desklist').cleared,true);
+});
+
+test('a screen wake lock granted after a pause is released',async()=>{
+ let released=0;
+ const context=vm.createContext({paused:false,ended:false,wake:null,navigator:{wakeLock:{request:async()=>{context.paused=true;return {release:async()=>{released++;}};}}}});
+ vm.runInContext(page('async function keepAwake(','function goLive('),context);
+ await vm.runInContext('keepAwake()',context);
+ assert.equal(released,1);assert.equal(context.wake,null);
+});

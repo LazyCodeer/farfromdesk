@@ -22,6 +22,8 @@ const ENDS={
   OFFER_EXPIRED:EXPIRED,
   ACCESS_ENDED:'Remote access was turned off on your Mac.',
   TOO_MANY_ATTEMPTS:'Too many wrong passwords. '+NEW_LINK,
+  WAIT_BEFORE_RETRY:"Too many wrong passwords. Wait a few minutes, then send 'control my screen' for a new link.",
+  MAC_UNAVAILABLE:"Your Mac is not ready for remote control. Open FarFromDesk on it, then send 'control my screen' for a new link.",
   DESKTOP_UNAVAILABLE:'FarFromDesk lost Accessibility or Screen Recording permission on your Mac. '+NEW_LINK,
   LOGIN_TIMEOUT:'The password was not entered within 2 minutes. '+NEW_LINK,
   IDLE_TIMEOUT:'Closed because this phone was left unused, so nobody else can use your Mac from it. '+NEW_LINK,
@@ -75,6 +77,8 @@ const send=m=>{if(!ended&&control?.readyState==='open')control.send(JSON.stringi
 
 function end(message,kind='failed'){
   if(ended)return;ended=true;live=false;
+  // Ended on purpose (End, idle, the Mac stopping it): no reconnect without the password, and no paused screen on reload.
+  if(kind==='ended'){store.drop(KEEP);store.drop(PAUSED);}
   for(const w of waiting.values())w({ok:false,error:'ENDED'});waiting.clear();
   clearInterval(aliveTimer);clearInterval(idleTimer);$('idle').hidden=true;$('paused').hidden=true;wake?.release().catch(()=>{});wake=null;
   try{pc?.close();}catch{}
@@ -120,7 +124,9 @@ async function start(){
     pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete'){clearTimeout(t);done();}});
   });
   for(const c of offer.c)await pc.addIceCandidate({candidate:'candidate:'+c,sdpMid:'0',sdpMLineIndex:0}).catch(()=>{});
-  const code=SIGNAL_PREFIX+encodeSignal(sdpToSignal(pc.localDescription.sdp,'answer',offer.s));
+  let code;try{code=SIGNAL_PREFIX+encodeSignal(sdpToSignal(pc.localDescription.sdp,'answer',offer.s));}
+  catch{throw Error('ANSWER_TOO_LONG');} // this phone's own network routes, not the link
+
   $('code').value=code;
   const text=encodeURIComponent(code);
   $('whatsapp').href=`https://wa.me/?text=${text}`;
@@ -140,7 +146,8 @@ async function start(){
 
 function dropped(){
   if(ended)return;
-  end('The connection to your Mac ended. '+NEW_LINK,authed&&(paused||kept())?'dropped':'failed');
+  // Past the 10 minute pause limit the Mac has closed the session and sends no new link.
+  end('The connection to your Mac ended. '+NEW_LINK,authed&&(paused&&wasPaused()||kept())?'dropped':'failed');
 }
 
 function onOpen(){
@@ -200,7 +207,7 @@ function onMessage(data){
 
 // ---- Live view.
 function liveStatus(text,tone){$('livetext').textContent=text;$('livetext').parentElement.dataset.tone=tone;}
-async function keepAwake(){try{wake=await navigator.wakeLock?.request('screen');}catch{}}
+async function keepAwake(){try{wake=await navigator.wakeLock?.request('screen');}catch{}if(paused||ended){wake?.release().catch(()=>{});wake=null;}}
 function goLive(){
   live=true;$('setup').hidden=true;$('session').hidden=false;
   liveStatus(shown===null?'Loading screen…':'Live',shown===null?'warn':'good');requestAnimationFrame(layout);
@@ -212,7 +219,7 @@ function goLive(){
 document.addEventListener('visibilitychange',()=>{
   if(!live)return;
   if(document.hidden)return pause();
-  if(!wake)keepAwake();
+  if(!wake&&!paused)keepAwake();
   idleTick(); // background timers are throttled, so catch up the moment the page is back
   if(parked!==null){const id=parked;parked=null;send({t:'ready',frameId:id});}
 });
@@ -224,7 +231,8 @@ function pause(){
   store.drop(KEEP);store.set(PAUSED,{at:Date.now()});send({t:'pause'});
   // Wipe the picture, not just cover it: nothing of the Mac's screen stays on this phone while it is logged out.
   canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);previews.clear();$('session').classList.add('paused');
-  stopVoice(true);clearInterval(idleTimer);$('idle').hidden=true;wake?.release().catch(()=>{});wake=null;parked=null;
+  // A clip being transcribed is dropped by the Mac, so free the mic here; desktop previews are pictures of the screen too.
+  stopVoice(true);if(voiceId){voiceId='';micState(false,false);}$('desklist').replaceChildren();clearInterval(idleTimer);$('idle').hidden=true;wake?.release().catch(()=>{});wake=null;parked=null;
   $('pausemsg').hidden=true;$('paused').hidden=false;liveStatus('Paused','warn');
 }
 $('resumeform').onsubmit=e=>{
@@ -491,4 +499,6 @@ $('stop').onclick=()=>{
   $('stop').disabled=true;
 };
 
-start().catch(e=>{console.error(e);/INVALID_SIGNAL/.test(e?.message)?end(EXPIRED_SUB,'expired'):end('Could not set up the connection. '+NEW_LINK);});
+start().catch(e=>{console.error(e);/INVALID_SIGNAL/.test(e?.message)?end(EXPIRED_SUB,'expired'):
+  /ANSWER_TOO_LONG/.test(e?.message)?end("This phone has too many network connections for a code. Turn off any VPN, use only Wi-Fi or only mobile data, then send 'control my screen' for a new link."):
+  end('Could not set up the connection. '+NEW_LINK);});
