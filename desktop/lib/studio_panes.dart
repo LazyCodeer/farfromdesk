@@ -33,7 +33,17 @@ extension _Panes on _DeskState {
   String sessionApp(String id) {
     final b = sessionBinding(id);
     if (b == null) return 'Not routed to a session';
-    return '${b['provider'] == 'claude' ? 'Claude' : 'Codex'} ${b['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}';
+    final provider = switch (b['provider']) {
+      'claude' => 'Claude',
+      'codex' => 'Codex',
+      _ => 'Coding',
+    };
+    final mode = switch (b['executionMode']) {
+      'desktop' => 'Desktop',
+      'cli' => 'CLI',
+      _ => 'session',
+    };
+    return '$provider $mode';
   }
 
   String inboxText(dynamic value) {
@@ -145,6 +155,7 @@ extension _Panes on _DeskState {
         }
         if (data['attention'] is List) {
           inboxAttention = List<Map>.from(data['attention']);
+          inboxAttentionLoaded = true;
         }
         inboxError = null;
       });
@@ -270,24 +281,28 @@ extension _Panes on _DeskState {
           'text': inboxText(j['error'] ?? j['preview']),
           'at': j['updated_at'] ?? jobAt(j),
         },
-      for (final v in List<Map>.from(status['voiceRequests'] ?? []).where(
-        (v) =>
-            ['failed', 'routing_blocked', 'interrupted'].contains(v['status']),
-      ))
-        {
-          'id': 'voice:${v['id']}',
-          'bindingId':
-              allJobs
-                  .where((j) => j['id'] == v['id'])
-                  .firstOrNull?['binding_id'] ??
-              'unassigned-voice',
-          'requestId': v['id'],
-          'title': v['status'] == 'routing_blocked'
-              ? 'Voice note · routing blocked'
-              : 'Voice note failed',
-          'text': 'Open the recorded timing and cause.',
-          'at': v['created_at'],
-        },
+      if (!inboxAttentionLoaded)
+        for (final v in List<Map>.from(status['voiceRequests'] ?? []).where(
+          (v) => [
+            'failed',
+            'routing_blocked',
+            'interrupted',
+          ].contains(v['status']),
+        ))
+          {
+            'id': 'voice:${v['id']}',
+            'bindingId':
+                allJobs
+                    .where((j) => j['id'] == v['id'])
+                    .firstOrNull?['binding_id'] ??
+                'unassigned-voice',
+            'requestId': v['id'],
+            'title': v['status'] == 'routing_blocked'
+                ? 'Voice note · routing blocked'
+                : 'Voice note failed',
+            'text': 'Open the recorded timing and cause.',
+            'at': v['created_at'],
+          },
       ...inboxAttention,
       for (final c in List<Map>.from(
         status['commandTurns'] ?? [],
@@ -719,6 +734,29 @@ extension _Panes on _DeskState {
     dense: true,
     contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
     leading: const Icon(Icons.error_outline, size: 16, color: warning),
+    trailing: a['canReviewOrphan'] == 1 && a['destination'] is String
+        ? TextButton(
+            onPressed: busy
+                ? null
+                : () async {
+                    if (!await confirm(
+                      'Mark this voice note reviewed?',
+                      'This removes it from Attention. Its original failure and diagnostics stay saved.',
+                      actionLabel: 'Mark reviewed',
+                    )) {
+                      return;
+                    }
+                    if (!mounted) return;
+                    await post('/api/voice-attention-review', {
+                      'audioId': a['requestId'],
+                      'destination': a['destination'],
+                      'confirmed': true,
+                    });
+                    if (mounted && actionError == null) await loadInbox();
+                  },
+            child: const Text('Mark reviewed', style: TextStyle(fontSize: 11)),
+          )
+        : null,
     title: Text(
       '${a['title']}',
       maxLines: 1,
@@ -764,7 +802,11 @@ extension _Panes on _DeskState {
         selectInboxSession('${a['bindingId']}');
         changeView(() => inboxRequestSelected = '${a['requestId']}');
       }
-      if (a['requestId'] != null) await requestTimeline('${a['requestId']}');
+      // An orphan audio id may collide with a request in another chat. Its
+      // own thread contains the destination-checked error text instead.
+      if (a['requestId'] != null && a['bindingId'] != 'unassigned-voice') {
+        await requestTimeline('${a['requestId']}');
+      }
     },
   );
 
@@ -955,7 +997,7 @@ extension _Panes on _DeskState {
         );
         day = nextDay;
       }
-      contents.add(inboxMessage(m));
+      contents.add(inboxMessage(m, unassigned: id == 'unassigned-voice'));
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1059,7 +1101,7 @@ extension _Panes on _DeskState {
     );
   }
 
-  Widget inboxMessage(Map m) {
+  Widget inboxMessage(Map m, {bool unassigned = false}) {
     final fromYou = m['kind'] == 'owner',
         failed = m['kind'] == 'voice-failed',
         voice = m['voice'] == 1;
@@ -1150,7 +1192,7 @@ extension _Panes on _DeskState {
                         inboxText(m['text']),
                         style: const TextStyle(fontSize: 13, height: 1.5),
                       ),
-                      if (failed)
+                      if (failed && !unassigned)
                         TextButton(
                           onPressed: () => requestTimeline('${m['requestId']}'),
                           child: const Text('Details'),

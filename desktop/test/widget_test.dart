@@ -1236,7 +1236,7 @@ void main() {
     },
   );
   testWidgets(
-    'Activity exposes blocked voice routing and fetches diagnostics only on demand',
+    'Attention shows the orphan voice error without reading another chat diagnostics',
     (tester) async {
       size(tester);
       final api = AuditGateway();
@@ -1251,12 +1251,21 @@ void main() {
         find.byKey(const ValueKey('inbox-attention-voice:wa:voice')),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Request timing and delivery'), findsOneWidget);
-      expect(find.textContaining('voice_route_failed'), findsOneWidget);
-      expect(find.textContaining('Delivered: Not observed'), findsOneWidget);
-      expect(api.diagnosticCalls, ['/api/request-events?id=wa%3Avoice']);
-      await tester.tap(find.text('Done'));
-      await tester.pumpAndSettle();
+      final orphanThread = find.byKey(
+        const PageStorageKey('inbox-thread-unassigned-voice'),
+      );
+      expect(orphanThread, findsOneWidget);
+      expect(
+        find.descendant(
+          of: orphanThread,
+          matching: find.text(AuditGateway.orphanError),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Request timing and delivery'), findsNothing);
+      expect(find.textContaining('PRIVATE OTHER DESTINATION'), findsNothing);
+      expect(api.diagnosticCalls, isEmpty);
+      expect(api.threadCalls, contains('unassigned-voice'));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1594,7 +1603,11 @@ class PreferenceGateway extends ConnectionGateway {
 
 class AuditGateway extends PreviewGateway {
   AuditGateway() : super(fixture: 'activity', screen: 'activity');
+  static const orphanError =
+      'Transcript saved, but the original WhatsApp chat could not be routed.';
   final diagnosticCalls = <String>[];
+  final threadCalls = <String>[];
+  static const at = 1792911400000;
   @override
   Future<Map<String, dynamic>> get(String path) async {
     if (path.startsWith('/api/request-events')) {
@@ -1602,29 +1615,108 @@ class AuditGateway extends PreviewGateway {
       return {
         'events': [
           {
-            'event': 'voice_route_failed',
-            'at': 1792911400000,
-            'details': '{"code":"routing_unavailable"}',
+            'event': 'PRIVATE OTHER DESTINATION',
+            'at': at,
+            'details': 'Same request id belongs to another destination.',
           },
         ],
-        'deliveries': [
+        'deliveries': [],
+      };
+    }
+    if (path.startsWith('/api/inbox-thread')) {
+      final id = Uri.parse(path).queryParameters['bindingId'];
+      if (id == null) {
+        return {
+          'sessions': [
+            {
+              'id': 'sample-worker',
+              'binding_id': 'sample-worker',
+              'name': 'Separate session',
+              'preview': 'Separate destination request',
+              'latestAt': at + 1000,
+              'requestCount': 1,
+              'needsReview': 1,
+              'waiting': 0,
+              'answered': 0,
+              'closed': 0,
+            },
+            {
+              'id': 'unassigned-voice',
+              'binding_id': null,
+              'name': 'Unassigned voice notes',
+              'preview': orphanError,
+              'latestAt': at,
+              'requestCount': 1,
+              'needsReview': 1,
+              'waiting': 0,
+              'answered': 0,
+              'closed': 0,
+            },
+          ],
+          'attention': [
+            {
+              'id': 'voice:wa:voice',
+              'bindingId': 'unassigned-voice',
+              'requestId': 'wa:voice',
+              'title': 'Voice note · routing blocked',
+              'text': orphanError,
+              'at': at,
+              'destination': 'original-owner',
+              'canReviewOrphan': 1,
+            },
+          ],
+        };
+      }
+      threadCalls.add(id);
+      if (id == 'unassigned-voice') {
+        return {
+          'messages': [
+            {
+              'key': '2:voice:wa:voice',
+              'requestId': 'wa:voice',
+              'kind': 'voice-failed',
+              'text': orphanError,
+              'at': at,
+              'destination': 'original-owner',
+              'voice': 1,
+            },
+          ],
+          'jobs': [],
+          'next': null,
+        };
+      }
+      return {
+        'messages': [
           {
-            'status': 'sent',
-            'reply_kind': 'final',
-            'attempts': 0,
-            'sent_at': 1792911400000,
+            'key': '0:request:wa:voice',
+            'requestId': 'wa:voice',
+            'kind': 'owner',
+            'text': 'Separate destination request',
+            'at': at + 1000,
+            'destination': 'different-owner',
+            'voice': 0,
           },
         ],
+        'jobs': [],
+        'next': null,
       };
     }
     final data = await super.get(path);
     data['voiceRequests'] = [
+      {'id': 'wa:voice', 'status': 'routing_blocked', 'created_at': at},
+    ];
+    // The orphan's id alone is insufficient: another chat can have that request id.
+    data['pendingJobs'] = [
       {
         'id': 'wa:voice',
-        'status': 'routing_blocked',
-        'created_at': 1792911400000,
+        'binding_id': 'sample-worker',
+        'destination': 'different-owner',
+        'status': 'uncertain',
+        'created_at': at + 1000,
+        'preview': 'Separate destination request',
       },
     ];
+    data['jobs'] = [];
     return data;
   }
 }

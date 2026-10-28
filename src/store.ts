@@ -29,6 +29,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,event TEXT NOT NULL,binding_id TEXT,detail TEXT);
       CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL REFERENCES bindings(id),request_id TEXT NOT NULL REFERENCES inbox(id),filename TEXT NOT NULL,mime TEXT NOT NULL,sha256 TEXT NOT NULL,data BLOB NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS audio_inbox(id TEXT PRIMARY KEY,destination TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS voice_attention_reviews(audio_id TEXT NOT NULL REFERENCES audio_inbox(id) ON DELETE CASCADE,destination TEXT NOT NULL,reviewed_at INTEGER NOT NULL,PRIMARY KEY(audio_id,destination));
       CREATE TABLE IF NOT EXISTS request_events(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL,binding_id TEXT,event TEXT NOT NULL,at INTEGER NOT NULL,attempt_id TEXT,turn_id TEXT,source_commit TEXT,details TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS request_events_request ON request_events(request_id,id);
       CREATE TABLE IF NOT EXISTS reply_receipts(source TEXT PRIMARY KEY,request_id TEXT,binding_id TEXT,kind TEXT,origin TEXT,turn_id TEXT,text_hash TEXT NOT NULL,created_at INTEGER NOT NULL);
@@ -52,6 +53,10 @@ export class Store {
       if(!this.db.prepare(`PRAGMA table_info(${table})`).all().some((c:any)=>c.name==='destination'))this.db.exec(`ALTER TABLE ${table} ADD COLUMN destination TEXT`);
       this.db.prepare(`UPDATE ${table} SET destination=? WHERE destination IS NULL`).run(this.get('whatsapp-owner')??null);
     }
+    // Inbox summaries and history join each binding's requests to their replies.
+    // Build indexes once after legacy columns have been migrated, not on reads.
+    this.db.exec(`CREATE INDEX IF NOT EXISTS inbox_binding_created ON inbox(binding_id,created_at);
+      CREATE INDEX IF NOT EXISTS outbox_request_created ON outbox(request_id,created_at);`);
     initializeOptions(this);
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
@@ -137,7 +142,27 @@ export class Store {
   hookUpdate(id:string){return this.db.prepare('SELECT text FROM hook_updates WHERE id=?').get(id);}
   recover() {
     this.db.prepare("UPDATE outbox SET status='uncertain',error='Telegram delivery was interrupted; check the bot before resending' WHERE status='sending' AND destination LIKE 'tg:%'").run();
-    for(const row of this.db.prepare("SELECT id FROM inbox WHERE status='dispatched'").all() as any[])this.jobState(row.id,'uncertain','Bridge restarted during delivery. Check the native session before retrying.');
+    for(const row of this.db.prepare("SELECT id,destination FROM inbox WHERE status='dispatched'").all() as {id:string;destination:string|null}[]) {
+      // The opening receipt survives native submission, so a restart here cannot
+      // prove the message was unsent. Never ask the owner to resend blindly.
+      const opening=this.db.prepare(`SELECT 1 FROM reply_receipts r JOIN outbox o ON o.source=r.source||':0'
+        WHERE r.source=? AND r.request_id=? AND o.destination=?`).get(`native-opening:${row.id}`,row.id,row.destination);
+      this.db.exec('SAVEPOINT recover_native_delivery');
+      try {
+        this.jobState(row.id,'uncertain','Bridge restarted during delivery. Check the native session before retrying.');
+        if(opening&&row.destination) this.db.prepare("UPDATE outbox SET status='cancelled',error='Opening notice superseded after bridge restart' WHERE source=? AND destination=? AND status='queued'").run(`native-opening:${row.id}:0`,row.destination);
+        if(opening&&row.destination) this.output(undefined,
+          'FarFromDesk restarted before this request’s delivery outcome was recorded. Check this exact session before sending your message again.',
+          `native-restart:${row.id}`,row.destination,{requestId:row.id,kind:'system',origin:'system'});
+        this.db.exec('RELEASE recover_native_delivery');
+      } catch(e) {this.db.exec('ROLLBACK TO recover_native_delivery; RELEASE recover_native_delivery');throw e;}
+    }
+    // A finished or otherwise non-dispatched request must not receive an old
+    // queued promise after restart either. Sent/uncertain records stay intact.
+    this.db.prepare(`UPDATE outbox SET status='cancelled',error='Opening notice superseded after bridge restart'
+      WHERE status='queued' AND source LIKE 'native-opening:%' AND EXISTS (SELECT 1 FROM inbox i JOIN reply_receipts r ON r.request_id=i.id
+        WHERE r.source='native-opening:'||i.id AND outbox.source=r.source||':0'
+          AND outbox.destination=i.destination AND i.status!='dispatched')`).run();
     this.interruptAudio('The bridge restarted while processing your voice note. Please resend it or type your message.');
   }
   interruptAudio(message:string) {

@@ -59,6 +59,7 @@ class _DeskState extends State<Desk> {
   String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
   String inboxTab = 'Requests';
   List<Map> inboxAttention = [];
+  bool inboxAttentionLoaded = false;
   List<Map>? inboxGroups;
   final inboxThreads = <String, Map<String, dynamic>>{};
   final inboxScrolls = <String, ScrollController>{};

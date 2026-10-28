@@ -51,7 +51,9 @@ test('unrouted failed voice notes remain unassigned and delivery errors appear i
   const orphan=inboxThread(store,'unassigned-voice');assert.equal(orphan.messages.length,1);assert.equal(orphan.messages[0].kind,'voice-failed');assert.match(orphan.messages[0].text,/No speech found/);assert.equal(orphan.jobs.length,0);
   assert.equal(inboxThread(store,a.id).messages.length,0);
   store.enqueue('wa:a',a,'ask');store.output(a,'reply','response','owner',{requestId:'wa:a',kind:'final'});store.db.exec("UPDATE outbox SET status='failed',error='send failed' WHERE source='response:0'");
-  assert.equal(inboxSessions(store).attention.length,1);
+  const attention=inboxSessions(store).attention as {id:string}[];
+  assert.equal(attention.filter(r=>r.id.startsWith('delivery:')).length,1);
+  assert.equal(attention.filter(r=>r.id==='voice:wa:voice').length,1);
   assert.ok(inboxSessions(store).sessions.some(s=>s.id==='unassigned-voice'));
  }finally{store.db.close();}
 });
@@ -112,5 +114,58 @@ test('Attention retains more than 100 unresolved deliveries and drops reviewed o
   const attention=inboxSessions(store).attention as {requestId:string}[];
   assert.equal(attention.length,102);
   for(const n of [0,1,2])assert.equal(attention.some(r=>r.requestId==='wa:delivery-'+n),false);
+ }finally{store.db.close();}
+});
+
+
+test('Attention includes older failed voices past latest-50 cap and safely deduplicates current rows',()=>{
+ const {store,a,b}=fixture();try {
+  const insert=store.db.prepare('INSERT INTO audio_inbox VALUES(?,?,?,?)');
+  insert.run('wa:old-unassigned','owner','failed',1);
+  store.enqueue('wa:old-linked',a,'a voice transcript','owner');
+  insert.run('wa:old-linked','owner','routing_blocked',2);
+  store.enqueue('wa:reviewed',a,'already handled','owner');store.jobState('wa:reviewed','reviewed');
+  insert.run('wa:reviewed','owner','failed',3);
+  store.enqueue('wa:answered',a,'already answered','owner');store.jobState('wa:answered','completed',null,'done');
+  insert.run('wa:answered','owner','interrupted',4);
+  // Wrong-destination same-ID data is never attributed to the other session.
+  store.enqueue('wa:different',b,'other chat','different-owner');
+  insert.run('wa:different','owner','failed',5);
+  for(let n=0;n<55;n++)insert.run('wa:ok-'+n,'owner','processed',100+n);
+  insert.run('wa:recent','owner','interrupted',999);
+  const current=(store.voiceRequests() as {id:string;status:string;created_at:number}[]).filter(v=>['failed','routing_blocked','interrupted'].includes(v.status));
+  assert.deepEqual(current.map(v=>v.id),['wa:recent']); // old failures hidden by the status endpoint's 50-row window
+  const result=inboxSessions(store).attention as {id:string;requestId:string;bindingId:string;at:number;text:string;title:string}[];
+  const frontendRows=[...current.map(v=>({id:'voice:'+v.id})),...result];
+  const deduped=new Map(frontendRows.map(row=>[row.id,row]));
+  const voiceRows=[...deduped.values()].filter(v=>v.id.startsWith('voice:')) as typeof result;
+  assert.deepEqual(voiceRows.map(v=>v.id).sort(),['voice:wa:different','voice:wa:old-linked','voice:wa:old-unassigned','voice:wa:recent']);
+  const orphan=voiceRows.find(v=>v.id==='voice:wa:old-unassigned')!;
+  assert.equal(orphan.bindingId,'unassigned-voice');assert.equal(orphan.requestId,'wa:old-unassigned');assert.equal(orphan.at,1);
+  const linked=voiceRows.find(v=>v.id==='voice:wa:old-linked')!;
+  assert.equal(linked.bindingId,a.id);assert.equal(linked.requestId,'wa:old-linked');assert.equal(linked.at,2);
+  assert.equal(voiceRows.find(v=>v.id==='voice:wa:different')!.bindingId,'unassigned-voice');
+  assert.ok(inboxThread(store,'unassigned-voice').messages.some(m=>m.requestId==='wa:different'));
+  assert.ok(!inboxThread(store,b.id).messages.some(m=>m.kind==='voice-failed'));
+  assert.equal(voiceRows.filter(v=>v.id==='voice:wa:recent').length,1);
+  assert.match(linked.title,/routing blocked/i);assert.doesNotMatch(JSON.stringify(voiceRows),/a voice transcript|other chat/);
+ }finally{store.db.close();}
+});
+
+
+test('different-destination same-ID voice remains unassigned without mislabelling or leaking the other request',()=>{
+ const {store,b}=fixture();try {
+  store.enqueue('wa:collision',b,'other account private request','other-owner');
+  store.db.prepare('INSERT INTO audio_inbox VALUES(?,?,?,?)').run('wa:collision','owner','failed',111);
+  store.output(undefined,'Voice could not be decoded','audio-error:wa:collision','owner');
+  const summary=inboxSessions(store);
+  assert.equal(summary.sessions.filter(s=>s.id==='unassigned-voice').length,1);
+  assert.ok(inboxSessions(store,'Voice could not be decoded').sessions.some(s=>s.id==='unassigned-voice'));
+  const row=(summary.attention as {id:string;bindingId:string}[]).find(r=>r.id==='voice:wa:collision');
+  assert.equal(row?.bindingId,'unassigned-voice');
+  const orphan=inboxThread(store,'unassigned-voice');assert.equal(orphan.messages.length,1);assert.match(orphan.messages[0].text,/Voice could not be decoded/);
+  assert.equal(orphan.jobs.length,0);assert.ok(!JSON.stringify(orphan).includes('other account private request'));
+  const other=inboxThread(store,b.id);assert.equal(other.messages.length,1);assert.equal(other.messages[0].voice,0);
+  assert.ok(!JSON.stringify(other).includes('Voice could not be decoded'));
  }finally{store.db.close();}
 });
