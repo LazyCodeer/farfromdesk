@@ -11,7 +11,7 @@ const exec=promisify(execFile);
 const sleep=(ms:number)=>new Promise<void>(r=>setTimeout(r,ms));
 export const uninstallKey='{DF168D57-418A-4924-B435-BF904833EF76}_is1';
 export type WindowsUpdateRequest={app:string;state:string;port:number;current:string;version:string;uiPid:number};
-type ProcessIdentity={pid:number;path:string;started:string};
+type ProcessIdentity={pid:number;path:string;started:string;observedPath?:string};
 type Inventory={installs:{path:string;version:string}[];processes:ProcessIdentity[]};
 const samePath=(a:string,b:string)=>win32.resolve(a).toLowerCase()===win32.resolve(b).toLowerCase();
 export async function canonicalWindowsInventory(value:Inventory,canonical:(path:string)=>Promise<string>=realpath):Promise<Inventory> {
@@ -20,7 +20,7 @@ export async function canonicalWindowsInventory(value:Inventory,canonical:(path:
  const path=async(p:string)=>{try{return await canonical(p);}catch{return p;}};
  return {
   installs:await Promise.all(value.installs.map(async entry=>({...entry,path:await path(entry.path)}))),
-  processes:await Promise.all(value.processes.map(async entry=>({...entry,path:await path(entry.path)}))),
+  processes:await Promise.all(value.processes.map(async entry=>({...entry,observedPath:entry.path,path:await path(entry.path)}))),
  };
 }
 export function validateWindowsInstall(app:string,current:string,inventory:Inventory,uiPid:number) {
@@ -67,7 +67,7 @@ $process=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
 if($null -ne $process -and !$process.CloseMainWindow()){throw 'Close the FarFromDesk window before retrying'}`;
  await exec(join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),
   ['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
-  {windowsHide:true,timeout:30000,env:{...process.env,FFD_UPDATE_UI_PID:String(ui.pid),FFD_UPDATE_UI_PATH:ui.path,FFD_UPDATE_UI_STARTED:ui.started}});
+  {windowsHide:true,timeout:30000,env:{...process.env,FFD_UPDATE_UI_PID:String(ui.pid),FFD_UPDATE_UI_PATH:ui.observedPath??ui.path,FFD_UPDATE_UI_STARTED:ui.started}});
 }
 async function noLinks(root:string):Promise<void> {
  if((await lstat(root)).isSymbolicLink())throw new Error('Linked installation folders are not supported by the updater.');

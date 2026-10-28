@@ -268,7 +268,9 @@ class NativeGateway extends Gateway {
           'An update is already in progress. Check its status before retrying.',
         );
       }
-      final attempt = await createUpdateAttempt(directory);
+      final attempt = Directory(
+        await (await createUpdateAttempt(directory)).resolveSymbolicLinks(),
+      );
       // Copy the runtime too: executing the installed node.exe would lock it.
       final runtime = await File(p.join(root, 'runtime', 'node.exe'))
           .copy(p.join(attempt.path, 'node.exe'));
@@ -544,7 +546,8 @@ class NativeGateway extends Gateway {
       if (['complete', 'error'].contains(value['phase'])) {
         final receipt = File(p.join(state, 'app-update', 'shown.json'));
         final identity = '${value['attempt']}:${value['phase']}';
-        if (await receipt.exists() && await receipt.readAsString() == identity) {
+        if (await receipt.exists() &&
+            await receipt.readAsString() == identity) {
           return null;
         }
         await receipt.writeAsString(identity, flush: true);
