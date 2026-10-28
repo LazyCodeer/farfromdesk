@@ -169,6 +169,15 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}
       if(path==='/api/meta-brain'&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Settings.');json(res,200,saveBrainConfig(store,router.brain.secret,await body(req)));return;}
+      if(path==='/api/memory'&&req.method==='GET'){json(res,200,router.brain.owner.view());return;}
+      if(path.startsWith('/api/memory')&&req.method==='POST'){
+        if(req.headers.origin)throw new Error('Use native desktop Settings.');
+        const d=await body(req),m=router.brain.owner;
+        if(path==='/api/memory'){if(typeof d.path!=='string'||typeof d.content!=='string')throw new Error('Choose a memory file and its text.');m.write(d.path,d.content,'owner',typeof d.summary==='string'&&d.summary.trim()?d.summary:`You edited ${d.path}`);}
+        else if(path==='/api/memory/undo'){if(!Number.isInteger(d.id))throw new Error('Choose a change to undo.');m.undo(d.id);}
+        else throw new Error('Unknown memory action.');
+        json(res,200,m.view());return;
+      }
       if(path==='/api/meta-brain/tasks'&&req.method==='GET'){if(url.searchParams.get('fresh')==='1')await router.brain.refresh(router);json(res,200,{tasks:router.brain.tasks(),workItems:router.brain.memory.board()});return;}
       if(path==='/api/meta-brain/verify'&&req.method==='POST'){const d=await body(req);if(d.confirmed!==true||typeof d.requestId!=='string')throw new Error('Owner verification requires an exact request and confirmation.');router.brain.verify(d.requestId);json(res,200,{ok:true});return;}
 

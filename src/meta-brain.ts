@@ -2,23 +2,26 @@ import { BrainMemory } from './brain-memory.js';
 import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret } from './meta-brain-config.js';
-import { Interpretation, MetaModel } from './meta-model.js';
+import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
 import { mentionedItems } from './owner-routing.js';
+import { OwnerMemory } from './owner-memory.js';
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
 export class MetaBrain {
   readonly memory:BrainMemory;
+  readonly owner:OwnerMemory;
   constructor(private store:Store,readonly secret=new MetaSecret(),private model:Pick<MetaModel,'interpret'>=new MetaModel()) {
     store.db.exec(`CREATE TABLE IF NOT EXISTS brain_tasks(id TEXT PRIMARY KEY,original TEXT NOT NULL,normalized TEXT,source TEXT NOT NULL,destination TEXT,coordinator_id TEXT,state TEXT NOT NULL,permission TEXT NOT NULL,reason TEXT,verified_at INTEGER,created_at INTEGER NOT NULL);`);
     this.memory=new BrainMemory(store);
+    this.owner=new OwnerMemory(store,secret.root,brainPolicy(store).notes);
     if(!store.db.prepare('PRAGMA table_info(brain_tasks)').all().some((c:any)=>c.name==='target_session_id'))store.db.exec('ALTER TABLE brain_tasks ADD COLUMN target_session_id TEXT');
     store.db.exec(`CREATE TABLE IF NOT EXISTS brain_watches(request_id TEXT PRIMARY KEY,destination TEXT NOT NULL,item_id INTEGER NOT NULL,job_id TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'waiting',created_at INTEGER NOT NULL);`);
     for(const row of store.db.prepare('SELECT id,destination FROM brain_tasks').all())store.correlateBrainReply(String(row.id),`brain:${row.id}`,row.destination as string|null);
     // A prior process may have paid for inference but not saved its result. Never replay it.
     store.db.prepare("UPDATE brain_tasks SET state='blocked',permission='denied',reason='Interpretation interrupted; no automatic retry' WHERE state='interpreting'").run();
   }
-  view(){return brainView(this.store,this.secret);}
+  view(){return {...brainView(this.store,this.secret),instructions:BRAIN_PROMPT};}
   get(id:string){return this.store.db.prepare('SELECT * FROM brain_tasks WHERE id=?').get(id) as Task|undefined;}
   tasks(destination?:string|null) {
     const rows=(destination===undefined?this.store.db.prepare('SELECT * FROM brain_tasks ORDER BY created_at DESC LIMIT 100').all():this.store.db.prepare('SELECT * FROM brain_tasks WHERE destination IS ? ORDER BY created_at DESC LIMIT 100').all(destination)) as Task[];
@@ -142,6 +145,12 @@ export class MetaBrain {
     }catch{this.store.db.exec('ROLLBACK TO brain_update; RELEASE brain_update');return answer('I couldn\'t send the update request. Nothing was sent; try again in a moment.');}
     return true;
   }
+  /** Tells the owner what the brain saved for this message, so nothing lands in memory silently. */
+  private announce(m:Incoming) {
+    const source=`brain:${m.id}`,saved=this.owner.changes(source);if(!saved.length)return;
+    this.store.set(`memory-last:${this.store.destination()}`,JSON.stringify({source,at:Date.now()}));
+    this.store.outputBrain(m.id,`🧠 ${saved.map(c=>c.summary).join('\n').slice(0,600)}\nReply *undo* to take it back.`,`brain-memory:${m.id}`);
+  }
   private answer(id:string,text:string) {
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(id);
     this.store.outputBrain(id,text);
@@ -161,7 +170,11 @@ export class MetaBrain {
     const text=m.text.trim().replace(/[.!?]+$/,'').toLowerCase(),policy=brainPolicy(this.store),destination=this.store.destination();
     const key=`brain-choice:${destination}`,topic=this.store.get(`brain-topic:${destination}`),board=this.memory.board();
     const answer=(s:string)=>{this.answer(m.id,s);return true;};
-    if(/^(?:(?:hey|hi|hello)(?: there)?|how are you(?: doing)?)$/.test(text)){
+    // "undo" only takes back a memory line this chat saved in the last 30 minutes.
+    if(text==='undo'){let saved:{source:string;at:number}|undefined;try{saved=JSON.parse(this.store.get(`memory-last:${destination}`)??'null')??undefined;}catch{}
+      if(saved&&Date.now()-saved.at<30*60000){this.store.set(`memory-last:${destination}`,'null');try{for(const c of this.owner.changes(saved.source).reverse())this.owner.undo(c.id);return answer('Done, I took that back out of your memory.');}catch(e){return answer((e as Error).message);}}}
+    // Greetings skip the model, except while the brain still has to introduce itself.
+    if(/^(?:(?:hey|hi|hello)(?: there)?|how are you(?: doing)?)$/.test(text)&&!this.owner.introNeeded()){
       const waiting=board.filter(i=>i.status==='waiting on owner'||i.status==='blocked');
       return answer(waiting.length?`Hi! ${waiting.length===1?'One item needs':`${waiting.length} items need`} you: ${waiting.slice(0,3).map(i=>`#${i.id} ${i.title}`).join(', ')}. Ask for your items, an update, or tell me what you want done.`:'Hi! Ask for your items, a task update, or tell me what you want done.');
     }
@@ -265,7 +278,8 @@ export class MetaBrain {
     const topicKey=`brain-topic:${this.store.destination()}`;
     try {
       const key=this.secret.read();if(!key)throw new Error('Meta API key is missing. Configure it in desktop Settings.');
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))}));
+      const memoryTool=(i:Parameters<MemoryTool>[0])=>this.owner.command(i,`brain:${m.id}`,policy.learn);
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch {
       this.store.event(m.id,'brain_interpretation_failed',{code:'unavailable',durationMs:Date.now()-interpretationStarted});
@@ -280,6 +294,7 @@ export class MetaBrain {
     }
     if(this.get(m.id)?.state!=='interpreting')return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);
+    this.announce(m);
     if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
     // Model wording is only allowed for questions and small talk; claims always come from saved data.
     const said=(decision.reply??'').replace(/\s*[—–]\s*/g,', ').trim().slice(0,400);
@@ -329,8 +344,8 @@ export class MetaBrain {
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
-      // A model cannot independently introduce a platform absent from the original.
-      if(!named.length&&decision.provider!=='unspecified')throw new Error('Please name the coding platform you want, or use your default coordinator.');
+      // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
+      if(!named.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
       target=topic?this.memory.owner(topic,router):undefined;

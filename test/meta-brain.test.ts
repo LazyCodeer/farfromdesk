@@ -13,6 +13,7 @@ import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainView, META_ENDPOINT } 
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
 
 const decision=(provider:Interpretation['provider']='unspecified',normalized='Corrected wording'):Interpretation=>({intent:'task',provider,normalized,taskIds:[]});
+const call=(name:string,args:unknown,id='call_1')=>new Response(JSON.stringify({id:'r',created:0,model:'muse-spark-1.3',choices:[{index:0,finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]}}]}),{headers:{'content-type':'application/json'}});
 function fixture(answer:Interpretation=decision(),disk=false) {
   const dir=mkdtempSync(join(tmpdir(),'ffd-meta-test-')),file=disk?join(dir,'test.db'):':memory:';
   const store=new Store(file),approvals=new Approvals(store),native={run:async()=>{},stop:()=>{},catalog:async()=>({sessions:[]})};
@@ -107,16 +108,24 @@ test('disable or policy revocation during interpretation prevents dispatch',asyn
 test('credentials are private, absent from status/SQLite, replaceable and removable',()=>{
   const f=fixture();try{const synthetic='another-synthetic-key-not-a-real-secret';saveBrainConfig(f.store,f.secret,{policy:f.policy,key:synthetic});assert.equal(statSync(join(f.dir,'meta-model-api-key')).mode&0o777,0o600);assert.equal(f.secret.read(),synthetic);assert.equal(brainView(f.store,f.secret).configured,true);assert.ok(!JSON.stringify(brainView(f.store,f.secret)).includes(synthetic));assert.ok(!JSON.stringify(f.store.db.prepare('SELECT * FROM settings').all()).includes(synthetic));f.secret.remove();assert.equal(f.secret.present(),false);}finally{f.close();}
 });
-test('Meta uses documented endpoint, model, strict JSON and bearer server-side only',async()=>{
-  const model=new MetaModel((async(url,init)=>{assert.equal(url,META_ENDPOINT);assert.equal(init?.redirect,'error');assert.equal((init?.headers as any).authorization,'Bearer synthetic-key');const body=JSON.parse(init!.body as string);assert.equal(body.model,'muse-spark-1.3');assert.equal(body.response_format.json_schema.strict,true);assert.equal(body.tools,undefined);return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(decision())}}]}));}) as typeof fetch);
+test('Meta uses documented endpoint, model, a decide tool and bearer server-side only',async()=>{
+  const model=new MetaModel((async(url,init)=>{assert.equal(url,META_ENDPOINT);assert.equal(init?.redirect,'error');assert.equal(new Headers(init?.headers).get('authorization'),'Bearer synthetic-key');const body=JSON.parse(init!.body as string);assert.equal(body.model,'muse-spark-1.3');assert.deepEqual(body.tools.map((t:any)=>t.function.name),['decide']);return call('decide',decision());}) as typeof fetch);
   assert.deepEqual(await model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Fix it',source:'text',tasks:[]}),decision());
+});
+test('Meta reads memory through the tool before deciding',async()=>{
+  const seen:string[]=[];let n=0;
+  const model=new MetaModel((async(_u,init)=>{const body=JSON.parse(init!.body as string);n++;
+    if(n===1)return call('memory',{command:'view',path:'words.md'},'m1');
+    seen.push(body.messages.find((m:any)=>m.role==='tool').content);return call('decide',decision(),'d1');}) as typeof fetch);
+  const r=await model.interpret('k',DEFAULT_BRAIN,{original:'read ATC',source:'text',tasks:[]},i=>`${i.command} ${i.path}: ATC means air traffic`);
+  assert.equal(n,2);assert.match(seen[0],/view words\.md: ATC means air traffic/);assert.deepEqual(r,decision());
 });
 test('Meta timeout, malformed output, extra authority fields and HTTP errors redact raw content',async()=>{
   for(const kind of ['timeout','malformed','authority','http']) {
     const model=new MetaModel((async(_url,init)=>{
       if(kind==='timeout')return await new Promise((_resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('synthetic-secret')),100);init!.signal!.addEventListener('abort',()=>{clearTimeout(timer);reject(new Error('synthetic-secret'));},{once:true});});
       if(kind==='http')return new Response('synthetic-secret',{status:401});
-      return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:kind==='malformed'?'synthetic-secret':JSON.stringify({...decision(),approve:true})}}]}));
+      return kind==='malformed'?new Response(JSON.stringify({choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'synthetic-secret'}}]}),{headers:{'content-type':'application/json'}}):call('decide',{...decision(),approve:true});
     }) as typeof fetch,10);
     await assert.rejects(model.interpret('synthetic-secret',DEFAULT_BRAIN,{original:'Fix',source:'text',tasks:[]}),e=>e instanceof Error&&!e.message.includes('synthetic-secret'));
   }
@@ -362,7 +371,8 @@ test('brain wording is used only for chat and clarify, never dispatching work',a
   }finally{f.close();}
 });
 test('Meta request asks for low reasoning effort and allows chat replies',async()=>{
-  let body:any;const model=new MetaModel((async(_u,init)=>{body=JSON.parse(init!.body as string);return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({...decision(),intent:'chat',reply:'Hi.'})}}]}));}) as typeof fetch);
+  let body:any;const model=new MetaModel((async(_u,init)=>{body=JSON.parse(init!.body as string);return call('decide',{...decision(),intent:'chat',reply:'Hi.'});}) as typeof fetch);
   const r=await model.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]});
-  assert.equal(r.reply,'Hi.');assert.equal(body.reasoning_effort,'low');assert.ok(body.response_format.json_schema.schema.properties.intent.enum.includes('chat'));assert.ok(body.response_format.json_schema.schema.required.includes('reply'));
+  assert.equal(r.reply,'Hi.');assert.equal(body.reasoning_effort,'low');assert.equal(body.tool_choice,'required');assert.ok(body.tools[0].function.parameters.properties.intent.enum.includes('chat'));
 });
+

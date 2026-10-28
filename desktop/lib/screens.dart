@@ -43,7 +43,7 @@ extension _BridgeScreens on _DeskState {
   );
   Widget gap([double size = 18]) => SizedBox(height: size);
   Widget buildDesk(BuildContext context) {
-    final titles = ['Home', 'Activity', 'Settings'];
+    final titles = ['Home', 'Activity', 'Items', 'Brain', 'Settings'];
     final pending = (status['pendingJobs'] ?? []).length;
     final count = pending + (status['approvals'] ?? []).length;
     return Scaffold(
@@ -112,6 +112,10 @@ extension _BridgeScreens on _DeskState {
                             ...homeScreen()
                           else if (section == 1)
                             ...activityScreen()
+                          else if (section == 2)
+                            ...itemsScreen()
+                          else if (section == 3)
+                            brainScreen()
                           else
                             ...settingsScreen(),
                         ],
@@ -161,7 +165,7 @@ extension _BridgeScreens on _DeskState {
           ),
         ),
         const SizedBox(height: 6),
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < titles.length; i++)
           Padding(
             padding: const EdgeInsets.only(bottom: 2),
             child: Tooltip(
@@ -188,6 +192,8 @@ extension _BridgeScreens on _DeskState {
                             [
                               Icons.home_outlined,
                               Icons.show_chart_rounded,
+                              Icons.checklist_rounded,
+                              Icons.psychology_outlined,
                               Icons.settings_outlined,
                             ][i],
                             size: 18,
@@ -206,7 +212,8 @@ extension _BridgeScreens on _DeskState {
                               ),
                             ),
                           ),
-                          if (i == 1 && count > 0)
+                          if (i == 1 && count > 0 ||
+                              i == 2 && itemsNeedingYou > 0)
                             Container(
                               constraints: const BoxConstraints(minWidth: 20),
                               height: 20,
@@ -219,7 +226,7 @@ extension _BridgeScreens on _DeskState {
                                 borderRadius: BorderRadius.circular(999),
                               ),
                               child: Text(
-                                '$count',
+                                '${i == 1 ? count : itemsNeedingYou}',
                                 style: const TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w700,
@@ -334,6 +341,8 @@ extension _BridgeScreens on _DeskState {
                 [
                   'Your messaging connection and coding assistant.',
                   'See which session answered and what needs your attention.',
+                  'The work your proxies are tracking, and which session owns each piece.',
+                  'How your phone messages are read and routed before a session sees them.',
                   'Decide when FarFromDesk runs and how this $computer stays available.',
                 ][section],
                 style: const TextStyle(fontSize: 12, color: muted),
@@ -583,7 +592,7 @@ extension _BridgeScreens on _DeskState {
     children: [
       small('Want to receive messages in another app?'),
       TextButton(
-        onPressed: () => go(2),
+        onPressed: () => go(4),
         child: const Text('Messaging settings'),
       ),
     ],
@@ -1244,14 +1253,23 @@ extension _BridgeScreens on _DeskState {
                   ],
                 ),
               ),
-              if (v['ready'] == true && cloud)
-                button('Change', () => go(2), compact: true)
-              else if (v['ready'] != true && !downloading)
+              if (v['ready'] == true)
+                button(
+                  editingVoice ? 'Done' : 'Change',
+                  () => changeView(() => editingVoice = !editingVoice),
+                  compact: true,
+                  key: const Key('voice-change'),
+                )
+              else if (!downloading)
                 tag('Not set up', tint: warning),
             ],
           ),
           if (downloading) ...[gap(14), voiceDownload()],
-          if (v['ready'] != true && !downloading) ...[gap(14), voiceSetup()],
+          if (!downloading && (v['ready'] != true || editingVoice)) ...[
+            gap(14),
+            voiceSetup(),
+            voiceAdvanced(),
+          ],
         ],
       ),
     );
@@ -1264,7 +1282,61 @@ extension _BridgeScreens on _DeskState {
       ? 'Meta'
       : 'Deepgram';
 
-  /// Local model or the owner's own API key; shared by Home and Settings.
+  /// Own FFmpeg/whisper only matter for transcribing on this computer.
+  Widget voiceAdvanced() => Theme(
+    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+    child: ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      title: const Text(
+        'Advanced',
+        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+      ),
+      expandedCrossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if ((voicePathChoice ??
+                (voiceClouds.contains(status['voice']?['engine'])
+                    ? 'api'
+                    : 'local')) ==
+            'local') ...[
+          small('Use your own FFmpeg, whisper-cli and model.'),
+          gap(10),
+          for (final item in [
+            ('ffmpeg', 'FFmpeg executable'),
+            ('whisper', 'whisper-cli executable'),
+            ('model', 'Whisper model'),
+          ])
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      audio[item.$1] ?? item.$2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: muted),
+                    ),
+                  ),
+                  button('Choose ${item.$1}', () async {
+                    final path = await api.chooseFile(item.$2);
+                    if (path != null && mounted) {
+                      changeView(() => audio[item.$1] = path);
+                    }
+                  }),
+                ],
+              ),
+            ),
+          button(
+            'Save voice settings',
+            () => post('/api/audio-config', audio),
+            primary: true,
+            enabled: audio.length == 3,
+          ),
+        ],
+      ],
+    ),
+  );
+
+  /// Local model or the owner's own API key, set up and changed on Home.
   Widget voiceSetup() {
     final v = Map<String, dynamic>.from(status['voice'] ?? {});
     final engine = v['engine'] ?? 'local';
@@ -3844,19 +3916,7 @@ extension _BridgeScreens on _DeskState {
         status['requestCleanup'] ?? {'enabled': false, 'afterHours': 24};
     return [
       messagingAppSettings(),
-      panel(
-        'Brain',
-        trailing: status['metaBrain']?['enabled'] != true
-            ? tag('Off')
-            : status['metaBrain']?['configured'] == true
-            ? tag('On', good: true)
-            : tag('Needs a key', tint: warning),
-        MetaBrainPanel(
-          gateway: api,
-          saved: Map<String, dynamic>.from(status['metaBrain'] ?? {}),
-          onSaved: refresh,
-        ),
-      ),
+      brainLinkCard(),
       if (status['macControl']?['supported'] == true) macControlPanel(),
       panel(
         'On this $computer',
@@ -4036,8 +4096,8 @@ extension _BridgeScreens on _DeskState {
             gap(10),
             settingsDisclosure(
               icon: Icons.shield_outlined,
-              title: 'Your account & permissions',
-              subtitle: 'Your account, coordinators and native approvals',
+              title: 'Who can send tasks',
+              subtitle: 'Your account, proxies and native approvals',
               children: [
                 settingRow(
                   'Owner account',
@@ -4056,66 +4116,6 @@ extension _BridgeScreens on _DeskState {
                   'Prompts shown by Claude or Codex still need you at this $computer. Pausing the bridge does not stop work already running.',
                   tag('Always on'),
                 ),
-              ],
-            ),
-            gap(10),
-            settingsDisclosure(
-              icon: Icons.graphic_eq,
-              title: 'Voice notes',
-              subtitle: status['voice']?['ready'] != true
-                  ? 'Not set up'
-                  : status['voice']?['local'] == false
-                  ? 'Transcribed by ${voiceName(status['voice']?['engine'])}'
-                  : 'Transcribed on this $computer',
-              children: [
-                gap(12),
-                voiceSetup(),
-                // Own FFmpeg/whisper only matter for transcribing on this computer.
-                if ((voicePathChoice ??
-                        (voiceClouds.contains(status['voice']?['engine'])
-                            ? 'api'
-                            : 'local')) ==
-                    'local') ...[
-                  gap(18),
-                  small(
-                    'Advanced: use your own FFmpeg, whisper-cli and model.',
-                  ),
-                  gap(10),
-                  for (final item in [
-                    ('ffmpeg', 'FFmpeg executable'),
-                    ('whisper', 'whisper-cli executable'),
-                    ('model', 'Whisper model'),
-                  ])
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              audio[item.$1] ?? item.$2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: muted,
-                              ),
-                            ),
-                          ),
-                          button('Choose ${item.$1}', () async {
-                            final path = await api.chooseFile(item.$2);
-                            if (path != null && mounted) {
-                              changeView(() => audio[item.$1] = path);
-                            }
-                          }),
-                        ],
-                      ),
-                    ),
-                  button(
-                    'Save voice settings',
-                    () => post('/api/audio-config', audio),
-                    primary: true,
-                    enabled: audio.length == 3,
-                  ),
-                ],
               ],
             ),
           ],
@@ -4240,4 +4240,306 @@ class _DashedBorder extends CustomPainter {
 
   @override
   bool shouldRepaint(_) => false;
+}
+
+extension _BrainAndItems on _DeskState {
+  List<Map<String, dynamic>> get workItems => [
+    for (final i in loadedItems)
+      Map<String, dynamic>.from(i as Map),
+  ];
+  int get itemsNeedingYou => workItems
+      .where((i) => ['waiting on owner', 'blocked'].contains(i['status']))
+      .length;
+
+  Future<void> loadItems({bool fresh = false}) async {
+    try {
+      final data = await api.get(
+        '/api/meta-brain/tasks${fresh ? '?fresh=1' : ''}',
+      );
+      changeView(() => loadedItems = data['workItems'] as List? ?? []);
+    } catch (e) {
+      changeView(() => actionError = 'Could not load items. ${clean(e)}');
+    }
+  }
+
+  Widget brainScreen() => MetaBrainPanel(
+    key: ValueKey('brain-${status['metaBrain']?['configured']}'),
+    gateway: api,
+    saved: Map<String, dynamic>.from(status['metaBrain'] ?? {}),
+    onSaved: refresh,
+    openItems: () => go(2),
+  );
+
+  Widget brainLinkCard() {
+    final b = status['metaBrain'] ?? {};
+    final summary = b['enabled'] != true
+        ? 'Off. Your proxy gets every message as it is.'
+        : b['configured'] == true
+        ? 'On with Meta ${b['model'] ?? 'muse-spark-1.3'}.'
+        : 'On, but it needs a key. Messages use normal routing until then.';
+    return card(
+      Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: accentWash,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.psychology_outlined, color: accent),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Brain',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    infoTip(
+                      'The brain reads each phone message first, keeps your item list and picks which session should answer. It never runs commands or approves anything itself.',
+                      label: 'About the brain',
+                    ),
+                  ],
+                ),
+                gap(2),
+                small(
+                  '$summary Model, instructions, permissions and memory are on the Brain page.',
+                ),
+              ],
+            ),
+          ),
+          button('Manage brain', () => go(3), compact: true),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> itemsScreen() {
+    final all = workItems;
+    bool needs(Map i) => ['waiting on owner', 'blocked'].contains(i['status']);
+    final counts = {
+      'Open': all.where((i) => i['status'] != 'done').length,
+      'Needs you': all.where(needs).length,
+      'Done': all.where((i) => i['status'] == 'done').length,
+      'All': all.length,
+    };
+    final q = itemQuery.toLowerCase();
+    final shown = all.where((i) {
+      final keep = switch (itemFilter) {
+        'Needs you' => needs(i),
+        'Done' => i['status'] == 'done',
+        'All' => true,
+        _ => i['status'] != 'done',
+      };
+      return keep &&
+          '${i['title']} ${i['session'] ?? ''}'.toLowerCase().contains(q);
+    }).toList();
+    final brainOn = status['metaBrain']?['enabled'] == true;
+    return [
+      card(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            '${counts['Open']} open, ${counts['Needs you']} need you',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          infoTip(
+                            'Items are work your proxies follow up on. Each has a number you can use from your phone, like "update on 6". Done items stay in the All list.',
+                            label: 'About items',
+                          ),
+                        ],
+                      ),
+                      gap(2),
+                      small(
+                        'Proxies add items for work that needs follow-up. Ask "where are we" on your phone to get this list.',
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  width: 260,
+                  child: TextField(
+                    onChanged: (v) => changeView(() => itemQuery = v),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      prefixIcon: Icon(Icons.search, size: 18),
+                      hintText: 'Search items or sessions',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                spinButton(
+                  'Refresh',
+                  'Refreshing…',
+                  () => loadItems(fresh: true),
+                ),
+              ],
+            ),
+            gap(16),
+            segmented(
+              counts.keys.toList(),
+              itemFilter,
+              (v) => changeView(() => itemFilter = v),
+              counts: counts,
+              compact: true,
+            ),
+            gap(14),
+            tableHeader(const [
+              (30.0, '#'),
+              (null, 'Item'),
+              (200.0, 'Session'),
+              (150.0, 'Status'),
+            ]),
+            if (shown.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 36),
+                child: Center(
+                  child: Column(
+                    children: [
+                      const Text(
+                        'No items here',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      gap(4),
+                      small(
+                        brainOn
+                            ? 'Say "add this" on your phone while asking for work.'
+                            : 'Turn on the brain to keep an item list.',
+                      ),
+                      if (!brainOn) ...[
+                        gap(10),
+                        button('Open Brain', () => go(3), compact: true),
+                      ],
+                    ],
+                  ),
+                ),
+              )
+            else
+              for (final i in shown) itemRow(i),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  /// Shared table header for Activity and Items: one tinted strip.
+  Widget tableHeader(List<(double?, String)> columns) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+    decoration: BoxDecoration(
+      color: surface,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Row(
+      children: [
+        for (final (i, c) in columns.indexed) ...[
+          if (i > 0) const SizedBox(width: 14),
+          c.$1 == null
+              ? Expanded(child: headerText(c.$2))
+              : SizedBox(
+                  width: c.$1,
+                  child: headerText(c.$2, right: i == 0),
+                ),
+        ],
+        const SizedBox(width: 30),
+      ],
+    ),
+  );
+  Widget headerText(String t, {bool right = false}) => Text(
+    t,
+    textAlign: right ? TextAlign.right : TextAlign.left,
+    style: const TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      color: muted,
+    ),
+  );
+
+  Widget itemRow(Map<String, dynamic> i) {
+    final status = '${i['status']}';
+    final needs = ['waiting on owner', 'blocked'].contains(status);
+    final label = status.isEmpty
+        ? 'Unknown'
+        : status[0].toUpperCase() + status.substring(1);
+    return Container(
+      margin: const EdgeInsets.only(top: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: needs ? warning.withValues(alpha: .07) : null,
+        borderRadius: BorderRadius.circular(10),
+        border: needs ? null : const Border(top: BorderSide(color: hairline)),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 30,
+            child: Text(
+              '${i['id']}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontWeight: FontWeight.w700, color: muted),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${i['title']}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (i['executionState'] != null)
+                  small('Work: ${i['executionState']}'),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          SizedBox(
+            width: 200,
+            child: Text(
+              '${i['session'] ?? 'No session yet'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          ),
+          const SizedBox(width: 14),
+          SizedBox(
+            width: 150,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: status == 'done'
+                  ? tag('Done', good: true)
+                  : status == 'blocked'
+                  ? tag('Blocked', tint: danger)
+                  : needs
+                  ? tag(label, tint: warning)
+                  : status == 'in progress'
+                  ? tag(label, spinning: true)
+                  : tag(label),
+            ),
+          ),
+          const SizedBox(width: 30),
+        ],
+      ),
+    );
+  }
 }

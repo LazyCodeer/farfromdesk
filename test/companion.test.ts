@@ -25,6 +25,8 @@ function fixture() {
   saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,allowStatus:true,allowManagement:true,failure:'block',providers:['codex','claude']}});
   let calls=0,next:Interpretation=task,seen:any;
   router.brain=new MetaBrain(store,secret,{interpret:async(_k:any,_p:any,input:any)=>{calls++;seen=input;return next;}});
+  // An owner who already answered the brain's introduction, so greetings stay on the local fast path.
+  router.brain.owner.write('about-me.md','# About you\n- Call me: Sam\n','owner');
   const last=()=>(store.db.prepare('SELECT body FROM outbox ORDER BY rowid DESC LIMIT 1').get() as {body:string}).body;
   const send=async(id:string,text:string,answer?:Interpretation)=>{if(answer)next=answer;await router.receive({id,text});};
   return {store,router,c,proxy,worker,last,send,get calls(){return calls;},get seen(){return seen;},jobs:()=>store.jobs(),close(){router.stopped=true;approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
