@@ -69,3 +69,40 @@ test('voice is refused unless the Mac answers positively that it is unlocked',{t
   }finally{host.stop('TEST_DONE');}
  }
 });
+
+test('a capture cancelled by a pause ends neither the paused session nor the one the password brings back',{timeout:30_000},async()=>{
+ for(const relogin of [false,true]){
+  const a=await access(),old=backend();let fail!:(e:Error)=>void;old.capture=()=>new Promise((_r,reject)=>fail=reject);
+  const host:any=new P2PHost({access:a,backend:backend});const {s,frames}=session(old,await a.authenticate(pw));host.session=s;
+  try{
+   const pending=host.onControl(s,JSON.stringify({t:'ready',frameId:1}));while(!fail)await delay();
+   await host.onControl(s,JSON.stringify({t:'pause'}));
+   // The new login queues behind the old capture, which a real driver rejects once the pause aborts it.
+   const login=relogin?host.onControl(s,JSON.stringify({t:'auth',password:pw})):undefined;if(relogin)while(!s.backend)await delay();
+   fail(Error('capture cancelled by pause'));await pending;await login;await s.queue;
+   assert.equal(host.session,s,String(relogin));assert.equal(host.status.state==='ended',false);
+   assert.equal(!!s.token,relogin);assert.equal(frames.length>0,relogin);
+  }finally{host.stop('TEST_DONE');}
+ }
+});
+
+test('a revoked login cannot act or receive a frame before the 2s watch notices',{timeout:30_000},async()=>{
+ const a=await access(),b=backend();let acts=0;b.act=async()=>{acts++;};
+ const host:any=new P2PHost({access:a,backend:()=>b});const {s,frames,messages}=session(b,await a.authenticate(pw));host.session=s;
+ try{
+  a.stop();
+  await host.onControl(s,JSON.stringify({t:'input',id:'revoked-0001',frameId:1,kind:'key',key:'a'}));
+  assert.equal(acts,0);assert.equal(frames.length,0);
+  assert.equal(messages.find(m=>m.t==='ended')?.reason,'ACCESS_ENDED');
+ }finally{host.stop('TEST_DONE');}
+});
+
+test('a login revoked while a capture is running sends no pixels',{timeout:30_000},async()=>{
+ const a=await access();let done!:(f:any)=>void;const b=backend();b.capture=()=>new Promise(r=>done=r);
+ const host:any=new P2PHost({access:a,backend:()=>b});const {s,frames}=session(b,await a.authenticate(pw));host.session=s;
+ try{
+  const pending=host.onControl(s,JSON.stringify({t:'ready',frameId:1}));while(!done)await delay();
+  a.stop();done(frame);await pending;
+  assert.equal(frames.length,0);assert.equal(host.status.reason,'ACCESS_ENDED');
+ }finally{host.stop('TEST_DONE');}
+});

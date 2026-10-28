@@ -5,6 +5,8 @@ import {CONTROL_CHANNEL,FRAME_CHANNEL,LOGIN_MS,MAC_IDLE_MS,PAUSE_MS,MAX_VOICE_BY
 import {decodeSignal,encodeSignal,sdpToSignal,signalToSdp} from './signal-codec.js';
 
 type State='idle'|'offered'|'connecting'|'connected'|'ended';
+/** What a queued job runs against, fixed when it starts: a pause or new login replaces these on the session, not here. */
+type Job={epoch:number;backend:DesktopBackend;signal:AbortSignal};
 type Session={id:string;pc:RTCPeerConnection;control:RTCDataChannel;frames:RTCDataChannel;expiresAt:number;abort:AbortController;watch?:ReturnType<typeof setInterval>;
  token?:string;backend?:DesktopBackend;authing:boolean;locked:boolean;paused?:boolean;epoch:number;activeAt:number;loginBy?:number;transcribing?:boolean;voice?:{id:string;mime:string;chunks:Buffer[];bytes:number};attempts:number;misses:number;frameId:number;frame?:DesktopFrame;prev?:DesktopFrame;pulling:boolean;seen:Set<string>;queue:Promise<void>};
 const MAX_BUFFERED=1<<20,MAX_ATTEMPTS=5,READY_MISSES=3,CAPTURE_TRIES=3,RESUME_MS=10*60_000;
@@ -87,7 +89,7 @@ export class P2PHost{
   // Enforced here too: an unattended phone (its screen kept on by the page) must not stay in control.
   if(this.now()-s.activeAt>MAC_IDLE_MS)return this.end(s,'IDLE_TIMEOUT');
   // In the input queue: the driver drops its connection after any failed call, which would kill an input in flight.
-  let r=false as boolean|'locked';const e=s.epoch;await this.serial(s,async()=>{r=await s.backend!.ready().catch(()=>false);});
+  let r=false as boolean|'locked';const e=s.epoch;await this.serial(s,async j=>{r=await j.backend.ready().catch(()=>false);});
   if(this.session!==s||s.epoch!==e||!s.token)return;
   if((r==='locked')!==s.locked){s.locked=r==='locked';this.send(s,{t:'locked',locked:s.locked});}
   // One slow permission probe is not a loss; end only after several in a row.
@@ -137,32 +139,33 @@ export class P2PHost{
   if(m?.t==='input'||m?.t==='voice'||m?.t==='desktops')s.activeAt=this.now();
   if(m?.t==='desktops'){
    if(!s.backend?.desktops)return this.send(s,{t:'desktops',count:0,current:0});
-   return this.serial(s,async()=>{let d={count:0,current:0};try{d=await s.backend!.desktops!(s.abort.signal);}catch{}this.send(s,{t:'desktops',...d});});
+   return this.serial(s,async j=>{let d={count:0,current:0};try{d=await j.backend.desktops!(j.signal);}catch{}if(this.live(s,j.epoch))this.send(s,{t:'desktops',...d});});
   }
   if(m?.t==='voice')return this.onVoice(s,m);
   if(m?.t==='ready'){
    if(m.frameId!==s.frameId||s.pulling)return;
    s.pulling=true;
-   return this.serial(s,async e=>{try{await this.sendFrame(s,await this.capture(s),e);}finally{s.pulling=false;}});
+   return this.serial(s,async j=>{try{await this.sendFrame(s,await this.capture(j),j.epoch);}finally{if(s.epoch===j.epoch)s.pulling=false;}});
   }
   if(m?.t==='input'){
    const id=typeof m.id==='string'?m.id.slice(0,64):'',error=inputError(m);
    if(error)return this.send(s,{t:'ack',id,ok:false,error});
    if(s.seen.has(id))return this.send(s,{t:'ack',id,ok:false,error:'DUPLICATE_INPUT'});
    s.seen.add(id);
-   return this.serial(s,async()=>{
+   return this.serial(s,async j=>{
     // The phone is usually showing the frame before the newest one (the next is already in flight).
     // Both map the same way when the screen size is unchanged, so either is accepted.
     const frame=m.frameId===s.frameId?s.frame:m.frameId===s.frameId-1&&s.prev&&s.frame&&s.prev.width===s.frame.width&&s.prev.height===s.frame.height?s.prev:undefined;
     if(!frame)return this.send(s,{t:'ack',id,ok:false,error:'STALE_FRAME'});
-    try{await s.backend!.act(frame,m as Input,s.abort.signal);}
+    try{await j.backend.act(frame,m as Input,j.signal);}
     catch(e){
+     if(this.session!==s||s.epoch!==j.epoch)return; // cancelled by a pause: the page already gave up on this tap
      const message=(e as Error).message??'';
      // The driver refused before sending anything, so the session can safely carry on.
      if(message.startsWith('DESKTOP_NATIVE_REFUSED'))return this.send(s,{t:'ack',id,ok:false,error:'ACTION_REFUSED'});
      this.send(s,{t:'ack',id,ok:false,error:'ACTION_FAILED'});return this.end(s,'ACTION_FAILED',message); // outcome unknown: never retry
     }
-    this.send(s,{t:'ack',id,ok:true});
+    if(s.epoch===j.epoch)this.send(s,{t:'ack',id,ok:true});
    });
   }
   return this.end(s,'INVALID_MESSAGE');
@@ -171,7 +174,7 @@ export class P2PHost{
   * on the lock screen the password is only ever typed and goes straight into the Mac. Transcripts are never logged. */
  private async onVoice(s:Session,m:any){
   const t=this.opts.transcriber;if(!t)return this.end(s,'INVALID_MESSAGE');
-  const id=typeof m.id==='string'?m.id.slice(0,64):'',fail=(error:string,message?:string)=>{s.voice=undefined;if(this.session===s)this.send(s,{t:'voice-fail',id,error,...message?{message}:{}});};
+  const e=s.epoch,id=typeof m.id==='string'?m.id.slice(0,64):'',fail=(error:string,message?:string)=>{if(s.epoch!==e)return;s.voice=undefined;if(this.session===s)this.send(s,{t:'voice-fail',id,error,...message?{message}:{}});};
   if(s.locked)return fail('MAC_LOCKED');
   // One at a time: each transcription is CPU on the Mac or a paid call on the owner's key.
   if(s.transcribing)return fail('VOICE_BUSY');
@@ -182,16 +185,16 @@ export class P2PHost{
   if(v.bytes>MAX_VOICE_BYTES)return fail('VOICE_TOO_LONG');
   v.chunks.push(b);
   if(m.last!==true)return;
-  s.voice=undefined;s.transcribing=true;const e=s.epoch,signal=s.abort.signal;
+  s.voice=undefined;s.transcribing=true;const signal=s.abort.signal;
   try{
    // Checked again now, uncached, in case the Mac locked while the phone was recording.
    // Only a positive unlocked answer counts: an unknown state could be the lock screen.
-   let r=false as boolean|'locked';await this.serial(s,async()=>{r=await s.backend!.ready(true).catch(()=>false);});
-   if(s.epoch!==e||!s.token)return;
+   let r=false as boolean|'locked';await this.serial(s,async j=>{r=await j.backend.ready(true).catch(()=>false);});
+   if(!this.live(s,e))return;
    if(r!==true)return fail(r==='locked'?'MAC_LOCKED':'MAC_UNAVAILABLE');
-   const text=await t.transcribe(Buffer.concat(v.chunks),v.mime,signal);if(this.session===s&&s.epoch===e)this.send(s,{t:'voice-text',id,text:text.slice(0,2000)});
-  }catch(e){fail('TRANSCRIBE_FAILED',String((e as Error).message??'').slice(0,200));}
-  finally{s.transcribing=false;}
+   const text=await t.transcribe(Buffer.concat(v.chunks),v.mime,signal);if(this.live(s,e))this.send(s,{t:'voice-text',id,text:text.slice(0,2000)});
+  }catch(err){fail('TRANSCRIBE_FAILED',String((err as Error).message??'').slice(0,200));}
+  finally{s.transcribing=false;} // not reset by pause, so a cancelled clip still finishes before the next starts
  }
  /** Authenticated: start the backend, hand the phone its reconnect secret and the first frame. */
  private begin(s:Session){
@@ -199,32 +202,42 @@ export class P2PHost{
   const secret=this.keep(s.token!);
   s.backend=this.opts.backend();
   s.epoch++;
-  return this.serial(s,async e=>{
+  return this.serial(s,async j=>{
    // The phone needs the lock state before it shows the type field, not 2s later.
-   s.locked=await s.backend!.ready(true).catch(()=>false)==='locked';
-   const f=await this.capture(s);if(s.epoch!==e)return;this.send(s,{t:'auth-ok',locked:s.locked,width:f.width,height:f.height,resume:secret,...s.backend!.desktops?{desktops:true as const}:{},...this.opts.transcriber?{voice:this.opts.transcriber.engine}:{},idle:MAC_IDLE_MS});await this.sendFrame(s,f,e);});
+   const locked=await j.backend.ready(true).catch(()=>false)==='locked';
+   const f=await this.capture(j);if(!this.live(s,j.epoch))return;s.locked=locked;this.send(s,{t:'auth-ok',locked:s.locked,width:f.width,height:f.height,resume:secret,...j.backend.desktops?{desktops:true as const}:{},...this.opts.transcriber?{voice:this.opts.transcriber.engine}:{},idle:MAC_IDLE_MS});await this.sendFrame(s,f,j.epoch);});
  }
  /** A single failed screenshot is usually transient; retry briefly before giving up. */
- private async capture(s:Session){
+ private async capture(j:Job){
   for(let attempt=1;;attempt++){
-   try{return await s.backend!.capture(s.abort.signal);}
-   catch(e){if(attempt>=CAPTURE_TRIES||s.abort.signal.aborted)throw e;await sleep(400);}
+   try{return await j.backend.capture(j.signal);}
+   catch(e){if(attempt>=CAPTURE_TRIES||j.signal.aborted)throw e;await sleep(400);}
   }
  }
  /** Capture and act share one queue, so an input always runs against the frame its id names. */
- private serial(s:Session,job:(epoch:number)=>Promise<void>){
-  // Jobs belong to the epoch they were queued in; work queued before a pause or a new login is dropped.
+ private serial(s:Session,job:(j:Job)=>Promise<void>){
+  // Jobs belong to the epoch they were queued in; work queued before a pause or a new login is dropped,
+  // and so is its failure: a capture cancelled by a pause must not end the session that follows.
   const e=s.epoch;
-  s.queue=s.queue.then(async()=>{if(this.session!==s||s.epoch!==e||!s.backend)return;try{await job(e);}catch(e){this.end(s,'DESKTOP_UNAVAILABLE',(e as Error).message);}});
+  s.queue=s.queue.then(async()=>{
+   if(!s.backend||!this.live(s,e))return;
+   try{await job({epoch:e,backend:s.backend,signal:s.abort.signal});}
+   catch(err){if(this.session===s&&s.epoch===e)this.end(s,'DESKTOP_UNAVAILABLE',(err as Error).message);}
+  });
   return s.queue;
  }
+ /** Still the session and epoch this work belongs to, and the login still holds (checked now, not at the 2s watch). */
+ private live(s:Session,epoch:number){
+  if(this.session!==s||s.epoch!==epoch||!s.token)return false;
+  try{this.opts.access.authorize(s.token);return true;}catch{this.end(s,'ACCESS_ENDED');return false;}
+ }
  private async sendFrame(s:Session,f:DesktopFrame,epoch:number){
-  if(this.session!==s||s.epoch!==epoch)return;
+  if(!this.live(s,epoch))return;
   s.frameId++;s.prev=s.frame;s.frame=f;const chunks=chunkFrame(s.frameId,f.width,f.height,f.jpeg);
   for(const c of chunks){
    // ponytail: polls bufferedAmount; switch to bufferedAmountLow events if 20ms granularity ever matters.
    while(s.frames.bufferedAmount>MAX_BUFFERED){if(this.session!==s||s.epoch!==epoch)return;await sleep(20);}
-   if(this.session!==s||s.epoch!==epoch)return;
+   if(!this.live(s,epoch))return;
    s.frames.send(Buffer.from(c.buffer,c.byteOffset,c.byteLength));
   }
  }

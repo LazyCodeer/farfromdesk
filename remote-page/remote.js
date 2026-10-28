@@ -178,6 +178,8 @@ function onMessage(data){
     authed=true;paused=false;store.drop(PAUSED);$('paused').hidden=true;$('session').classList.remove('paused');canList=m.desktops===true;setVoice(m.voice);idleMs=typeof m.idle==='number'?m.idle:0;showLocked(m.locked===true);
     if(typeof m.resume==='string')store.set(KEEP,{secret:m.resume,alive:Date.now()});
     goLive();
+    // Login finished while the phone was hidden: visibilitychange already passed, so pause now.
+    if(document.hidden)pause();
   }
   else if(m.t==='auth-fail'){
     if(paused){$('pausemsg').textContent=explain(m.error);$('pausemsg').hidden=false;$('resumepw').focus();return;}
@@ -402,7 +404,9 @@ function micState(listening,busy){$('mic').setAttribute('aria-pressed',String(li
 $('mic').onclick=async()=>{
   if(rec){stopVoice(false);return;}
   if(macLocked)return;
-  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch{toast('Allow the microphone for this page to use voice typing.');return;}
+  // A pause while the permission prompt or the clip is pending makes both obsolete (epoch).
+  const e=epoch;let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch{if(e===epoch)toast('Allow the microphone for this page to use voice typing.');return;}
+  if(e!==epoch||paused||ended||rec){stream.getTracks().forEach(t=>t.stop());return;}
   const type=['audio/webm','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));
   const chunks=[];rec=new MediaRecorder(stream,type?{mimeType:type}:undefined);discard=false;
   rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
@@ -411,6 +415,7 @@ $('mic').onclick=async()=>{
     if(discard||macLocked||!chunks.length){micState(false,false);return;}
     micState(false,true);
     const mime=(r.mimeType||type||'audio/webm').split(';')[0],bytes=new Uint8Array(await new Blob(chunks).arrayBuffer());
+    if(e!==epoch||paused||ended){micState(false,false);return;}
     voiceId=crypto.randomUUID();const n=Math.ceil(bytes.length/PIECE);
     for(let seq=0;seq<n;seq++){let bin='';for(const b of bytes.subarray(seq*PIECE,(seq+1)*PIECE))bin+=String.fromCharCode(b);send({t:'voice',id:voiceId,seq,mime,data:btoa(bin),last:seq===n-1});}
   };

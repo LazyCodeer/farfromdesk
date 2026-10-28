@@ -20,3 +20,50 @@ test('a frame still decoding when the phone pauses is not drawn',async()=>{
  release({width:100,height:100,close(){closed++;}});await pending;
  assert.equal(draws,0);assert.equal(closed,1);
 });
+
+const page=(from:string,to:string)=>{const src=fs.readFileSync('remote-page/remote.js','utf8');return src.slice(src.indexOf(from),src.indexOf(to));};
+
+test('a login that finishes while the phone is hidden pauses straight away',()=>{
+ let paused=0;
+ const context=vm.createContext({document:{hidden:true},authed:false,paused:false,live:false,canList:false,idleMs:0,
+  store:{drop(){},set(){}},PAUSED:'paused',KEEP:'keep',$:()=>({hidden:true,classList:{remove(){}}}),setVoice(){},showLocked(){},
+  goLive(){context.live=true;},pause(){paused++;}});
+ vm.runInContext(page('function onMessage(','// ---- Live view.'),context);
+ vm.runInContext('onMessage(JSON.stringify({t:"auth-ok",resume:"fixture",idle:75000}))',context);
+ assert.equal(paused,1);
+});
+
+function micPage(getUserMedia:()=>Promise<any>,blob:()=>Promise<ArrayBuffer>){
+ const mic:any={},sent:any[]=[],toasts:string[]=[];let recorder:any;
+ class Recorder{mimeType='audio/webm';ondataavailable:any;onstop:any;static isTypeSupported(){return true;}constructor(){recorder=this;}start(){}stop(){}}
+ const context=vm.createContext({$:()=>mic,rec:null,macLocked:false,paused:false,ended:false,epoch:0,discard:false,voiceTimer:null,VOICE_MAX_MS:120000,PIECE:1000,voiceId:'',
+  navigator:{mediaDevices:{getUserMedia}},MediaRecorder:Recorder,Blob:class{arrayBuffer=blob;},crypto:{randomUUID:()=>'v'},btoa,
+  setTimeout:()=>0,clearTimeout(){},stopVoice(){},toast:(t:string)=>toasts.push(t),micState(){},send:(m:any)=>sent.push(m)});
+ vm.runInContext(page("$('mic').onclick=async()=>{","function heard("),context);
+ return {context,mic,sent,toasts,recorder:()=>recorder};
+}
+const pauseIn=(c:any)=>{c.paused=true;c.epoch++;};
+
+test('a microphone grant that lands after a pause never records',async()=>{
+ let grant!:(s:any)=>void,stopped=0;
+ const p=micPage(()=>new Promise(r=>grant=r),async()=>new ArrayBuffer(1));
+ const pending=p.mic.onclick();pauseIn(p.context);
+ grant({getTracks:()=>[{stop(){stopped++;}}]});await pending;
+ assert.equal(p.recorder(),undefined);assert.equal(stopped,1);
+});
+
+test('a microphone refusal that lands after a pause shows nothing',async()=>{
+ let deny!:(e:Error)=>void;
+ const p=micPage(()=>new Promise((_r,j)=>deny=j),async()=>new ArrayBuffer(1));
+ const pending=p.mic.onclick();pauseIn(p.context);deny(Error('NotAllowedError'));await pending;
+ assert.deepEqual(p.toasts,[]);
+});
+
+test('a clip still being read when the phone pauses is not uploaded after the password',async()=>{
+ let read!:(b:ArrayBuffer)=>void;
+ const p=micPage(async()=>({getTracks:()=>[{stop(){}}]}),()=>new Promise(r=>read=r));
+ await p.mic.onclick();const r=p.recorder();r.ondataavailable({data:{size:1}});
+ const stopped=r.onstop();pauseIn(p.context);p.context.paused=false; // the password brought the session back
+ read(new Uint8Array([1,2,3]).buffer);await stopped;
+ assert.deepEqual(p.sent,[]);
+});
