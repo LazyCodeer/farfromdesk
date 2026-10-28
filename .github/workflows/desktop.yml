@@ -57,7 +57,8 @@ jobs:
     uses: ./.github/workflows/desktop-checks.yml
   desktop:
     if: needs.version.outputs.skip != 'true'
-    needs: [version, checks]
+    # Builds run alongside the checks; publish still waits for both.
+    needs: version
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
@@ -161,7 +162,7 @@ jobs:
           compression-level: 0
   publish:
     if: needs.version.outputs.publish == 'true' && needs.version.outputs.skip != 'true' && github.ref == 'refs/heads/main'
-    needs: [version, desktop]
+    needs: [version, checks, desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
