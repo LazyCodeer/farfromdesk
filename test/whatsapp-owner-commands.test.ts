@@ -124,9 +124,54 @@ test('WhatsApp forwarded or quoted voice cannot open screen control and spoken s
 test('WhatsApp target list accepts a quoted number without running an agent task',async()=>{
  const f=fixture();try{
   const a=f.store.register('claude-a','claude','22222222-2222-4222-8222-222222222222','/synthetic','channel').binding,b=f.store.register('claude-b','claude','33333333-3333-4333-8333-333333333333','/synthetic','channel').binding;
-  f.store.set('selected',JSON.stringify([a.id,b.id]));await f.wa.receiveMessage(f.msg('TARGETS','/claude'));await f.wa.flush();
+  f.store.set('selected',JSON.stringify([a.id,b.id]));await f.wa.receiveMessage(f.msg('TARGETS','/claude list'));await f.wa.flush();
   const row=f.store.db.prepare('SELECT b.wa_id FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id').get() as any;
   await f.wa.receiveMessage(f.msg('PICK','',{message:{extendedTextMessage:{text:'2',contextInfo:{stanzaId:row.wa_id}}}}));
   assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,b.id);assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});
+
+test('bare /claude switches straight to the default Claude coordinator with one line and no list',async()=>{
+ const f=fixture();try{
+  const c=f.store.register('claude-coord','claude','44444444-4444-4444-8444-444444444444','/synthetic','channel').binding,w=f.store.register('claude-worker','claude','55555555-5555-4555-8555-555555555555','/synthetic','channel').binding;
+  f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});f.router.coordinator.registry.register(c);f.store.set(`name:${c.id}`,'atlas Super Ai');
+  f.store.set('selected',JSON.stringify([c.id,w.id]));
+  await f.wa.receiveMessage(f.msg('C1','/claude'));
+  assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
+  const bodies=()=>(f.store.db.prepare("SELECT body FROM outbox WHERE source LIKE 'command%' OR source LIKE 'owner-choice:%' ORDER BY rowid").all() as any[]).map(r=>r.body);
+  assert.match(bodies().at(-1)!,/Now talking to atlas Super Ai\. \/back to leave\./);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM owner_target_options').get()!.n,0);assert.equal(f.store.jobs().length,0);
+  await f.wa.receiveMessage(f.msg('C2','Check the build'));assert.equal(f.store.job('wa:C2')?.binding_id,c.id);
+  // No Codex coordinator: one line pointing to the desktop app, and the Claude target stays.
+  await f.wa.receiveMessage(f.msg('C3','/codex'));
+  assert.match(bodies().at(-1)!,/No Codex coordinator is connected\. Connect one in the FarFromDesk desktop app/);
+  assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
+  // A paused coordinator fails closed instead of picking another Claude session.
+  await f.wa.receiveMessage(f.msg('C4','/back'));f.store.enable(c.id,false);await f.wa.receiveMessage(f.msg('C5','/claude'));
+  assert.equal(f.store.get(`owner-target:${owner}`),'null');assert.equal(f.store.jobs().length,1);
+  // The full list stays available behind /claude list.
+  f.store.enable(c.id,true);await f.wa.receiveMessage(f.msg('C6','/claude list'));assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM owner_target_options').get()!.n,1);
+ }finally{f.close();}
+});
+
+test('an expired or older-build session list is dropped so plain numbers and names route normally',async()=>{
+ const f=fixture();try{
+  const key=`owner-target-choice:${owner}`;
+  f.store.set(key,JSON.stringify({provider:'claude',targets:[],expires:Date.now()-1,requestId:'wa:old',names:['claude-a']}));
+  await f.wa.receiveMessage(f.msg('N1','1'));assert.equal(f.store.job('wa:N1')?.binding_id,f.binding.id);assert.equal(f.store.get(key),'null');
+  f.store.set(key,JSON.stringify({provider:'claude',targets:[],expires:Date.now()+600000,names:['claude-a']}));
+  await f.wa.receiveMessage(f.msg('N2','claude-a'));assert.equal(f.store.job('wa:N2')?.binding_id,f.binding.id);assert.equal(f.store.get(key),'null');
+  assert.equal(f.store.commandTurns().length,0);
+ }finally{f.close();}
+});
+
+test('WhatsApp session list polls are numbered once and the text never mentions buttons',async()=>{
+ const f=fixture();try{
+  f.store.set('whatsapp-choice-polls','true');
+  const a=f.store.register('claude-a','claude','22222222-2222-4222-8222-222222222222','/synthetic','channel').binding,b=f.store.register('claude-b','claude','33333333-3333-4333-8333-333333333333','/synthetic','channel').binding;
+  f.store.set('selected',JSON.stringify([a.id,b.id]));await f.wa.receiveMessage(f.msg('L1','/claude list'));await f.wa.flush();await f.wa.flush();
+  const text=f.sends.find(s=>s.content?.text?.includes('Choose a connected Claude session'))!.content.text;assert.doesNotMatch(text,/button/i);
+  const poll=f.sends.find(s=>s.message?.pollCreationMessageV3)!.message.pollCreationMessageV3;
+  assert.deepEqual(poll.options.map((o:any)=>o.optionName),['1. claude-a','2. claude-b']);
  }finally{f.close();}
 });

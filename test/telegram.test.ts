@@ -226,7 +226,7 @@ test('Claude targets offer stable choices and never substitute paused or changed
     await f.pair();const a=f.store.register('claude-app','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
     const b=f.store.register('claude-cli','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;
     f.store.set('selected',JSON.stringify([a.id,b.id]));
-    await f.tg.receive(f.message(90,'/claude'));assert.equal(f.store.jobs().length,0);
+    await f.tg.receive(f.message(90,'/claude list'));assert.equal(f.store.jobs().length,0);
     await f.tg.flush();await f.tg.receive(f.message(91,'/claude 2'));await f.tg.receive(f.message(92,'Check this task'));
     assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,b.id);
     assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.destination,telegramDestination(bot,owner));
@@ -283,7 +283,7 @@ test('screen entry reports unavailable, setup, locked or authenticated viewer re
 test('selected target applies to files and mode changes invalidate an in-flight file target',async()=>{
   const f=fixture();try{
     await f.pair();const claude=f.store.register('claude-file','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
-    f.store.set('selected',JSON.stringify([claude.id]));await f.tg.receive(f.message(90,'/claude'));
+    f.store.set('selected',JSON.stringify([claude.id]));await f.tg.receive(f.message(90,'/claude list'));
     const destination=telegramDestination(bot,owner),m={id:telegramMessageId(bot,owner,91),text:'Review this file',ownerCommand:false};
     const target=f.store.destinationContext.run(destination,()=>f.router.attachmentTarget(m));assert.equal(target.binding.id,claude.id);
     await f.tg.receive(f.message(92,'/codex'));
@@ -376,9 +376,10 @@ test('Claude target list sends buttons for seven sessions and quoted 4 selects t
  const f=fixture();try{
   await f.pair();const targets=Array.from({length:7},(_,i)=>f.store.register('claude-'+i,'claude',`22222222-2222-4222-8222-${String(i+1).padStart(12,'0')}`,f.root,'channel').binding);
   f.store.set('selected',JSON.stringify(targets.map(b=>b.id)));
-  await f.tg.receive(f.message(900,'/claude'));await f.tg.flush();await f.tg.flush();
+  await f.tg.receive(f.message(900,'/claude list'));await f.tg.flush();await f.tg.flush();
   const sends=f.calls.filter(c=>c.method==='sendMessage'&&c.body.reply_markup?.inline_keyboard);
   assert.deepEqual(sends.map(c=>c.body.reply_markup.inline_keyboard.length),[6,1]);
+  assert.doesNotMatch(sends[0].body.text,/\d\. claude-/); // labels live on the buttons only
   const rows=f.store.db.prepare("SELECT b.* FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id ORDER BY b.created_at,b.rowid").all() as any[];
   const messageId=Number(rows[0].wa_id.split(':').at(-1));
   await f.tg.receive(f.message(901,'4',owner,{reply_to_message:{message_id:messageId,from:{id:bot}}}));
@@ -395,7 +396,7 @@ test('target buttons, plain numbers and exact names share a single claim and rej
   await f.pair();const a=f.store.register('claude-one','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
   const b=f.store.register('claude-two','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;f.store.set('selected',JSON.stringify([a.id,b.id]));
   const dest=telegramDestination(bot,owner);let id=1000;
-  const offer=async()=>{await f.tg.receive(f.message(id++,'/claude'));for(let i=0;i<5;i++)await f.tg.flush();const row=f.store.db.prepare('SELECT b.*,o.id AS option_id FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id ORDER BY b.rowid DESC LIMIT 1').get() as any;return row;};
+  const offer=async()=>{await f.tg.receive(f.message(id++,'/claude list'));for(let i=0;i<5;i++)await f.tg.flush();const row=f.store.db.prepare('SELECT b.*,o.id AS option_id FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id ORDER BY b.rowid DESC LIMIT 1').get() as any;return row;};
   const row=await offer();const cb=(uid:number,data=`opt:${row.option_id}:2`)=>({callback_query:{id:'target-tap-'+id++,from:{id:uid},message:{message_id:Number(row.wa_id.split(':').at(-1)),chat:{id:owner,type:'private'},from:{id:bot}},data}});
   await f.tg.receive(cb(other));assert.equal(f.store.get(`owner-target:${dest}`),undefined);
   await f.tg.receive(cb(owner));assert.equal(JSON.parse(f.store.get(`owner-target:${dest}`)!).id,b.id);assert.equal(f.store.jobs().length,0);
@@ -412,14 +413,16 @@ test('target choices reject forwarded replies, expired lists and lists replaced 
  const f=fixture();try{
   await f.pair();const a=f.store.register('claude-a','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding,b=f.store.register('claude-b','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;
   f.store.set('selected',JSON.stringify([a.id,b.id]));const dest=telegramDestination(bot,owner);let id=1100;
-  const offer=async()=>{await f.tg.receive(f.message(id++,'/claude'));for(let i=0;i<5;i++)await f.tg.flush();return f.store.db.prepare('SELECT b.wa_id,o.id FROM message_options o JOIN owner_target_options t ON t.option_id=o.id JOIN outbox b ON b.id=o.outbox_id ORDER BY b.rowid DESC LIMIT 1').get() as any;};
+  const offer=async()=>{await f.tg.receive(f.message(id++,'/claude list'));for(let i=0;i<5;i++)await f.tg.flush();return f.store.db.prepare('SELECT b.wa_id,o.id FROM message_options o JOIN owner_target_options t ON t.option_id=o.id JOIN outbox b ON b.id=o.outbox_id ORDER BY b.rowid DESC LIMIT 1').get() as any;};
   const first=await offer();
   await f.tg.receive(f.message(id++,'1',owner,{reply_to_message:{message_id:Number(first.wa_id.split(':').at(-1)),from:{id:bot}},forward_origin:{type:'user'}}));
   assert.equal(f.store.get(`owner-target:${dest}`),undefined);
   await offer();await f.tg.receive(f.message(id++,'1',owner,{reply_to_message:{message_id:Number(first.wa_id.split(':').at(-1)),from:{id:bot}}}));assert.equal(f.store.get(`owner-target:${dest}`),undefined);
   f.store.db.prepare('UPDATE message_options SET expires_at=0').run();await f.tg.receive(f.message(id++,'2'));assert.equal(f.store.get(`owner-target:${dest}`),undefined);
-  f.store.set(`owner-target-choice:${dest}`,JSON.stringify({provider:'claude',targets:[],expires:Date.now()+600000}));await f.tg.receive(f.message(id++,'1'));
   assert.equal(f.store.jobs().length,0);assert.ok(f.store.commandTurns().some((t:any)=>t.status==='blocked'&&t.label==='Session selection'));
+  // A list saved by an older build (no requestId) is dropped, so the number is an ordinary message.
+  f.store.set(`owner-target-choice:${dest}`,JSON.stringify({provider:'claude',targets:[],expires:Date.now()+600000}));await f.tg.receive(f.message(id,'1'));
+  assert.equal(f.store.get(`owner-target-choice:${dest}`),'null');assert.equal(f.store.job(telegramMessageId(bot,owner,id))?.binding_id,f.binding.id);
  }finally{f.close();}
 });
 

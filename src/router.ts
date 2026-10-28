@@ -69,7 +69,13 @@ export class Router {
   async receive(m:Incoming):Promise<RouteResult> {
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
-    try{const label=ownerTurnLabel(this,m),result=await this.receiveOnce(m);if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);return result;}finally{this.receiving.delete(m.id);}
+    try{
+      // History is best effort: a failure to label or record it must not fail a turn that already ran, or Telegram re-polls it.
+      let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch{}
+      const result=await this.receiveOnce(m);
+      try{if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch{}
+      return result;
+    }finally{this.receiving.delete(m.id);}
   }
   private async receiveOnce(m:Incoming):Promise<RouteResult> {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};

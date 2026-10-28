@@ -5,8 +5,8 @@ import { brainPolicy } from './meta-brain-config.js';
 import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 
 export const TELEGRAM_COMMANDS=[
-  {command:'claude',description:'Talk to a connected Claude session'},
-  {command:'codex',description:'Talk to a connected Codex session'},
+  {command:'claude',description:'Talk to your Claude coordinator'},
+  {command:'codex',description:'Talk to your Codex coordinator'},
   {command:'brain',description:'Use the Meta brain, without fallback'},
   {command:'screen',description:'Open the password-protected Mac viewer'},
   {command:'back',description:'Return to normal routing'},
@@ -39,7 +39,7 @@ function candidates(r:Router,provider:string) {
 function enabled(r:Router,provider:string){return (r.coordinator?.enabled()??JSON.parse(r.store.get('enabled-apps')??'["codex","claude"]')).includes(provider);}
 function session(r:Router,target:Extract<Target,{kind:'session'}>) {
   const b=r.store.binding(target.id);
-  if(!b||!enabled(r,b.provider)||!candidates(r,b.provider).some(x=>x.id===b.id)||identity(r,b)!==target.identity)throw Error('Your chosen session is paused, disconnected or changed. Choose /claude or /codex again. Nothing was sent elsewhere.');
+  if(!b||!enabled(r,b.provider)||!candidates(r,b.provider).some(x=>x.id===b.id)||identity(r,b)!==target.identity)throw Error('Your chosen session is paused, disconnected or changed. Send /claude or /codex again. Nothing was sent elsewhere.');
   const entry=r.coordinator?.registry.entry(b.id);
   if(entry&&r.coordinator!.registry.identity(b).key!==entry.key)throw Error('This proxy account or runtime changed. Review Coding platforms before choosing it again.');
   return b;
@@ -50,6 +50,24 @@ function brain(r:Router) {
   if(!r.coordinator)throw Error('Brain routing is unavailable. Finish setting up Coding platforms in FarFromDesk.');
 }
 function clear(r:Router){r.store.set(routeKey(r),'null');r.store.set(choiceKey(r),'null');endDirect(r.store);r.brain.clearChoice();}
+/** A pending list that can still be answered. An expired list or one saved by an older build has no requestId to claim against. */
+function livePending(r:Router):Choice|null {
+  const pending=JSON.parse(r.store.get(choiceKey(r))??'null') as Choice|null;
+  if(pending&&(typeof pending.requestId!=='string'||pending.expires<=Date.now())){r.store.set(choiceKey(r),'null');return null;}
+  return pending;
+}
+/** The provider's default coordinator, as the proxy line in currentTarget already defines it. */
+function defaultSession(r:Router,provider:string):Binding {
+  const label=provider==='claude'?'Claude':'Codex';
+  let b:Binding|undefined;
+  if(r.coordinator){
+    const master=r.coordinator.master();
+    if(master?.provider===provider&&r.coordinator.isCoordinator(master.id))b=master;
+    else if(r.coordinator.registry.entries().some(e=>e.provider===provider))b=r.coordinator.registry.choose(provider); // throws one line when paused or ambiguous
+  }else{const active=r.store.binding(r.store.get('active')??'');if(active?.provider===provider)b=active;}
+  if(!b||!candidates(r,provider).some(x=>x.id===b!.id))throw Error(`No ${label} coordinator is connected. Connect one in the FarFromDesk desktop app, Coding platforms.`);
+  return b;
+}
 function name(r:Router,b:Binding){return (r.store.get(`name:${b.id}`)??b.alias).replace(/[\r\n*_`]/g,' ').slice(0,80);}
 export function currentTarget(r:Router) {
   const t=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
@@ -68,12 +86,13 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   const match=/^\/(claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
-  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nUse typed slash commands or the session buttons to choose a target. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
+  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Remote Desktop settings in FarFromDesk.':'Screen viewing is unavailable in this build. Open Remote Desktop settings in FarFromDesk on your Mac.';
   const provider=cmd==='codex'?'codex':'claude';if(!enabled(r,provider))throw Error(`${provider==='claude'?'Claude':'Codex'} is disabled. Enable it in Coding platforms first.`);
-  if(arg)return pickOwnerTarget(r,m,provider)??`Send /${cmd} for a fresh list, then choose a session.`;
+  if(!arg){const b=defaultSession(r,provider);return activateTarget(r,{kind:'session',id:b.id,identity:identity(r,b)},true);}
+  if(arg.toLowerCase()!=='list')return pickOwnerTarget(r,m,provider)??`Send /${cmd} list for a fresh list, then choose a session.`;
   const available=candidates(r,provider);
   if(!available.length)throw Error(`No enabled connected ${provider==='claude'?'Claude':'Codex'} session is available. Connect or resume one in Coding platforms; no session was created.`);
   const targets=available.map(b=>({kind:'session' as const,id:b.id,identity:identity(r,b)}));
@@ -85,9 +104,11 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
       const page=available.slice(offset,offset+6);
       const choices=page.map((b,i)=>({id:`target${offset+i+1}`,label:`${offset+i+1}. ${name(r,b)}${r.coordinator?.isCoordinator(b.id)?' · coordinator':''}`.slice(0,80)}));
       const source=`owner-choice:${m.id}:${offset}`;
-      r.store.output(undefined,`Choose a connected ${provider==='claude'?'Claude':'Codex'} session:
+      // Telegram shows the labels as buttons, so the body does not repeat them. WhatsApp has only the numbered text.
+      const label=provider==='claude'?'Claude':'Codex';
+      r.store.output(undefined,r.store.destination()!.startsWith('tg:')?`Choose a connected ${label} session. This list expires in 10 minutes.`:`Choose a connected ${label} session:
 ${choices.map(c=>c.label).join('\n')}
-Tap a button, reply with its number, or send /${cmd} NUMBER. This list expires in 10 minutes.`,source);
+Reply to this message with a number, or send /${cmd} NUMBER. This list expires in 10 minutes.`,source);
       const row=r.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(source+':0') as {id:string};
       const optionId=createOptions(r.store,row.id,m.id,'',r.store.destination()!,{choices,expiresInSeconds:600});
       r.store.db.prepare('INSERT INTO owner_target_options(option_id) VALUES(?)').run(optionId);
@@ -96,19 +117,21 @@ Tap a button, reply with its number, or send /${cmd} NUMBER. This list expires i
   }catch(e){r.store.db.exec('ROLLBACK TO owner_target_list; RELEASE owner_target_list');throw e;}
   return ''; // The paged messages above already carry their buttons and number fallback.
 }
-function activateTarget(r:Router,target:Extract<Target,{kind:'session'}>) {
+function activateTarget(r:Router,target:Extract<Target,{kind:'session'}>,short=false) {
   const b=session(r,target);clear(r);r.store.set(routeKey(r),JSON.stringify(target));
+  if(short)return `Now talking to ${name(r,b)}. /back to leave.`;
   return `Now talking to ${name(r,b)} (${b.provider}). Your next messages go to this exact session. Permissions, account and runtime are unchanged. Use /back to leave.`;
 }
 /** Target lists share the atomic option claim, but never enqueue an agent task. */
 export function ownerTurnLabel(r:Router,m:Incoming):string|undefined {
   if(authenticatedOwner(r,m)&&isOwnerCommand(m.text))return m.text.trim().split(/\s+/)[0].toLowerCase();
   if(m.quotedId&&r.store.db.prepare('SELECT 1 FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,r.store.destination()))return 'Session selection';
-  if(authenticatedOwner(r,m)&&m.ownerCommand&&/^\d+$/.test(m.text.trim())&&r.store.get(choiceKey(r))&&r.store.get(choiceKey(r))!=='null')return 'Session selection';
+  if(authenticatedOwner(r,m)&&m.ownerCommand&&/^\d+$/.test(m.text.trim())&&livePending(r))return 'Session selection';
 }
 export function pickOwnerTarget(r:Router,m:Incoming,provider?:string):string|undefined {
   const destination=r.store.destination();if(!destination)return;
-  const pending=JSON.parse(r.store.get(choiceKey(r))??'null') as Choice|null;
+  // A stale list is dropped here, so later numbers and names route normally instead of failing forever.
+  const pending=livePending(r);
   let row:any;
   if(m.quotedId){
     row=r.store.db.prepare('SELECT o.*,b.wa_id FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,destination);
@@ -124,16 +147,14 @@ export function pickOwnerTarget(r:Router,m:Incoming,provider?:string):string|und
   }
   if(number===undefined&&!m.optionToken){if(row||provider)throw Error('Choose a number or button from the session list.');return;}
   if(!row){
-    if(!pending){if(provider)throw Error(`Send /${provider} for a fresh session list.`);return;}
-    if(typeof pending.requestId!=='string')throw Error(`This session list is from an older build. Send /${pending.provider} again for buttons.`);
-    if(provider&&pending.provider!==provider)throw Error(`Send /${provider} for a fresh session list.`);
-    if(pending.expires<=Date.now())throw Error(`This session list expired. Send /${pending.provider} again.`);
+    if(!pending){if(provider)throw Error(`Send /${provider} list for a fresh session list.`);return;}
+    if(provider&&pending.provider!==provider)throw Error(`Send /${provider} list for a fresh session list.`);
     row=r.store.db.prepare('SELECT o.*,b.wa_id FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE o.request_id=? AND o.destination=?').all(pending.requestId,destination).find((o:any)=>JSON.parse(o.choices).some((c:any)=>c.id===`target${number}`));
     if(!row)throw Error('Choose one of the offered session numbers.');
   }
   let reply='This session choice was already recorded.';
   selectOption(r.store,{responseId:m.id,destination,messageId:row.wa_id,token:m.optionToken,number},()=>{throw Error('A session choice cannot create an agent task.');},(requestId,choiceId)=>{
-    if(!pending||pending.requestId!==requestId||pending.expires<=Date.now())throw Error(`This session list expired or was replaced. Send /claude or /codex again.`);
+    if(!pending||pending.requestId!==requestId||pending.expires<=Date.now())throw Error(`This session list expired or was replaced. Send /claude list or /codex list again.`);
     const index=Number(choiceId.replace(/^target/,''))-1;
     if(!pending.targets[index])throw Error('Choose one of the offered sessions.');
     reply=activateTarget(r,pending.targets[index]);
