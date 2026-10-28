@@ -189,6 +189,10 @@ test('a paused default coordinator fails closed even when another coordinator of
   const body=(f.store.db.prepare("SELECT body FROM outbox WHERE source='command-error:wa:P1:0'").get() as any).body;
   assert.equal(body,'Your default Claude coordinator, Desk coordinator, is paused. Resume it in the FarFromDesk desktop app. Or send /claude list to choose a connected session.');
   assert.equal(f.store.get(`owner-target:${owner}`),undefined);assert.equal(f.store.jobs().length,0);
+  // With nothing else to list, the paused line carries no /claude list hint.
+  f.store.enable(cli.id,false);await f.wa.receiveMessage(f.msg('P3','/claude'));
+  assert.equal((f.store.db.prepare("SELECT body FROM outbox WHERE source='command-error:wa:P3:0'").get() as any).body,'Your default Claude coordinator, Desk coordinator, is paused. Resume it in the FarFromDesk desktop app.');
+  f.store.enable(cli.id,true);
   // An unknown argument with no list points to /claude list instead of a list that does not exist.
   await f.wa.receiveMessage(f.msg('P2','/claude bogus'));
   assert.match((f.store.db.prepare("SELECT body FROM outbox WHERE source='command:wa:P2:0'").get() as any).body,/^Send \/claude list/);

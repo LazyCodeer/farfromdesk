@@ -58,17 +58,18 @@ function livePending(r:Router):Choice|null {
 }
 /** The provider's default coordinator, as the proxy line in currentTarget already defines it. */
 function defaultSession(r:Router,provider:string):Binding {
-  const label=provider==='claude'?'Claude':'Codex',list=`Or send /${provider} list to choose a connected session.`;
+  // The /claude list hint only when that list would offer something.
+  const label=provider==='claude'?'Claude':'Codex',list=candidates(r,provider).length?` Or send /${provider} list to choose a connected session.`:'';
   // The saved default, read directly: master() hides a paused one, and falling through would silently swap the target.
   const saved=r.store.binding(r.store.get(r.coordinator?'master':'active')??'');
   let b:Binding|undefined;
   if(saved?.provider===provider&&(!r.coordinator||r.coordinator.isCoordinator(saved.id))){
-    if(!saved.enabled)throw Error(`Your default ${label} coordinator, ${name(r,saved)}, is paused. Resume it in the FarFromDesk desktop app. ${list}`);
+    if(!saved.enabled)throw Error(`Your default ${label} coordinator, ${name(r,saved)}, is paused. Resume it in the FarFromDesk desktop app.${list}`);
     b=saved;
   }else if(r.coordinator?.registry.entries().some(e=>e.provider===provider)){
-    try{b=r.coordinator.registry.choose(provider);}catch(e){throw Error(`${(e as Error).message} ${list}`);} // paused or ambiguous, one line
+    try{b=r.coordinator.registry.choose(provider);}catch(e){throw Error(`${(e as Error).message}${list}`);} // paused or ambiguous, one line
   }
-  if(!b||!candidates(r,provider).some(x=>x.id===b!.id))throw Error(`No ${label} coordinator is connected. Connect one in the FarFromDesk desktop app, Coding platforms.${candidates(r,provider).length?` ${list}`:''}`);
+  if(!b||!candidates(r,provider).some(x=>x.id===b!.id))throw Error(`No ${label} coordinator is connected. Connect one in the FarFromDesk desktop app, Coding platforms.${list}`);
   return b;
 }
 function name(r:Router,b:Binding){return (r.store.get(`name:${b.id}`)??b.alias).replace(/[\r\n*_`]/g,' ').slice(0,80);}
