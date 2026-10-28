@@ -4,8 +4,7 @@ import { brainPolicy } from './meta-brain-config.js';
 import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 
 export const TELEGRAM_COMMANDS=[
-  {command:'cloud',description:'Talk to a connected Claude session'},
-  {command:'claude',description:'Alias for cloud'},
+  {command:'claude',description:'Talk to a connected Claude session'},
   {command:'codex',description:'Talk to a connected Codex session'},
   {command:'brain',description:'Use the Meta brain, without fallback'},
   {command:'screen',description:'Open the password-protected Mac viewer'},
@@ -39,7 +38,7 @@ function candidates(r:Router,provider:string) {
 function enabled(r:Router,provider:string){return (r.coordinator?.enabled()??JSON.parse(r.store.get('enabled-apps')??'["codex","claude"]')).includes(provider);}
 function session(r:Router,target:Extract<Target,{kind:'session'}>) {
   const b=r.store.binding(target.id);
-  if(!b||!enabled(r,b.provider)||!candidates(r,b.provider).some(x=>x.id===b.id)||identity(r,b)!==target.identity)throw Error('Your chosen session is paused, disconnected or changed. Choose /cloud or /codex again. Nothing was sent elsewhere.');
+  if(!b||!enabled(r,b.provider)||!candidates(r,b.provider).some(x=>x.id===b.id)||identity(r,b)!==target.identity)throw Error('Your chosen session is paused, disconnected or changed. Choose /claude or /codex again. Nothing was sent elsewhere.');
   const entry=r.coordinator?.registry.entry(b.id);
   if(entry&&r.coordinator!.registry.identity(b).key!==entry.key)throw Error('This proxy account or runtime changed. Review Coding platforms before choosing it again.');
   return b;
@@ -65,7 +64,7 @@ export function currentTarget(r:Router) {
 }
 export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined> {
   if(!authenticatedOwner(r,m)||!m.ownerCommand||m.quotedId||m.source==='voice')return;
-  const match=/^\/(cloud|claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
+  const match=/^\/(claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
   if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nOnly commands you type as a new message change routing. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
@@ -105,8 +104,8 @@ export function clearOwnerTarget(r:Router){clear(r);}
 export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
   if(!authenticatedOwner(r,m)||m.quotedId)return;
   const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;if(!target)return;
-  if(target.kind==='brain')throw Error('Meta brain mode accepts text and voice. Choose /cloud or /codex for a file, or quote the intended session reply.');
+  if(target.kind==='brain')throw Error('Meta brain mode accepts text and voice. Choose /claude or /codex for a file, or quote the intended session reply.');
   return session(r,target);
 }
 
-export const isOwnerCommand=(text:string)=>/^\/(cloud|claude|codex|brain|screen|back|help)(?:\s|$)/i.test(text.trim());
+export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|screen|back|help)(?:\s|$)/i.test(text.trim());

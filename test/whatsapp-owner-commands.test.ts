@@ -4,6 +4,7 @@ import { createCipheriv, createHmac, createHash, randomBytes } from 'node:crypto
 import { proto, BufferJSON } from '@whiskeysockets/baileys';
 import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
+import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
 import { WhatsApp } from '../src/whatsapp.js';
 import { GuardedSocket } from '../src/wa-guard.js';
@@ -31,7 +32,7 @@ function fixture(){
   const encPayload=Buffer.concat([cipher.update(bytes),cipher.final(),cipher.getAuthTag()]);
   return {...msg(id,''),message:{pollUpdateMessage:{pollCreationMessageKey:{id:poll.wa_id,remoteJid:owner,fromMe:true},vote:{encPayload,encIv:iv}}}};
  };
- return {store,router,wa,binding,sends,msg,choices,vote,fail:()=>{fail=true;},close:()=>{wa.close();approvals.cancel();store.close();}};
+ return {store,router,wa,approvals,binding,sends,msg,choices,vote,fail:()=>{fail=true;},close:()=>{wa.close();approvals.cancel();store.close();}};
 }
 
 test('WhatsApp typed commands use the owner chat and reject forwards, quotes and other people',async()=>{
@@ -80,5 +81,41 @@ test('turning polls off prevents a queued poll send and ignores its later vote',
   f.store.set('whatsapp-choice-polls','false');
   assert.throws(()=>f.wa.polls.message(poll.id),/disabled/);
   await f.wa.receiveMessage(f.vote(poll,'DISABLED'));assert.equal(f.store.job('wa:DISABLED'),undefined);
+ }finally{f.close();}
+});
+
+
+test('quoted WhatsApp question accepts a slash-prefixed path exactly once',async()=>{
+ const f=fixture();try{
+  let result:string|undefined;
+  void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Which folder?','question')).then(v=>{result=v;});
+  f.store.db.prepare("UPDATE outbox SET status='sent',wa_id='QUESTION' WHERE source LIKE 'permission:%'").run();
+  const m=f.msg('ANSWER','',{message:{extendedTextMessage:{text:'/Users/me/project',contextInfo:{stanzaId:'QUESTION'}}}});
+  await f.wa.receiveMessage(m);await f.wa.receiveMessage(m);
+  assert.equal(result,'/Users/me/project');assert.equal(f.approvals.pending.size,0);assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});
+
+test('WhatsApp owner voice keeps screen, back, session browsing and selection intent',async()=>{
+ const f=fixture();try{
+  let text='',screens=0,lists=0,selected='',id=0;
+  f.wa.transcribe=async()=>text;f.router.remoteControl=async t=>t==='control my screen'?(screens++,'Synthetic screen link'):undefined;
+  const voice=async(value:string,contextInfo:any={})=>{text=value;await f.wa.receiveMessage(f.msg('VOICE'+id++,'',{message:{audioMessage:{mimetype:'audio/ogg; codecs=opus',seconds:2,fileLength:10,contextInfo}}}));};
+  await voice('control my screen');assert.equal(screens,1);assert.equal(f.store.jobs().length,0);
+  await f.wa.receiveMessage(f.msg('TALK','/talk codex-poll'));await voice('back');assert.equal(f.store.get(`direct:${owner}`),undefined);
+  await f.wa.receiveMessage(f.msg('TARGET','/codex'));await voice('back');assert.equal(f.store.get(`owner-target:${owner}`),'null');
+  const c=new Coordinator(f.store,f.router.native,f.router,()=>{});f.router.coordinator=c;
+  c.list=async()=>{lists++;return '1. Synthetic session';};c.select=async value=>{selected=value;return 'Selected';};
+  await voice('show my sessions');assert.equal(lists,1);
+  f.store.set('selection-awaiting','true');await voice('1');assert.equal(selected,'1');assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});
+
+test('WhatsApp forwarded or quoted voice cannot open screen control and spoken slash commands stay blocked',async()=>{
+ const f=fixture();try{
+  let text='control my screen',screens=0,id=0;f.wa.transcribe=async()=>text;f.router.remoteControl=async()=>{screens++;return 'Unexpected screen link';};
+  const voice=async(contextInfo:any={})=>f.wa.receiveMessage(f.msg('VOICE'+id++,'',{message:{audioMessage:{mimetype:'audio/ogg; codecs=opus',seconds:2,fileLength:10,contextInfo}}}));
+  await voice({isForwarded:true,forwardingScore:1});await voice({stanzaId:'unknown'});await voice({quotedMessage:{conversation:'quoted'}});
+  text='/screen';await voice();assert.equal(screens,0);
  }finally{f.close();}
 });

@@ -2,14 +2,14 @@
 
 Telegram registers its command menu automatically with `setMyCommands` when the existing bot connects or reconnects. No BotFather menu configuration is required. Menu registration failure is exposed in connection status; typed commands still work. WhatsApp uses typed commands and has no bot menu.
 
-- `/cloud` and `/claude`: choose an enabled connected Claude session or proxy.
+- `/claude`: choose an enabled connected Claude session or proxy.
 - `/codex`: choose an enabled connected Codex session or proxy.
 - `/brain`: select the configured Meta brain. Disabled/missing-key states are explained, and model failure never falls back to a different session in this mode.
 - `/screen`: use the existing password-protected Mac viewer entry flow. It does not grant native permissions. Setup, platform, password, lock and native access checks remain in the remote service/host. A signaling link is not evidence that a real phone can connect.
 - `/back`: leave the explicit target and return to normal configured routing.
 - `/help`: show descriptions and the current target. Existing commands remain supported.
 
-If several connections fit, the response lists them and asks for `/cloud NUMBER` or `/codex NUMBER`. Choices expire after ten minutes and are tied to the saved exact connection identity. Paused, removed or changed connections fail closed; no sessions are created and no accounts/runtimes are switched. Target selections are isolated by owner destination. Quoted replies still return to the quoted session. Text and voice use the selected target; files use the selected session, while Brain mode asks the owner to choose a session for file delivery.
+If several connections fit, the response lists them and asks for `/claude NUMBER` or `/codex NUMBER`. Choices expire after ten minutes and are tied to the saved exact connection identity. Paused, removed or changed connections fail closed; no sessions are created and no accounts/runtimes are switched. Target selections are isolated by owner destination. Quoted replies still return to the quoted session. Text and voice use the selected target; files use the selected session, while Brain mode asks the owner to choose a session for file delivery.
 
 Only authenticated, top-level owner text can change modes or run commands. Forwarded text, quotes, file captions, voice commands and internal reports do not execute slash commands. Telegram accepts `@thisbot` suffixes and ignores commands addressed to another bot. Owner message IDs and existing choice consumption provide duplicate protection.
 

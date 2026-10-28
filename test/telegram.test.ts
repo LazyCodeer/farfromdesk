@@ -195,12 +195,14 @@ test('command menu and bot suffixes preserve existing commands and reject other 
   const f=fixture();try{
     await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
     assert.deepEqual(menu.scope,{type:'all_private_chats'});
-    assert.deepEqual(menu.commands.slice(0,7).map((c:any)=>c.command),['cloud','claude','codex','brain','screen','back','help']);
+    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','screen','back','help','sessions','status']);
     await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
     await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);
     await f.tg.receive(f.message(93,'/help@ffd_test_bot'));
     assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>r.body.includes('Current target: test (codex)')));
+    const target=f.store.get(`owner-target:${telegramDestination(bot,owner)}`);
+    await f.tg.receive(f.message(96,'/cloud'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),target);
     await f.tg.receive(f.message(94,'/back'));await f.tg.receive(f.message(95,'/status@ffd_test_bot'));
     assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),'null');
   }finally{f.close();}
@@ -224,13 +226,13 @@ test('Claude aliases offer stable choices and never substitute paused or changed
     await f.pair();const a=f.store.register('claude-app','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
     const b=f.store.register('claude-cli','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;
     f.store.set('selected',JSON.stringify([a.id,b.id]));
-    await f.tg.receive(f.message(90,'/cloud'));assert.equal(f.store.jobs().length,0);
+    await f.tg.receive(f.message(90,'/claude'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/claude 2'));await f.tg.receive(f.message(92,'Check this task'));
     assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,b.id);
     assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.destination,telegramDestination(bot,owner));
     f.store.enable(b.id,false);await f.tg.receive(f.message(93,'Do not fall back'));assert.equal(f.store.job(telegramMessageId(bot,owner,93)),undefined);
     f.store.enable(b.id,true);f.store.set(`execution-mode:${b.id}`,'desktop');await f.tg.receive(f.message(94,'Changed runtime'));assert.equal(f.store.job(telegramMessageId(bot,owner,94)),undefined);
-    f.store.set('enabled-apps','["codex"]');await f.tg.receive(f.message(95,'/cloud'));assert.equal(f.store.bindings().length,3);
+    f.store.set('enabled-apps','["codex"]');await f.tg.receive(f.message(95,'/claude'));assert.equal(f.store.bindings().length,3);
     assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>r.body.includes('Claude is disabled')));
     await f.tg.receive(f.message(96,'/back'));await f.tg.receive(f.message(97,'Normal again'));assert.equal(f.store.job(telegramMessageId(bot,owner,97))?.binding_id,f.binding.id);
   }finally{f.close();}
@@ -281,10 +283,47 @@ test('screen entry reports unavailable, setup, locked or authenticated viewer re
 test('selected target applies to files and mode changes invalidate an in-flight file target',async()=>{
   const f=fixture();try{
     await f.pair();const claude=f.store.register('claude-file','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
-    f.store.set('selected',JSON.stringify([claude.id]));await f.tg.receive(f.message(90,'/cloud'));
+    f.store.set('selected',JSON.stringify([claude.id]));await f.tg.receive(f.message(90,'/claude'));
     const destination=telegramDestination(bot,owner),m={id:telegramMessageId(bot,owner,91),text:'Review this file',ownerCommand:false};
     const target=f.store.destinationContext.run(destination,()=>f.router.attachmentTarget(m));assert.equal(target.binding.id,claude.id);
     await f.tg.receive(f.message(92,'/codex'));
     const changed=f.store.destinationContext.run(destination,()=>f.router.attachmentTarget(m));assert.notEqual(changed.identity,target.identity);assert.equal(changed.binding.id,f.binding.id);
   }finally{f.close();}
+});
+
+
+test('quoted Telegram question accepts a slash-prefixed path exactly once',async()=>{
+ const f=fixture();try{
+  await f.pair();const dest=telegramDestination(bot,owner);let result:string|undefined;
+  void f.store.destinationContext.run(dest,()=>f.approvals.ask(f.binding,'Which folder?','question')).then(v=>{result=v;});
+  f.store.db.prepare("UPDATE outbox SET status='sent',wa_id=? WHERE source LIKE 'permission:%'").run(telegramMessageId(bot,owner,400));
+  const m=f.message(401,'/Users/me/project',owner,{reply_to_message:{message_id:400,from:{id:bot}}});
+  await f.tg.receive(m);await f.tg.receive(m);
+  assert.equal(result,'/Users/me/project');assert.equal(f.approvals.pending.size,0);assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});
+
+test('Telegram owner voice keeps screen, back, session browsing and selection intent',async()=>{
+ const f=fixture();try{
+  await f.pair();let text='',screens=0,lists=0,selected='';
+  f.tg.transcribe=async()=>text;f.router.remoteControl=async t=>t==='control my screen'?(screens++,'Synthetic screen link'):undefined;
+  let id=500;const voice=async(value:string,extra:any={})=>{text=value;await f.tg.receive(f.message(id++,'',owner,{voice:{file_id:'voice',file_size:10,duration:2,mime_type:'audio/ogg'},...extra}));await mediaSettled(f.tg);};
+  await voice('control my screen');assert.equal(screens,1);assert.equal(f.store.jobs().length,0);
+  await f.tg.receive(f.message(600,'/talk test'));await voice('back');assert.equal(f.store.get(`direct:${telegramDestination(bot,owner)}`),undefined);
+  await f.tg.receive(f.message(601,'/codex'));await voice('back');assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),'null');
+  const c=new Coordinator(f.store,f.router.native,f.router,()=>{});f.router.coordinator=c;
+  c.list=async()=>{lists++;return '1. Synthetic session';};c.select=async value=>{selected=value;return 'Selected';};
+  await voice('show my sessions');assert.equal(lists,1);
+  f.store.set('selection-awaiting','true');await voice('1');assert.equal(selected,'1');assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});
+
+test('Telegram forwarded or quoted voice cannot open screen control and spoken slash commands stay blocked',async()=>{
+ const f=fixture();try{
+  await f.pair();let screens=0,text='control my screen';f.router.remoteControl=async()=>{screens++;return 'Unexpected screen link';};f.tg.transcribe=async()=>text;
+  for(const [i,extra] of [{forward_origin:{type:'user'}},{reply_to_message:{message_id:77,from:{id:owner}}},{quote:{text:'quoted'}}].entries()){
+   await f.tg.receive(f.message(700+i,'',owner,{voice:{file_id:'voice',file_size:10,duration:2,mime_type:'audio/ogg'},...extra}));await mediaSettled(f.tg);
+  }
+  text='/screen';await f.tg.receive(f.message(710,'',owner,{voice:{file_id:'voice',file_size:10,duration:2,mime_type:'audio/ogg'}}));await mediaSettled(f.tg);assert.equal(screens,0);
+ }finally{f.close();}
 });

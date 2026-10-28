@@ -254,7 +254,9 @@ export class WhatsApp {
             if(routing()!==originalRouting)throw new Error('The selected session changed during transcription. Please resend the note to the intended session.');
             if(!text?.trim()||text.length>32000)throw new Error('No clear speech detected. Please resend or type your message.');
             if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions explicitly; voice transcription may mishear them.');
-            const result=await this.router.receive({id,text,quotedId:audio.contextInfo?.stanzaId??undefined,source:'voice',ownerCommand:false});
+            const context=audio.contextInfo;
+            const ownerIntent=!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
+            const result=await this.router.receive({id,text,quotedId:context?.stanzaId??undefined,source:'voice',ownerCommand:false,ownerIntent});
             const routed=result.status==='queued'||result.status==='handled';
             this.store.voiceEvent(id,{stage:'route',state:routed?'completed':'failed',durationMs:performance.now()-routingStarted,...(!routed?{code:result.code??'routing_unavailable'}:{})});
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routed?'processed':'routing_blocked',id);
