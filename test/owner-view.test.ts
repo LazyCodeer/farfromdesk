@@ -102,3 +102,13 @@ test('real listener expiry stops its backend without waiting for another owner r
   assert.equal(stopped,true);
   assert.throws(()=>session.claim(session.pairingCode),/SESSION_ENDED/);
 });
+
+test('phone gestures: double, right, scroll, keys and focused typing are validated before dispatch',async()=>{
+  const f=fixture(),token=f.session.claim(f.session.pairingCode);
+  const send=async(a:any)=>{const frame=await f.session.observe(token);return f.session.act(token,{id:randomUUID(),frameId:frame.frameId,...a});};
+  for(const a of [{kind:'double',x:.5,y:.5},{kind:'right',x:.1,y:.9},{kind:'scroll',x:.5,y:.5,direction:'down',amount:3},{kind:'key',key:'return'},{kind:'key',key:'c',modifiers:['cmd']},{kind:'type',text:'hello'}])await send(a);
+  assert.deepEqual(f.actions.map(a=>a.kind),['double','right','scroll','key','key','type']);
+  for(const bad of [{kind:'scroll',x:.5,y:.5,direction:'sideways',amount:3},{kind:'scroll',x:.5,y:.5,direction:'up',amount:99},{kind:'key',key:'q;rm'},{kind:'key',key:'c',modifiers:['fn']},{kind:'drag',x:.1,y:.1}])
+    await assert.rejects(send(bad),/INVALID/);
+  assert.equal(f.actions.length,6);
+});

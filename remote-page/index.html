@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0a0a">
+<title>FarFromDesk Remote</title>
+<link rel="stylesheet" href="remote.css">
+<script type="module" src="remote.js"></script>
+</head>
+<body>
+
+<svg width="0" height="0" class="defs" aria-hidden="true">
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-7-6 16-3-7z"/><path d="M11 14l9-9"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M9 9h10v11H9z"/><path d="M5 15V4h10"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><path d="M12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.9M6.6 6.6C4 8.3 2.5 12 2.5 12S6 18 12 18c1.6 0 3-.4 4.2-1"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><path d="M4 6h16a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 20 18H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 6z"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M8 14h8"/></symbol>
+  <symbol id="i-command" viewBox="0 0 24 24"><path d="M9 9V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V9"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 3.5a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0v-5a3 3 0 0 1 3-3z"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></symbol>
+  <symbol id="i-desktops" viewBox="0 0 24 24"><path d="M3 8.5h12.5v9H3z"/><path d="M7.5 5.5H21v9h-2.5"/></symbol>
+  <!-- Badges on the link between the phone and the Mac. -->
+  <symbol id="b-code" viewBox="0 0 24 24"><path d="M3 5h18v11H10l-5 4v-4H3z"/><path d="M8 10.5h8"/></symbol>
+  <symbol id="b-lock" viewBox="0 0 24 24"><path d="M6 11h12v9H6z"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/><path d="M12 14.5v2"/></symbol>
+  <symbol id="b-key" viewBox="0 0 24 24"><path d="M14.5 9.5a4 4 0 1 1-1 2.6L5 20.5H3v-2l1.5-1.5H6V15.5h1.5L10 13"/></symbol>
+  <symbol id="b-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="b-clock" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16z"/><path d="M12 8v4.5l3 2"/></symbol>
+  <symbol id="b-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+</svg>
+
+<main id="setup">
+  <header class="appbar">
+    <img src="logo.png" alt="" width="28" height="28">
+    <span>FarFromDesk</span><span class="spacer"></span>
+    <button id="cancel" type="button" class="link" hidden>Cancel</button>
+  </header>
+
+  <div id="content" class="content">
+    <div id="progress" class="progress" hidden><span></span><span></span><span></span></div>
+    <svg id="art" class="art" viewBox="0 0 342 170" aria-hidden="true">
+      <circle class="glow" cx="171" cy="92" r="80"/>
+      <rect class="body" x="44" y="40" width="54" height="104" rx="12"/>
+      <rect class="glass" x="51" y="52" width="40" height="76" rx="5"/>
+      <rect class="dim" x="62" y="45" width="18" height="3" rx="1.5"/>
+      <rect class="tint" x="56" y="60" width="22" height="4" rx="2"/>
+      <rect class="dim" x="56" y="70" width="30" height="3" rx="1.5"/>
+      <rect class="dim" x="56" y="78" width="26" height="3" rx="1.5"/>
+      <rect class="body" x="244" y="54" width="78" height="54" rx="6"/>
+      <rect class="glass" x="251" y="61" width="64" height="40" rx="3"/>
+      <path class="base" d="M236 116h94l-6 8h-82z"/>
+      <rect class="mint" x="257" y="68" width="24" height="4" rx="2"/>
+      <rect class="dim" x="257" y="77" width="44" height="3" rx="1.5"/>
+      <rect class="dim" x="257" y="85" width="36" height="3" rx="1.5"/>
+      <path class="link whole" d="M98 92h146"/>
+      <g class="broken"><path class="link" d="M98 92h40"/><path class="link" d="M204 92h40"/><path class="crack" d="M140 74l6 8-5 4 7 9"/><path class="crack" d="M202 110l-6-8 5-4-7-9"/></g>
+      <circle class="badge" cx="171" cy="92" r="26"/>
+      <use id="badge" class="glyph" href="#b-code" x="159" y="80" width="24" height="24"/>
+    </svg>
+    <p id="kicker" class="kicker" hidden></p>
+    <h1 id="title">Control your Mac</h1>
+    <p id="sub" class="sub" hidden></p>
+
+    <section id="answer" hidden>
+      <div class="codebox">
+        <textarea id="code" readonly rows="3" aria-label="Your code"></textarea>
+        <button id="copyicon" type="button" class="icon" aria-label="Copy code"><svg><use href="#i-copy"/></svg></button>
+      </div>
+    </section>
+
+    <form id="login" hidden>
+      <div class="field">
+        <input id="password" type="password" autocomplete="current-password" maxlength="256" required aria-label="Remote password" placeholder="Remote password">
+        <button id="reveal" type="button" class="icon" aria-label="Show password"><svg><use href="#i-eye-off"/></svg></button>
+      </div>
+    </form>
+
+    <ol id="nextsteps" class="nextsteps" hidden>
+      <li>Open your chat with FarFromDesk</li>
+      <li>Tap the newest link within 10 minutes</li>
+    </ol>
+
+    <p id="status" class="status" role="status"><span class="dot"></span><span id="statustext">Getting ready…</span></p>
+    <button id="howsecure" type="button" class="secureline"><svg><use href="#b-lock"/></svg>How your connection is encrypted</button>
+  </div>
+
+  <div id="actions" class="actions">
+    <div id="sendacts" hidden>
+      <a id="telegram" class="button primary" target="_blank" rel="noopener noreferrer"><svg><use href="#i-send"/></svg>Send Telegram</a>
+      <a id="whatsapp" class="button" target="_blank" rel="noopener noreferrer"><svg><use href="#i-chat"/></svg>Send WhatsApp</a>
+      <div class="row"><button id="copy" type="button" class="quiet">Copy code</button><button id="share" type="button" class="quiet" hidden>Share</button></div>
+    </div>
+    <button id="connect" class="primary" form="login" hidden>Connect</button>
+    <div id="openacts" hidden>
+      <a class="button primary" href="tg://"><svg><use href="#i-send"/></svg>Open Telegram</a>
+      <a class="button" href="whatsapp://"><svg><use href="#i-chat"/></svg>Open WhatsApp</a>
+    </div>
+  </div>
+</main>
+
+<section id="session" hidden>
+  <div id="viewport" aria-label="Your Mac screen. Tap to click, hold to right-click, swipe to scroll, pinch to zoom.">
+    <div id="stage"><canvas id="screen" width="16" height="10"></canvas></div>
+    <div id="ripples" aria-hidden="true"></div>
+  </div>
+
+  <div class="topbar">
+    <button id="secure" type="button" class="pill" aria-label="Live and encrypted. How this connection is protected"><span class="dot"></span><span id="livetext" role="status">Live</span><svg class="mini"><use href="#b-lock"/></svg></button>
+    <span class="spacer"></span>
+    <button id="deskbtn" type="button" class="pill" aria-pressed="false" aria-label="Desktops"><svg><use href="#i-desktops"/></svg>Desktops</button>
+    <button id="zoom" type="button" class="pill" aria-label="Fit screen">100%</button>
+    <button id="stop" type="button" class="pill danger">End</button>
+  </div>
+
+  <p id="banner" class="banner" role="status" hidden><span class="spin" aria-hidden="true"></span>Weak connection. Holding your session…</p>
+  <p id="toast" class="toast" role="alert" hidden></p>
+  <div id="lockbar" class="lockbar" hidden>
+    <svg><use href="#b-lock"/></svg>
+    <span><b>Your Mac is locked</b><small>Tap Type and enter your Mac password.</small></span>
+    <button id="locktype" type="button" class="pill on">Type</button>
+  </div>
+
+  <div id="keyboard" class="sheet" hidden>
+    <form id="typeform" class="row">
+      <input id="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="2000" placeholder="Type into the field you tapped" enterkeyhint="send">
+      <button id="mic" type="button" class="icon" aria-label="Speak" aria-pressed="false" hidden><svg><use href="#i-mic"/></svg></button>
+      <button class="primary icon" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+    </form>
+    <div class="keys">
+      <button data-key="return">Return</button><button data-key="delete">Delete</button><button data-key="tab">Tab</button><button data-key="escape">Esc</button>
+    </div>
+  </div>
+
+  <div id="shortcuts" class="sheet" hidden>
+    <span class="grab" aria-hidden="true"></span>
+    <div class="shortcuts">
+      <div class="keys arrows">
+        <span></span><button data-key="up" aria-label="Up">↑</button><span></span>
+        <button data-key="left" aria-label="Left">←</button><button data-key="down" aria-label="Down">↓</button><button data-key="right" aria-label="Right">→</button>
+      </div>
+      <div class="keys">
+        <button data-key="a" data-mod="cmd">⌘A</button><button data-key="c" data-mod="cmd">⌘C</button><button data-key="v" data-mod="cmd">⌘V</button><button data-key="z" data-mod="cmd">⌘Z</button>
+        <button data-key="f" data-mod="cmd">⌘F</button><button data-key="tab" data-mod="cmd">⌘Tab</button><button data-key="w" data-mod="cmd">⌘W</button><button data-key="space" data-mod="cmd" aria-label="Command Space">⌘␣</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="desktops" class="sheet" hidden>
+    <span class="grab" aria-hidden="true"></span>
+    <div class="sheethead"><span>Desktops</span><span>Main display</span></div>
+    <div id="desklist" class="desklist"></div>
+    <p id="desknote" class="desknote" hidden></p>
+    <button id="overview" type="button" class="rowbtn">
+      <span class="ic"><svg><use href="#i-fit"/></svg></span>
+      <span class="txt"><b>Show all windows</b><small>Opens Mission Control on your Mac</small></span><span class="chev" aria-hidden="true">›</span>
+    </button>
+  </div>
+
+  <nav class="dock">
+    <button id="kbd" type="button" aria-pressed="false"><svg><use href="#i-keyboard"/></svg>Type</button>
+    <button id="keysbtn" type="button" aria-pressed="false"><svg><use href="#i-command"/></svg>Keys</button>
+    <button id="lock" type="button" aria-pressed="false"><svg><use href="#i-eye"/></svg>View only</button>
+    <button id="fit" type="button"><svg><use href="#i-fit"/></svg>Fit</button>
+  </nav>
+</section>
+
+<div id="idle" class="notice" role="status" aria-live="polite" hidden>
+  <span><b>Still there?</b>Closing in <b id="idlesecs">15</b>s to keep your Mac safe.</span>
+  <button id="idlestay" type="button" class="pill on">I'm here</button>
+  <button id="idleend" type="button" class="pill">End</button>
+</div>
+
+<div id="paused" class="overlay" hidden>
+  <form id="resumeform" class="sheet card" role="dialog" aria-modal="true" aria-labelledby="pausetitle" aria-describedby="pausesub">
+    <h2 id="pausetitle">Session paused</h2>
+    <p id="pausesub" class="idlesub">Your phone screen turned off, so your Mac logged this phone out. Enter your remote password to pick up where you left off.</p>
+    <input id="resumepw" type="password" maxlength="256" autocomplete="current-password" placeholder="Remote password" aria-label="Remote password" required>
+    <p id="pausemsg" class="idlesub bad" hidden></p>
+    <button type="submit" class="primary">Resume</button>
+    <button id="pauseend" type="button" class="quiet">End session</button>
+  </form>
+</div>
+
+<div id="security" class="overlay" hidden>
+  <div class="sheet card" role="dialog" aria-modal="true" aria-labelledby="sectitle">
+    <span class="grab" aria-hidden="true"></span>
+    <h2 id="sectitle">How your connection is protected</h2>
+    <ul class="facts">
+      <li><b>Straight to your Mac</b>Your screen, taps and typing go directly between this phone and your Mac, never through a FarFromDesk server.</li>
+      <li><b>Encrypted</b>Everything is encrypted with DTLS, the standard encryption built into WebRTC.</li>
+      <li><b>Keys checked on both ends</b>Both devices check each other's SHA-256 key fingerprint. It travels only in the codes you send in your own chat, so no other device can step in.</li>
+      <li><b>Your password, every time</b>Each connection needs your remote password. Links expire after 5 minutes and work once.</li>
+      <li><b>Your Mac password</b>Typed on the lock screen, it goes over this connection straight into your Mac, never to any other service. FarFromDesk never stores or logs it.</li>
+      <li id="voicefact" hidden><b>Voice typing</b><span id="voicetext"></span></li>
+    </ul>
+    <button id="secclose" type="button" class="primary">Done</button>
+  </div>
+</div>
+</body>
+</html>

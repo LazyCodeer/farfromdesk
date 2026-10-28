@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 import 'gateway.dart';
+import 'phone_remote_panel.dart';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart' show DesktopCapturerSource;
 
@@ -190,6 +191,11 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
         FilledButton(
           onPressed: busy ? null : savePassword,
           child: const Text('Save password'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => PhoneRemotePage(gateway: widget.gateway))),
+          icon: const Icon(Icons.phone_iphone),
+          label: const Text('Try phone access on the same Wi-Fi'),
         ),
         SwitchListTile(
           title: const Text('Make this Mac available'),

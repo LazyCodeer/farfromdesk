@@ -1,3 +1,4 @@
+import { initializeOptions, createOptions, parseMessageOptions } from './message-options.js';
 import { cancelObsoleteCoordinatorUpdates } from './coordinator-updates.js';
 import { toWhatsApp } from './whatsapp-format.js';
 import { formatWhatsAppMessage } from './coordinator-experience.js';
@@ -50,6 +51,7 @@ export class Store {
       if(!this.db.prepare(`PRAGMA table_info(${table})`).all().some((c:any)=>c.name==='destination'))this.db.exec(`ALTER TABLE ${table} ADD COLUMN destination TEXT`);
       this.db.prepare(`UPDATE ${table} SET destination=? WHERE destination IS NULL`).run(this.get('whatsapp-owner')??null);
     }
+    initializeOptions(this);
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
@@ -143,26 +145,30 @@ export class Store {
     if(context.turnId!==undefined&&(typeof context.turnId!=='string'||context.turnId.length>200||/[\x00-\x1f]/.test(context.turnId)))throw new Error('Invalid turn identity');
     if(context.kind&&!['progress','final','hook','system'].includes(context.kind))throw new Error('Invalid reply kind');
     if(context.outcome&&!['done','blocked','reviewed','cancelled'].includes(context.outcome))throw new Error('Invalid reply outcome');
+    const options=context.options===undefined?undefined:parseMessageOptions(context.options);
+    if(options&&(context.origin!=='agent'||!destination||!this.ownerFor(destination)||!binding||!request||request.destination!==destination||text.length>2000))throw new Error('Options require an exact request, session, destination and text under 2000 characters.');
+    const receiptHash=hash(options?JSON.stringify([text,options]):text);
     const existing=this.db.prepare('SELECT * FROM reply_receipts WHERE source=?').get(source) as any;
-    if(existing){if(existing.text_hash!==hash(text)||existing.binding_id!==(binding?.id??null)||existing.request_id!==(context.requestId??null)||existing.turn_id!==(context.turnId??null)||existing.kind!==(context.kind??null))throw new Error('Reply event identity was reused for different content or another request');return false;}
+    if(existing){if(existing.text_hash!==receiptHash||existing.binding_id!==(binding?.id??null)||existing.request_id!==(context.requestId??null)||existing.turn_id!==(context.turnId??null)||existing.kind!==(context.kind??null))throw new Error('Reply event identity was reused for different content or another request');return false;}
     if(this.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${source}:0`))return false;
     if(context.origin==='hook'&&context.requestId&&context.turnId&&this.db.prepare("SELECT 1 FROM reply_receipts WHERE binding_id=? AND request_id=? AND turn_id=? AND origin='agent' AND kind='final'").get(binding?.id??null,context.requestId,context.turnId)) {
       this.event(context.requestId,'duplicate_hook_suppressed',{},context.turnId);return false;
     }
-    if(context.origin==='agent'&&context.kind==='final'&&context.requestId&&context.turnId&&this.db.prepare("SELECT 1 FROM reply_receipts WHERE binding_id=? AND request_id=? AND turn_id=? AND origin='hook'").get(binding?.id??null,context.requestId,context.turnId)) {
+    if(!options&&context.origin==='agent'&&context.kind==='final'&&context.requestId&&context.turnId&&this.db.prepare("SELECT 1 FROM reply_receipts WHERE binding_id=? AND request_id=? AND turn_id=? AND origin='hook'").get(binding?.id??null,context.requestId,context.turnId)) {
       // A native final already queued for this exact turn. Retain explicit outcome
       // tracking without sending another copy, regardless of arrival order.
       this.db.exec('SAVEPOINT reply_output');
       try {
         const now=Date.now();
-        this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId,binding?.id??null,context.kind,context.origin,context.turnId,hash(text),now);
+        this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId,binding?.id??null,context.kind,context.origin,context.turnId,receiptHash,now);
         this.db.prepare('UPDATE inbox SET first_reply_at=COALESCE(first_reply_at,?),final_reply_at=COALESCE(final_reply_at,?) WHERE id=?').run(now,now,context.requestId);
         this.event(context.requestId,'duplicate_agent_suppressed',{},context.turnId);
         this.db.exec('RELEASE reply_output');return false;
       }catch(e){this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output');throw e;}
     }
     // Stable message IDs are recorded before network I/O. Retries reuse them.
-    const formatted=toWhatsApp(text);
+    const optionText=options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';
+    const formatted=toWhatsApp(text+optionText);
     const chunks:string[]=[];let chunk='';
     // Bound UTF-16 length too: emoji occupy two units in Telegram entity offsets.
     for(const character of formatted){if(chunk.length+character.length>3500){chunks.push(chunk);chunk='';}chunk+=character;}
@@ -175,7 +181,8 @@ export class Store {
     try {
       const now=Date.now();
       chunks.forEach((chunk,i) => insert.run(randomUUID(), binding?.id ?? null, formatWhatsAppMessage(chunk,label,coordinator,i+1,chunks.length,context.kind), `${source}:${i}`, `3EB0${randomBytes(16).toString('hex').toUpperCase()}`, now,destination,context.requestId??null,context.kind??null,context.turnId??null));
-      this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId??null,binding?.id??null,context.kind??null,context.origin??null,context.turnId??null,hash(text),now);
+      if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options);}
+      this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId??null,binding?.id??null,context.kind??null,context.origin??null,context.turnId??null,receiptHash,now);
       if(request){
         if(context.kind==='progress'||context.kind==='final')this.db.prepare('UPDATE inbox SET first_reply_at=COALESCE(first_reply_at,?),final_reply_at=CASE WHEN ?=\'final\' THEN COALESCE(final_reply_at,?) ELSE final_reply_at END WHERE id=?').run(now,context.kind,now,request.id);
         this.event(request.id,'reply_queued',context.outcome?{outcome:context.outcome}:{},context.turnId);

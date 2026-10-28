@@ -64,3 +64,12 @@ test('reply check warns about long, technical replies but never blocks them',asy
   const r=await runFfd(['reply','tg:1','final','Staged at ~/Apps/Test.app'],{id:'me'},async(path,data)=>{calls.push(data);return {};},()=>'');
   assert.equal(calls.length,1);assert.match(r,/Queued.*\n.*file path/s);
 });
+
+test('structured reply choices validate before transport and retain payload',async()=>{
+ const calls:any[]=[];const call=async(path:string,body:any)=>{calls.push({path,body});return {};};
+ const payload={text:'Choose next',options:{choices:[{id:'a',label:'Inspect'},{id:'b',label:'Wait'}],expiresInSeconds:60}};
+ await runFfd(['reply-options','request','progress'],{id:'session'},call,()=>JSON.stringify(payload));
+ assert.deepEqual(calls[0].body.options,payload.options);
+ await assert.rejects(runFfd(['reply-options','request','progress'],{id:'session'},call,()=>JSON.stringify({...payload,options:{choices:[]}})));
+ assert.equal(calls.length,1);
+});

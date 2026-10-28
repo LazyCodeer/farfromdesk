@@ -66,6 +66,7 @@ void main() {
             .text,
         isEmpty,
       );
+      await tester.scrollUntilVisible(find.text('Choose screen and start local video test'), 200, scrollable: find.byType(Scrollable).first);
       final start = tester.widget<FilledButton>(
         find.widgetWithText(
           FilledButton,

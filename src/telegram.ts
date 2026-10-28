@@ -1,3 +1,4 @@
+import { optionsMarkup } from './message-options.js';
 import { randomBytes, createHash } from 'node:crypto';
 import { constants, existsSync, openSync, closeSync, fstatSync, readFileSync, writeFileSync, fchmodSync, ftruncateSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -117,7 +118,7 @@ export class Telegram {
     while(!signal.aborted&&!this.closed) {
       try {
         const key=`telegram-offset:${this.bot!.id}`,offset=Number(this.store.get(key)??0);
-        const updates=await this.call('getUpdates',{offset,timeout:25,limit:20,allowed_updates:['message']},signal);
+        const updates=await this.call('getUpdates',{offset,timeout:25,limit:20,allowed_updates:['message','callback_query']},signal);
         if(signal.aborted||this.closed)return;
         if(!Array.isArray(updates))throw new TelegramError(0);
         for(const update of updates){if(signal.aborted||this.closed)return;if(!Number.isSafeInteger(update.update_id)||update.update_id<offset)continue;await this.receive(update);this.store.set(key,String(update.update_id+1));}
@@ -129,6 +130,15 @@ export class Telegram {
     }
   }
   async receive(update:any) {
+    const cb=update?.callback_query;
+    if(cb){
+      const m=cb.message;
+      if(this.closed||!this.bot||this.router.stopped||this.store.controlChannel()!=='telegram'||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(cb.from?.id)||cb.from.is_bot||cb.from.id!==m.chat.id||m.from?.id!==this.bot.id||!validId(m.message_id)||telegramDestination(this.bot.id,m.chat.id)!==this.store.get('telegram-owner')||typeof cb.id!=='string'||!/^[A-Za-z0-9_-]{1,200}$/.test(cb.id)||typeof cb.data!=='string')return;
+      const destination=telegramDestination(this.bot.id,m.chat.id);
+      const result=await this.store.destinationContext.run(destination,()=>this.router.receive({id:`tg-choice:${this.bot!.id}:${cb.id}`,text:'Selected message option',quotedId:telegramMessageId(this.bot!.id,m.chat.id,m.message_id),optionToken:cb.data}));
+      await this.call('answerCallbackQuery',{callback_query_id:cb.id,text:result.status==='blocked'?'Choice unavailable. Check the reply.':'Answer recorded.'}).catch(()=>{});
+      return;
+    }
     const m=update?.message;
     if(this.closed||!this.bot||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(m.from?.id)||m.from.is_bot||m.chat.id!==m.from.id||!validId(m.message_id))return;
     const text=typeof m.text==='string'?m.text:'';
@@ -195,6 +205,7 @@ export class Telegram {
       const destination=this.store.get('telegram-owner')!;
       if(row.destination!==destination){this.store.db.prepare("UPDATE outbox SET status='failed',error='Original Telegram account is not connected' WHERE id=?").run(row.id);return;}
       let body:Record<string,unknown>|FormData={chat_id:Number(this.store.get('telegram-user-id')),text:telegramHTML(row.body),parse_mode:'HTML',link_preview_options:{is_disabled:true}},method='sendMessage';
+      const markup=optionsMarkup(this.store,row.id);if(markup)(body as Record<string,unknown>).reply_markup=markup;
       if(row.artifact_id){
         try {
           const a=this.store.db.prepare('SELECT * FROM artifacts WHERE id=?').get(row.artifact_id) as any,b=this.store.binding(row.binding_id),job=this.store.job(a?.request_id??'');

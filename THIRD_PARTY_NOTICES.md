@@ -13,6 +13,7 @@ FarFromDesk includes and depends on third-party work. The first-party license do
 | Flutter | https://github.com/flutter/flutter — third-party notices are bundled in Flutter assets |
 | Poppins and DM Sans | License texts accompany font files in macos/Sources/SessionBridge/Resources/Fonts |
 | Native desktop helpers | See native/README.md; redistribution provenance must be resolved before public release |
+| werift 0.25.2 | https://github.com/shinyoshiaki/werift-webrtc (MIT), used for phone control. Brings mediabunny 1.62.1 (MPL-2.0, unmodified, source https://github.com/Vanilagy/mediabunny) and tweetnacl 1.0.3 (Unlicense); their license files ship in node_modules |
 | Synthetic speech fixture | See test/fixtures/local-english.md for provenance |
 
 Other npm dependencies are pinned in package-lock.json and carry their upstream package notices. The current development package includes node_modules; a public release should include a complete license inventory and review dev-dependency bundling.
