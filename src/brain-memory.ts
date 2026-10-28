@@ -52,7 +52,8 @@ export class BrainMemory {
         if(ids.length===1&&this.store.binding(ids[0]))this.items.setSession(item.id,ids[0],'Brain evidence');
       }
       const complete=item.jobs.every(j=>j.status==='completed'&&j.outcome==='done'&&this.store.db.prepare("SELECT 1 FROM reply_receipts WHERE request_id=? AND kind='final' AND origin='agent'").get(j.id));
-      if(complete&&item.status==='in progress'){
+      // A block the Brain set itself lifts on later evidence; one the owner set stays.
+      if(complete&&(item.status==='in progress'||item.status==='blocked'&&this.items.statusBy(item.id)==='Brain evidence')){
         this.items.setStatus(item.id,'done','Brain evidence');
         this.items.note(item.id,'All linked sessions reported completion with final replies. Owner verification is separate.','Brain evidence',`brain-complete:${item.id}:${latest.id}`);
       }else if(['in progress','not started'].includes(item.status)&&this.gone(latest)){

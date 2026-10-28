@@ -51,7 +51,13 @@ export class Items {
   setStatus(id:number,status:string,by?:string) {
     const s=itemStatus(status),item=this.get(id);
     if(item.status!==s){this.store.db.prepare('UPDATE items SET status=?,updated_at=? WHERE id=?').run(s,Date.now(),id);this.note(id,`Status: ${s}.`,by);}
+    // Someone else confirming the same status takes it over, so an owner's "blocked" is never treated as the Brain's.
+    else if(by&&by!==this.statusBy(id))this.note(id,`Status: ${s}.`,by);
     return this.get(id);
+  }
+  /** Who made the item's latest status change or confirmation. */
+  statusBy(id:number) {
+    return (this.store.db.prepare("SELECT by FROM item_notes WHERE item_id=? AND note LIKE 'Status: %' ORDER BY id DESC LIMIT 1").get(id) as {by?:string|null}|undefined)?.by??undefined;
   }
   setSession(id:number,ref:string,by?:string) {
     const b=this.session(ref),item=this.get(id);
