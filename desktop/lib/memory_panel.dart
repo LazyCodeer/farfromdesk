@@ -86,11 +86,16 @@ class _MemoryFilesState extends State<MemoryFiles> {
           as String? ??
       '';
 
-  Future<void> write(String path, String text, String summary) => run(
+  Future<void> write(
+    String path,
+    String text,
+    String summary, {
+    String? expected,
+  }) => run(
     () => widget.gateway.post('/api/memory', {
       'path': path,
       'content': text,
-      'expected': content(path),
+      'expected': expected ?? content(path),
       'summary': summary,
     }),
     done: 'Saved. Every session uses it from the next message.',
@@ -163,7 +168,6 @@ class _MemoryFilesState extends State<MemoryFiles> {
         ],
       ),
     );
-    name.dispose();
     final clean = path?.trim().toLowerCase() ?? '';
     if (clean.isEmpty) return;
     final file = clean.endsWith('.md') ? clean : '$clean.md';
@@ -172,10 +176,16 @@ class _MemoryFilesState extends State<MemoryFiles> {
         .last
         .replaceAll('.md', '')
         .replaceAll('-', ' ');
+    if (files.any((f) => f['path'] == file)) {
+      setState(() => message = '$file already exists. Open it to change it.');
+      return;
+    }
+    // Expecting an empty file makes the server refuse if it was created meanwhile.
     await write(
       file,
       '# ${title[0].toUpperCase()}${title.substring(1)}\n',
       'Created $file and listed it in MEMORY.md',
+      expected: '',
     );
   }
 
@@ -207,7 +217,6 @@ class _MemoryFilesState extends State<MemoryFiles> {
         ],
       ),
     );
-    text.dispose();
     if (next != null && next != content(_index)) {
       await write(_index, next, 'Edited the index');
     }
