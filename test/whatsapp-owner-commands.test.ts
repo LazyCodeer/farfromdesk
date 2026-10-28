@@ -139,12 +139,15 @@ test('bare /claude switches straight to the default Claude coordinator with one 
   await f.wa.receiveMessage(f.msg('C1','/claude'));
   assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
   const bodies=()=>(f.store.db.prepare("SELECT body FROM outbox WHERE source LIKE 'command%' OR source LIKE 'owner-choice:%' ORDER BY rowid").all() as any[]).map(r=>r.body);
-  assert.match(bodies().at(-1)!,/Now talking to atlas Super Ai\. \/back to leave\./);
+  assert.equal(bodies().at(-1),'Now talking to atlas Super Ai. /back to leave.'); // no header or footer
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM owner_target_options').get()!.n,0);assert.equal(f.store.jobs().length,0);
   await f.wa.receiveMessage(f.msg('C2','Check the build'));assert.equal(f.store.job('wa:C2')?.binding_id,c.id);
   // No Codex coordinator: one line pointing to the desktop app, and the Claude target stays.
   await f.wa.receiveMessage(f.msg('C3','/codex'));
-  assert.match(bodies().at(-1)!,/No Codex coordinator is connected\. Connect one in the FarFromDesk desktop app/);
+  assert.equal(bodies().at(-1),'No Codex coordinator is connected. Connect one in the FarFromDesk desktop app, Coding platforms.');
+  // Other output keeps its usual presentation.
+  f.store.output(undefined,'Ordinary notice','plain-check');
+  assert.match((f.store.db.prepare("SELECT body FROM outbox WHERE source='plain-check:0'").get() as any).body,/\*Reply\*[\s\S]*— FarFromDesk$/);
   assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
   // A paused coordinator fails closed instead of picking another Claude session.
   await f.wa.receiveMessage(f.msg('C4','/back'));f.store.enable(c.id,false);await f.wa.receiveMessage(f.msg('C5','/claude'));

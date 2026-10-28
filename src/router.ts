@@ -87,9 +87,11 @@ export class Router {
     // Screen-control links and the phone's answer code are handled before any routing.
     if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
+    let ownerReply=false;
     try {
-      const targetReply=pickOwnerTarget(this,m);
-      if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      // Replies to owner commands and session picks, errors included, go out without the session header and footer.
+      ownerReply=true;const targetReply=pickOwnerTarget(this,m);ownerReply=false;
+      if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
         const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>this.queue(m.id,this.need(bindingId),body));
         if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
@@ -98,10 +100,10 @@ export class Router {
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
-      const commandReply=m.ownerCommand&&isOwnerCommand(text)?await ownerCommand(this,m):undefined;
-      if(commandReply!==undefined){this.store.output(undefined,commandReply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
+      if(commandReply!==undefined){this.store.output(undefined,commandReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(authenticatedOwner(this,m)&&ownerIntent&&!m.quotedId&&backToProxy.test(text)&&this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'){
-        clearOwnerTarget(this);this.store.output(undefined,'Back to normal routing.',`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
+        clearOwnerTarget(this);this.store.output(undefined,'Back to normal routing.',`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'&&!text.startsWith('/')&&await routeOwnerTarget(this,m)){this.store.remember(m.id);this.pump();return {status:this.brain.get(m.id)?.state==='blocked'?'blocked':this.store.job(m.id)?'queued':'handled',requestId:m.id};}
       const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show (?:me )?(?:my )?(?:recent )?sessions|list (?:my |all |recent )?sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
@@ -169,7 +171,7 @@ export class Router {
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
-    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`);this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
+    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`,undefined,ownerReply?{plain:true}:{});this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
     this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};
   }
   /** Hands this chat to one session until the owner says back, switches, or goes quiet for two hours. */

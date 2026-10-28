@@ -1,6 +1,6 @@
 // Diagnostics deliberately exclude message content, arbitrary paths and provider errors.
 export type RequestOutcome='done'|'blocked'|'reviewed'|'cancelled';
-export type ReplyContext={options?:import('./message-options.js').MessageOptions;requestId?:string;kind?:'progress'|'final'|'hook'|'system';turnId?:string;outcome?:RequestOutcome;origin?:'agent'|'hook'|'system'};
+export type ReplyContext={plain?:true;options?:import('./message-options.js').MessageOptions;requestId?:string;kind?:'progress'|'final'|'hook'|'system';turnId?:string;outcome?:RequestOutcome;origin?:'agent'|'hook'|'system'};
 export type VoiceStage='download'|'decode'|'transcribe'|'route';
 export type VoiceStageEvent={stage:VoiceStage;state:'started'|'completed'|'failed';durationMs?:number;code?:string;audioSeconds?:number;engine?:string;model?:string};
 export function errorCode(error:unknown) {

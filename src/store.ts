@@ -185,10 +185,12 @@ export class Store {
     const item=binding?this.itemOf(context.requestId):undefined;
     const label=binding?`${item?`#${item} · `:''}${binding.provider==='claude'?'Claude':'Codex'} ${this.get(`execution-mode:${binding.id}`)==='desktop'?'Desktop':'CLI'} · ${this.get(`name:${binding.id}`)??binding.alias}`.slice(0,130):'';
     const coordinator=!!binding&&(binding.id===this.get('master')||this.get(`role-kind:${binding.id}`)==='master');
+    // Owner command replies are short confirmations: no session header, emoji stage or footer.
+    const present=(chunk:string,i:number)=>context.plain?`${chunk}${chunks.length>1?`\n\n(${i+1}/${chunks.length})`:''}`:formatWhatsAppMessage(chunk,label,coordinator,i+1,chunks.length,context.kind);
     this.db.exec('SAVEPOINT reply_output');
     try {
       const now=Date.now();
-      chunks.forEach((chunk,i) => insert.run(randomUUID(), binding?.id ?? null, formatWhatsAppMessage(chunk,label,coordinator,i+1,chunks.length,context.kind), `${source}:${i}`, `3EB0${randomBytes(16).toString('hex').toUpperCase()}`, now,destination,context.requestId??null,context.kind??null,context.turnId??null));
+      chunks.forEach((chunk,i) => insert.run(randomUUID(), binding?.id ?? null, present(chunk,i), `${source}:${i}`, `3EB0${randomBytes(16).toString('hex').toUpperCase()}`, now,destination,context.requestId??null,context.kind??null,context.turnId??null));
       if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options);}
       this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId??null,binding?.id??null,context.kind??null,context.origin??null,context.turnId??null,receiptHash,now);
       if(request){

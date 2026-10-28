@@ -108,7 +108,7 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
       const label=provider==='claude'?'Claude':'Codex';
       r.store.output(undefined,r.store.destination()!.startsWith('tg:')?`Choose a connected ${label} session. This list expires in 10 minutes.`:`Choose a connected ${label} session:
 ${choices.map(c=>c.label).join('\n')}
-Reply to this message with a number, or send /${cmd} NUMBER. This list expires in 10 minutes.`,source);
+Reply to this message with a number, or send /${cmd} NUMBER. This list expires in 10 minutes.`,source,undefined,{plain:true});
       const row=r.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(source+':0') as {id:string};
       const optionId=createOptions(r.store,row.id,m.id,'',r.store.destination()!,{choices,expiresInSeconds:600});
       r.store.db.prepare('INSERT INTO owner_target_options(option_id) VALUES(?)').run(optionId);
