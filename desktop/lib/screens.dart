@@ -215,16 +215,18 @@ extension _BridgeScreens on _DeskState {
             child: SizedBox(
               height: 34,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
                 child: Row(
                   children: [
                     Icon(icon, size: 16, color: on ? ink : faint),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 13.5,
+                          fontSize: 13,
                           fontWeight: FontWeight.w500,
                           color: on ? ink : muted,
                         ),
@@ -242,7 +244,7 @@ extension _BridgeScreens on _DeskState {
   }
 
   Widget navGroup(String label) => Padding(
-    padding: const EdgeInsets.fromLTRB(10, 14, 10, 6),
+    padding: const EdgeInsets.fromLTRB(8, 14, 8, 6),
     child: Text(
       label,
       style: const TextStyle(
@@ -267,11 +269,43 @@ extension _BridgeScreens on _DeskState {
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
           onTap: onTap,
-          child: Padding(padding: const EdgeInsets.all(12), child: child),
+          child: Padding(padding: const EdgeInsets.all(10), child: child),
         ),
       );
 
+  Widget statusDot(Color color) => Container(
+    width: 6,
+    height: 6,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
+
+  // The bridge is the local backend; it is offline when status stops loading.
+  Widget bridgeLine() => Tooltip(
+    message: macName,
+    child: Row(
+      children: [
+        statusDot(error == null ? success : faint),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            error == null ? 'Bridge running' : 'Bridge offline',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              color: error == null ? success : faint,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
   Widget channelBox() {
+    const divider = Padding(
+      padding: EdgeInsets.symmetric(vertical: 9),
+      child: Divider(height: 1, thickness: 1, color: hairline),
+    );
     if (!hasChannelChoice || !connected) {
       return sidebarBox(
         tint: accent,
@@ -284,30 +318,27 @@ extension _BridgeScreens on _DeskState {
           children: [
             Row(
               children: [
-                Container(
-                  width: 7,
-                  height: 7,
-                  decoration: const BoxDecoration(
-                    color: accent,
-                    shape: BoxShape.circle,
-                  ),
-                ),
+                statusDot(accent),
                 const SizedBox(width: 7),
-                const Text(
-                  'Not connected',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: accentSoft,
+                const Expanded(
+                  child: Text(
+                    'Not connected',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: accentSoft,
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             const Text(
               'Link WhatsApp or Telegram to start sending tasks.',
-              style: TextStyle(fontSize: 12, height: 17 / 12, color: muted),
+              style: TextStyle(fontSize: 11.5, height: 16 / 11.5, color: muted),
             ),
+            divider,
+            bridgeLine(),
           ],
         ),
       );
@@ -319,52 +350,41 @@ extension _BridgeScreens on _DeskState {
         : (status['whatsapp']?['phoneNumber'] ?? 'Your account');
     return sidebarBox(
       Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              logoTile(usingTelegram ? 'telegram' : 'whatsapp', size: 30),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      channelName,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+          Tooltip(
+            message: 'Replies in $replyPlace',
+            child: Row(
+              children: [
+                logoTile(usingTelegram ? 'telegram' : 'whatsapp', size: 22),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        channelName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    Text(
-                      '$account',
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11.5, color: faint),
-                    ),
-                  ],
+                      Text(
+                        '$account',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: faint),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              tag('Live', good: true),
-            ],
+              ],
+            ),
           ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              const Icon(
-                Icons.chat_bubble_outline_rounded,
-                size: 12,
-                color: faint,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Replies in $replyPlace',
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11.5, color: faint),
-                ),
-              ),
-            ],
-          ),
+          divider,
+          bridgeLine(),
         ],
       ),
     );
@@ -372,7 +392,7 @@ extension _BridgeScreens on _DeskState {
 
   Widget sidebar(List<String> titles, int count) => Container(
     key: const ValueKey('navigation-rail'),
-    width: 232,
+    width: 140,
     decoration: const BoxDecoration(
       color: sidebarColor,
       border: Border(right: BorderSide(color: hairline)),
@@ -381,87 +401,29 @@ extension _BridgeScreens on _DeskState {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(18, 20, 18, 16),
+          padding: const EdgeInsets.fromLTRB(12, 20, 8, 14),
           child: Row(
             children: [
               ClipRRect(
-                borderRadius: BorderRadius.circular(7),
+                borderRadius: BorderRadius.circular(6),
                 child: Image.asset(
                   'assets/ffd-icon.png',
                   key: const ValueKey('header-logo'),
-                  width: 28,
-                  height: 28,
+                  width: 22,
+                  height: 22,
                 ),
               ),
-              const SizedBox(width: 10),
-              const Text(
-                'FarFromDesk',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -.15,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Container(
-          margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-          decoration: BoxDecoration(
-            color: const Color(0xff111111),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: line2),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  color: const Color(0xff1c1c1c),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(
-                  Icons.laptop_mac_rounded,
-                  size: 15,
-                  color: ink2,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      macName,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: BoxDecoration(
-                            color: connected ? success : faint,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          connected ? 'Bridge running' : 'Not connected',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: connected ? success : faint,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+              const SizedBox(width: 8),
+              const Flexible(
+                child: Text(
+                  'FarFromDesk',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -.3,
+                  ),
                 ),
               ),
             ],
@@ -469,7 +431,7 @@ extension _BridgeScreens on _DeskState {
         ),
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -486,7 +448,7 @@ extension _BridgeScreens on _DeskState {
         ),
         if (update.release != null)
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             child: sidebarBox(
               Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -514,11 +476,11 @@ extension _BridgeScreens on _DeskState {
           ),
         if (ready)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             child: channelBox(),
           ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 16),
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
           child: Row(
             children: [
               InkWell(
@@ -533,13 +495,18 @@ extension _BridgeScreens on _DeskState {
                   style: TextStyle(fontSize: 11.5, color: faint2),
                 ),
               ),
-              const Spacer(),
-              const Text(
-                'v$installedVersion',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: faint2,
-                  fontFamily: 'Menlo',
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'v$installedVersion',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.end,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: faint2,
+                    fontFamily: 'Menlo',
+                  ),
                 ),
               ),
             ],

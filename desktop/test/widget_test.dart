@@ -779,13 +779,9 @@ void main() {
         tester.getTopLeft(find.byKey(const ValueKey('navigation-rail'))).dy,
         lessThan(80),
       );
-      final group = find.byKey(const ValueKey('activity-filter-group'));
-      final waiting = find.descendant(
-        of: group,
-        matching: find.text('Waiting'),
-      );
-      await tester.ensureVisible(waiting);
-      await tester.tap(waiting);
+      await tester.tap(find.byKey(const ValueKey('activity-filter-group')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Waiting').last);
       await tester.pumpAndSettle();
       expect(find.text('Check delivery after reconnecting'), findsNothing);
       final select = find.byKey(const ValueKey('select-visible-requests'));

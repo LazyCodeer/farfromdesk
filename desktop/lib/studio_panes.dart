@@ -131,9 +131,11 @@ extension _Panes on _DeskState {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Expanded(
-                    child: Text(
+                  Tooltip(
+                    message: '${allJobs.length} requests',
+                    child: const Text(
                       'Inbox',
                       style: TextStyle(
                         fontSize: 18,
@@ -141,18 +143,49 @@ extension _Panes on _DeskState {
                       ),
                     ),
                   ),
-                  small('${allJobs.length} requests'),
+                  PopupMenuButton<String>(
+                    key: const ValueKey('activity-filter-group'),
+                    tooltip: 'Show requests',
+                    initialValue: activityFilter,
+                    onSelected: (filter) =>
+                        changeView(() => activityFilter = filter),
+                    itemBuilder: (_) => [
+                      for (final f in filters)
+                        PopupMenuItem(
+                          value: f,
+                          height: 34,
+                          child: Text(f, style: const TextStyle(fontSize: 13)),
+                        ),
+                    ],
+                    child: Container(
+                      height: 28,
+                      padding: const EdgeInsets.only(left: 10, right: 6),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: line2),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            activityFilter,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: muted,
+                            ),
+                          ),
+                          const Icon(
+                            Icons.expand_more_rounded,
+                            size: 16,
+                            color: faint,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
               gap(12),
-              segmented(
-                filters,
-                activityFilter,
-                (filter) => changeView(() => activityFilter = filter),
-                key: const ValueKey('activity-filter-group'),
-                compact: true,
-              ),
-              gap(10),
               SizedBox(
                 height: 38,
                 child: TextField(
