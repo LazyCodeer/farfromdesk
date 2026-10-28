@@ -13,10 +13,10 @@ permissions:
   contents: read
 jobs:
   upgrade:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 45
     env:
-      WSB_TARGET_ARCH: x64
+      WSB_TARGET_ARCH: x86_64
       FFD_CANDIDATE: ${{ inputs.candidate || '0.9.1' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -57,7 +57,7 @@ jobs:
         id: speech-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
-          key: speech-v1-windows-latest-${{ hashFiles('script/build_speech_runtime.py', 'script/speech_cpu/**') }}
+          key: speech-v1-windows-2022-${{ hashFiles('script/build_speech_runtime.py', 'script/speech_cpu/**') }}
           path: |
             build/speech-toolchain*
             build/speech-runtime*
