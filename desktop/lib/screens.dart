@@ -47,6 +47,7 @@ extension _BridgeScreens on _DeskState {
     // Startup and reconnects pass through 'connecting'; show that instead of
     // flashing the not-connected setup screen.
     if (error == null &&
+        actionError == null &&
         (!ready ||
             !connected &&
                 !onboardingSkipped &&
@@ -70,7 +71,30 @@ extension _BridgeScreens on _DeskState {
       );
     }
     if (ready && !connected && !onboardingSkipped && section == 0) {
-      return Scaffold(body: SafeArea(child: onboardingScreen()));
+      return Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              if (error != null || actionError != null)
+                Container(
+                  key: const Key('onboarding-error'),
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: sand,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: SelectableText(
+                    error ?? actionError!,
+                    style: const TextStyle(color: warning),
+                  ),
+                ),
+              Expanded(child: onboardingScreen()),
+            ],
+          ),
+        ),
+      );
     }
     final titles = ['Overview', 'Inbox', 'Items', 'Brain', 'Settings'];
     final pending = (status['pendingJobs'] ?? []).length;

@@ -170,7 +170,9 @@ export class Telegram {
         if(p&&Date.now()<=p.expires&&start[1]===p.secret){
           if(!p.candidate){p.candidate={id:m.from.id,name:String(m.from.first_name??'Telegram account').replace(/[\x00-\x1f]/g,' ').slice(0,80)};this.store.set('telegram-pairing',JSON.stringify(p));}
         }else{
-          await this.call('sendMessage',{chat_id:m.chat.id,text:start[1]?'This pairing link is out of date. Open the newest link from the FarFromDesk app.':'Open the pairing link from the FarFromDesk app.'},this.controller?.signal);
+          // Optional guidance must not pin the polling offset ahead of the owner's real /start.
+          this.store.remember(id);
+          await this.call('sendMessage',{chat_id:m.chat.id,text:start[1]?'This pairing link is out of date. Open the newest link from the FarFromDesk app.':'Open the pairing link from the FarFromDesk app.'},this.controller?.signal).catch(()=>{});
         }
         this.store.remember(id);return;
       }

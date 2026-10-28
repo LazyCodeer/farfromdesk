@@ -430,3 +430,15 @@ test('owner commands and failures appear in history without creating native jobs
   f.store.set('telegram-owner',telegramDestination(bot,other));assert.equal(f.store.commandTurns().length,0);
  }finally{f.close();}
 });
+
+
+test('failed stale-link guidance cannot block polling the real owner pairing message',async()=>{
+ const f=fixture();try{
+  await f.tg.connect(token);const secret=new URL(f.tg.view().pairingUrl!).searchParams.get('start');f.tg.close();
+  f.fail(403);f.updates([f.message(1300,'/start stale',other),f.message(1301,`/start ${secret}`)]);await f.tg.resume();
+  for(let i=0;i<100&&f.store.get('telegram-offset:'+bot)!=='1302';i++)await new Promise(r=>setTimeout(r,2));
+  assert.equal(f.store.get('telegram-offset:'+bot),'1302');assert.equal(f.tg.view().candidate?.id,owner);assert.equal(f.store.seen(telegramMessageId(bot,other,1300)),true);
+  const before=f.calls.filter(c=>c.method==='sendMessage').length;await f.tg.receive(f.message(1300,'/start stale',other));assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,before);
+  assert.equal(f.store.get('telegram-owner'),undefined);
+ }finally{f.close();}
+});

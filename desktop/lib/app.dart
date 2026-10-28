@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import 'gateway.dart';
+import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
 import 'updates.dart';
 
@@ -93,6 +94,8 @@ class _DeskState extends State<Desk> {
   int? phonePid, phoneWindowId;
   String? phoneAddress, remoteError;
   bool remoteBusy = false, changingRemotePassword = false;
+  int remoteEpoch = 0;
+  bool phoneAddressInitialized = false;
   final remotePassword = TextEditingController(),
       remoteConfirm = TextEditingController();
   UpdateCheck update = const UpdateCheck();
@@ -500,6 +503,7 @@ class _DeskState extends State<Desk> {
     bool primary = false,
     bool compact = false,
     bool destructive = false,
+    bool ignoreBusy = false,
     IconData? icon,
     Key? key,
   }) {
@@ -518,7 +522,7 @@ class _DeskState extends State<Desk> {
             ),
           )
         : null;
-    final onPressed = busy || !enabled ? null : action;
+    final onPressed = (busy && !ignoreBusy) || !enabled ? null : action;
     final label = Row(
       mainAxisSize: MainAxisSize.min,
       children: [

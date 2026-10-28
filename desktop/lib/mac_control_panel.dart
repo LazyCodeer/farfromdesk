@@ -125,6 +125,17 @@ extension _MacControlPanel on _DeskState {
               },
             ),
           ),
+          gap(10),
+          button(
+            'Remote Desktop settings',
+            () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => RemoteDesktopPage(gateway: api),
+              ),
+            ),
+            compact: true,
+            key: const Key('remote-desktop-settings'),
+          ),
           if (!enabled) ...[
             gap(8),
             small(

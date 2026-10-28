@@ -8,16 +8,24 @@ extension _RemoteControl on _DeskState {
   bool get remotePasswordSet => phoneRemote['passwordSet'] == true;
 
   Future<void> loadRemote() async {
+    final epoch = remoteEpoch;
     try {
       final link = await api.get('/api/remote-control');
       final phone = await api.get('/api/phone-remote');
-      if (!mounted) return;
+      if (!mounted || epoch != remoteEpoch) return;
       changeView(() {
         remoteLink = link;
         phoneRemote = phone;
         final addresses = phone['addresses'] as List? ?? [];
-        if (phoneAddress == null && addresses.length == 1) {
-          phoneAddress = addresses.first['address'] as String?;
+        if (phoneAddress != null &&
+            !addresses.any((a) => a['address'] == phoneAddress)) {
+          phoneAddress = null;
+        }
+        if (!phoneAddressInitialized && addresses.isNotEmpty) {
+          phoneAddressInitialized = true;
+          if (addresses.length == 1) {
+            phoneAddress = addresses.first['address'] as String?;
+          }
         }
       });
     } catch (_) {
@@ -25,24 +33,37 @@ extension _RemoteControl on _DeskState {
     }
   }
 
-  Future<void> remoteRun(Future<void> Function() action) async {
-    if (remoteBusy) return;
+  Future<void> remoteRun(
+    Future<void> Function() action, {
+    bool interrupt = false,
+  }) async {
+    if (remoteBusy && !interrupt) return;
+    final epoch = ++remoteEpoch;
     changeView(() {
       remoteBusy = true;
       remoteError = null;
     });
     try {
       await action();
+      if (epoch != remoteEpoch) return;
       await loadRemote();
     } catch (e) {
-      if (mounted) changeView(() => remoteError = remoteMessage(clean(e)));
+      if (mounted && epoch == remoteEpoch) {
+        changeView(() => remoteError = remoteMessage(clean(e)));
+      }
     } finally {
-      if (mounted) changeView(() => remoteBusy = false);
+      if (mounted && epoch == remoteEpoch) changeView(() => remoteBusy = false);
     }
   }
 
-  Future<Map<String, dynamic>> phoneCommand(Map<String, dynamic> data) =>
-      api.post('/api/phone-remote', data);
+  Future<Map<String, dynamic>> phoneCommand(Map<String, dynamic> data) async {
+    final epoch = remoteEpoch;
+    final result = await api.post('/api/phone-remote', data);
+    if (epoch != remoteEpoch) {
+      throw StateError('This operation was superseded.');
+    }
+    return result;
+  }
 
   String remoteMessage(String code) =>
       const {
@@ -203,7 +224,11 @@ extension _RemoteControl on _DeskState {
             gap(12),
             button(
               'Stop phone access',
-              () => remoteRun(() => api.post('/api/remote-control', {})),
+              () => remoteRun(
+                () => api.post('/api/remote-control', {}),
+                interrupt: true,
+              ),
+              ignoreBusy: true,
               destructive: true,
               compact: true,
               icon: Icons.stop_rounded,
@@ -241,6 +266,15 @@ extension _RemoteControl on _DeskState {
     final phoneConnected = phoneRemote['connected'] == true;
     final addresses = phoneRemote['addresses'] as List? ?? [];
     final url = phoneRemote['url']?.toString() ?? '';
+    final selectedPid = phoneApps.any((a) => a['pid'] == phonePid)
+        ? phonePid
+        : null;
+    final selectedWindow = phoneWindows.any((w) => w['id'] == phoneWindowId)
+        ? phoneWindowId
+        : null;
+    final selectedAddress = addresses.any((a) => a['address'] == phoneAddress)
+        ? phoneAddress
+        : null;
     final allowed =
         status['macControl']?['trusted'] == true &&
         status['macControl']?['capture']?['trusted'] == true;
@@ -296,7 +330,11 @@ extension _RemoteControl on _DeskState {
                 gap(12),
                 button(
                   'Stop phone access',
-                  () => remoteRun(() => phoneCommand({'action': 'stop'})),
+                  () => remoteRun(
+                    () => phoneCommand({'action': 'stop'}),
+                    interrupt: true,
+                  ),
+                  ignoreBusy: true,
                   destructive: true,
                   compact: true,
                   icon: Icons.stop_rounded,
@@ -317,8 +355,10 @@ extension _RemoteControl on _DeskState {
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<int>(
-                        key: ValueKey('app-${phoneApps.length}'),
-                        initialValue: phonePid,
+                        key: ValueKey(
+                          'app-$selectedPid-${phoneApps.map((a) => a['pid']).join(',')}',
+                        ),
+                        initialValue: selectedPid,
                         isExpanded: true,
                         decoration: const InputDecoration(labelText: 'App'),
                         items: [
@@ -359,8 +399,10 @@ extension _RemoteControl on _DeskState {
                 ),
                 gap(10),
                 DropdownButtonFormField<int>(
-                  key: ValueKey('window-$phonePid-${phoneWindows.length}'),
-                  initialValue: phoneWindowId,
+                  key: ValueKey(
+                    'window-$phonePid-$selectedWindow-${phoneWindows.map((w) => w['id']).join(',')}',
+                  ),
+                  initialValue: selectedWindow,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Window'),
                   items: [
@@ -373,8 +415,10 @@ extension _RemoteControl on _DeskState {
                 ),
                 gap(10),
                 DropdownButtonFormField<String>(
-                  key: ValueKey('net-${addresses.length}'),
-                  initialValue: phoneAddress,
+                  key: ValueKey(
+                    'net-$selectedAddress-${addresses.map((a) => a['address']).join(',')}',
+                  ),
+                  initialValue: selectedAddress,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Wi-Fi network'),
                   items: [
@@ -400,17 +444,18 @@ extension _RemoteControl on _DeskState {
                   () => remoteRun(
                     () => phoneCommand({
                       'action': 'start',
-                      'pid': phonePid,
-                      'windowId': phoneWindowId,
-                      'address': phoneAddress,
+                      'pid': selectedPid,
+                      'windowId': selectedWindow,
+                      'address': selectedAddress,
                     }),
                   ),
                   enabled:
                       !remoteBusy &&
                       allowed &&
                       remotePasswordSet &&
-                      phoneWindowId != null &&
-                      phoneAddress != null,
+                      selectedPid != null &&
+                      selectedWindow != null &&
+                      selectedAddress != null,
                   primary: true,
                   compact: true,
                   key: const Key('wifi-start'),

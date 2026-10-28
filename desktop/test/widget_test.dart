@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -33,6 +34,140 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
   }
+
+  testWidgets('Onboarding shows a rejected Telegram token error', (
+    tester,
+  ) async {
+    size(tester);
+    final api = FailingTelegramGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Bot token'),
+      '123456:synthetic_token_only_123456789012345',
+    );
+    await tester.ensureVisible(find.text('Connect bot'));
+    await tester.tap(find.text('Connect bot'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('onboarding-error')), findsOneWidget);
+    expect(find.text('Telegram rejected this bot token.'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Phone stop interrupts pending work for both connection types', (
+    tester,
+  ) async {
+    size(tester);
+    for (final wifi in [false, true]) {
+      final api = BusyRemoteGateway(wifi);
+      await tester.pumpWidget(FarFromDeskApp(key: UniqueKey(), gateway: api));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('remote-password')));
+      await tester.enterText(
+        find.byKey(const Key('remote-password')),
+        'synthetic remote password',
+      );
+      await tester.enterText(
+        find.byKey(const Key('remote-password-confirm')),
+        'synthetic remote password',
+      );
+      await tester.ensureVisible(find.byKey(const Key('remote-password-save')));
+      await tester.tap(find.byKey(const Key('remote-password-save')));
+      await tester.pump();
+      final stop = find.byKey(Key(wifi ? 'wifi-stop' : 'remote-link-stop'));
+      await tester.ensureVisible(stop);
+      await tester.tap(stop);
+      await tester.pump();
+      expect(api.remoteActions, contains(wifi ? 'stop' : 'link-stop'));
+      api.blocked.complete({});
+      await tester.pumpAndSettle();
+      expect(find.textContaining('superseded'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    }
+  });
+
+  testWidgets(
+    'Remote Desktop settings remain reachable to turn off saved access',
+    (tester) async {
+      size(tester);
+      final api = LegacyRemoteGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      final entry = find.byKey(const Key('remote-desktop-settings'));
+      await tester.ensureVisible(entry);
+      await tester.tap(entry);
+      await tester.pumpAndSettle();
+      final toggle = find.widgetWithText(
+        SwitchListTile,
+        'Make this Mac available',
+      );
+      await tester.ensureVisible(toggle);
+      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(api.legacyEnabled, isFalse);
+      expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Phone selectors clear removed values when equal-length lists refresh',
+    (tester) async {
+      size(tester);
+      final api = RefreshingRemoteGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      Finder field(String label) => find.byWidgetPredicate(
+        (w) => w is DropdownButtonFormField && w.decoration.labelText == label,
+      );
+      expect(
+        tester
+            .widget<DropdownButtonFormField<String>>(field('Wi-Fi network'))
+            .initialValue,
+        '192.0.2.1',
+      );
+      await tester.ensureVisible(find.byKey(const Key('wifi-find-apps')));
+      await tester.tap(find.byKey(const Key('wifi-find-apps')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(field('App'));
+      await tester.tap(field('App'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editor One').last);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<DropdownButtonFormField<int>>(field('App')).initialValue,
+        10,
+      );
+      api.replaced = true;
+      await tester.tap(find.byKey(const Key('wifi-find-apps')));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<DropdownButtonFormField<int>>(field('App')).initialValue,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<DropdownButtonFormField<int>>(field('Window'))
+            .initialValue,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<DropdownButtonFormField<String>>(field('Wi-Fi network'))
+            .initialValue,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('Inbox shows command failures even without native jobs', (
     tester,
@@ -1688,5 +1823,116 @@ class CommandHistoryGateway extends PreviewGateway {
       ];
     }
     return data;
+  }
+}
+
+class FailingTelegramGateway extends PreviewGateway {
+  FailingTelegramGateway() : super(fixture: 'telegram');
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/telegram/connect') {
+      throw StateError('Telegram rejected this bot token.');
+    }
+    return super.post(path, data);
+  }
+}
+
+class BusyRemoteGateway extends MacControlGateway {
+  BusyRemoteGateway(bool wifi) : wifiRunning = wifi {
+    linkState = wifi ? 'idle' : 'offered';
+  }
+  bool wifiRunning;
+  final blocked = Completer<Map<String, dynamic>>();
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    if (path == '/api/phone-remote') data['running'] = wifiRunning;
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/phone-remote' && data['action'] == 'password') {
+      remoteActions.add('password');
+      return blocked.future;
+    }
+    if (path == '/api/phone-remote' && data['action'] == 'stop') {
+      wifiRunning = false;
+    }
+    return super.post(path, data);
+  }
+}
+
+class LegacyRemoteGateway extends MacControlGateway {
+  bool legacyEnabled = true;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    if (path == '/api/remote-desktop') {
+      return {'supported': true, 'enabled': legacyEnabled, 'passwordSet': true};
+    }
+    return super.get(path);
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/remote-desktop') {
+      if (data['action'] == 'stop') legacyEnabled = false;
+      return {'enabled': legacyEnabled};
+    }
+    return super.post(path, data);
+  }
+}
+
+class RefreshingRemoteGateway extends MacControlGateway {
+  RefreshingRemoteGateway() {
+    enabled = true;
+    trusted = true;
+    captureTrusted = true;
+    remotePasswordSet = true;
+  }
+  bool replaced = false;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    if (path == '/api/phone-remote') {
+      data['addresses'] = [
+        {'name': 'Wi-Fi', 'address': replaced ? '192.0.2.2' : '192.0.2.1'},
+      ];
+    }
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/phone-remote' && data['action'] == 'apps') {
+      return {
+        'apps': [
+          {
+            'pid': replaced ? 20 : 10,
+            'name': replaced ? 'Editor Two' : 'Editor One',
+          },
+        ],
+      };
+    }
+    if (path == '/api/phone-remote' && data['action'] == 'windows') {
+      return {
+        'windows': [
+          {'id': 11, 'title': 'Window One'},
+        ],
+      };
+    }
+    return super.post(path, data);
   }
 }
