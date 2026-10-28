@@ -92,7 +92,7 @@ await runWindowsUpdate(process.argv[2],{small:async url=>url.endsWith('.sha256')
  await writeFile(join(evidence,'result.json'),JSON.stringify(resultSummary,null,2));
  console.log(JSON.stringify(resultSummary,null,2));
 } finally {
- for(const [source,name] of [[join(state,'app-update','status.json'),'update-status.json'],[join(state,'app-update','attempt-integration','installer.log'),'installer.log'],[join(root,'old-install.log'),'old-install.log']]){
+ for(const [source,name] of [[join(state,'app-update','status.json'),'update-status.json'],[join(state,'app-update','attempt-integration','process-exit-check.json'),'process-exit-check.json'],[join(state,'app-update','attempt-integration','installer.log'),'installer.log'],[join(root,'old-install.log'),'old-install.log']]){
   await cp(source,join(evidence,name)).catch(()=>{});
  }
  // Only this disposable app/state. Never a global taskkill node.exe or user-data deletion.

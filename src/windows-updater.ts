@@ -11,7 +11,7 @@ const exec=promisify(execFile);
 const sleep=(ms:number)=>new Promise<void>(r=>setTimeout(r,ms));
 export const uninstallKey='{DF168D57-418A-4924-B435-BF904833EF76}_is1';
 export type WindowsUpdateRequest={app:string;state:string;port:number;current:string;version:string;uiPid:number};
-type ProcessIdentity={pid:number;path:string;started:string;observedPath?:string};
+type ProcessIdentity={pid:number;path:string;started:string;observedPath?:string;parentPid?:number};
 type Inventory={installs:{path:string;version:string}[];processes:ProcessIdentity[]};
 const samePath=(a:string,b:string)=>win32.resolve(a).toLowerCase()===win32.resolve(b).toLowerCase();
 export async function canonicalWindowsInventory(value:Inventory,canonical:(path:string)=>Promise<string>=realpath):Promise<Inventory> {
@@ -35,6 +35,9 @@ export function installerArguments(app:string,log:string) {
  // No /FORCECLOSEAPPLICATIONS and no shell. Never kill unrelated Node processes.
  return ['/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/RESTARTEXITCODE=3010','/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS','/SP-',`/DIR=${app}`,`/LOG=${log}`];
 }
+export function installationProcesses(app:string,processes:ProcessIdentity[]) {
+ return processes.filter(p=>samePath(p.path,win32.join(app,'farfromdesk.exe'))||samePath(p.path,win32.join(app,'backend','runtime','node.exe')));
+}
 
 // Fixed PowerShell source; paths are carried in environment data, never inserted as code.
 export async function windowsInventory():Promise<Inventory> {
@@ -47,7 +50,7 @@ foreach($prefix in @('Software','Software\\WOW6432Node')) {
   if($null -ne $entry) {try {$entries+=@{path=$entry.GetValue('InstallLocation');version=$entry.GetValue('DisplayVersion')}} finally {$entry.Dispose()}}
  } finally {$base.Dispose()}
 }
-$processes=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('farfromdesk.exe','node.exe')} | ForEach-Object { if($_.ExecutablePath) {@{pid=[int]$_.ProcessId;path=$_.ExecutablePath;started=$_.CreationDate.ToUniversalTime().ToString('o')}} })
+$processes=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('farfromdesk.exe','node.exe')} | ForEach-Object { if($_.ExecutablePath) {@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;path=$_.ExecutablePath;started=$_.CreationDate.ToUniversalTime().ToString('o')}} })
 @{installs=$entries;processes=$processes}|ConvertTo-Json -Depth 4 -Compress`;
  const powershell=join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
  const result=await exec(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,timeout:30000,maxBuffer:1024*1024});
@@ -150,8 +153,13 @@ export async function runWindowsUpdate(requestFile:string,transport={small,downl
     await waitExit(request.uiPid,'FarFromDesk window');uiClosed=true;
    },
    ensureStopped:async()=>{
-    const processes=(await windowsInventory()).processes;
-    if(processes.some(p=>samePath(p.path,join(app,'farfromdesk.exe'))||samePath(p.path,join(app,'backend','runtime','node.exe'))))throw new Error('FarFromDesk reopened before installation. Close it before retrying.');
+    const processes=installationProcesses(app,(await windowsInventory()).processes);
+    // Windows can enumerate exited process objects while a parent retains its handle.
+    // Verify liveness independently; never force-kill any additional helper.
+    await writeFile(join(attempt,'process-exit-check.json'),JSON.stringify(processes.map(p=>({...p,alive:alive(p.pid)}))));
+    for(const p of processes)await waitExit(p.pid,`FarFromDesk process ${p.pid}`);
+    const remaining=installationProcesses(app,(await windowsInventory()).processes).filter(p=>alive(p.pid));
+    if(remaining.length)throw new Error(`FarFromDesk is still running (process ${remaining.map(p=>p.pid).join(', ')}). Close it before retrying.`);
    },
    install:async()=>{
     await report({phase:'installing',message:'Installing into your existing FarFromDesk folder…'});

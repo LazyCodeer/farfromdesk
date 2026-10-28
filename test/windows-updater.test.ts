@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {releaseAsset} from '../src/app-updater.js';
-import {validateWindowsInstall,installerArguments,installWindowsUpdate,canonicalWindowsInventory} from '../src/windows-updater.js';
+import {validateWindowsInstall,installerArguments,installWindowsUpdate,canonicalWindowsInventory,installationProcesses} from '../src/windows-updater.js';
 
 const app='C:\\Users\\Test User\\AppData\\Local\\Programs\\FarFromDesk';
 const inventory=()=>({installs:[{path:app+'\\',version:'0.8.0'}],processes:[{pid:42,path:app+'\\farfromdesk.exe',started:'2026-10-28T00:00:00Z'}]});
+test('exit checks only cover executables inside the selected installation',()=>{
+ const processes=[...inventory().processes,{pid:43,path:app+'\\backend\\runtime\\node.exe',started:'now'},{pid:44,path:'C:\\OtherApp\\node.exe',started:'now'},{pid:45,path:'C:\\Saved State\\app-update\\attempt-1\\node.exe',started:'now'}];
+ assert.deepEqual(installationProcesses(app,processes).map(p=>p.pid),[42,43]);
+});
 test('short Windows folder names are resolved without hiding duplicate installations',async()=>{
  const short='C:\\Users\\TESTUS~1\\AppData\\Local\\Programs\\FarFromDesk';
  const value=inventory();value.installs[0].path=short;
