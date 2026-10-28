@@ -156,7 +156,7 @@ test('dispatch transaction rollback leaves no orphan job or queued receipt',asyn
   const f=fixture();try{const queue=f.router.queue.bind(f.router);f.router.queue=(...args)=>{queue(...args);throw new Error('simulated failure after enqueue');};await f.router.receive({id:'wa:rollback',text:'Fix it'});assert.equal(f.store.jobs().length,0);assert.equal(f.router.brain.get('wa:rollback')?.state,'blocked');assert.ok(!f.out().some((r:any)=>r.request_id==='wa:rollback'&&r.binding_id));assert.ok(f.out().some((r:any)=>r.request_id==='wa:rollback'&&!r.binding_id));}finally{f.close();}
 });
 
-test('a follow-up Meta links to a worker\'s item asks first, even when it names nobody; the owner picks with /to',async()=>{
+test('topic follow-up goes straight to its proven owning worker, not the default coordinator',async()=>{
   const f=fixture();try{
     await f.router.receive({id:'wa:invoice',text:'Fix invoice export'});
     const worker=f.store.register('invoice-worker','codex',randomUUID(),'/tmp').binding;f.store.set('selected',JSON.stringify([worker.id]));
@@ -164,11 +164,11 @@ test('a follow-up Meta links to a worker\'s item asks first, even when it names 
     const item=f.store.itemOf('wa:invoice')!;
     f.c.registry.setDefault(f.claude.id);
     f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
-    for(const [i,text] of ['For the invoice export, also handle empty CSVs','Do not send this to the session that worked on this item; ask the coordinator'].entries()){
-      await f.router.receive({id:`wa:follow${i}`,text});
-      assert.equal(f.store.job(`wa:follow${i}`),undefined,text);
-      assert.match(String((f.out().at(-1) as any).body),/use \/to invoice-worker/,text);
-    }
+    await f.router.receive({id:'wa:invoice-follow',text:'For the invoice export, also handle empty CSVs'});
+    assert.equal(f.store.job('wa:invoice-follow')?.binding_id,worker.id);
+    assert.equal(f.store.itemOf('wa:invoice-follow'),item);
+    assert.equal(f.router.brain.get('wa:invoice-follow')?.coordinator_id,f.codex.id);
+    assert.equal(f.router.brain.get('wa:invoice-follow')?.target_session_id,worker.id);
     assert.equal(f.c.items().list(true).length,1);
   }finally{f.close();}
 });
@@ -194,7 +194,7 @@ test('memory includes destination-linked work created through legacy coordinator
     const item=f.store.itemOf('wa:legacy-topic')!;
     assert.ok(f.router.brain.memory.board().some(i=>i.id===item));
     f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));await f.router.receive({id:'wa:legacy-follow',text:'Check that invoice export'});
-    assert.equal(f.store.job('wa:legacy-follow'),undefined);assert.match(String((f.out().at(-1) as any).body),/use \/to legacy-worker/);
+    assert.equal(f.store.job('wa:legacy-follow')?.binding_id,worker.id);
   }finally{f.close();}
 });
 test('owner can save a todo without dispatch, update it, and recover it from disk',async()=>{
@@ -431,7 +431,7 @@ test('a session named in free text never gets the task, whatever the model picks
       f.respond(async()=>({...decision(),taskIds:i===3?['item:1']:[],sessionId:pick.id}));
       await f.router.receive({id,text});
       assert.equal(f.store.job(id),undefined,text);
-      assert.match(String((f.out().at(-1) as any).body),/\/claude list or \/codex list/,text);
+      assert.match(String((f.out().at(-1) as any).body),/\/claude list or \/codex list.*Nothing was sent/s,text);
     }
     assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,null);
     // A model naming a session the owner never mentioned doesn't route there either.
@@ -439,6 +439,69 @@ test('a session named in free text never gets the task, whatever the model picks
     await f.router.receive({id:'wa:plain',text:'add retry to the webhook'});
     assert.ok(f.store.job('wa:plain'));assert.notEqual(f.store.job('wa:plain')?.binding_id,worker.id);
   }finally{f.close();}
+});
+test('an excluded coordinator never gets the request: platform, alias, short names and the item owner all ask first',async()=>{
+  const f=fixture();try{
+    const body=()=>String((f.out().at(-1) as any).body);
+    const cases:[string,()=>void,()=>Interpretation][]=[
+      ['Do not send this to Claude',()=>{},()=>decision('claude')],
+      ['Do not send this to claude-proxy',()=>f.store.set(`name:${f.claude.id}`,'Main builder'),()=>decision('claude')],
+      ['Do not send this to UX',()=>f.store.set(`name:${f.codex.id}`,'UX'),()=>decision()],
+      ['不要发给开发',()=>f.store.set(`name:${f.codex.id}`,'开发'),()=>decision()],
+      ['Do not send this to 开发',()=>f.store.set(`name:${f.codex.id}`,'开发'),()=>decision()],
+      ['Keep it away from codex',()=>{},()=>decision('codex')],
+    ];
+    for(const [i,[text,setup,pick]] of cases.entries()){
+      setup();f.respond(async()=>pick());
+      await f.router.receive({id:`wa:ex${i}`,text});
+      assert.equal(f.store.job(`wa:ex${i}`),undefined,text);assert.match(body(),/Please confirm: send this to .*Nothing was sent/,text);
+    }
+    // A coordinator-owned item, excluded by reference without any name.
+    f.respond(async()=>decision());
+    await f.router.receive({id:'wa:item',text:'Fix invoice export'});
+    const item=f.store.itemOf('wa:item')!;assert.ok(f.store.job('wa:item'));
+    f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
+    await f.router.receive({id:'wa:ref',text:'Do not send this to the session that previously worked on this item.'});
+    assert.equal(f.store.job('wa:ref'),undefined);assert.match(body(),/as a follow-up to item #/);
+    // Any other answer drops the question, so a later "yes" sends nothing.
+    f.respond(async()=>({...decision(),intent:'chat',reply:'ok'}));
+    await f.router.receive({id:'wa:no',text:'leave it for now'});
+    await f.router.receive({id:'wa:late',text:'yes'});
+    assert.equal(f.store.job('wa:ref'),undefined);assert.equal(f.store.job('wa:late'),undefined);
+  }finally{f.close();}
+});
+test('"yes" sends exactly the confirmed request to the named session, links its item, and only once',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    f.respond(async()=>({...decision(),sessionId:f.codex.id}));
+    await f.router.receive({id:'wa:named',text:'Payments API: add logging'});
+    assert.equal(f.store.job('wa:named'),undefined);assert.match(String((f.out().at(-1) as any).body),/send this to Payments API\?/);
+    await f.router.receive({id:'wa:yes',text:'Yes'});
+    assert.equal(f.store.job('wa:named')?.binding_id,worker.id);assert.equal(f.store.job('wa:named')?.body,'Payments API: add logging');
+    const item=f.store.itemOf('wa:named')!;assert.ok(item);assert.equal(f.store.job('wa:yes'),undefined);
+    await f.router.receive({id:'wa:yes2',text:'yes'});
+    assert.equal(f.store.jobs().filter(j=>j.binding_id===worker.id).length,1);
+    // A follow-up that names the item's session keeps the item link after confirmation (the /to advice lost it).
+    f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
+    await f.router.receive({id:'wa:follow',text:'Payments API, also log retries'});
+    assert.equal(f.store.job('wa:follow'),undefined);
+    await f.router.receive({id:'wa:yes3',text:'yes'});
+    assert.equal(f.store.job('wa:follow')?.binding_id,worker.id);assert.equal(f.store.itemOf('wa:follow'),item);
+  }finally{f.close();}
+});
+test('a confirmation never sends after it expires or after the session is paused or changed',async()=>{
+  for(const change of ['expired','paused','identity']){const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    await f.router.receive({id:'wa:named',text:'Payments API: add logging'});
+    const key=`brain-confirm:${f.store.destination()}`,p=JSON.parse(f.store.get(key)!);
+    if(change==='expired')f.store.set(key,JSON.stringify({...p,expires:Date.now()-1}));
+    if(change==='paused')f.store.enable(worker.id,false);
+    if(change==='identity')f.store.set(key,JSON.stringify({...p,targetKey:'{"other":true}'}));
+    await f.router.receive({id:'wa:yes',text:'yes'});
+    assert.equal(f.store.job('wa:named'),undefined,change);assert.match(String((f.out().at(-1) as any).body),/Nothing was sent/,change);
+  }finally{f.close();}}
 });
 test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
   for(const by of ['Owner','codex-proxy',undefined]){
