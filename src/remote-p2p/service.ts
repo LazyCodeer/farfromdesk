@@ -13,8 +13,8 @@ import type {Store} from '../store.js';
 
 const nativeRoot=fileURLToPath(new URL('../../native/',import.meta.url));
 // Plain requests to take over the screen. Requests to do something in an app stay with the coordinator.
-// After "give me screen access" only a note about the owner may follow ("i will do it myself"), never another request.
-const command=/^(?:\/remote|(?:(?:i (?:want|need|would like) to|let me|can i|please|pls)\s+)?(?:take |get |have )?(?:control|access|open|share|remote(?: into)?)(?: of| to| into)? (?:my |the |this )?(?:screen|mac|macbook|computer|laptop|desktop|pc)(?: remotely)?|(?:give|send|share with) me (?:the |a )?(?:screen|remote|mac|desktop|computer|laptop) (?:access|control|link)(?:[,.!]?\s+(?:i|i'll|i'm|so i|and i|please|pls|now|thanks|thank you)\b.*)?|remote (?:control|desktop|access))[.!?]?$/i;
+// After "give me screen access" only a fixed courtesy or "i will do it myself" may follow, never another request.
+const command=/^(?:\/remote|(?:(?:i (?:want|need|would like) to|let me|can i|please|pls)\s+)?(?:take |get |have )?(?:control|access|open|share|remote(?: into)?)(?: of| to| into)? (?:my |the |this )?(?:screen|mac|macbook|computer|laptop|desktop|pc)(?: remotely)?|(?:give|send|share with) me (?:the |a )?(?:screen|remote|mac|desktop|computer|laptop) (?:access|control|link)(?:[,.!]?\s+(?:please|pls|now|thanks|thank you|i(?: will|'ll) (?:do|create|handle) it (?:my ?self|myself)))?|remote (?:control|desktop|access))[.!?]?$/i;
 const answer=new RegExp('^'+SIGNAL_PREFIX.trim()+'\\s+([A-Za-z0-9_-]{20,4000})$');
 const refused:Record<string,string>={OFFER_EXPIRED:'That link has expired. Send "control my screen" for a new one.',ANSWER_REFUSED:'That code does not match your latest link. Send "control my screen" for a new one.',INVALID_SIGNAL:'That code looks incomplete. Copy it again from the phone page and send it here.'};
 

@@ -110,9 +110,10 @@ test('a login revoked while a capture is running sends no pixels',{timeout:30_00
 test('asking for a link to something else is not taken as a screen request',async()=>{
  const {RemoteControlService}=await import('../src/remote-p2p/service.js');
  const svc=new RemoteControlService({status:{passwordSet:false},enable(){}} as any);
- for(const text of ['Send me the remote access details for the prod server','Give me the desktop link for the new build','Give me a computer access link, then rotate the staging keys'])
+ for(const text of ['Send me the remote access details for the prod server','Give me the desktop link for the new build','Give me a computer access link, then rotate the staging keys',
+  'give me screen access please ask Codex for an update','send me a remote link now and summarize my tasks','give me remote access i will check the logs'])
   assert.equal(await svc.chat(text),undefined,text);
- for(const text of ['send me the screen link','give me remote access','control my screen'])assert.notEqual(await svc.chat(text),undefined,text);
+ for(const text of ['send me the screen link','give me remote access please','give me screen access, thanks','control my screen'])assert.notEqual(await svc.chat(text),undefined,text);
 });
 
 test('a new password set in the app lifts a phone lockout from the old one',{timeout:60_000},async()=>{
