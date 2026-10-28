@@ -11,6 +11,7 @@ import { saveBindingCredentials } from './server.js';
 import type { SessionRoute } from './connections.js';
 
 type Creation={workspaceRoot?:string;taskOwnerRequestId?:string;recoveryAttemptId?:string;recoveryPrevious?:{status:Creation['status'];error?:string};route?:SessionRoute;executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'checking'|'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain'|'blocked'|'needs_action';originRequestId?:string;stage?:'preflight'|'workspace'|'native'|'dispatch';bindingId?:string;cwd?:string;error?:string};
+class WorkspaceApprovalExpired extends Error {}
 type Workspace={root?:string;path:string;dev:number;ino:number;approvedAt:number};
 export class Workers {
   tasks=new Map<string,Promise<void>>();
@@ -125,7 +126,7 @@ export class Workers {
       const answer=await this.router.approvals.ask(master,`Allow FarFromDesk to create new coding projects inside ${root}?\nThis approval applies to future owner-requested projects here. Codex uses workspace-write with native approvals; Claude CLI uses acceptEdits; Claude Desktop retains its own native permissions and may require initial folder approval. Commands or access requiring further native permission are sent here. This does not grant access to arbitrary folders.`);
       if(this.closed||generation!==this.workspaceGeneration)return null;
       // A cancelled origin cannot grant shared access, but must not turn another waiting session uncertain.
-      try{this.router.coordinator!.ownerRequest(op.requestId);}catch{return null;}
+      try{this.router.coordinator!.ownerRequest(op.requestId);}catch{throw new WorkspaceApprovalExpired('The request that opened this workspace approval is closed. No access was granted. Recover the operation with a new owner request to ask again.');}
       if(answer!=='approve')return null;
       if(!existsSync(root))mkdirSync(root,{recursive:true,mode:0o700});
       const stat=lstatSync(root);if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error('Choose a real workspace directory, not a symbolic link.');
@@ -197,7 +198,7 @@ export class Workers {
       if(needsWorkspace){
         const w=await this.approveWorkspace({...op,requestId,masterId:parent.binding_id});
         if(this.closed)return;
-        this.router.coordinator!.ownerRequest(requestId);
+        try{this.router.coordinator!.ownerRequest(requestId);}catch{throw new WorkspaceApprovalExpired('This recovery request is closed. No session work was resumed. Ask to recover again with a new owner request.');}
         if(!w){
           // Denial changes access, not the known state of the existing session/task.
           this.save({...next,...next.recoveryPrevious!,recoveryPrevious:undefined});
@@ -224,7 +225,13 @@ export class Workers {
       this.store.set('selected',JSON.stringify([...new Set([...selected,b.id])]));
       this.router.coordinator!.dispatch(requestId,[b.id],op.text,`create-${op.id}`);
       this.save({...next,status:'ready',recoveryPrevious:undefined});this.store.output(undefined,`Recovered “${op.name}” in the same native session and queued the original task.`,`worker-create:${op.id}:recovered:${next.recoveryAttemptId}`);
-    }).catch(e=>{if(this.closed)return;this.save({...next,recoveryPrevious:undefined,status:/^Desktop start needs owner action/.test(e instanceof Error?e.message:String(e))?'needs_action':'uncertain',error:e instanceof Error?e.message:'Exact-session recovery failed.'});this.store.output(undefined,`Recovery is still blocked: ${this.get(id)!.error}`,`worker-create:${id}:recovery-error:${next.recoveryAttemptId}`,destination);this.reportStatus(this.get(id)!);}).finally(()=>this.tasks.delete(id));
+    }).catch(e=>{if(this.closed)return;
+      if(e instanceof WorkspaceApprovalExpired){
+        this.save({...next,...next.recoveryPrevious!,recoveryPrevious:undefined});
+        this.store.output(undefined,e.message,`worker-workspace-expired:${id}:${next.recoveryAttemptId}`,destination);
+        this.reportStatus({...next,status:'blocked',error:e.message});return;
+      }
+      this.save({...next,recoveryPrevious:undefined,status:/^Desktop start needs owner action/.test(e instanceof Error?e.message:String(e))?'needs_action':'uncertain',error:e instanceof Error?e.message:'Exact-session recovery failed.'});this.store.output(undefined,`Recovery is still blocked: ${this.get(id)!.error}`,`worker-create:${id}:recovery-error:${next.recoveryAttemptId}`,destination);this.reportStatus(this.get(id)!);}).finally(()=>this.tasks.delete(id));
     this.tasks.set(id,task);return this.view(id)[0];
   }
   // Connects a Desktop session once the owner has pressed Send and it wrote its own ready

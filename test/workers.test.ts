@@ -537,3 +537,29 @@ test('restart during native recovery records uncertainty rather than an expired 
     assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,0);
   }finally{f.workers.close();f.approvals.cancel();finish?.();await settled(f);f.close();}
 });
+
+
+test('closed shared approval origin leaves new projects blocked and recoverable rather than denied',async()=>{
+  const f=fixture();try{
+    const first=await f.workers.start(f.request);
+    f.store.enqueue('wa:joined-project',f.master,'Create a second project');
+    const joined=await f.workers.start({...f.request,requestId:'wa:joined-project',eventId:'join'});
+    f.store.jobState('wa:create','replaced');approve(f);await settled(f);
+    for(const id of [first.id,joined.id]){assert.equal(f.workers.get(id)?.status,'blocked');assert.match(f.workers.get(id)?.error??'',/request.*closed/i);assert.equal(f.workers.view(id)[0].canRecover,true);}
+    f.store.enqueue('wa:recover-joined',f.master,'Recover the same new project');
+    await f.workers.recover('wa:recover-joined',joined.id);
+    for(let i=0;i<30&&!f.approvals.pending.size;i++)await new Promise(r=>setTimeout(r,5));
+    approve(f);await settled(f);assert.equal(f.workers.get(joined.id)?.status,'ready');assert.equal(f.counts().creations,1);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('closing the recovery request during folder approval preserves the healthy existing session',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    f.store.enqueue('wa:cancel-recovery',f.master,'Restore access');
+    await f.workers.recover('wa:cancel-recovery',op.id);f.store.jobState('wa:cancel-recovery','replaced');approve(f);await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'ready');assert.equal(f.workers.workspace(),null);
+    assert.equal(f.store.binding(f.workers.get(op.id)!.bindingId!)?.enabled,0);
+    assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>/request.*closed/i.test(r.body)));
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
