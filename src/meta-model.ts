@@ -36,7 +36,6 @@ export const BRAIN_PROMPT=`You are the FarFromDesk brain. The owner sends short 
 - Unclear acronyms or words (for example "read ATC") mean clarify. Do not guess.
 - Never answer status from your own memory. Status and update text is written by code from saved data, so leave reply empty for those.
 - Only use ids that appear in tasks or sessions.
-- sessionId for a task: the id of the one session the owner asks to do it by name ("send the payments api session…"). A session the owner mentions only to exclude it ("not Payments API") or in passing is not addressed: leave sessionId "".
 - Unused fields: operation none, sessionId "", title "", itemStatus unchanged, reply "".
 
 # Memory
