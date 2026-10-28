@@ -198,9 +198,13 @@ void main() {
     size(tester);
     await tester.pumpWidget(FarFromDeskApp(gateway: CommandHistoryGateway()));
     await tester.pumpAndSettle();
-    expect(find.text('Recent commands'), findsOneWidget);
-    expect(find.text('/claude · Failed'), findsOneWidget);
-    expect(find.text('No connected Claude session.'), findsOneWidget);
+    expect(find.text('Recent commands'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('inbox-tab-Commands')));
+    await tester.pumpAndSettle();
+    expect(find.text('/claude'), findsWidgets);
+    expect(find.text('Failed'), findsWidgets);
+    expect(find.text('No connected Claude session.'), findsWidgets);
+    expect(find.byKey(const ValueKey('activity-filter-group')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -852,7 +856,7 @@ void main() {
       expect(find.text('FarFromDesk'), findsOneWidget);
       expect(find.byTooltip('Refresh'), findsNothing);
       expect(find.text('Check delivery after reconnecting'), findsWidgets);
-      expect(find.text('How recovery works'), findsOneWidget);
+      expect(find.byTooltip('How recovery works'), findsOneWidget);
       if (Platform.environment['FFD_CAPTURE_ACTIVITY'] == '1') {
         await expectLater(
           find.byType(Scaffold),
@@ -860,13 +864,14 @@ void main() {
         );
       }
       await tester.enterText(
-        find.widgetWithText(TextField, 'Search requests or sessions'),
+        find.widgetWithText(TextField, 'Search sessions'),
         'reconnecting',
       );
       await tester.pumpAndSettle();
       expect(find.text('Check delivery after reconnecting'), findsWidgets);
-      expect(find.text('Review the website changes'), findsNothing);
-      await tester.tap(find.text('How recovery works'));
+      // Search selects the whole matching session, retaining its other requests.
+      expect(find.text('Review the website changes'), findsWidgets);
+      await tester.tap(find.byTooltip('How recovery works'));
       await tester.pumpAndSettle();
       expect(find.text('Your requests stay saved'), findsOneWidget);
       await tester.tap(find.text('Done'));
@@ -876,85 +881,317 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
-  testWidgets('Inbox selects a request and shows its thread and actions', (
+  testWidgets('Inbox tabs separate session history, commands and attention', (
+    tester,
+  ) async {
+    size(tester);
+    final api = SessionInboxGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    final a = find.byKey(const ValueKey('inbox-session-alpha'));
+    final b = find.byKey(const ValueKey('inbox-session-beta'));
+    expect(a, findsOneWidget);
+    expect(b, findsOneWidget);
+    expect(tester.getTopLeft(a).dy, lessThan(tester.getTopLeft(b).dy));
+    expect(find.text('Shared session'), findsWidgets);
+    expect(find.text('A full current request'), findsWidgets);
+    expect(find.text('No speech was found.'), findsOneWidget);
+    expect(find.text('Voice transcript'), findsOneWidget);
+    expect(find.textContaining('Progress · Telegram'), findsOneWidget);
+    expect(find.textContaining('Final · Telegram'), findsOneWidget);
+    expect(
+      find.textContaining('Worker report for owner request'),
+      findsNothing,
+    );
+    expect(find.byType(Checkbox), findsNothing);
+    expect(find.text('Mark reviewed'), findsNothing);
+    expect(find.text('Request status'), findsNothing);
+    if (Platform.environment['FFD_CAPTURE_SESSION_INBOX'] == '1') {
+      await tester.runAsync(() async {
+        for (final brand in ['claude', 'openai', 'whatsapp']) {
+          await precacheImage(
+            AssetImage('assets/logo-$brand.png'),
+            tester.element(find.byType(Scaffold)),
+          );
+        }
+      });
+      await tester.pumpAndSettle();
+      await expectLater(
+        find.byType(Scaffold),
+        matchesGoldenFile('../../../inbox2308-session.png'),
+      );
+    }
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Search sessions'),
+      'needle reply',
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    expect(a, findsOneWidget);
+    expect(b, findsNothing);
+    expect(find.text('A full current request'), findsWidgets);
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Search sessions'),
+      '',
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('inbox-tab-Commands')));
+    await tester.pumpAndSettle();
+    expect(a, findsNothing);
+    expect(find.byKey(const ValueKey('activity-filter-group')), findsNothing);
+    expect(find.text('Ready for your next message.'), findsWidgets);
+    expect(find.textContaining('💬'), findsNothing);
+    expect(find.textContaining('*Reply*'), findsNothing);
+    expect(find.textContaining('— FarFromDesk'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('inbox-attention-request:tg:old')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('inbox-attention-delivery:failed')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('activity-filter-group')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'Earlier conversation pages and exact older request review remain available',
+    (tester) async {
+      size(tester);
+      final api = SessionInboxGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Load earlier messages'));
+      await tester.pumpAndSettle();
+      expect(api.olderCalls, 1);
+      expect(find.text('Earlier owner request to review'), findsOneWidget);
+      expect(find.text('Load earlier messages'), findsNothing);
+      await tester.tap(find.text('Session info'));
+      await tester.pumpAndSettle();
+      expect(find.text('/sample/alpha'), findsOneWidget);
+      expect(find.text('alpha-native-id'), findsOneWidget);
+      final infoScroll = find
+          .descendant(
+            of: find.byType(AlertDialog),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        find.byType(DropdownButtonFormField<String>),
+        180,
+        scrollable: infoScroll,
+      );
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Earlier owner request to review').last);
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Mark reviewed'),
+        180,
+        scrollable: infoScroll,
+      );
+      await tester.drag(infoScroll, const Offset(0, -140));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mark reviewed'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Confirm').last);
+      await tester.pumpAndSettle();
+      expect(api.reviewed, [
+        {
+          'requestId': 'tg:old',
+          'expectedStatus': 'uncertain',
+          'confirmed': true,
+        },
+      ]);
+      expect(find.text('Mark reviewed'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('Late session loads never replace the selected conversation', (
+    tester,
+  ) async {
+    size(tester);
+    final api = SessionInboxGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    api.holdBeta = true;
+    await tester.tap(find.byKey(const ValueKey('inbox-session-beta')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('inbox-session-alpha')));
+    await tester.pumpAndSettle();
+    api.betaPending.complete(api.thread('beta'));
+    await tester.pumpAndSettle();
+    expect(find.text('A full current request'), findsWidgets);
+    expect(find.text('Only in the other session'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Same-timestamp refresh gaps keep earlier messages reachable', (
+    tester,
+  ) async {
+    size(tester);
+    final api = SameTimestampInboxGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    expect(find.text('Load earlier messages'), findsNothing);
+    api.newPage = true;
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    final threadScroll = find
+        .descendant(
+          of: find.byKey(const PageStorageKey('inbox-thread-alpha')),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('Load earlier messages'),
+      -500,
+      scrollable: threadScroll,
+      maxScrolls: 50,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Load earlier messages'));
+    await tester.pumpAndSettle();
+    expect(api.olderCalls, 1);
+    await tester.scrollUntilVisible(
+      find.text('Recovered middle message'),
+      -500,
+      scrollable: threadScroll,
+      maxScrolls: 50,
+    );
+    expect(find.text('Recovered middle message'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Compact Inbox opens session info without overflow', (
+    tester,
+  ) async {
+    size(tester);
+    tester.view.physicalSize = const Size(760, 720);
+    final api = SessionInboxGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('inbox-session-alpha')));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Back to sessions'), findsOneWidget);
+    await tester.tap(find.text('Session info'));
+    await tester.pumpAndSettle();
+    expect(find.text('/sample/alpha'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'Compact Inbox restores its list when the selected session no longer matches',
+    (tester) async {
+      size(tester);
+      tester.view.physicalSize = const Size(760, 720);
+      final api = SessionInboxGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('activity-filter-group')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Needs review').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('inbox-session-alpha')));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Back to sessions'), findsOneWidget);
+      api.oldReviewed = true;
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('inbox-tab-Requests')), findsOneWidget);
+      expect(find.widgetWithText(TextField, 'Search sessions'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('activity-filter-group')),
+        findsOneWidget,
+      );
+      expect(find.text('No matching sessions.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('Inbox groups requests and keeps details in session info', (
     tester,
   ) async {
     size(tester);
     final api = ActivityDesignGateway();
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    final row = find.byKey(const PageStorageKey('request-wa:sample-wait'));
-    final title = find.descendant(
-      of: row,
-      matching: find.text('Review the website changes'),
-    );
-    await tester.ensureVisible(row);
-    await tester.tap(title);
+    final row = find.byKey(const ValueKey('inbox-session-sample-worker'));
+    expect(row, findsOneWidget);
+    expect(find.byType(Checkbox), findsNothing);
+    expect(find.text('Select all'), findsNothing);
+    expect(find.textContaining('Close selected'), findsNothing);
+    expect(find.text('Review the website changes'), findsWidgets);
+    expect(find.text('Mark reviewed'), findsNothing);
+    await tester.tap(find.text('Session info'));
     await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-    expect(tester.getSize(row).height, lessThan(450));
-    expect(find.text('Review the website changes'), findsNWidgets(3));
-    expect(find.text('Mark reviewed'), findsOneWidget);
-    await tester.ensureVisible(find.text('Timing and delivery'));
+    await tester.scrollUntilVisible(
+      find.text('Timing and delivery'),
+      180,
+      scrollable: find
+          .descendant(
+            of: find.byType(AlertDialog),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.tap(find.text('Timing and delivery'));
     await tester.pumpAndSettle();
     expect(find.text('Request timing and delivery'), findsOneWidget);
     await tester.tap(
       find.descendant(
-        of: find.byType(AlertDialog),
+        of: find.byType(AlertDialog).last,
         matching: find.text('Done'),
       ),
     );
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(const PageStorageKey('request-wa:sample-queue')),
-        matching: find.text('Run the release checks'),
-      ),
-    );
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('Header filters sessions without bulk request selection', (
+    tester,
+  ) async {
+    size(tester);
+    final api = ActivityDesignGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    expect(find.text('Review the website changes'), findsOneWidget);
-    expect(find.text('Sending to Website redesign'), findsOneWidget);
-    expect(tester.getSize(row).height, lessThan(450));
+    final logo = find.byKey(const ValueKey('header-logo'));
+    expect(
+      tester.getTopLeft(logo).dx,
+      lessThan(tester.getTopLeft(find.text('FarFromDesk')).dx),
+    );
+    expect(tester.getTopLeft(logo).dy, lessThan(52));
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('navigation-rail'))).dy,
+      lessThan(80),
+    );
+    await tester.tap(find.byKey(const ValueKey('activity-filter-group')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Waiting').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('inbox-session-sample-worker')),
+      findsOneWidget,
+    );
+    // One waiting request keeps all of that session's history visible.
+    expect(find.text('Check delivery after reconnecting'), findsWidgets);
+    expect(find.byKey(const ValueKey('select-visible-requests')), findsNothing);
+    expect(find.byType(Checkbox), findsNothing);
+    expect(api.calls, isEmpty);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
-  testWidgets(
-    'Header branding, grouped filters and visible selection work together',
-    (tester) async {
-      size(tester);
-      final api = ActivityDesignGateway();
-      await tester.pumpWidget(FarFromDeskApp(gateway: api));
-      await tester.pumpAndSettle();
-      final logo = find.byKey(const ValueKey('header-logo'));
-      expect(
-        tester.getTopLeft(logo).dx,
-        lessThan(tester.getTopLeft(find.text('FarFromDesk')).dx),
-      );
-      expect(tester.getTopLeft(logo).dy, lessThan(52));
-      expect(
-        tester.getTopLeft(find.byKey(const ValueKey('navigation-rail'))).dy,
-        lessThan(80),
-      );
-      await tester.tap(find.byKey(const ValueKey('activity-filter-group')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Waiting').last);
-      await tester.pumpAndSettle();
-      expect(find.text('Check delivery after reconnecting'), findsNothing);
-      final select = find.byKey(const ValueKey('select-visible-requests'));
-      await tester.tap(select);
-      await tester.pumpAndSettle();
-      expect(find.text('Close selected (1)…'), findsOneWidget);
-      expect(tester.widget<Checkbox>(select).value, true);
-      await tester.tap(select);
-      await tester.pumpAndSettle();
-      expect(find.text('Close selected (1)…'), findsNothing);
-      expect(api.calls, isEmpty);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
   testWidgets(
     'Update banner stays in the top bar and automatic installation requires a click',
     (tester) async {
@@ -1005,11 +1242,14 @@ void main() {
       final api = AuditGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      expect(find.text('Voice notes needing attention'), findsOneWidget);
-      expect(find.text('Transcribed · routing blocked'), findsOneWidget);
+      expect(find.text('Voice notes needing attention'), findsNothing);
       expect(api.diagnosticCalls, isEmpty);
-      await tester.ensureVisible(find.text('Details'));
-      await tester.tap(find.text('Details'));
+      await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
+      await tester.pumpAndSettle();
+      expect(find.text('Voice note · routing blocked'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('inbox-attention-voice:wa:voice')),
+      );
       await tester.pumpAndSettle();
       expect(find.text('Request timing and delivery'), findsOneWidget);
       expect(find.textContaining('voice_route_failed'), findsOneWidget);
@@ -1968,5 +2208,280 @@ class ReconnectingItemsGateway extends PreviewGateway {
       throw StateError('Items temporarily unavailable.');
     }
     return super.get(path);
+  }
+}
+
+class SessionInboxGateway extends PreviewGateway {
+  SessionInboxGateway() : super(fixture: 'activity', screen: 'activity');
+  bool holdBeta = false;
+  final betaPending = Completer<Map<String, dynamic>>();
+  int olderCalls = 0;
+  final reviewed = <Map<String, dynamic>>[];
+  bool oldReviewed = false;
+  static const now = 1793232000000;
+  List<Map<String, dynamic>> get testJobs => [
+    {
+      'id': 'tg:old',
+      'binding_id': 'alpha',
+      'status': oldReviewed ? 'reviewed' : 'uncertain',
+      'canClose': !oldReviewed,
+      'created_at': now - 86400000,
+      'updated_at': now - 86400000,
+      'body': 'Earlier owner request to review',
+      'preview': 'Earlier owner request to review',
+      'error': oldReviewed ? null : 'Check the original session.',
+      'destination': 'tg:owner',
+    },
+    {
+      'id': 'tg:new',
+      'binding_id': 'alpha',
+      'status': 'completed',
+      'outcome': 'done',
+      'created_at': now,
+      'updated_at': now + 5000,
+      'body': 'A full current request',
+      'preview': 'A full current request',
+      'destination': 'tg:owner',
+    },
+    {
+      'id': 'tg:beta',
+      'binding_id': 'beta',
+      'status': 'completed',
+      'outcome': 'done',
+      'created_at': now + 10000,
+      'updated_at': now + 10000,
+      'body': 'Only in the other session',
+      'preview': 'Only in the other session',
+      'destination': 'tg:owner',
+    },
+  ];
+  Map<String, dynamic> thread(String id, {bool older = false}) {
+    if (id == 'beta') {
+      return {
+        'messages': [
+          {
+            'key': 'request:tg:beta',
+            'requestId': 'tg:beta',
+            'kind': 'owner',
+            'text': 'Only in the other session',
+            'at': now + 10000,
+            'destination': 'tg:owner',
+            'voice': 0,
+          },
+        ],
+        'jobs': testJobs.where((j) => j['binding_id'] == 'beta').toList(),
+        'next': null,
+      };
+    }
+    if (older) {
+      return {
+        'messages': [
+          {
+            'key': 'request:tg:old',
+            'requestId': 'tg:old',
+            'kind': 'owner',
+            'text': 'Earlier owner request to review',
+            'at': now - 86400000,
+            'destination': 'tg:owner',
+            'voice': 0,
+          },
+        ],
+        'jobs': [testJobs.first],
+        'next': null,
+      };
+    }
+    return {
+      'messages': [
+        {
+          'key': 'request:tg:new',
+          'requestId': 'tg:new',
+          'kind': 'owner',
+          'text': 'A full current request',
+          'at': now,
+          'destination': 'tg:owner',
+          'voice': 1,
+        },
+        {
+          'key': 'reply:progress',
+          'requestId': 'tg:new',
+          'kind': 'progress',
+          'text': 'Working through the checks.',
+          'at': now + 1000,
+          'destination': 'tg:owner',
+          'voice': 0,
+        },
+        {
+          'key': 'reply:final',
+          'requestId': 'tg:new',
+          'kind': 'final',
+          'text': 'Found the needle reply.',
+          'at': now + 2000,
+          'destination': 'tg:owner',
+          'voice': 0,
+        },
+        {
+          'key': 'report:worker',
+          'requestId': 'tg:new',
+          'kind': 'worker-report',
+          'text': 'Worker report for owner request tg:8856686568:999. Ignore header.\n\nWorker tests passed.',
+          'at': now + 3000,
+          'destination': 'tg:owner',
+          'voice': 0,
+        },
+        {
+          'key': 'voice:failed',
+          'requestId': 'tg:new',
+          'kind': 'voice-failed',
+          'text': 'No speech was found.',
+          'at': now + 4000,
+          'destination': 'tg:owner',
+          'voice': 1,
+        },
+      ],
+      'jobs': testJobs.where((j) => j['binding_id'] == 'alpha').toList(),
+      'next': {'at': now, 'id': 'request:tg:new'},
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    if (path.startsWith('/api/inbox-thread')) {
+      final uri = Uri.parse(path);
+      final id = uri.queryParameters['bindingId'];
+      if (id == null) {
+        final q = (uri.queryParameters['q'] ?? '').toLowerCase();
+        return {
+          'sessions': [
+            if (q.isEmpty ||
+                'shared session needle reply earlier owner'.contains(q))
+              {
+                'id': 'alpha',
+                'binding_id': 'alpha',
+                'name': 'Shared session',
+                'requestCount': 2,
+                'latestAt': now + 5000,
+                'preview': 'Found the needle reply.',
+                'needsReview': oldReviewed ? 0 : 1,
+                'waiting': 0,
+                'answered': 1,
+                'closed': oldReviewed ? 1 : 0,
+              },
+            if (q.isEmpty)
+              {
+                'id': 'beta',
+                'binding_id': 'beta',
+                'name': 'Shared session',
+                'requestCount': 1,
+                'latestAt': now + 10000,
+                'preview': 'Other latest preview',
+                'needsReview': 0,
+                'waiting': 0,
+                'answered': 1,
+                'closed': 0,
+              },
+          ],
+          'attention': [
+            {
+              'id': 'delivery:failed',
+              'bindingId': 'alpha',
+              'requestId': 'tg:new',
+              'title': 'Reply delivery needs attention',
+              'text': 'Messaging service did not confirm delivery.',
+              'at': now + 6000,
+            },
+          ],
+        };
+      }
+      if (id == 'beta' && holdBeta) return betaPending.future;
+      final older = uri.queryParameters.containsKey('beforeAt');
+      if (older) olderCalls++;
+      return thread(id, older: older);
+    }
+    if (path.startsWith('/api/request-events')) {
+      return {'events': [], 'deliveries': []};
+    }
+    final data = await super.get(path);
+    data['bindings'] = [
+      {
+        'id': 'alpha',
+        'alias': 'alpha',
+        'name': 'Shared session',
+        'provider': 'claude',
+        'executionMode': 'desktop',
+        'native_id': 'alpha-native-id',
+        'cwd': '/sample/alpha',
+        'enabled': 1,
+      },
+      {
+        'id': 'beta',
+        'alias': 'beta',
+        'name': 'Shared session',
+        'provider': 'codex',
+        'executionMode': 'cli',
+        'native_id': 'beta-native-id',
+        'cwd': '/sample/beta',
+        'enabled': 1,
+      },
+    ];
+    data['pendingJobs'] = testJobs
+        .where((j) => j['status'] == 'uncertain')
+        .toList();
+    data['jobs'] = testJobs;
+    data['commandTurns'] = [
+      {
+        'id': 'cmd:one',
+        'label': '/claude',
+        'status': 'handled',
+        'summary': '💬 *Reply*\nReady for your next message.\n\n— FarFromDesk',
+        'created_at': now,
+      },
+    ];
+    data['approvals'] = [];
+    data['voiceRequests'] = [];
+    data['unlinkedUpdates'] = [];
+    return data;
+  }
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/request-review') {
+      reviewed.add(Map.of(data));
+      oldReviewed = true;
+      return {};
+    }
+    return super.post(path, data);
+  }
+}
+
+class SameTimestampInboxGateway extends SessionInboxGateway {
+  bool newPage = false;
+  @override
+  Map<String, dynamic> thread(String id, {bool older = false}) {
+    if (id != 'alpha') {
+      return super.thread(id, older: older);
+    }
+    Map<String, dynamic> message(int n, String text) => {
+      'key': '1:reply:${n.toString().padLeft(3, '0')}',
+      'requestId': 'tg:new',
+      'kind': 'progress',
+      'text': text,
+      'at': SessionInboxGateway.now,
+      'destination': 'tg:owner',
+      'voice': 0,
+    };
+    return {
+      'messages': older
+          ? [message(100, 'Recovered middle message')]
+          : newPage
+          ? [for (var n = 200; n < 300; n++) message(n, 'New message $n')]
+          : [message(0, 'Original cached message')],
+      'jobs': testJobs.where((j) => j['binding_id'] == 'alpha').toList(),
+      'next': newPage && !older
+          ? {'at': SessionInboxGateway.now, 'id': '1:reply:200'}
+          : null,
+    };
   }
 }

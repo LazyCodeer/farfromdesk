@@ -1,3 +1,4 @@
+import { inboxSessions, inboxThread } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
 import { BrowserTabs } from './browser-tabs.js';
 import {PhoneRemoteService} from './remote-desktop/phone-service.js';
@@ -236,6 +237,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/artifacts/cancel'&&req.method==='POST') {const d=await body(req),b=store.binding(d.bindingId);if(!b)throw new Error('Unknown session.');json(res,200,artifacts.cancel(b,d.artifactId));return;}
       if(path==='/api/media/cleanup'&&req.method==='POST') {await body(req);json(res,200,{incoming:router.attachments.cleanup(),outgoing:artifacts.cleanup()});return;}
       if(path==='/api/hook-update'&&req.method==='GET') {json(res,200,store.hookUpdate(url.searchParams.get('id')??'')??{text:'This local update has expired.'});return;}
+      if(path==='/api/inbox-thread'&&req.method==='GET') {if(!isAdmin){json(res,403,{error:'Conversation history requires the app.'});return;}const id=url.searchParams.get('bindingId');const data=id?inboxThread(store,id,url.searchParams.get('beforeAt'),url.searchParams.get('beforeId')):inboxSessions(store,url.searchParams.get('q')??'');if('jobs' in data)data.jobs=data.jobs.map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)}));json(res,200,data);return;}
       if(path==='/api/request-events'&&req.method==='GET') {const id=url.searchParams.get('id')??'';json(res,200,{events:store.events(id),deliveries:store.deliveries(id)});return;}
 
       if(path==='/api/mac-control'&&req.method==='GET'){json(res,200,macControl.view());return;}

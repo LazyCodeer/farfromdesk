@@ -55,8 +55,16 @@ class _DeskState extends State<Desk> {
       activityQuery = '',
       itemQuery = '',
       settingsTab = 'Messaging';
-  // Inbox request shown in the thread pane; the newest visible one if unset.
-  String? inboxSelected;
+  // A stable binding identity, never a request title or session display name.
+  String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
+  String inboxTab = 'Requests';
+  List<Map> inboxAttention = [];
+  List<Map>? inboxGroups;
+  final inboxThreads = <String, Map<String, dynamic>>{};
+  final inboxScrolls = <String, ScrollController>{};
+  bool inboxLoading = false, inboxOlderLoading = false, inboxShowThread = false;
+  int inboxEpoch = 0;
+  Timer? inboxSearchTimer;
   final settingsKeys = <String, GlobalKey>{};
   bool editingVoice = false;
   // Item board from the brain; the 3s status poll doesn't carry it.
@@ -80,7 +88,6 @@ class _DeskState extends State<Desk> {
   StateSetter? get modalUpdate =>
       modalContext?.mounted == true ? modalSetter : null;
   final search = TextEditingController();
-  final chosen = <String>{};
   final audio = <String, String>{};
   // Voice setup choices; null follows the saved engine.
   String? voicePathChoice, voiceProviderChoice;
@@ -174,6 +181,10 @@ class _DeskState extends State<Desk> {
   @override
   void dispose() {
     timer?.cancel();
+    inboxSearchTimer?.cancel();
+    for (final controller in inboxScrolls.values) {
+      controller.dispose();
+    }
     updateTimer?.cancel();
     api.closeUpdates();
     search.dispose();
@@ -368,6 +379,7 @@ class _DeskState extends State<Desk> {
           error = null;
         });
         modalUpdate?.call(() {});
+        if (section == 1) unawaited(loadInbox());
         if (section == 4 &&
             next['macControl']?['supported'] == true &&
             !remoteBusy) {
@@ -494,6 +506,7 @@ class _DeskState extends State<Desk> {
   void go(int index) {
     setState(() => section = index);
     if (index == 2) unawaited(loadItems());
+    if (index == 1) unawaited(loadInbox());
   }
 
   Widget button(
