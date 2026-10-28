@@ -63,9 +63,9 @@ class _MemoryFilesState extends State<MemoryFiles> {
       final next = await call();
       if (!mounted) return;
       setState(() {
+        message = next.remove('notice') as String? ?? done;
         data = next;
         editPath = editLine = null;
-        message = done;
       });
     } catch (e) {
       if (mounted) {
@@ -90,6 +90,7 @@ class _MemoryFilesState extends State<MemoryFiles> {
     () => widget.gateway.post('/api/memory', {
       'path': path,
       'content': text,
+      'expected': content(path),
       'summary': summary,
     }),
     done: 'Saved. Every session uses it from the next message.',

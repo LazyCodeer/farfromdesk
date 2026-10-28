@@ -11,6 +11,7 @@ type Task={id:string;original:string;normalized:string|null;source:string;destin
 export class MetaBrain {
   readonly memory:BrainMemory;
   readonly owner:OwnerMemory;
+  private refreshTurn=0;private watchTurn=0;
   constructor(private store:Store,readonly secret=new MetaSecret(),private model:Pick<MetaModel,'interpret'>=new MetaModel()) {
     store.db.exec(`CREATE TABLE IF NOT EXISTS brain_tasks(id TEXT PRIMARY KEY,original TEXT NOT NULL,normalized TEXT,source TEXT NOT NULL,destination TEXT,coordinator_id TEXT,state TEXT NOT NULL,permission TEXT NOT NULL,reason TEXT,verified_at INTEGER,created_at INTEGER NOT NULL);`);
     this.memory=new BrainMemory(store);
@@ -58,10 +59,12 @@ export class MetaBrain {
   }
   private async refreshEvidence(router:Router,items:ReturnType<BrainMemory['board']>) {
     if(!router.native.requestStatus)return;
-    const jobs=items.flatMap(i=>i.jobs).filter(j=>['submitted','dispatched','uncertain'].includes(String(j.status))).slice(0,3);
+    const fresh=(id:string)=>{try{return Date.now()-JSON.parse(this.store.get(`brain-native:${id}`)!).at<15000;}catch{return false;}};
+    const due=items.flatMap(i=>i.jobs).filter(j=>['submitted','dispatched','uncertain'].includes(String(j.status))&&!fresh(String(j.id)));
+    // Three at a time, taking turns, so a fourth active job is not starved by the first three.
+    const start=due.length?this.refreshTurn%due.length:0,jobs=[...due.slice(start),...due.slice(0,start)].slice(0,3);this.refreshTurn=start+jobs.length;
     await Promise.all(jobs.map(async j=>{
-      const id=String(j.id),cached=this.store.get(`brain-native:${id}`);
-      if(cached){try{if(Date.now()-JSON.parse(cached).at<15000)return;}catch{}}
+      const id=String(j.id);
       try {
         const observed=await router.native.requestStatus({id,binding_id:String(j.binding_id)});
         this.store.set(`brain-native:${id}`,JSON.stringify({at:Date.now(),status:observed?.status??'unknown',turnId:observed?.turnId}));
@@ -242,10 +245,13 @@ export class MetaBrain {
   tick(router:Router) {
     const policy=brainPolicy(this.store);if(router.stopped||!policy.enabled||!policy.allowStatus)return;
     this.memory.synchronize();
-    const watches=this.store.db.prepare("SELECT * FROM brain_watches WHERE state='waiting' ORDER BY created_at LIMIT 100").all();
+    // Filtered and retired before the limit, so rows that can never fire don't hold back current ones.
+    this.store.db.prepare("UPDATE brain_watches SET state='gone' WHERE state='waiting' AND (NOT EXISTS(SELECT 1 FROM items i WHERE i.id=item_id) OR NOT EXISTS(SELECT 1 FROM inbox j WHERE j.id=job_id))").run();
+    // 100 per tick, taking turns, so unfinished watches never hold back the ones after them.
+    const watches=this.store.db.prepare("SELECT * FROM brain_watches WHERE state='waiting' AND destination=? ORDER BY created_at,request_id LIMIT 100 OFFSET ?").all(this.store.destination(),this.watchTurn);
+    this.watchTurn=watches.length<100?0:this.watchTurn+watches.length;
     for(const w of watches){
-      if(w.destination!==this.store.destination())continue;
-      const item=this.memory.board(String(w.destination)).find(i=>i.id===w.item_id),job=this.store.job(String(w.job_id));if(!item||!job)continue;
+      const item=this.memory.item(Number(w.item_id),String(w.destination)),job=this.store.job(String(w.job_id));if(!item||!job)continue;
       const jobs=item.jobs.filter(j=>Number(j.created_at)>=job.created_at);
       const terminal=(j:typeof jobs[number])=>['completed','reviewed','auto_closed','replaced'].includes(String(j.status));
       const blocked=jobs.some(j=>j.outcome==='blocked'||['failed','uncertain'].includes(String(j.status)));
@@ -278,7 +284,8 @@ export class MetaBrain {
     const topicKey=`brain-topic:${this.store.destination()}`;
     try {
       const key=this.secret.read();if(!key)throw new Error('Meta API key is missing. Configure it in desktop Settings.');
-      const memoryTool=(i:Parameters<MemoryTool>[0])=>this.owner.command(i,`brain:${m.id}`,policy.learn);
+      // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
+      const memoryTool=(i:Parameters<MemoryTool>[0])=>this.owner.command(i,`brain:${m.id}`,policy.learn&&!router.stopped&&JSON.stringify(brainPolicy(this.store))===JSON.stringify(policy));
       decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch {

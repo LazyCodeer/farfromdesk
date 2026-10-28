@@ -11,12 +11,14 @@ export class BrainMemory {
     this.items=new Items(store);
     store.db.exec('CREATE TABLE IF NOT EXISTS brain_item_routes(item_id INTEGER NOT NULL,destination TEXT NOT NULL,PRIMARY KEY(item_id,destination));');
   }
-  board(destination=this.store.destination()) {
+  /** One item of this chat, found directly rather than through the 100-row board view. */
+  item(id:number,destination=this.store.destination()) {return this.board(destination,id)[0];}
+  board(destination=this.store.destination(),only?:number) {
     if(!destination)return [];
-    return (this.store.db.prepare(`SELECT DISTINCT i.* FROM items i WHERE
-      EXISTS(SELECT 1 FROM brain_item_routes r WHERE r.item_id=i.id AND r.destination=?) OR
-      EXISTS(SELECT 1 FROM item_requests r JOIN inbox j ON j.id=r.request_id WHERE r.item_id=i.id AND j.destination=?)
-      ORDER BY i.updated_at DESC,i.id DESC LIMIT 100`).all(destination,destination) as Item[]).map(item=>{
+    return (this.store.db.prepare(`SELECT DISTINCT i.* FROM items i WHERE (?1 IS NULL OR i.id=?1) AND (
+      EXISTS(SELECT 1 FROM brain_item_routes r WHERE r.item_id=i.id AND r.destination=?2) OR
+      EXISTS(SELECT 1 FROM item_requests r JOIN inbox j ON j.id=r.request_id WHERE r.item_id=i.id AND j.destination=?2))
+      ORDER BY i.updated_at DESC,i.id DESC LIMIT 100`).all(only??null,destination) as Item[]).map(item=>{
         let jobs=this.store.db.prepare('SELECT j.id,j.binding_id,j.status,j.outcome,j.first_reply_at,j.created_at,j.updated_at FROM inbox j JOIN item_requests r ON r.request_id=j.id WHERE r.item_id=? AND j.destination=? ORDER BY j.created_at DESC,j.rowid DESC').all(item.id,destination)
           // Status questions are about the work, not part of it, so their state never drives the item's.
           .filter(j=>!this.store.get(`brain-ask:${j.id}`));
@@ -52,7 +54,8 @@ export class BrainMemory {
         if(ids.length===1&&this.store.binding(ids[0]))this.items.setSession(item.id,ids[0],'Brain evidence');
       }
       const complete=item.jobs.every(j=>j.status==='completed'&&j.outcome==='done'&&this.store.db.prepare("SELECT 1 FROM reply_receipts WHERE request_id=? AND kind='final' AND origin='agent'").get(j.id));
-      if(complete&&item.status==='in progress'){
+      // A block the Brain set itself lifts on later evidence; one the owner set stays.
+      if(complete&&(item.status==='in progress'||item.status==='blocked'&&this.items.statusBy(item.id)==='Brain evidence')){
         this.items.setStatus(item.id,'done','Brain evidence');
         this.items.note(item.id,'All linked sessions reported completion with final replies. Owner verification is separate.','Brain evidence',`brain-complete:${item.id}:${latest.id}`);
       }else if(['in progress','not started'].includes(item.status)&&this.gone(latest)){

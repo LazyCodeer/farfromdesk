@@ -190,7 +190,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path.startsWith('/api/memory')&&req.method==='POST'){
         if(req.headers.origin)throw new Error('Use native desktop Settings.');
         const d=await body(req),m=router.brain.owner;
-        if(path==='/api/memory'){if(typeof d.path!=='string'||typeof d.content!=='string')throw new Error('Choose a memory file and its text.');m.write(d.path,d.content,'owner',typeof d.summary==='string'&&d.summary.trim()?d.summary:`You edited ${d.path}`);}
+        if(path==='/api/memory'){if(typeof d.path!=='string'||typeof d.content!=='string')throw new Error('Choose a memory file and its text.');
+          // The editor sends what it loaded: if the Brain or another window changed the file since, keep theirs and show the newest.
+          if(typeof d.expected==='string'&&(m.read(d.path)??'')!==d.expected){json(res,200,{...m.view(),notice:'This memory changed since you opened it, so nothing was saved. It now shows the newest version; make your change again.'});return;}
+          m.write(d.path,d.content,'owner',typeof d.summary==='string'&&d.summary.trim()?d.summary:`You edited ${d.path}`);}
         else if(path==='/api/memory/undo'){if(!Number.isInteger(d.id))throw new Error('Choose a change to undo.');m.undo(d.id);}
         else throw new Error('Unknown memory action.');
         json(res,200,m.view());return;
