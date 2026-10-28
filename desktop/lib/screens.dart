@@ -3127,6 +3127,31 @@ extension _BridgeScreens on _DeskState {
   }
 
   List<Widget> inboxNotices() => [
+    if (List<Map>.from(status['commandTurns'] ?? []).isNotEmpty)
+      panel(
+        'Recent commands',
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final turn in List<Map>.from(
+              status['commandTurns'] ?? [],
+            ).take(5))
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: Text(
+                  '${turn['label']} · ${turn['status'] == 'blocked' ? 'Failed' : 'Done'}',
+                ),
+                subtitle: Text(
+                  '${turn['summary']}',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: muted),
+                ),
+              ),
+          ],
+        ),
+      ),
     if (List<Map>.from(status['voiceRequests'] ?? []).any(
       (v) => ['failed', 'routing_blocked', 'interrupted'].contains(v['status']),
     ))

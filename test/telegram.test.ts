@@ -221,13 +221,13 @@ test('only authenticated unquoted top-level commands switch routes or open the v
   }finally{f.close();}
 });
 
-test('Claude aliases offer stable choices and never substitute paused or changed connections',async()=>{
+test('Claude targets offer stable choices and never substitute paused or changed connections',async()=>{
   const f=fixture();try{
     await f.pair();const a=f.store.register('claude-app','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
     const b=f.store.register('claude-cli','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;
     f.store.set('selected',JSON.stringify([a.id,b.id]));
     await f.tg.receive(f.message(90,'/claude'));assert.equal(f.store.jobs().length,0);
-    await f.tg.receive(f.message(91,'/claude 2'));await f.tg.receive(f.message(92,'Check this task'));
+    await f.tg.flush();await f.tg.receive(f.message(91,'/claude 2'));await f.tg.receive(f.message(92,'Check this task'));
     assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,b.id);
     assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.destination,telegramDestination(bot,owner));
     f.store.enable(b.id,false);await f.tg.receive(f.message(93,'Do not fall back'));assert.equal(f.store.job(telegramMessageId(bot,owner,93)),undefined);
@@ -368,5 +368,65 @@ test('expired, disconnected and foreign-bot pending links cannot be restored',as
    restarted.close();const record=JSON.parse(f.store.get('telegram-pairing')!);record.botId=other;f.store.set('telegram-pairing',JSON.stringify(record));
    const third=restarted.view().pairingUrl;await restarted.resume();assert.notEqual(restarted.view().pairingUrl,third);
   }finally{restarted.close();}
+ }finally{f.close();}
+});
+
+
+test('Claude target list sends buttons for seven sessions and quoted 4 selects the frozen connection',async()=>{
+ const f=fixture();try{
+  await f.pair();const targets=Array.from({length:7},(_,i)=>f.store.register('claude-'+i,'claude',`22222222-2222-4222-8222-${String(i+1).padStart(12,'0')}`,f.root,'channel').binding);
+  f.store.set('selected',JSON.stringify(targets.map(b=>b.id)));
+  await f.tg.receive(f.message(900,'/claude'));await f.tg.flush();await f.tg.flush();
+  const sends=f.calls.filter(c=>c.method==='sendMessage'&&c.body.reply_markup?.inline_keyboard);
+  assert.deepEqual(sends.map(c=>c.body.reply_markup.inline_keyboard.length),[6,1]);
+  const rows=f.store.db.prepare("SELECT b.* FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id ORDER BY b.created_at,b.rowid").all() as any[];
+  const messageId=Number(rows[0].wa_id.split(':').at(-1));
+  await f.tg.receive(f.message(901,'4',owner,{reply_to_message:{message_id:messageId,from:{id:bot}}}));
+  assert.equal(JSON.parse(f.store.get(`owner-target:${telegramDestination(bot,owner)}`)!).id,targets[3].id);assert.equal(f.store.jobs().length,0);
+  await f.tg.receive(f.message(902,'Check progress'));assert.equal(f.store.job(telegramMessageId(bot,owner,902))?.binding_id,targets[3].id);
+  const callback=sends[1].body.reply_markup.inline_keyboard[0][0].callback_data;
+  await f.tg.receive({callback_query:{id:'old-other-page',from:{id:owner},message:{message_id:Number(rows[1].wa_id.split(':').at(-1)),chat:{id:owner,type:'private'},from:{id:bot}},data:callback}});
+  assert.equal(JSON.parse(f.store.get(`owner-target:${telegramDestination(bot,owner)}`)!).id,targets[3].id);
+ }finally{f.close();}
+});
+
+test('target buttons, plain numbers and exact names share a single claim and reject stale identities',async()=>{
+ const f=fixture();try{
+  await f.pair();const a=f.store.register('claude-one','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
+  const b=f.store.register('claude-two','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;f.store.set('selected',JSON.stringify([a.id,b.id]));
+  const dest=telegramDestination(bot,owner);let id=1000;
+  const offer=async()=>{await f.tg.receive(f.message(id++,'/claude'));for(let i=0;i<5;i++)await f.tg.flush();const row=f.store.db.prepare('SELECT b.*,o.id AS option_id FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id ORDER BY b.rowid DESC LIMIT 1').get() as any;return row;};
+  const row=await offer();const cb=(uid:number,data=`opt:${row.option_id}:2`)=>({callback_query:{id:'target-tap-'+id++,from:{id:uid},message:{message_id:Number(row.wa_id.split(':').at(-1)),chat:{id:owner,type:'private'},from:{id:bot}},data}});
+  await f.tg.receive(cb(other));assert.equal(f.store.get(`owner-target:${dest}`),undefined);
+  await f.tg.receive(cb(owner));assert.equal(JSON.parse(f.store.get(`owner-target:${dest}`)!).id,b.id);assert.equal(f.store.jobs().length,0);
+  await f.tg.receive(f.message(id++,'/back'));await f.tg.receive(cb(owner));assert.equal(f.store.get(`owner-target:${dest}`),'null');
+  await offer();await f.tg.receive(f.message(id++,'1'));assert.equal(JSON.parse(f.store.get(`owner-target:${dest}`)!).id,a.id);
+  await offer();await f.tg.receive(f.message(id++,'claude-two'));assert.equal(JSON.parse(f.store.get(`owner-target:${dest}`)!).id,b.id);
+  await offer();f.store.enable(a.id,false);await f.tg.receive(f.message(id++,'1'));assert.equal(JSON.parse(f.store.get(`owner-target:${dest}`)!).id,b.id);
+  assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});
+
+
+test('target choices reject forwarded replies, expired lists and lists replaced by a newer command',async()=>{
+ const f=fixture();try{
+  await f.pair();const a=f.store.register('claude-a','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding,b=f.store.register('claude-b','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;
+  f.store.set('selected',JSON.stringify([a.id,b.id]));const dest=telegramDestination(bot,owner);let id=1100;
+  const offer=async()=>{await f.tg.receive(f.message(id++,'/claude'));for(let i=0;i<5;i++)await f.tg.flush();return f.store.db.prepare('SELECT b.wa_id,o.id FROM message_options o JOIN owner_target_options t ON t.option_id=o.id JOIN outbox b ON b.id=o.outbox_id ORDER BY b.rowid DESC LIMIT 1').get() as any;};
+  const first=await offer();
+  await f.tg.receive(f.message(id++,'1',owner,{reply_to_message:{message_id:Number(first.wa_id.split(':').at(-1)),from:{id:bot}},forward_origin:{type:'user'}}));
+  assert.equal(f.store.get(`owner-target:${dest}`),undefined);
+  await offer();await f.tg.receive(f.message(id++,'1',owner,{reply_to_message:{message_id:Number(first.wa_id.split(':').at(-1)),from:{id:bot}}}));assert.equal(f.store.get(`owner-target:${dest}`),undefined);
+  f.store.db.prepare('UPDATE message_options SET expires_at=0').run();await f.tg.receive(f.message(id++,'2'));assert.equal(f.store.get(`owner-target:${dest}`),undefined);
+  f.store.set(`owner-target-choice:${dest}`,JSON.stringify({provider:'claude',targets:[],expires:Date.now()+600000}));await f.tg.receive(f.message(id++,'1'));
+  assert.equal(f.store.jobs().length,0);assert.ok(f.store.commandTurns().some((t:any)=>t.status==='blocked'&&t.label==='Session selection'));
+ }finally{f.close();}
+});
+
+test('owner commands and failures appear in history without creating native jobs',async()=>{
+ const f=fixture();try{
+  await f.pair();await f.tg.receive(f.message(1200,'/claude'));await f.tg.receive(f.message(1200,'/claude'));await f.tg.receive(f.message(1201,'/help'));
+  const turns=f.store.commandTurns();assert.equal(turns.length,2);assert.equal(turns.find((t:any)=>t.label==='/claude')?.status,'blocked');assert.equal(turns.find((t:any)=>t.label==='/help')?.status,'handled');assert.equal(f.store.jobs().length,0);
+  f.store.set('telegram-owner',telegramDestination(bot,other));assert.equal(f.store.commandTurns().length,0);
  }finally{f.close();}
 });

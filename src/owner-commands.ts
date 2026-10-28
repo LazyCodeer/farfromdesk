@@ -1,3 +1,4 @@
+import { createOptions, selectOption } from './message-options.js';
 import { hash, type Binding } from './store.js';
 import type { Router, Incoming } from './router.js';
 import { brainPolicy } from './meta-brain-config.js';
@@ -20,7 +21,7 @@ export function telegramCommand(text:string,username:string):string|null {
   return `/${m[1].toLowerCase()}${text.slice(m[0].length)}`;
 }
 type Target={kind:'session';id:string;identity:string}|{kind:'brain'};
-type Choice={provider:string;targets:Extract<Target,{kind:'session'}>[];expires:number};
+type Choice={provider:string;targets:Extract<Target,{kind:'session'}>[];expires:number;requestId:string;names:string[]};
 const routeKey=(r:Router)=>`owner-target:${r.store.destination()}`;
 const choiceKey=(r:Router)=>`owner-target-choice:${r.store.destination()}`;
 export function authenticatedOwner(r:Router,m:Incoming) {
@@ -67,29 +68,79 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   const match=/^\/(claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
-  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nOnly commands you type as a new message change routing. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
+  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nUse typed slash commands or the session buttons to choose a target. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Remote Desktop settings in FarFromDesk.':'Screen viewing is unavailable in this build. Open Remote Desktop settings in FarFromDesk on your Mac.';
   const provider=cmd==='codex'?'codex':'claude';if(!enabled(r,provider))throw Error(`${provider==='claude'?'Claude':'Codex'} is disabled. Enable it in Coding platforms first.`);
-  let target:Extract<Target,{kind:'session'}>;
-  if(arg){
-    const choice=JSON.parse(r.store.get(choiceKey(r))??'null') as Choice|null;
-    if(!/^\d+$/.test(arg)||!choice||choice.provider!==provider||choice.expires<Date.now()||!choice.targets[Number(arg)-1])throw Error(`Send /${cmd} for a fresh list, then /${cmd} NUMBER to choose.`);
-    target=choice.targets[Number(arg)-1];
-  }else{
-    const available=candidates(r,provider);
-    if(!available.length)throw Error(`No enabled connected ${provider==='claude'?'Claude':'Codex'} session is available. Connect or resume one in Coding platforms; no session was created.`);
-    const targets=available.map(b=>({kind:'session' as const,id:b.id,identity:identity(r,b)}));
-    if(targets.length>1){
-      r.store.set(choiceKey(r),JSON.stringify({provider,targets,expires:Date.now()+10*60_000}));
-      return `Choose a connected ${provider==='claude'?'Claude':'Codex'} target:\n${available.map((b,i)=>`${i+1}. ${name(r,b)} · ${r.store.get(`execution-mode:${b.id}`)??'cli'}${r.coordinator?.isCoordinator(b.id)?' · proxy':''}`).join('\n')}\nReply /${cmd} NUMBER. Current target: ${currentTarget(r)}.`;
+  if(arg)return pickOwnerTarget(r,m,provider)??`Send /${cmd} for a fresh list, then choose a session.`;
+  const available=candidates(r,provider);
+  if(!available.length)throw Error(`No enabled connected ${provider==='claude'?'Claude':'Codex'} session is available. Connect or resume one in Coding platforms; no session was created.`);
+  const targets=available.map(b=>({kind:'session' as const,id:b.id,identity:identity(r,b)}));
+  if(targets.length===1)return activateTarget(r,targets[0]);
+  r.store.db.exec('SAVEPOINT owner_target_list');
+  try {
+    r.store.set(choiceKey(r),JSON.stringify({provider,targets,expires:Date.now()+10*60_000,requestId:m.id,names:available.map(b=>name(r,b))}));
+    for(let offset=0;offset<available.length;offset+=6){
+      const page=available.slice(offset,offset+6);
+      const choices=page.map((b,i)=>({id:`target${offset+i+1}`,label:`${offset+i+1}. ${name(r,b)}${r.coordinator?.isCoordinator(b.id)?' · coordinator':''}`.slice(0,80)}));
+      const source=`owner-choice:${m.id}:${offset}`;
+      r.store.output(undefined,`Choose a connected ${provider==='claude'?'Claude':'Codex'} session:
+${choices.map(c=>c.label).join('\n')}
+Tap a button, reply with its number, or send /${cmd} NUMBER. This list expires in 10 minutes.`,source);
+      const row=r.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(source+':0') as {id:string};
+      const optionId=createOptions(r.store,row.id,m.id,'',r.store.destination()!,{choices,expiresInSeconds:600});
+      r.store.db.prepare('INSERT INTO owner_target_options(option_id) VALUES(?)').run(optionId);
     }
-    target=targets[0];
-  }
-  const b=session(r,target);clear(r);r.store.set(routeKey(r),JSON.stringify(target));
-  return `Now talking to ${name(r,b)} (${provider}). Your next messages go to this exact session. Permissions, account and runtime are unchanged. Use /back to leave.`;
+    r.store.db.exec('RELEASE owner_target_list');
+  }catch(e){r.store.db.exec('ROLLBACK TO owner_target_list; RELEASE owner_target_list');throw e;}
+  return ''; // The paged messages above already carry their buttons and number fallback.
 }
+function activateTarget(r:Router,target:Extract<Target,{kind:'session'}>) {
+  const b=session(r,target);clear(r);r.store.set(routeKey(r),JSON.stringify(target));
+  return `Now talking to ${name(r,b)} (${b.provider}). Your next messages go to this exact session. Permissions, account and runtime are unchanged. Use /back to leave.`;
+}
+/** Target lists share the atomic option claim, but never enqueue an agent task. */
+export function ownerTurnLabel(r:Router,m:Incoming):string|undefined {
+  if(authenticatedOwner(r,m)&&isOwnerCommand(m.text))return m.text.trim().split(/\s+/)[0].toLowerCase();
+  if(m.quotedId&&r.store.db.prepare('SELECT 1 FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,r.store.destination()))return 'Session selection';
+  if(authenticatedOwner(r,m)&&m.ownerCommand&&/^\d+$/.test(m.text.trim())&&r.store.get(choiceKey(r))&&r.store.get(choiceKey(r))!=='null')return 'Session selection';
+}
+export function pickOwnerTarget(r:Router,m:Incoming,provider?:string):string|undefined {
+  const destination=r.store.destination();if(!destination)return;
+  const pending=JSON.parse(r.store.get(choiceKey(r))??'null') as Choice|null;
+  let row:any;
+  if(m.quotedId){
+    row=r.store.db.prepare('SELECT o.*,b.wa_id FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,destination);
+    if(!row)return;
+    if(!m.optionToken&&(!authenticatedOwner(r,m)||!m.ownerChoice||m.source==='voice'))throw Error('Choose a session with a button or a typed reply to its list.');
+  }else if(!authenticatedOwner(r,m)||!m.ownerCommand||m.source==='voice')return;
+  const value=(provider?m.text.trim().replace(/^\/\S+\s*/, ''):m.text.trim());
+  let number=/^\d+$/.test(value)?Number(value):undefined;
+  if(number===undefined&&!m.optionToken&&pending){
+    const matches=pending.names?.map((n,i)=>({n,i})).filter(x=>x.n.toLowerCase()===value.toLowerCase())??[];
+    if(matches.length>1)throw Error('Several sessions have that name. Choose its number or button.');
+    if(matches.length===1)number=matches[0].i+1;
+  }
+  if(number===undefined&&!m.optionToken){if(row||provider)throw Error('Choose a number or button from the session list.');return;}
+  if(!row){
+    if(!pending){if(provider)throw Error(`Send /${provider} for a fresh session list.`);return;}
+    if(typeof pending.requestId!=='string')throw Error(`This session list is from an older build. Send /${pending.provider} again for buttons.`);
+    if(provider&&pending.provider!==provider)throw Error(`Send /${provider} for a fresh session list.`);
+    if(pending.expires<=Date.now())throw Error(`This session list expired. Send /${pending.provider} again.`);
+    row=r.store.db.prepare('SELECT o.*,b.wa_id FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE o.request_id=? AND o.destination=?').all(pending.requestId,destination).find((o:any)=>JSON.parse(o.choices).some((c:any)=>c.id===`target${number}`));
+    if(!row)throw Error('Choose one of the offered session numbers.');
+  }
+  let reply='This session choice was already recorded.';
+  selectOption(r.store,{responseId:m.id,destination,messageId:row.wa_id,token:m.optionToken,number},()=>{throw Error('A session choice cannot create an agent task.');},(requestId,choiceId)=>{
+    if(!pending||pending.requestId!==requestId||pending.expires<=Date.now())throw Error(`This session list expired or was replaced. Send /claude or /codex again.`);
+    const index=Number(choiceId.replace(/^target/,''))-1;
+    if(!pending.targets[index])throw Error('Choose one of the offered sessions.');
+    reply=activateTarget(r,pending.targets[index]);
+  });
+  return reply;
+}
+
 /** An explicit mode takes precedence over model guesses; stale targets fail closed. */
 export async function routeOwnerTarget(r:Router,m:Incoming):Promise<boolean> {
   if(!authenticatedOwner(r,m)||m.quotedId)return false;

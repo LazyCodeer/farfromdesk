@@ -278,7 +278,7 @@ export class WhatsApp {
         if(self&&ownerCommand&&text!.trim()==='/self') {
           await this.selectDestination();this.store.output(undefined,'Switched to Message yourself. You can continue here.',`self-switch:${m.key.id}`,origin);this.store.remember(id);return;
         }
-        await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand});
+        await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand,ownerChoice:!context?.isForwarded&&!context?.forwardingScore});
       });
     }finally{this.receiving.delete(id);}
   }

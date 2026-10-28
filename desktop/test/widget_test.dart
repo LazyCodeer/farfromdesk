@@ -34,6 +34,18 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
+  testWidgets('Inbox shows command failures even without native jobs', (
+    tester,
+  ) async {
+    size(tester);
+    await tester.pumpWidget(FarFromDeskApp(gateway: CommandHistoryGateway()));
+    await tester.pumpAndSettle();
+    expect(find.text('Recent commands'), findsOneWidget);
+    expect(find.text('/claude · Failed'), findsOneWidget);
+    expect(find.text('No connected Claude session.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'Mac control requires opt-in, separates permission setup and can stop immediately',
     (tester) async {
@@ -1659,5 +1671,26 @@ class MacControlGateway extends PreviewGateway {
       return view;
     }
     return super.post(path, data);
+  }
+}
+
+class CommandHistoryGateway extends PreviewGateway {
+  CommandHistoryGateway() : super(fixture: 'connected', screen: 'activity');
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    final data = await super.get(path);
+    if (path == '/api/status') {
+      data['jobs'] = [];
+      data['pendingJobs'] = [];
+      data['commandTurns'] = [
+        {
+          'id': 'tg:1:2:3',
+          'label': '/claude',
+          'status': 'blocked',
+          'summary': 'No connected Claude session.',
+        },
+      ];
+    }
+    return data;
   }
 }

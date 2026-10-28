@@ -119,3 +119,14 @@ test('WhatsApp forwarded or quoted voice cannot open screen control and spoken s
   text='/screen';await voice();assert.equal(screens,0);
  }finally{f.close();}
 });
+
+
+test('WhatsApp target list accepts a quoted number without running an agent task',async()=>{
+ const f=fixture();try{
+  const a=f.store.register('claude-a','claude','22222222-2222-4222-8222-222222222222','/synthetic','channel').binding,b=f.store.register('claude-b','claude','33333333-3333-4333-8333-333333333333','/synthetic','channel').binding;
+  f.store.set('selected',JSON.stringify([a.id,b.id]));await f.wa.receiveMessage(f.msg('TARGETS','/claude'));await f.wa.flush();
+  const row=f.store.db.prepare('SELECT b.wa_id FROM outbox b JOIN message_options o ON o.outbox_id=b.id JOIN owner_target_options t ON t.option_id=o.id').get() as any;
+  await f.wa.receiveMessage(f.msg('PICK','',{message:{extendedTextMessage:{text:'2',contextInfo:{stanzaId:row.wa_id}}}}));
+  assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,b.id);assert.equal(f.store.jobs().length,0);
+ }finally{f.close();}
+});

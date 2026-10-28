@@ -1,4 +1,4 @@
-import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand } from './owner-commands.js';
+import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel } from './owner-commands.js';
 import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
@@ -13,7 +13,7 @@ import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
-export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean};
+export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean};
 export const help = `Just tell me what you need.
 
 • Show my recent sessions.
@@ -69,7 +69,7 @@ export class Router {
   async receive(m:Incoming):Promise<RouteResult> {
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
-    try{return await this.receiveOnce(m);}finally{this.receiving.delete(m.id);}
+    try{const label=ownerTurnLabel(this,m),result=await this.receiveOnce(m);if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);return result;}finally{this.receiving.delete(m.id);}
   }
   private async receiveOnce(m:Incoming):Promise<RouteResult> {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
@@ -82,6 +82,8 @@ export class Router {
     if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     try {
+      const targetReply=pickOwnerTarget(this,m);
+      if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
         const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>this.queue(m.id,this.need(bindingId),body));
         if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}

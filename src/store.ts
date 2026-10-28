@@ -24,6 +24,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS inbox(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL REFERENCES bindings(id),body TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,error TEXT);
       CREATE TABLE IF NOT EXISTS seen(id TEXT PRIMARY KEY,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS owner_command_turns(id TEXT PRIMARY KEY,destination TEXT NOT NULL,owner TEXT NOT NULL,label TEXT NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,binding_id TEXT REFERENCES bindings(id),body TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',source TEXT UNIQUE NOT NULL,wa_id TEXT UNIQUE NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,error TEXT);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,event TEXT NOT NULL,binding_id TEXT,detail TEXT);
       CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL REFERENCES bindings(id),request_id TEXT NOT NULL REFERENCES inbox(id),filename TEXT NOT NULL,mime TEXT NOT NULL,sha256 TEXT NOT NULL,data BLOB NOT NULL,created_at INTEGER NOT NULL);
@@ -113,6 +114,13 @@ export class Store {
   }
   events(requestId:string) {return this.db.prepare('SELECT event,at,attempt_id,turn_id,source_commit,details FROM request_events WHERE request_id=? ORDER BY id LIMIT 1000').all(requestId);}
   deliveries(requestId:string){return this.db.prepare('SELECT status,reply_kind,turn_id,attempts,created_at,sent_at,delivered_at,read_at FROM outbox WHERE request_id=? ORDER BY created_at LIMIT 100').all(requestId);}
+  recordOwnerCommand(id:string,label:string,status:string) {
+    const destination=this.destination(),owner=this.ownerFor(destination);if(!destination||!owner)return;
+    const output=this.db.prepare('SELECT body FROM outbox WHERE source IN (?,?) ORDER BY created_at DESC LIMIT 1').get(`command-error:${id}:0`,`command:${id}:0`) as {body:string}|undefined;
+    const summary=output?.body??(status==='blocked'?'Command could not finish. Check the reply in your chat.':'Handled in your chat.');
+    this.db.prepare('INSERT OR IGNORE INTO owner_command_turns VALUES(?,?,?,?,?,?,?)').run(id,destination,owner,label.slice(0,100),status,summary.slice(0,1000),Date.now());
+  }
+  commandTurns(){return this.db.prepare('SELECT * FROM owner_command_turns ORDER BY created_at DESC,rowid DESC LIMIT 100').all().filter((r:any)=>r.owner===this.ownerFor(r.destination)).slice(0,20).map(({owner,...r}:any)=>r);}
   voiceRequests(){return this.db.prepare('SELECT id,status,created_at FROM audio_inbox ORDER BY created_at DESC LIMIT 50').all();}
   voiceEvent(requestId:string,event:VoiceStageEvent) {this.event(requestId,`voice_${event.stage}_${event.state}`,event);}
   hookRequest(bindingId:string,turnId:string) {
