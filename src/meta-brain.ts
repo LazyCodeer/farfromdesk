@@ -361,8 +361,10 @@ export class MetaBrain {
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
       // A session the owner named in their own words routes there; the model never picks it alone.
-      const lower=m.text.toLowerCase(),sessions=this.memory.candidates(router).filter(b=>{const n=(this.store.get(`name:${b.id}`)??b.alias).trim().toLowerCase();return n.length>=3&&new RegExp(`(?:^|\\W)${n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\W|$)`).test(lower);});
+      const lower=m.text.toLowerCase(),sessions=this.memory.candidates(router).filter(b=>{const n=(this.store.get(`name:${b.id}`)??b.alias).trim().toLowerCase();return n.length>=3&&n!=='codex'&&n!=='claude'&&new RegExp(`(?:^|\\W)${n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\W|$)`).test(lower);});
       if(sessions.length>1)throw new Error('Your message names more than one session. Please choose one.');
+      // A literal mention routes only when the interpretation agrees it addresses that session; an exclusion or passing mention asks first.
+      if(sessions.length&&decision.sessionId!==sessions[0].id)throw new Error(`Your message mentions ${this.store.get(`name:${sessions[0].id}`)??sessions[0].alias}. Should this go to that session? Please say so directly, or name the session you want.`);
       const provider=named[0]??sessions[0]?.provider??(decision.provider==='unspecified'?undefined:decision.provider);
       if(sessions.length&&named.length&&sessions[0].provider!==named[0])throw new Error('That session is on another platform. Please clarify.');
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.

@@ -420,13 +420,27 @@ test('an unassigned item goes to the session the owner names, and a named platfo
     const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
     f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
     new BrainMemory(f.store).add('wa:todo','add retry to the webhook');
-    f.respond(async()=>({...decision(),taskIds:['item:1']}));
+    f.respond(async()=>({...decision(),taskIds:['item:1'],sessionId:worker.id}));
     await f.router.receive({id:'wa:own',text:'payments api should do the webhook retry'});
     assert.equal(f.store.job('wa:own')?.binding_id,worker.id);
     assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,worker.id);
-    f.respond(async()=>({...decision('codex'),taskIds:[]}));
+    f.respond(async()=>({...decision('codex'),taskIds:[],sessionId:worker.id}));
     await f.router.receive({id:'wa:plat',text:'codex, payments api needs a new endpoint'});
     assert.equal(f.store.job('wa:plat'),undefined);assert.match(String((f.out().at(-1) as any).body),/another platform/);
+  }finally{f.close();}
+});
+test('a session mentioned only to exclude it gets nothing, and casing or quotes still route a real request',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    await f.router.receive({id:'wa:not',text:'Do not send this to Payments API. Ask the coordinator to inspect the webhook.'});
+    assert.equal(f.store.job('wa:not'),undefined);assert.match(String((f.out().at(-1) as any).body),/mentions Payments API/);
+    f.respond(async()=>({...decision(),sessionId:randomUUID()}));
+    await f.router.receive({id:'wa:other',text:'payments api, check the logs'});
+    assert.equal(f.store.job('wa:other'),undefined);
+    f.respond(async()=>({...decision(),sessionId:worker.id}));
+    await f.router.receive({id:'wa:caps',text:'"PAYMENTS API": add logging to the webhook'});
+    assert.equal(f.store.job('wa:caps')?.binding_id,worker.id);
   }finally{f.close();}
 });
 test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
@@ -457,11 +471,12 @@ test('a session named in the owner\'s words gets the task, and two names ask fir
     const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
     const other=f.store.register('billing-ui','claude',randomUUID(),'/tmp').binding;
     f.store.set(`name:${worker.id}`,'Payments API');f.store.set(`name:${other.id}`,'Billing UI');f.store.set('selected',JSON.stringify([worker.id,other.id]));
+    f.respond(async()=>({...decision(),sessionId:worker.id}));
     await f.router.receive({id:'wa:named',text:'send the payments api session: add retry to the webhook'});
     assert.equal(f.store.job('wa:named')?.binding_id,worker.id);
     await f.router.receive({id:'wa:two',text:'payments api and billing ui both need this'});
     assert.equal(f.store.job('wa:two'),undefined);assert.match(String((f.out().at(-1) as any).body),/more than one session/);
-    f.respond(async()=>({...decision(),taskIds:['item:1']}));
+    f.respond(async()=>({...decision(),taskIds:['item:1'],sessionId:other.id}));
     await f.router.receive({id:'wa:moved',text:'billing ui should take the webhook retry'});
     assert.equal(f.store.job('wa:moved'),undefined);assert.match(String((f.out().at(-1) as any).body),/belongs to another session/);
   }finally{f.close();}
