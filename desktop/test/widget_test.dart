@@ -54,6 +54,29 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Old item errors do not show setup while reconnecting', (
+    tester,
+  ) async {
+    size(tester);
+    final api = ReconnectingItemsGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Could not load items.'), findsWidgets);
+    for (final state in ['connecting', 'reconnecting']) {
+      api.whatsappState = state;
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const Key('startup-loader')), findsOneWidget);
+      expect(find.byKey(const Key('onboarding-error')), findsNothing);
+    }
+    api.whatsappState = 'connected';
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('startup-loader')), findsNothing);
+    expect(find.textContaining('Could not load items.'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Phone stop interrupts pending work for both connection types', (
     tester,
   ) async {
@@ -1934,5 +1957,16 @@ class RefreshingRemoteGateway extends MacControlGateway {
       };
     }
     return super.post(path, data);
+  }
+}
+
+class ReconnectingItemsGateway extends PreviewGateway {
+  ReconnectingItemsGateway() : super(fixture: 'connected');
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    if (path == '/api/meta-brain/tasks') {
+      throw StateError('Items temporarily unavailable.');
+    }
+    return super.get(path);
   }
 }

@@ -47,7 +47,6 @@ extension _BridgeScreens on _DeskState {
     // Startup and reconnects pass through 'connecting'; show that instead of
     // flashing the not-connected setup screen.
     if (error == null &&
-        actionError == null &&
         (!ready ||
             !connected &&
                 !onboardingSkipped &&
