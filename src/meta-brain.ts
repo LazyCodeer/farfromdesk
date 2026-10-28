@@ -369,7 +369,8 @@ export class MetaBrain {
       if(!named.length&&!sessions.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
-      target=topic?this.memory.owner(topic,router):sessions[0];
+      // An item nobody owns yet goes to the session the owner named, never the default coordinator.
+      target=(topic?this.memory.owner(topic,router):undefined)??sessions[0];
       if(topic&&sessions.length&&target&&target.id!==sessions[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);

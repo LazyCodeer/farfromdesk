@@ -415,6 +415,20 @@ test('status quotes what a blocked session asked, and the owner answer moves it 
     assert.equal((f.store.db.prepare('SELECT status FROM items WHERE id=1').get() as any).status,'in progress');
   }finally{f.close();}
 });
+test('an unassigned item goes to the session the owner names, and a named platform must match it',async()=>{
+  const f=fixture();try{
+    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
+    f.store.set(`name:${worker.id}`,'Payments API');f.store.set('selected',JSON.stringify([worker.id]));
+    new BrainMemory(f.store).add('wa:todo','add retry to the webhook');
+    f.respond(async()=>({...decision(),taskIds:['item:1']}));
+    await f.router.receive({id:'wa:own',text:'payments api should do the webhook retry'});
+    assert.equal(f.store.job('wa:own')?.binding_id,worker.id);
+    assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,worker.id);
+    f.respond(async()=>({...decision('codex'),taskIds:[]}));
+    await f.router.receive({id:'wa:plat',text:'codex, payments api needs a new endpoint'});
+    assert.equal(f.store.job('wa:plat'),undefined);assert.match(String((f.out().at(-1) as any).body),/another platform/);
+  }finally{f.close();}
+});
 test('a connected worker session is visible to the brain before its first task',async()=>{
   const f=fixture();try{
     const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
