@@ -360,26 +360,27 @@ export class MetaBrain {
       const named=[...new Set((m.text.match(/\b(?:codex|claude)\b/gi)??[]).map(v=>v.toLowerCase()))];
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
-      // A session routes only when the message opens by addressing it ("Payments API: …", "send the payments api session: …") and the interpretation agrees.
-      // Any other mention, such as an exclusion, asks first. This is an allowlist, so a phrasing nobody listed fails closed instead of reaching that session.
-      const norm=(t:string)=>t.normalize('NFKC').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"').replace(/\s+/g,' ').trim().toLowerCase();
+      // Display names and aliases of any length name a session: "UX", "开发", "claude-proxy" as surely as "Payments API".
+      const norm=(t:string)=>t.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
       const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
-      const label=(b:Binding)=>this.store.get(`name:${b.id}`)??b.alias;
-      let mentioned=this.memory.candidates(router).filter(b=>{const n=norm(label(b));return n.length>=3&&n!=='codex'&&n!=='claude'&&new RegExp(`(?:^|\\W)${esc(n)}(?:\\W|$)`).test(said);});
-      // "Payments API" inside a mentioned "Payments API. Inc" is the longer name, not a second session.
-      for(const b of [...mentioned])if(mentioned.some(o=>o!==b&&norm(label(o)).includes(norm(label(b)))))mentioned.splice(mentioned.indexOf(b),1);
-      if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one.');
-      const sessions=mentioned.filter(b=>new RegExp(`^(?:please )?(?:(?:send|tell|ask|give|forward)(?: this| it)?(?: to)? )?(?:the )?["']?${esc(norm(label(b)))}["']?(?: session)? ?[:,]`).test(said));
-      if(mentioned.length&&(!sessions.length||decision.sessionId!==sessions[0].id))throw new Error(`Your message mentions ${label(mentioned[0])}. To send it there, start with "${label(mentioned[0])}:". Otherwise say which session should do this.`);
-      const provider=named[0]??sessions[0]?.provider??(decision.provider==='unspecified'?undefined:decision.provider);
-      if(sessions.length&&named.length&&sessions[0].provider!==named[0])throw new Error('That session is on another platform. Please clarify.');
+      const hit=(n:string)=>/[^\x00-\x7f]/.test(n)?said.includes(n):new RegExp(`(?:^|[^a-z0-9])${esc(n)}(?:[^a-z0-9]|$)`).test(said);
+      const mentioned=this.memory.candidates(router).filter(b=>[this.label(b),b.alias].map(norm).some(n=>n&&n!=='codex'&&n!=='claude'&&hit(n)));
+      if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
+      // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
+      // next to destination words, is ambiguous: the owner is asked and nothing is sent.
+      // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
+      const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
+      const destinationWord=/\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|codex|claude|anywhere|anyone|someone|elsewhere)\b|[发给派]/;
+      const ambiguous=mentioned.length>0||said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
+      const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
-      if(!named.length&&!sessions.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
+      if(!named.length&&!mentioned.length&&decision.provider!=='unspecified'&&!this.owner.collaborates())throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
+      target=topic?this.memory.owner(topic,router):undefined;
+      if(mentioned.length&&target&&target.id!==mentioned[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
       // An item nobody owns yet goes to the session the owner named, never the default coordinator.
-      target=(topic?this.memory.owner(topic,router):undefined)??sessions[0];
-      if(topic&&sessions.length&&target&&target.id!==sessions[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
+      target??=mentioned[0];
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
       if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
@@ -389,21 +390,27 @@ export class MetaBrain {
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
       if(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id))throw new Error('The owning session is not connected. Connect that exact session first.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
+      // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
+      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);
     }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
+    this.send(router,m.id,m.text,target,coordinator,topic);
+    return true;
+  }
+  private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}
+  private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>) {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
       // Queue original verbatim. Normalized wording is advisory ledger data, never an authorization source.
-      router.queue(m.id,target,m.text);
-      const item=topic??this.memory.add(m.id,m.text);
-      this.memory.link(m.id,item.id);
+      router.queue(id,target,text);
+      const item=topic??this.memory.add(id,text);
+      this.memory.link(id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
       // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.
       if(['not started','done','waiting on owner'].includes(item.status)||item.status==='blocked'&&this.memory.items.statusBy(item.id)==='Brain evidence')this.memory.items.setStatus(item.id,'in progress','Brain');
-      this.store.set(topicKey,`item:${item.id}`);
-      this.store.db.prepare("UPDATE brain_tasks SET coordinator_id=?,target_session_id=?,state='queued',permission='allowed' WHERE id=?").run(coordinator!.id,target.id,m.id);
-      this.store.remember(m.id);
-      this.store.db.exec('RELEASE brain_dispatch');
-    }catch{this.store.db.exec('ROLLBACK TO brain_dispatch; RELEASE brain_dispatch');this.stop(m.id,'Dispatch could not be queued. Check the saved request before sending a new message.');}
-    return true;
+      this.store.set(`brain-topic:${this.store.destination()}`,`item:${item.id}`);
+      this.store.db.prepare("UPDATE brain_tasks SET coordinator_id=?,target_session_id=?,state='queued',permission='allowed' WHERE id=?").run(coordinator.id,target.id,id);
+      this.store.remember(id);
+      this.store.db.exec('RELEASE brain_dispatch');return true;
+    }catch{this.store.db.exec('ROLLBACK TO brain_dispatch; RELEASE brain_dispatch');this.stop(id,'Dispatch could not be queued. Check the saved request before sending a new message.');return false;}
   }
 }
