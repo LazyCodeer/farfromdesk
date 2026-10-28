@@ -5,6 +5,7 @@ import { brainPolicy, brainView, MetaSecret } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
 import { mentionedItems } from './owner-routing.js';
 import { OwnerMemory } from './owner-memory.js';
+import { errorCode } from './request-events.js';
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
@@ -285,13 +286,14 @@ export class MetaBrain {
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
     try {
-      const key=this.secret.read();if(!key)throw new Error('Meta API key is missing. Configure it in desktop Settings.');
+      const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const memoryTool=(i:Parameters<MemoryTool>[0])=>this.owner.command(i,`brain:${m.id}`,policy.learn&&!router.stopped&&JSON.stringify(brainPolicy(this.store))===JSON.stringify(policy));
       decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
-    }catch {
-      this.store.event(m.id,'brain_interpretation_failed',{code:'unavailable',durationMs:Date.now()-interpretationStarted});
+    }catch(e) {
+      const code=(e as {code?:unknown})?.code;
+      this.store.event(m.id,'brain_interpretation_failed',{code:typeof code==='string'?code:errorCode(e),durationMs:Date.now()-interpretationStarted});
       if(this.get(m.id)?.state!=='interpreting')return true;
       // Policy changes during an HTTP call revoke its result; never silently resume under old consent.
       if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}

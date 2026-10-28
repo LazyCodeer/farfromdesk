@@ -373,6 +373,12 @@ test('brain wording is used only for chat and clarify, never dispatching work',a
 test('Meta request asks for low reasoning effort and allows chat replies',async()=>{
   let body:any;const model=new MetaModel((async(_u,init)=>{body=JSON.parse(init!.body as string);return call('decide',{...decision(),intent:'chat',reply:'Hi.'});}) as typeof fetch);
   const r=await model.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]});
-  assert.equal(r.reply,'Hi.');assert.equal(body.reasoning_effort,'low');assert.equal(body.tool_choice,'required');assert.ok(body.tools[0].function.parameters.properties.intent.enum.includes('chat'));
+  assert.equal(r.reply,'Hi.');assert.equal(body.reasoning_effort,'low');assert.equal(body.tool_choice,'auto');assert.ok(body.tools[0].function.parameters.properties.intent.enum.includes('chat'));
+});
+test('a rejected Meta request records a safe failure code, never the provider text',async()=>{
+  const rejected=new MetaModel((async()=>new Response(JSON.stringify({error:{message:'only "auto" is supported for tool_choice'}}),{status:400})) as typeof fetch);
+  await assert.rejects(rejected.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]}),(e:any)=>e.code==='provider_rejected'&&!/tool_choice/.test(e.message));
+  const down=new MetaModel((async()=>new Response('{}',{status:503})) as typeof fetch);
+  await assert.rejects(down.interpret('synthetic-key',{...DEFAULT_BRAIN,enabled:true},{original:'hi',source:'text',tasks:[]}),(e:any)=>e.code==='provider_unavailable');
 });
 

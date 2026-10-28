@@ -16,7 +16,7 @@ export function errorCode(error:unknown) {
   if(/session.*(?:paused|missing)|selected session changed|not been connected/i.test(text))return 'routing_unavailable';
   return 'unknown';
 }
-const codes=new Set(['configuration_missing','authentication_required','timeout','cancelled','no_speech','integrity_failed','unsupported_format','permission_required','routing_unavailable','unknown']);
+const codes=new Set(['configuration_missing','authentication_required','timeout','cancelled','no_speech','integrity_failed','unsupported_format','permission_required','routing_unavailable','provider_rejected','provider_unavailable','invalid_response','unknown']);
 export function safeEventDetails(input:Record<string,unknown>={}) {
   const result:Record<string,string|number|boolean>={};
   for(const key of ['durationMs','audioSeconds','inputTokens','outputTokens','costUsd']) {
