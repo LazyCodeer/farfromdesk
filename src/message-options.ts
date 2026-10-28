@@ -45,6 +45,7 @@ export function selectOption(store:Store,input:{responseId:string;destination:st
   try{
     const changed=store.db.prepare('UPDATE message_options SET selected_id=?,response_id=? WHERE id=? AND selected_id IS NULL').run(choice.id,input.responseId,row.id);
     if(changed.changes){
+      const item=store.itemOf(row.request_id);if(item)store.linkItem(input.responseId,item);
       queue(row.binding_id,`Owner selected an offered answer for request ${row.request_id}: ${JSON.stringify(choice)}. This is a message choice, not a native permission grant. Preserve the original task scope.`);
       store.remember(input.responseId);
     }
