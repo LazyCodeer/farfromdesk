@@ -156,7 +156,7 @@ test('dispatch transaction rollback leaves no orphan job or queued receipt',asyn
   const f=fixture();try{const queue=f.router.queue.bind(f.router);f.router.queue=(...args)=>{queue(...args);throw new Error('simulated failure after enqueue');};await f.router.receive({id:'wa:rollback',text:'Fix it'});assert.equal(f.store.jobs().length,0);assert.equal(f.router.brain.get('wa:rollback')?.state,'blocked');assert.ok(!f.out().some((r:any)=>r.request_id==='wa:rollback'&&r.binding_id));assert.ok(f.out().some((r:any)=>r.request_id==='wa:rollback'&&!r.binding_id));}finally{f.close();}
 });
 
-test('topic follow-up goes straight to its proven owning worker, not the default coordinator',async()=>{
+test('a follow-up Meta links to a worker\'s item asks first, even when it names nobody; the owner picks with /to',async()=>{
   const f=fixture();try{
     await f.router.receive({id:'wa:invoice',text:'Fix invoice export'});
     const worker=f.store.register('invoice-worker','codex',randomUUID(),'/tmp').binding;f.store.set('selected',JSON.stringify([worker.id]));
@@ -164,11 +164,11 @@ test('topic follow-up goes straight to its proven owning worker, not the default
     const item=f.store.itemOf('wa:invoice')!;
     f.c.registry.setDefault(f.claude.id);
     f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
-    await f.router.receive({id:'wa:invoice-follow',text:'For the invoice export, also handle empty CSVs'});
-    assert.equal(f.store.job('wa:invoice-follow')?.binding_id,worker.id);
-    assert.equal(f.store.itemOf('wa:invoice-follow'),item);
-    assert.equal(f.router.brain.get('wa:invoice-follow')?.coordinator_id,f.codex.id);
-    assert.equal(f.router.brain.get('wa:invoice-follow')?.target_session_id,worker.id);
+    for(const [i,text] of ['For the invoice export, also handle empty CSVs','Do not send this to the session that worked on this item; ask the coordinator'].entries()){
+      await f.router.receive({id:`wa:follow${i}`,text});
+      assert.equal(f.store.job(`wa:follow${i}`),undefined,text);
+      assert.match(String((f.out().at(-1) as any).body),/use \/to invoice-worker/,text);
+    }
     assert.equal(f.c.items().list(true).length,1);
   }finally{f.close();}
 });
@@ -194,7 +194,7 @@ test('memory includes destination-linked work created through legacy coordinator
     const item=f.store.itemOf('wa:legacy-topic')!;
     assert.ok(f.router.brain.memory.board().some(i=>i.id===item));
     f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));await f.router.receive({id:'wa:legacy-follow',text:'Check that invoice export'});
-    assert.equal(f.store.job('wa:legacy-follow')?.binding_id,worker.id);
+    assert.equal(f.store.job('wa:legacy-follow'),undefined);assert.match(String((f.out().at(-1) as any).body),/use \/to legacy-worker/);
   }finally{f.close();}
 });
 test('owner can save a todo without dispatch, update it, and recover it from disk',async()=>{

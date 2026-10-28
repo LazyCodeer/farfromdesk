@@ -373,6 +373,8 @@ export class MetaBrain {
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
       target=topic?this.memory.owner(topic,router):undefined;
+      // A follow-up Meta linked to an item never reaches that item's worker on its own: "don't send this to the session that worked on it" names nobody.
+      if(target&&!c.isCoordinator(target.id))throw new Error(`This looks like a follow-up to an item ${label(target)} worked on. To send it there, use /to ${target.alias} and your message, or choose with /claude list or /codex list. Nothing was sent.`);
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
       if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
