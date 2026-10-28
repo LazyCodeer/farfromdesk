@@ -292,8 +292,8 @@ export class MetaBrain {
       decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
-      const code=(e as {code?:unknown})?.code;
-      this.store.event(m.id,'brain_interpretation_failed',{code:typeof code==='string'?code:errorCode(e),durationMs:Date.now()-interpretationStarted});
+      const raw=(e as {code?:unknown})?.code,code=typeof raw==='string'?raw:errorCode(e);
+      this.store.event(m.id,'brain_interpretation_failed',{code,durationMs:Date.now()-interpretationStarted});
       if(this.get(m.id)?.state!=='interpreting')return true;
       // Policy changes during an HTTP call revoke its result; never silently resume under old consent.
       if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
@@ -301,7 +301,10 @@ export class MetaBrain {
         this.store.db.prepare("UPDATE brain_tasks SET state='legacy',permission='legacy',reason='Meta unavailable; owner-selected legacy fallback' WHERE id=?").run(m.id);
         return false;
       }
-      this.stop(m.id,this.secret.present()?'Meta interpretation is unavailable. Check Settings, or send a new message when ready.':'Meta API key is missing. Add it in desktop Settings, or disable the Meta brain.');return true;
+      this.stop(m.id,!this.secret.present()?'Meta API key is missing. Add it in the Brain page, or turn the brain off.'
+        :code==='authentication_required'?'Meta rejected your API key. Replace it in the Brain page, then send your message again.'
+        :code==='timeout'?'Meta took too long to answer. Send your message again.'
+        :'Meta could not read that message right now. Send it again in a moment.');return true;
     }
     if(this.get(m.id)?.state!=='interpreting')return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);

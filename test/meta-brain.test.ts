@@ -226,6 +226,23 @@ test('exact owner session pause/resume is durable and does not switch messaging 
     f.store.db.prepare('DELETE FROM seen WHERE id=?').run('wa:pause');await f.router.receive({id:'wa:pause',text:'Pause session invoice-worker'});assert.equal(f.store.binding(worker.id)?.enabled,1);
   }finally{f.close();}
 });
+test('"pause the NAME session" works and a paused coordinator can resume itself',async()=>{
+  const f=fixture();try{
+    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});f.store.set(`name:${f.claude.id}`,'Mobile app');
+    f.respond(async()=>({...decision(),intent:'manage',operation:'pause_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:pause-c',text:'pause the Mobile app session'});assert.equal(f.store.binding(f.claude.id)?.enabled,0);
+    f.respond(async()=>({...decision(),intent:'manage',operation:'resume_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:resume-c',text:'resume session Mobile app'});assert.equal(f.store.binding(f.claude.id)?.enabled,1);
+  }finally{f.close();}
+});
+test('a rejected key tells the owner to replace it',async()=>{
+  const f=fixture();try{
+    f.respond(async()=>{throw Object.assign(new Error('Meta interpretation unavailable.'),{code:'authentication_required'});});
+    await f.router.receive({id:'wa:badkey',text:'Fix invoice export'});
+    assert.match(String((f.out().at(-1) as any).body),/Meta rejected your API key/);assert.equal(f.store.jobs().length,0);
+    assert.match(String((f.store.db.prepare("SELECT details FROM request_events WHERE request_id='wa:badkey' AND event='brain_interpretation_failed'").get() as any).details),/authentication_required/);
+  }finally{f.close();}
+});
 test('missing key and failed API use legacy routing with the new default policy',async()=>{
   for(const mode of ['missing','timeout']) {const f=fixture();try{
     saveBrainConfig(f.store,f.secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex','claude']}});

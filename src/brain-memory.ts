@@ -100,7 +100,7 @@ export class BrainMemory {
   /** Interpretation proposes a management operation; literal original commands authorize it. */
   manage(router:Router,m:Incoming,d:Interpretation):string {
     if(d.operation==='add_todo') {
-      const match=/^(?:please\s+)?(?:add (?:a )?(?:to-do|todo|task)|remember(?: this)?(?: task)?)[ :]+([\s\S]+)$/i.exec(m.text.trim());
+      const match=/^(?:please\s+)?(?:add (?:a )?(?:to-do|todo|task)|remember(?: this)?(?: task)?)[ :]+(?:to\s+)?([\s\S]+)$/i.exec(m.text.trim());
       if(!match)throw new Error('To save without starting work, say “Add todo: …”.');
       const item=this.add(m.id,match[1]);
       return `Saved #${item.id}: ${item.title}. Status: not started. No session was dispatched.`;
@@ -114,7 +114,7 @@ export class BrainMemory {
       return `#${item.id}: ${d.itemStatus}. Saved as your board update; execution evidence is unchanged.`;
     }
     if(d.operation==='pause_session'||d.operation==='resume_session') {
-      const match=/^(?:please\s+)?(pause|disconnect|resume|reconnect|connect) (?:the )?(?:session )?(.+?)[.!]?$/i.exec(m.text.trim());
+      const match=/^(?:please\s+)?(pause|disconnect|resume|reconnect|connect) (?:the )?(?:session )?(.+?)(?: session)?[.!]?$/i.exec(m.text.trim());
       const resume=d.operation==='resume_session';
       if(!match||resume!==/^(resume|reconnect|connect)$/i.test(match[1]))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
       const matches=this.candidates(router).filter(b=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].some(n=>n.toLowerCase()===match[2].toLowerCase()));
@@ -122,13 +122,14 @@ export class BrainMemory {
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
       if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error('This platform is disabled or denied by your policy.');
       const coordinator=router.coordinator.registry.bindingFor(b);
-      if(!coordinator?.enabled||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error('Review the saved coordinator connection before changing this session.');
+      // A paused coordinator can resume itself; its own pause must not lock it out.
+      if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error('Review the saved coordinator connection before changing this session.');
       if(resume){const selected=JSON.parse(this.store.get('selected')??'[]') as string[];this.store.set('selected',JSON.stringify([...new Set([...selected,b.id])]));}
       this.store.enable(b.id,resume);
       // Pausing forwarding does not terminate native work or disconnect the owner messaging account.
       if(!resume)router.channelClients.delete(b.id);
       this.store.audit(resume?'brain-session-resumed':'brain-session-paused',b.id);
-      return `${b.alias}: bridge forwarding ${resume?'enabled':'paused'}. Native work and permissions are unchanged.`;
+      return `${resume?'Resumed':'Paused'} ${this.store.get(`name:${b.id}`)??b.alias}. ${resume?'New messages can go to it again.':'New messages will not go to it.'} Work already running is not stopped.`;
     }
     throw new Error('Please clarify which task or session change you want.');
   }
