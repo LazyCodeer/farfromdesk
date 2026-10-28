@@ -56,6 +56,7 @@ export function saveBindingCredentials(b:Binding,token:string) {
   writeFileSync(join(dir,`${b.alias}.json`),JSON.stringify({id:b.id,token,alias:b.alias,provider:b.provider,nativeId:b.native_id,cwd:b.cwd}),{mode:0o600});
 }
 export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram;desktopControl?:DesktopControl;macControl?:MacControl;remoteDesktop?:RemoteDesktopService;browser?:BrowserTabs}) {
+  let voiceSettingsRevision=0;
   const browser=services?.browser??new BrowserTabs();
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
@@ -313,6 +314,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/voice-engine'&&req.method==='POST') {
         const d=await body(req);
+        // A newer provider choice or removal supersedes any key check still awaiting the network.
+        const revision=(d.remove===true||d.engine==='local'||isCloud(d.engine))?++voiceSettingsRevision:voiceSettingsRevision;
         if(d.remove===true){removeVoiceKey();store.set('voice-engine','local');}
         if(typeof d.fallback==='boolean')store.set('voice-fallback',d.fallback?'1':'0');
         if(d.engine==='local')store.set('voice-engine','local');
@@ -321,6 +324,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           const brainKey=d.engine==='meta'&&d.useBrainKey===true?router.brain.secret.read():undefined;
           if(d.engine==='meta'&&d.useBrainKey===true&&!brainKey)throw new Error('Save a Meta key in Brain settings first, or paste one here.');
           const key=cleanKey(brainKey??d.key);await testVoiceKey(d.engine,key);
+          if(revision!==voiceSettingsRevision)throw new Error('Voice settings changed while this key was being checked. The older choice was not saved.');
           writeVoiceKey(d.engine,key);store.set('voice-engine',d.engine);
         }
         json(res,200,audioReadiness(store));return;

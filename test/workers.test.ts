@@ -9,6 +9,7 @@ import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
 import { Connections, connectionProfile } from '../src/connections.js';
 import { Workers } from '../src/workers.js';
+import { coordinatorHome } from '../src/config.js';
 import { ClaudeSession } from '../src/claude-session.js';
 
 const uuid='44444444-4444-4444-a444-444444444444';
@@ -253,4 +254,312 @@ test('pre-start recovery revalidates the current owner request after account loo
   f.masters.connections=new Connections(f.store,async()=>{f.store.jobState('wa:recover','replaced');return {state:'verified',label:'Test account',accountKey:'test-account'};});
   await f.workers.recover('wa:recover','cancelled');await settled(f);assert.equal(f.workers.get('cancelled')?.status,'blocked');assert.equal(f.counts().creations,0);assert.equal(f.approvals.pending.size,0);
  }finally{f.close();}
+});
+
+
+test('new workers default to projects inside FarFromDesk home without creating before consent',async()=>{
+  const f=fixture();try{
+    f.workers=new Workers(f.store,f.router,f.masters as any,undefined,()=>{});
+    assert.equal(f.workers.root,join(coordinatorHome,'projects'));
+    const op=await f.workers.start(f.request);
+    assert.equal(f.workers.get(op.id)?.workspaceRoot,join(coordinatorHome,'projects'));
+    assert.equal(op.status,'awaiting_approval');assert.equal(f.counts().creations,0);
+    approve(f,'deny');await settled(f);assert.equal(f.workers.get(op.id)?.status,'denied');
+  }finally{f.close();}
+});
+
+test('changing the default preserves legacy grants, folders and recovery while new projects ask for their own location',async()=>{
+  const f=fixture();try{
+    const old=await f.workers.start(f.request);approve(f);await settled(f);
+    const saved=f.workers.get(old.id)!,binding=f.store.binding(saved.bindingId!)!;
+    writeFileSync(join(binding.cwd,'keep.txt'),'existing work');
+    // Reconstruct the single-grant/operation format from before the default-root change.
+    const {workspaceRoot,...legacyOp}=saved;f.workers.save(legacyOp);
+    const {root,...grant}=JSON.parse(f.store.get('worker-workspace')!);
+    f.store.set('worker-workspace',JSON.stringify(grant));f.store.db.prepare('DELETE FROM settings WHERE key=?').run('worker-workspaces');
+    f.workers.save({...f.request,id:'preflight-old',masterId:f.master.id,status:'blocked',route:await f.masters.connections.prepare({provider:'codex',cwd:f.root},'cli',true)});
+    const nextRoot=join(f.dir,'.farfromdesk','projects');
+    f.workers=new Workers(f.store,f.router,f.masters as any,nextRoot,()=>{});
+    assert.equal(f.workers.workspace(),null);f.workers.ensureRun(binding);
+    assert.ok(f.workers.workspaceSummary().includes(grant.path));assert.ok(f.workers.workspaceSummary().includes(nextRoot));
+    assert.equal(f.workers.get('preflight-old')?.workspaceRoot,grant.path);
+    const next=await f.workers.start({...f.request,eventId:'new-home'});
+    assert.equal(next.status,'awaiting_approval');assert.equal(existsSync(nextRoot),false);
+    approve(f);await settled(f);
+    const nextBinding=f.store.binding(f.workers.get(next.id)!.bindingId!)!;
+    assert.equal(nextBinding.cwd,join(realpathSync(nextRoot),`project-${next.id}`));
+    f.workers.ensureRun(binding);f.workers.ensureRun(nextBinding);
+    assert.equal(readFileSync(join(binding.cwd,'keep.txt'),'utf8'),'existing work');
+    f.store.enqueue('wa:legacy-recover',f.master,'Recover the old unfinished operation');
+    await f.workers.recover('wa:legacy-recover','preflight-old');await settled(f);
+    assert.equal(f.approvals.pending.size,0);
+    assert.equal(f.workers.get('preflight-old')?.cwd,join(grant.path,'project-preflight-old'));
+    f.workers.revoke();assert.match(f.workers.workspaceSummary(),/No project workspace approved/);assert.throws(()=>f.workers.ensureRun(binding),/not approved/);assert.throws(()=>f.workers.ensureRun(nextBinding),/not approved/);
+    assert.equal(readFileSync(join(binding.cwd,'keep.txt'),'utf8'),'existing work');
+  }finally{f.close();}
+});
+
+
+test('revoked legacy folders can be reapproved through recovery without replaying existing tasks',async()=>{
+  const f=fixture();try{
+    const old=await f.workers.start(f.request);approve(f);await settled(f);
+    const saved=f.workers.get(old.id)!,binding=f.store.binding(saved.bindingId!)!;
+    writeFileSync(join(binding.cwd,'keep.txt'),'old project');
+    f.workers=new Workers(f.store,f.router,f.masters as any,join(f.dir,'new-home','projects'),()=>{});
+    f.workers.revoke();
+    const newer=await f.workers.start({...f.request,eventId:'new-location'});approve(f);await settled(f);
+    assert.equal(f.workers.get(newer.id)?.status,'ready');assert.throws(()=>f.workers.ensureRun(binding),/not approved/);
+    assert.equal(f.workers.view(old.id)[0].canRecover,true);assert.equal(f.workers.view(old.id)[0].workspaceRequired,true);
+    let nativeRecoveries=0;f.masters.recoverWorker=async()=>{nativeRecoveries++;};
+    const before=f.store.jobs().filter(j=>j.id.startsWith('master:')).length;
+    f.store.enqueue('wa:restore-old',f.master,'Restore the original project folder approval');
+    await f.workers.recover('wa:restore-old',old.id);await f.workers.recover('wa:restore-old',old.id);
+    assert.equal(f.approvals.pending.size,1);assert.equal(f.workers.pending('wa:restore-old'),true);assert.ok([...f.approvals.pending.values()][0].question.includes(f.root));
+    approve(f,'deny');await settled(f);assert.throws(()=>f.workers.ensureRun(binding),/not approved/);
+    assert.equal(f.workers.get(old.id)?.taskOwnerRequestId,saved.requestId);
+    f.store.enqueue('wa:restore-approved',f.master,'Approve the original folder');
+    await f.workers.recover('wa:restore-approved',old.id);
+    const nextRoot=f.workers.root;f.workers.close();f.approvals.cancel();await settled(f);
+    f.workers=new Workers(f.store,f.router,f.masters as any,nextRoot,()=>{});
+    assert.equal(f.workers.get(old.id)?.status,'needs_approval');assert.match(f.workers.get(old.id)?.error??'',/Recover this same operation/);assert.equal(f.workers.view(old.id)[0].canRecover,true);
+    await f.workers.recover('wa:restore-approved',old.id);approve(f);await settled(f);
+    f.workers.ensureRun(binding);assert.equal(f.store.binding(binding.id)?.enabled,0);
+    assert.equal(nativeRecoveries,0);assert.equal(f.counts().creations,2);
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,before);
+    assert.equal(f.workers.get(old.id)?.taskOwnerRequestId,saved.requestId);
+    assert.equal(readFileSync(join(binding.cwd,'keep.txt'),'utf8'),'old project');
+    f.store.enable(binding.id,true);f.workers.ensureRun(binding); // the owner's later /resume
+  }finally{f.close();}
+});
+
+test('reapproval denial or a new revocation cannot resume a bound unfinished creation',async()=>{
+  const f=fixture();try{
+    f.masters.provisionWorker=async()=>{throw Error('Synthetic native interruption');};
+    const op=await f.workers.start(f.request);approve(f);await settled(f);
+    const bindingId=f.workers.get(op.id)!.bindingId!;f.workers.revoke();
+    f.store.enqueue('wa:restore-cancel',f.master,'Recover the same session');
+    await f.workers.recover('wa:restore-cancel',op.id);
+    approve(f);f.workers.revoke();await settled(f);
+    assert.equal(f.workers.workspace(),null);assert.equal(f.store.binding(bindingId)?.enabled,0);
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,0);
+    f.store.enqueue('wa:restore-final',f.master,'Recover the same session');
+    await f.workers.recover('wa:restore-final',op.id);approve(f);await settled(f);
+    assert.equal(f.workers.get(op.id)?.bindingId,bindingId);assert.equal(f.workers.get(op.id)?.status,'ready');
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,1);
+  }finally{f.close();}
+});
+
+
+test('workspace recovery denial and later failure report to their own requests without changing the original task',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);
+    const original=f.workers.view(op.id)[0].taskRequestId!;
+    f.workers.revoke();f.store.enqueue('wa:deny-recovery',f.master,'Restore access');
+    await f.workers.recover('wa:deny-recovery',op.id);approve(f,'deny');await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'ready');
+    assert.equal(f.workers.view(op.id)[0].taskRequestId,original);
+    const reports=()=>f.store.jobs().filter(j=>j.id.startsWith(`report:creation:${op.id}:`));
+    assert.equal(reports().length,1);
+    assert.equal(f.store.get(`report-parent:${reports()[0].id}`),'wa:deny-recovery');
+    assert.match(reports()[0].body,/not approved/);
+    f.store.enqueue('wa:failed-recovery',f.master,'Try restoring access again');
+    await f.workers.recover('wa:failed-recovery',op.id);
+    rmSync(f.store.binding(f.workers.get(op.id)!.bindingId!)!.cwd,{recursive:true});
+    approve(f);await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'uncertain');
+    assert.equal(reports().length,2);
+    assert.deepEqual(new Set(reports().map(j=>f.store.get(`report-parent:${j.id}`))),new Set(['wa:deny-recovery','wa:failed-recovery']));
+    assert.equal(f.workers.view(op.id)[0].taskRequestId,original);
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,1);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('workspace recovery protects only its current request across restart and denial preserves ready status',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);
+    const original=f.workers.view(op.id)[0].taskRequestId!;
+    f.workers.revoke();f.store.enqueue('wa:pending-recovery',f.master,'Restore access');
+    await f.workers.recover('wa:pending-recovery',op.id);
+    assert.equal(f.workers.pending('wa:create'),false);
+    assert.equal(f.workers.pending('wa:pending-recovery'),true);
+    f.workers.close();f.approvals.cancel();await settled(f);
+    f.workers=new Workers(f.store,f.router,f.masters as any,f.root,()=>{});
+    assert.equal(f.workers.pending('wa:create'),false);
+    assert.equal(f.workers.pending('wa:pending-recovery'),false);
+    assert.doesNotThrow(()=>f.router.channelReply(f.master,'Approval expired; ask to recover again','final','wa:pending-recovery'));
+    f.store.jobState(original,'completed');
+    assert.doesNotThrow(()=>f.router.channelReply(f.master,'Original task finished','final','wa:create'));
+    f.store.enqueue('wa:after-restart',f.master,'Ask for access again');
+    await f.workers.recover('wa:after-restart',op.id);approve(f,'deny');await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'ready');
+    assert.equal(f.workers.pending('wa:pending-recovery'),false);
+    assert.equal(f.workers.pending('wa:after-restart'),false);
+    assert.equal(f.workers.view(op.id)[0].taskRequestId,original);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('revocation cancels the recovering coordinator prompt and a new grant does not join the revoked generation',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    const replacement=f.store.register('replacement-master','codex','55555555-5555-4555-a555-555555555555',f.dir).binding;
+    f.store.set('master',replacement.id);
+    f.store.enqueue('wa:new-master-recover',replacement,'Restore access');
+    await f.workers.recover('wa:new-master-recover',op.id);
+    assert.equal([...f.approvals.pending.values()][0].binding.id,replacement.id);
+    f.workers.revoke();assert.equal(f.approvals.pending.size,0);
+    // Start another operation before the cancelled grant continuation has settled.
+    f.store.enqueue('wa:fresh-create',replacement,'Create another project');
+    await f.workers.start({...f.request,requestId:'wa:fresh-create',eventId:'fresh'});
+    assert.equal(f.approvals.pending.size,1);approve(f);await settled(f);
+    assert.ok(f.workers.workspace());
+    assert.equal(f.workers.get(op.id)?.status,'ready');
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+
+test('repeated workspace recovery failures never reuse a report delivery with different content',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    f.store.enqueue('wa:retry-access',f.master,'Restore access');
+    for(let i=0;i<2;i++){
+      await f.workers.recover('wa:retry-access',op.id);approve(f,'deny');await settled(f);
+    }
+    await f.workers.recover('wa:retry-access',op.id);
+    rmSync(f.store.binding(f.workers.get(op.id)!.bindingId!)!.cwd,{recursive:true});
+    approve(f);await settled(f); // A report-ID collision used to reject this background task.
+    const reports=f.store.jobs().filter(j=>j.id.startsWith(`report:creation:${op.id}:`));
+    assert.equal(reports.length,3);
+    assert.equal(new Set(reports.map(j=>j.id)).size,3);
+    assert.ok(reports.every(j=>f.store.get(`report-parent:${j.id}`)==='wa:retry-access'));
+    assert.equal(f.workers.tasks.size,0);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+
+test('Desktop reconciliation never requests revoked workspace permission even after explicit recovery denial',async()=>{
+  const f=fixture();try{
+    f.prefer('claude','desktop');(f.masters as any).desktop={acknowledgment:()=> 'ready'};
+    f.masters.provisionWorker=async()=>{throw Error('Desktop start needs owner action: press Send');};
+    const op=await f.workers.start({...f.request,provider:'claude'});approve(f);await settled(f);
+    f.workers.revoke();
+    for(let i=0;i<3;i++){f.workers.reconcileDesktop();assert.equal(f.approvals.pending.size,0);await settled(f);}
+    f.store.enqueue('wa:manual-recover',f.master,'Restore access');
+    await f.workers.recover('wa:manual-recover',op.id);approve(f,'deny');await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'needs_action');
+    for(let i=0;i<3;i++){f.workers.reconcileDesktop();assert.equal(f.approvals.pending.size,0);await settled(f);}
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,0);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('preflight retries with the same owner request retain distinct failure deliveries',async()=>{
+  const f=fixture();try{
+    const route=await f.masters.connections.prepare({provider:'codex',cwd:f.root},'cli',true);
+    f.workers.save({...f.request,id:'preflight-repeat',masterId:f.master.id,route,executionMode:'cli',status:'blocked'});
+    f.store.enqueue('wa:preflight-retry',f.master,'Recover');
+    for(const error of ['probe failure A','probe failure B']){
+      f.masters.connections.prepare=async()=>{throw Error(error);};
+      await f.workers.recover('wa:preflight-retry','preflight-repeat');await settled(f);
+    }
+    const reports=f.store.jobs().filter(j=>j.id.startsWith('report:creation:preflight-repeat:'));
+    assert.equal(reports.length,2);assert.equal(f.workers.get('preflight-repeat')?.error,'probe failure B');
+    assert.equal(f.counts().creations,0);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('restarted creation attempts retain distinct failure deliveries',async()=>{
+  const f=fixture();try{
+    f.workers.workspace=()=>{throw Error('workspace failure A');};
+    const op=await f.workers.start(f.request);await settled(f);
+    f.workers.save({...f.workers.get(op.id)!,status:'needs_approval'});
+    f.workers.workspace=()=>{throw Error('workspace failure B');};
+    await f.workers.start(f.request);await settled(f);
+    assert.equal(f.workers.get(op.id)?.error,'workspace failure B');
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith(`report:creation:${op.id}:`)).length,2);
+    assert.equal(f.counts().creations,0);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('closed shared approval origin leaves a joined ready session unchanged',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    f.store.enqueue('wa:grant-origin',f.master,'Create a second project');
+    await f.workers.start({...f.request,requestId:'wa:grant-origin',eventId:'second'});
+    f.store.enqueue('wa:grant-joiner',f.master,'Restore the existing workspace');
+    await f.workers.recover('wa:grant-joiner',op.id);
+    assert.equal(f.approvals.pending.size,1);
+    f.store.jobState('wa:grant-origin','completed');approve(f);await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'ready');assert.equal(f.workers.workspace(),null);
+    assert.equal(f.counts().creations,1);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('native recovery restart clears old pre-approval status before a later denial',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);
+    f.workers.save({...f.workers.get(op.id)!,status:'creating',recoveryPrevious:{status:'uncertain',error:'old error'}});
+    f.workers=new Workers(f.store,f.router,f.masters as any,f.root,()=>{});
+    const interrupted=f.workers.get(op.id)!;assert.match(interrupted.error!,/bridge restarted/);
+    f.workers.revoke();f.store.enqueue('wa:restart-deny',f.master,'Recover');
+    await f.workers.recover('wa:restart-deny',op.id);approve(f,'deny');await settled(f);
+    assert.equal(f.workers.get(op.id)?.error,interrupted.error);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('restoring access reports completion of recovery without claiming the existing task completed',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    const original=f.workers.view(op.id)[0].taskRequestId!;
+    f.store.jobState(original,'submitted');
+    f.store.enqueue('wa:restored',f.master,'Restore access');
+    await f.workers.recover('wa:restored',op.id);approve(f);await settled(f);
+    const report=f.store.jobs().find(j=>j.id.startsWith(`report:creation:${op.id}:ready:`));
+    assert.ok(report);assert.equal(f.store.get(`report-parent:${report.id}`),'wa:restored');
+    assert.match(report.body,/not.*task.*complet/i);assert.equal(f.store.job(original)?.status,'submitted');
+    assert.equal(f.workers.pending('wa:restored'),false);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+
+test('restart during native recovery records uncertainty rather than an expired folder approval',async()=>{
+  const f=fixture();let finish!:()=>void;try{
+    f.masters.provisionWorker=async()=>{throw Error('Native login required');};
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    let started!:()=>void;const entered=new Promise<void>(r=>{started=r;});
+    f.masters.recoverWorker=()=>new Promise<void>(r=>{finish=r;started();});
+    f.store.enqueue('wa:native-recovery',f.master,'Recover');
+    await f.workers.recover('wa:native-recovery',op.id);approve(f);await entered;
+    assert.equal(f.workers.get(op.id)?.status,'creating');
+    assert.equal(f.workers.get(op.id)?.recoveryPrevious,undefined);
+    f.workers.close();finish();await settled(f);
+    f.workers=new Workers(f.store,f.router,f.masters as any,f.root,()=>{});
+    assert.equal(f.workers.get(op.id)?.status,'uncertain');assert.match(f.workers.get(op.id)?.error??'',/bridge restarted/);
+    assert.equal(f.workers.pending('wa:native-recovery'),false);
+    assert.equal(f.store.jobs().filter(j=>j.id.startsWith('master:')).length,0);
+  }finally{f.workers.close();f.approvals.cancel();finish?.();await settled(f);f.close();}
+});
+
+
+test('closed shared approval origin leaves new projects blocked and recoverable rather than denied',async()=>{
+  const f=fixture();try{
+    const first=await f.workers.start(f.request);
+    f.store.enqueue('wa:joined-project',f.master,'Create a second project');
+    const joined=await f.workers.start({...f.request,requestId:'wa:joined-project',eventId:'join'});
+    f.store.jobState('wa:create','replaced');approve(f);await settled(f);
+    for(const id of [first.id,joined.id]){assert.equal(f.workers.get(id)?.status,'blocked');assert.match(f.workers.get(id)?.error??'',/request.*closed/i);assert.equal(f.workers.view(id)[0].canRecover,true);}
+    f.store.enqueue('wa:recover-joined',f.master,'Recover the same new project');
+    await f.workers.recover('wa:recover-joined',joined.id);
+    for(let i=0;i<30&&!f.approvals.pending.size;i++)await new Promise(r=>setTimeout(r,5));
+    approve(f);await settled(f);assert.equal(f.workers.get(joined.id)?.status,'ready');assert.equal(f.counts().creations,1);
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
+});
+
+test('closing the recovery request during folder approval preserves the healthy existing session',async()=>{
+  const f=fixture();try{
+    const op=await f.workers.start(f.request);approve(f);await settled(f);f.workers.revoke();
+    f.store.enqueue('wa:cancel-recovery',f.master,'Restore access');
+    await f.workers.recover('wa:cancel-recovery',op.id);f.store.jobState('wa:cancel-recovery','replaced');approve(f);await settled(f);
+    assert.equal(f.workers.get(op.id)?.status,'ready');assert.equal(f.workers.workspace(),null);
+    assert.equal(f.store.binding(f.workers.get(op.id)!.bindingId!)?.enabled,0);
+    assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>/request.*closed/i.test(r.body)));
+  }finally{f.workers.close();f.approvals.cancel();await settled(f);f.close();}
 });
