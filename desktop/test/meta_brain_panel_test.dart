@@ -217,4 +217,40 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.posts.last, '/api/memory/undo');
   });
+  testWidgets('a new memory file never replaces one that exists', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 2600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final api = MetaGateway();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MetaBrainPanel(
+              gateway: api,
+              saved: const {'enabled': false},
+              onSaved: () async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    Future<void> create(String name) async {
+      await tester.tap(find.text('New file'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('memory-new-name')), name);
+      await tester.tap(find.text('Create'));
+      await tester.pumpAndSettle();
+    }
+
+    await create('about-me');
+    expect(api.posts, isEmpty);
+    expect(find.textContaining('about-me.md already exists'), findsOneWidget);
+    await create('projects/site');
+    expect(api.saved['path'], 'projects/site.md');
+    expect(api.saved['expected'], '');
+  });
 }
