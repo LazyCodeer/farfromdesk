@@ -11,6 +11,9 @@ on:
         type: string
 permissions:
   contents: read
+concurrency:
+  group: windows-upgrade-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   upgrade:
     runs-on: windows-2022
@@ -97,3 +100,17 @@ jobs:
         run: |
           node script/test_windows_upgrade.mjs build/previous/FarFromDesk-0.8.0-windows-x64-setup.exe 0.8.0 "build/desktop-release/FarFromDesk-$env:FFD_CANDIDATE-windows-x64-setup.exe" $env:FFD_CANDIDATE
           if ($LASTEXITCODE -ne 0) { throw 'Real Windows upgrade test failed' }
+      - name: Retain installer and test diagnostics (no account state)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-updater-candidate
+          path: |
+            build/desktop-release/*-setup.exe
+            build/desktop-release/*-setup.exe.sha256
+            build/desktop-release/manifest-windows-x64.json
+            build/windows-upgrade-evidence/*.json
+            build/windows-upgrade-evidence/*.log
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn

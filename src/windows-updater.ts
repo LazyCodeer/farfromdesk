@@ -24,7 +24,7 @@ export function validateWindowsInstall(app:string,current:string,inventory:Inven
 }
 export function installerArguments(app:string,log:string) {
  // No /FORCECLOSEAPPLICATIONS and no shell. Never kill unrelated Node processes.
- return ['/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS','/SP-',`/DIR=${app}`,`/LOG=${log}`];
+ return ['/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/RESTARTEXITCODE=3010','/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS','/SP-',`/DIR=${app}`,`/LOG=${log}`];
 }
 
 // Fixed PowerShell source; paths are carried in environment data, never inserted as code.

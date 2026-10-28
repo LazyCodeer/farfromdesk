@@ -6,10 +6,12 @@ import {createHash} from 'node:crypto';
 import {spawn,execFileSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createReadStream} from 'node:fs';
-import {mkdtemp,readFile,writeFile,cp,mkdir,stat} from 'node:fs/promises';
+import {mkdtemp,readFile,writeFile,cp,mkdir,stat,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {createServer} from 'node:net';
+import {pathToFileURL} from 'node:url';
+import {DatabaseSync} from 'node:sqlite';
 import {newer} from '../dist/app-updater.js';
 import {uninstallKey} from '../dist/windows-updater.js';
 
@@ -22,8 +24,9 @@ function powershell(script,env={}){return execFileSync(ps,['-NoProfile','-NonInt
 // Refuse to change or uninstall an existing real installation in either scope/view.
 const preexisting=powershell(`$roots=@('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*');@(Get-ItemProperty $roots -ErrorAction SilentlyContinue|Where-Object {$_.DisplayName -like '*FarFromDesk*'}).Count`).trim();
 assert.equal(preexisting,'0','Use a disposable Windows user/runner: an installation already exists.');
-const root=await mkdtemp(join(tmpdir(),'ffd-real-upgrade-')),app=join(root,'Installed app'),state=join(root,'Saved state');
+const root=await realpath(await mkdtemp(join(tmpdir(),'ffd-real-upgrade-'))),app=join(root,'Installed app'),state=join(root,'Saved state');
 await mkdir(state);
+const evidence=resolve('build/windows-upgrade-evidence');await mkdir(evidence,{recursive:true});
 const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=server.address().port;await new Promise(r=>server.close(r));
 const env={...process.env,WSB_STATE_DIR:state,WSB_PORT:String(port),FFD_SMOKE_TEST:'1',CODEX_HOME:join(state,'codex'),CLAUDE_CONFIG_DIR:join(state,'claude'),WSB_CODEX_BIN:join(state,'missing-codex'),WSB_CLAUDE_BIN:join(state,'missing-claude')};
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -32,6 +35,16 @@ async function healthy(version){for(let i=0;i<120;i++){try{const h=await api('/a
 let oldUI;
 try {
  execFileSync(resolve(oldSetup),['/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',`/DIR=${app}`,`/LOG=${join(root,'old-install.log')}`],{timeout:180000});
+ // Seed synthetic history with the OLD schema/library before its backend starts.
+ Object.assign(process.env,env);
+ const {Store}=await import(pathToFileURL(join(app,'backend','dist','store.js')).href);
+ const seed=new Store(join(state,'bridge.sqlite'));
+ const {binding}=seed.register('upgrade-fixture','codex','00000000-0000-0000-0000-000000000001',state);
+ seed.enable(binding.id,false);
+ seed.enqueue('upgrade-fixture-request',binding,'Synthetic saved history');
+ seed.jobState('upgrade-fixture-request','reviewed');
+ seed.set('upgrade-fixture-setting','preserve this value');
+ seed.close();
  oldUI=spawn(join(app,'farfromdesk.exe'),[],{env,cwd:app,stdio:'ignore'});
  await once(oldUI,'spawn');const before=await healthy(oldVersion);
  // Exercise the original failure condition: background forwarding remains on when UI closes.
@@ -61,14 +74,27 @@ await runWindowsUpdate(process.argv[2],{small:async url=>url.endsWith('.sha256')
  assert.equal((await api('/api/status')).preferences.backgroundEnabled,true);
  assert.equal(await readFile(join(state,'admin-token'),'utf8'),originalToken);
  assert.equal(await readFile(join(state,'preserve-upgrade-sentinel'),'utf8'),'synthetic user data');
+ const saved=new DatabaseSync(join(state,'bridge.sqlite'),{readOnly:true});
+ try {
+  const connection=saved.prepare('SELECT alias,enabled,native_id FROM bindings WHERE id=?').get(binding.id);
+  assert.equal(connection.alias,'upgrade-fixture');assert.equal(connection.enabled,0);assert.equal(connection.native_id,binding.native_id);
+  const history=saved.prepare('SELECT body,status FROM inbox WHERE id=?').get('upgrade-fixture-request');
+  assert.equal(history.body,'Synthetic saved history');assert.equal(history.status,'reviewed');
+  assert.equal(saved.prepare('SELECT value FROM settings WHERE key=?').get('upgrade-fixture-setting').value,'preserve this value');
+ } finally {saved.close();}
  assert.ok((await stat(join(attempt,'before-update.sqlite'))).size>0);
  assert.ok((await stat(join(attempt,'previous','farfromdesk.exe'))).size>0);
  const installed=powershell(`$e=Get-ItemProperty ('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\'+$env:FFD_TEST_KEY);@{version=$e.DisplayVersion;path=$e.InstallLocation}|ConvertTo-Json -Compress`,{FFD_TEST_KEY:uninstallKey});
  const entry=JSON.parse(installed);assert.equal(entry.version,newVersion);assert.equal(entry.path.replace(/\\$/,''),app);
  const shortcut=powershell(`$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'FarFromDesk\\FarFromDesk.lnk'));$s.TargetPath`).trim();
  assert.equal(shortcut,join(app,'farfromdesk.exe'));
- console.log(JSON.stringify({passed:true,oldVersion,newVersion,elapsedMs:Date.now()-started,oldPid:before.pid,newPid:after.pid,root},null,2));
+ const resultSummary={passed:true,oldVersion,newVersion,elapsedMs:Date.now()-started,oldPid:before.pid,newPid:after.pid};
+ await writeFile(join(evidence,'result.json'),JSON.stringify(resultSummary,null,2));
+ console.log(JSON.stringify(resultSummary,null,2));
 } finally {
+ for(const [source,name] of [[join(state,'app-update','status.json'),'update-status.json'],[join(state,'app-update','attempt-integration','installer.log'),'installer.log'],[join(root,'old-install.log'),'old-install.log']]){
+  await cp(source,join(evidence,name)).catch(()=>{});
+ }
  // Only this disposable app/state. Never a global taskkill node.exe or user-data deletion.
  await api('/api/shutdown',{}).catch(()=>{});await wait(2000);
  powershell(`Get-Process farfromdesk -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $env:FFD_TEST_EXE}|ForEach-Object {$_.CloseMainWindow()|Out-Null}`,{FFD_TEST_EXE:join(app,'farfromdesk.exe')});

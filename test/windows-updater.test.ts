@@ -28,7 +28,7 @@ test('Windows updater selects only the official x64 EXE with its checksum',()=>{
 test('installer receives the existing path verbatim, never a shell or forced process close',()=>{
  const args=installerArguments(app,'C:\\Recovery & logs\\installer.log');
  assert.ok(args.includes('/DIR='+app));assert.ok(args.includes('/LOG=C:\\Recovery & logs\\installer.log'));
- assert.ok(args.includes('/NORESTART'));assert.ok(args.includes('/NOCLOSEAPPLICATIONS'));
+ assert.ok(args.includes('/NORESTART'));assert.ok(args.includes('/RESTARTEXITCODE=3010'));assert.ok(args.includes('/NOCLOSEAPPLICATIONS'));
  assert.ok(!args.some(a=>/FORCECLOSE|powershell|cmd\.exe/i.test(a)));
 });
 const names=['preflight','shutdown','waitBackend','backup','closeUI','ensureStopped','install','verify','launch','health'] as const;
