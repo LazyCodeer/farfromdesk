@@ -27,16 +27,17 @@ export function newer(candidate:string,current:string) {
  }
  return a.pre.length>b.pre.length;
 }
-export function releaseAsset(data:any,requested:string,current:string,arch:string) {
+export function releaseAsset(data:any,requested:string,current:string,arch:string,platform: "macos" | "windows" = "macos") {
+ if(platform==="windows" && arch!=="x64")throw new Error("No compatible Windows installer is available.");
  if(!['arm64','x64'].includes(arch)||!newer(requested,current))throw new Error('This release is not newer than your installed app.');
  if((version(current).pre.length===0||version(current).pre[0]==='local')&&version(requested).pre.length)throw new Error('Stable installations do not install preview releases.');
  const tag=data?.tag_name;
  if(!['v'+requested,requested].includes(tag)||data.draft!==false||!Array.isArray(data.assets))throw new Error('Release is unavailable.');
  if(!version(requested).pre.length&&data.prerelease!==false)throw new Error('Release channel does not match.');
- const name=`FarFromDesk-${requested}-macos-${arch}.zip`,url=`https://github.com/${repository}/releases/download/${tag}/${name}`;
+ const name=platform==="windows"?`FarFromDesk-${requested}-windows-x64-setup.exe`:`FarFromDesk-${requested}-macos-${arch}.zip`,url=`https://github.com/${repository}/releases/download/${tag}/${name}`;
  const match=(n:string,u:string)=>data.assets.filter((a:any)=>a.name===n&&a.state==='uploaded'&&a.browser_download_url===u);
  const assets=match(name,url),sums=match(name+'.sha256',url+'.sha256');
- if(assets.length!==1||sums.length!==1||!Number.isSafeInteger(assets[0].size)||assets[0].size<=0||assets[0].size>2*1024**3)throw new Error('A complete compatible ZIP update is not available.');
+ if(assets.length!==1||sums.length!==1||!Number.isSafeInteger(assets[0].size)||assets[0].size<=0||assets[0].size>2*1024**3)throw new Error('A complete compatible update is not available.');
  return {name,url,bytes:assets[0].size as number,checksumUrl:url+'.sha256'};
 }
 export function checksum(text:string,name:string) {
@@ -87,7 +88,7 @@ export async function publicResponse(url:string,signal:AbortSignal,fetcher:typeo
  }
  throw new Error('Too many update redirects.');
 }
-async function small(url:string,limit:number) {
+export async function small(url:string,limit:number) {
  const response=await publicResponse(url,AbortSignal.timeout(20000));const chunks:Uint8Array[]=[];let size=0;
  for await(const chunk of response.body!){size+=chunk.length;if(size>limit)throw new Error('Update metadata too large.');chunks.push(chunk);}
  return Buffer.concat(chunks).toString('utf8');

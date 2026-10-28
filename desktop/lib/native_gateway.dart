@@ -152,13 +152,18 @@ class NativeGateway extends Gateway {
   }
 
   @override
-  bool get canInstallUpdate => Platform.isMacOS;
+  bool get canInstallUpdate =>
+      Platform.isMacOS ||
+      (Platform.isWindows && Abi.current() == Abi.windowsX64);
   bool _installing = false;
   @override
   Future<void> installUpdate(
     AppRelease release,
     void Function(Map<String, dynamic>) progress,
   ) async {
+    if (Platform.isWindows) {
+      return _installWindowsUpdate(release, progress);
+    }
     if (!Platform.isMacOS || _installing) {
       throw StateError('An update is already running or unavailable.');
     }
@@ -240,7 +245,126 @@ class NativeGateway extends Gateway {
     }
   }
 
+  Future<void> _installWindowsUpdate(
+    AppRelease release,
+    void Function(Map<String, dynamic>) progress,
+  ) async {
+    if (!canInstallUpdate || _installing) {
+      throw StateError('An update is already running or unavailable.');
+    }
+    if (!trustedReleaseUrl(release.download) ||
+        !release.download.path.endsWith('-windows-x64-setup.exe')) {
+      throw StateError(
+        'A verified Windows EXE update is required. Check for updates again.',
+      );
+    }
+    _installing = true;
+    try {
+      final app = p.dirname(Platform.resolvedExecutable);
+      final root = p.join(app, 'backend');
+      final directory = Directory(p.join(state, 'app-update'));
+      if (await Directory(p.join(directory.path, 'lock')).exists()) {
+        throw StateError(
+          'An update is already in progress. Check its status before retrying.',
+        );
+      }
+      final attempt = await createUpdateAttempt(directory);
+      // Copy the runtime too: executing the installed node.exe would lock it.
+      final runtime = await File(p.join(root, 'runtime', 'node.exe'))
+          .copy(p.join(attempt.path, 'node.exe'));
+      for (final name in ['windows-updater.js', 'app-updater.js']) {
+        await File(p.join(root, 'dist', name)).copy(p.join(attempt.path, name));
+      }
+      await File(p.join(attempt.path, 'package.json'))
+          .writeAsString('{"type":"module"}', flush: true);
+      final request = File(p.join(attempt.path, 'request.json'));
+      await request.writeAsString(
+        jsonEncode({
+          'app': app,
+          'state': state,
+          'port': port,
+          'version': release.version,
+          'current': installedVersion,
+          'uiPid': pid,
+        }),
+        flush: true,
+      );
+      final helper = await Process.start(
+        runtime.path,
+        [p.join(attempt.path, 'windows-updater.js'), '--run', request.path],
+        workingDirectory: attempt.path,
+        mode: ProcessStartMode.detached,
+      );
+      final status = File(p.join(directory.path, 'status.json'));
+      var polls = 0;
+      while (true) {
+        Map<String, dynamic>? value;
+        try {
+          value =
+              jsonDecode(await status.readAsString()) as Map<String, dynamic>;
+        } catch (_) {}
+        if (value?['pid'] == helper.pid && value?['attempt'] == attempt.path) {
+          progress(value!);
+          if (value['phase'] == 'error') {
+            // A pre-install failure can leave the service stopped with this UI open.
+            // Wait for the helper to release its lock before reconnecting.
+            for (
+              var i = 0;
+              i < 50 &&
+                  await Directory(p.join(directory.path, 'lock')).exists();
+              i++
+            ) {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+            }
+            await start();
+            throw StateError(
+              value['message']?.toString() ?? 'The update could not finish.',
+            );
+          }
+          if (value['phase'] == 'complete') return;
+        }
+        if (++polls % 10 == 0) {
+          final processes = await Process.run(
+            p.join(
+              Platform.environment['SystemRoot'] ?? r'C:\Windows',
+              'System32',
+              'tasklist.exe',
+            ),
+            ['/FI', 'PID eq ${helper.pid}', '/FO', 'CSV', '/NH'],
+          );
+          if (processes.exitCode == 0 &&
+              !processes.stdout.toString().contains('","${helper.pid}",')) {
+            throw StateError(
+              'The update helper stopped. Reopen FarFromDesk to review its status.',
+            );
+          }
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+    } finally {
+      _installing = false;
+    }
+  }
+
   Future<void> start() async {
+    if (Platform.isWindows &&
+        await Directory(p.join(state, 'app-update', 'lock')).exists()) {
+      Map<String, dynamic>? updateState;
+      try {
+        updateState = jsonDecode(
+          await File(p.join(state, 'app-update', 'status.json')).readAsString(),
+        ) as Map<String, dynamic>;
+      } catch (_) {}
+      if (![
+        'restarting',
+        'complete',
+        'error',
+      ].contains(updateState?['phase'])) {
+        throw StateError(
+          'FarFromDesk is updating. Wait for it to restart; do not run the installer again.',
+        );
+      }
+    }
     launchAtStartup.setup(
       appName: 'FarFromDesk',
       appPath: Platform.resolvedExecutable,
@@ -404,6 +528,35 @@ class NativeGateway extends Gateway {
     if (Platform.environment['FFD_SMOKE_TEST'] == '1') {
       await File(p.join(state, 'smoke-ui-ready')).writeAsString('ready');
     }
+  }
+
+  @override
+  Future<Map<String, dynamic>?> updateOutcome() async {
+    if (!Platform.isWindows) return null;
+    final file = File(p.join(state, 'app-update', 'status.json'));
+    for (var i = 0; i < 120; i++) {
+      Map<String, dynamic> value;
+      try {
+        value = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      } catch (_) {
+        return null;
+      }
+      if (['complete', 'error'].contains(value['phase'])) {
+        final receipt = File(p.join(state, 'app-update', 'shown.json'));
+        final identity = '${value['attempt']}:${value['phase']}';
+        if (await receipt.exists() && await receipt.readAsString() == identity) {
+          return null;
+        }
+        await receipt.writeAsString(identity, flush: true);
+        return value;
+      }
+      if (value['phase'] != 'restarting') return null;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    return {
+      'phase': 'error',
+      'message': 'The updater has not confirmed completion. Check the saved update status before retrying.',
+    };
   }
 
   @override
