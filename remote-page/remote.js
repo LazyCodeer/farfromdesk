@@ -22,6 +22,8 @@ const ENDS={
   OFFER_EXPIRED:EXPIRED,
   ACCESS_ENDED:'Remote access was turned off on your Mac.',
   TOO_MANY_ATTEMPTS:'Too many wrong passwords. '+NEW_LINK,
+  WAIT_BEFORE_RETRY:"Too many wrong passwords. Wait a few minutes, then send 'control my screen' for a new link.",
+  MAC_UNAVAILABLE:"Your Mac is not ready for remote control. Open FarFromDesk on it, then send 'control my screen' for a new link.",
   DESKTOP_UNAVAILABLE:'FarFromDesk lost Accessibility or Screen Recording permission on your Mac. '+NEW_LINK,
   LOGIN_TIMEOUT:'The password was not entered within 2 minutes. '+NEW_LINK,
   IDLE_TIMEOUT:'Closed because this phone was left unused, so nobody else can use your Mac from it. '+NEW_LINK,
@@ -69,11 +71,14 @@ function finish(kind,message){
 }
 paint({scene:'code',done:1,title:'Control your Mac'});say('Getting ready…');
 
-let pc=null,control=null,ended=false,authed=false,live=false,paused=false,offerId=null,aliveTimer=null,wake=null;
+// epoch: bumped on every pause, so a decode, tap or ack from before it can't land after it.
+let pc=null,control=null,ended=false,authed=false,live=false,paused=false,epoch=0,offerId=null,aliveTimer=null,wake=null;
 const send=m=>{if(!ended&&control?.readyState==='open')control.send(JSON.stringify(m));};
 
 function end(message,kind='failed'){
   if(ended)return;ended=true;live=false;
+  // Ended on purpose (End, idle, the Mac stopping it): no reconnect without the password, and no paused screen on reload.
+  if(kind==='ended'){store.drop(KEEP);store.drop(PAUSED);}
   for(const w of waiting.values())w({ok:false,error:'ENDED'});waiting.clear();
   clearInterval(aliveTimer);clearInterval(idleTimer);$('idle').hidden=true;$('paused').hidden=true;wake?.release().catch(()=>{});wake=null;
   try{pc?.close();}catch{}
@@ -119,7 +124,9 @@ async function start(){
     pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete'){clearTimeout(t);done();}});
   });
   for(const c of offer.c)await pc.addIceCandidate({candidate:'candidate:'+c,sdpMid:'0',sdpMLineIndex:0}).catch(()=>{});
-  const code=SIGNAL_PREFIX+encodeSignal(sdpToSignal(pc.localDescription.sdp,'answer',offer.s));
+  let code;try{code=SIGNAL_PREFIX+encodeSignal(sdpToSignal(pc.localDescription.sdp,'answer',offer.s));}
+  catch{throw Error('ANSWER_TOO_LONG');} // this phone's own network routes, not the link
+
   $('code').value=code;
   const text=encodeURIComponent(code);
   $('whatsapp').href=`https://wa.me/?text=${text}`;
@@ -139,7 +146,8 @@ async function start(){
 
 function dropped(){
   if(ended)return;
-  end('The connection to your Mac ended. '+NEW_LINK,authed&&(paused||kept())?'dropped':'failed');
+  // Past the 10 minute pause limit the Mac has closed the session and sends no new link.
+  end('The connection to your Mac ended. '+NEW_LINK,authed&&(paused&&wasPaused()||kept())?'dropped':'failed');
 }
 
 function onOpen(){
@@ -177,6 +185,8 @@ function onMessage(data){
     authed=true;paused=false;store.drop(PAUSED);$('paused').hidden=true;$('session').classList.remove('paused');canList=m.desktops===true;setVoice(m.voice);idleMs=typeof m.idle==='number'?m.idle:0;showLocked(m.locked===true);
     if(typeof m.resume==='string')store.set(KEEP,{secret:m.resume,alive:Date.now()});
     goLive();
+    // Login finished while the phone was hidden: visibilitychange already passed, so pause now.
+    if(document.hidden)pause();
   }
   else if(m.t==='auth-fail'){
     if(paused){$('pausemsg').textContent=explain(m.error);$('pausemsg').hidden=false;$('resumepw').focus();return;}
@@ -197,7 +207,7 @@ function onMessage(data){
 
 // ---- Live view.
 function liveStatus(text,tone){$('livetext').textContent=text;$('livetext').parentElement.dataset.tone=tone;}
-async function keepAwake(){try{wake=await navigator.wakeLock?.request('screen');}catch{}}
+async function keepAwake(){try{wake=await navigator.wakeLock?.request('screen');}catch{}if(paused||ended){wake?.release().catch(()=>{});wake=null;}}
 function goLive(){
   live=true;$('setup').hidden=true;$('session').hidden=false;
   liveStatus(shown===null?'Loading screen…':'Live',shown===null?'warn':'good');requestAnimationFrame(layout);
@@ -209,17 +219,20 @@ function goLive(){
 document.addEventListener('visibilitychange',()=>{
   if(!live)return;
   if(document.hidden)return pause();
-  if(!wake)keepAwake();
+  if(!wake&&!paused)keepAwake();
   idleTick(); // background timers are throttled, so catch up the moment the page is back
   if(parked!==null){const id=parked;parked=null;send({t:'ready',frameId:id});}
 });
 // Screen off or page in the background: the Mac logs this phone out but keeps the connection.
 // Coming back needs the password, so whoever picks up this phone can't carry on from it.
 function pause(){
-  if(paused||!authed)return;paused=true;store.drop(KEEP);store.set(PAUSED,{at:Date.now()});send({t:'pause'});
+  if(paused||!authed)return;paused=true;epoch++;shown=null;
+  for(const w of waiting.values())w({ok:false,error:'ENDED'});waiting.clear();
+  store.drop(KEEP);store.set(PAUSED,{at:Date.now()});send({t:'pause'});
   // Wipe the picture, not just cover it: nothing of the Mac's screen stays on this phone while it is logged out.
   canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);previews.clear();$('session').classList.add('paused');
-  stopVoice(true);clearInterval(idleTimer);$('idle').hidden=true;wake?.release().catch(()=>{});wake=null;parked=null;
+  // A clip being transcribed is dropped by the Mac, so free the mic here; desktop previews are pictures of the screen too.
+  stopVoice(true);if(voiceId){voiceId='';micState(false,false);}$('desklist').replaceChildren();clearInterval(idleTimer);$('idle').hidden=true;wake?.release().catch(()=>{});wake=null;parked=null;
   $('pausemsg').hidden=true;$('paused').hidden=false;liveStatus('Paused','warn');
 }
 $('resumeform').onsubmit=e=>{
@@ -242,10 +255,10 @@ let shown=null,parked=null;
 // Pull the next frame only while this page is visible, so a locked phone doesn't keep the Mac capturing.
 const pull=id=>{if(document.hidden)parked=id;else send({t:'ready',frameId:id});};
 async function onChunk(data){
-  const f=assembler.push(data);if(!f||ended)return;
-  let bmp;
-  try{bmp=await createImageBitmap(new Blob([f.jpeg],{type:'image/jpeg'}));}catch{pull(f.frameId);return;}
-  if(ended){bmp.close();return;}
+  const f=assembler.push(data);if(!f||ended||paused)return;
+  const e=epoch;let bmp;
+  try{bmp=await createImageBitmap(new Blob([f.jpeg],{type:'image/jpeg'}));}catch{if(e===epoch)pull(f.frameId);return;}
+  if(ended||paused||e!==epoch){bmp.close();return;}
   if(canvas.width!==bmp.width||canvas.height!==bmp.height){canvas.width=bmp.width;canvas.height=bmp.height;layout();}
   canvas.getContext('2d').drawImage(bmp,0,0);bmp.close();
   if(shown===null)liveStatus('Live','good');
@@ -289,14 +302,14 @@ function act(data){
   if(ended||!authed)return Promise.resolve(null);
   if(viewOnly&&POINTER.has(data.kind)){toast('View only is on. Turn it off to click or scroll.');return Promise.resolve(null);}
   if(shown===null){toast('Wait for the screen to appear.');return Promise.resolve(null);}
-  const frameId=shown;
+  const frameId=shown,e=epoch;
   return chain=chain.then(async()=>{
-    if(ended)return null;
+    if(ended||paused||e!==epoch)return null;
     const id=crypto.randomUUID();
     const ack=new Promise(r=>{waiting.set(id,r);setTimeout(()=>{if(waiting.delete(id))r({ok:false,error:'NO_REPLY'});},15_000);});
     send({t:'input',id,frameId,...data});
     const a=await ack;
-    if(!ended&&!a.ok&&a.error!=='ENDED')toast(explain(a.error));
+    if(!ended&&e===epoch&&!a.ok&&a.error!=='ENDED')toast(explain(a.error));
     return a;
   });
 }
@@ -399,7 +412,9 @@ function micState(listening,busy){$('mic').setAttribute('aria-pressed',String(li
 $('mic').onclick=async()=>{
   if(rec){stopVoice(false);return;}
   if(macLocked)return;
-  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch{toast('Allow the microphone for this page to use voice typing.');return;}
+  // A pause while the permission prompt or the clip is pending makes both obsolete (epoch).
+  const e=epoch;let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch{if(e===epoch)toast('Allow the microphone for this page to use voice typing.');return;}
+  if(e!==epoch||paused||ended||rec){stream.getTracks().forEach(t=>t.stop());return;}
   const type=['audio/webm','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));
   const chunks=[];rec=new MediaRecorder(stream,type?{mimeType:type}:undefined);discard=false;
   rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
@@ -408,6 +423,7 @@ $('mic').onclick=async()=>{
     if(discard||macLocked||!chunks.length){micState(false,false);return;}
     micState(false,true);
     const mime=(r.mimeType||type||'audio/webm').split(';')[0],bytes=new Uint8Array(await new Blob(chunks).arrayBuffer());
+    if(e!==epoch||paused||ended){micState(false,false);return;}
     voiceId=crypto.randomUUID();const n=Math.ceil(bytes.length/PIECE);
     for(let seq=0;seq<n;seq++){let bin='';for(const b of bytes.subarray(seq*PIECE,(seq+1)*PIECE))bin+=String.fromCharCode(b);send({t:'voice',id:voiceId,seq,mime,data:btoa(bin),last:seq===n-1});}
   };
@@ -483,4 +499,6 @@ $('stop').onclick=()=>{
   $('stop').disabled=true;
 };
 
-start().catch(e=>{console.error(e);/INVALID_SIGNAL/.test(e?.message)?end(EXPIRED_SUB,'expired'):end('Could not set up the connection. '+NEW_LINK);});
+start().catch(e=>{console.error(e);/INVALID_SIGNAL/.test(e?.message)?end(EXPIRED_SUB,'expired'):
+  /ANSWER_TOO_LONG/.test(e?.message)?end("This phone has too many network connections for a code. Turn off any VPN, use only Wi-Fi or only mobile data, then send 'control my screen' for a new link."):
+  end('Could not set up the connection. '+NEW_LINK);});

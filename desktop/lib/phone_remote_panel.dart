@@ -29,17 +29,29 @@ class _PhoneRemotePageState extends State<PhoneRemotePage> {
     });
   }
 
+  static const _readError = 'Could not read phone access status.';
+  // The Mac's error codes in words; anything else keeps the general hint.
+  static const _errors = {
+    'USE_12_TO_256_CHARACTER_PASSWORD': 'Use a password of 12 to 256 characters.',
+    'WAIT_BEFORE_RETRY': 'Too many tries. Wait a moment, then try again.',
+    'MAC_ONLY': 'Phone access is available on a Mac only.',
+  };
+  String explain(Object e) =>
+      _errors.entries.where((c) => '$e'.contains(c.key)).map((c) => c.value).firstOrNull ??
+      'Could not complete this step. Check permissions and the selected window.';
+
   Future<void> refresh() async {
     try {
       final next = await widget.gateway.get('/api/phone-remote');
       if (!mounted) return;
       setState(() {
+        if (error == _readError) error = null;
         status = next;
         final addresses = next['addresses'] as List? ?? [];
         if (addresses.length == 1) address ??= addresses.first['address'];
       });
     } catch (_) {
-      if (mounted) setState(() => error = 'Could not read phone access status.');
+      if (mounted) setState(() => error = _readError);
     }
   }
 
@@ -49,10 +61,8 @@ class _PhoneRemotePageState extends State<PhoneRemotePage> {
     try {
       await action();
       await refresh();
-    } catch (_) {
-      if (mounted) {
-        setState(() => error = 'Could not complete this step. Check permissions and the selected window.');
-      }
+    } catch (e) {
+      if (mounted) setState(() => error = explain(e));
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -104,8 +114,8 @@ class _PhoneRemotePageState extends State<PhoneRemotePage> {
             TextField(key: const Key('phone-confirmation'), controller: confirmation, obscureText: true, decoration: const InputDecoration(labelText: 'Confirm password')),
             const SizedBox(height: 12),
             Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: busy ? null : () => run(() async {
-              if (password.text.length < 12 || password.text != confirmation.text) {
-                setState(() => error = 'Enter matching passwords of at least 12 characters.'); return;
+              if (password.text.length < 12 || password.text.length > 256 || password.text != confirmation.text) {
+                setState(() => error = 'Enter matching passwords of 12 to 256 characters.'); return;
               }
               await command({'action': 'password', 'password': password.text});
               password.clear(); confirmation.clear();
