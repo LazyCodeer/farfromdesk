@@ -39,7 +39,7 @@ function fixture() {
   const tg=new Telegram(store,router,root,fetcher);
   const message=(id:number,text:string,user=owner,extra:any={})=>({update_id:id,message:{message_id:id,date:Math.floor(Date.now()/1000),text,chat:{id:user,type:'private'},from:{id:user,first_name:'Owner',is_bot:false},...extra}});
   async function pair(){await tg.connect(token);const secret=new URL(tg.view().pairingUrl!).searchParams.get('start');await tg.receive(message(1,`/start ${secret}`));tg.confirm(String(owner));store.db.prepare('DELETE FROM outbox').run();}
-  return {root,store,router,approvals,binding,tg,calls,message,pair,updates:(rows:any[])=>{queuedUpdates=rows;},file:(data:Buffer)=>{fileData=data;},fail:(n:number)=>{fail=n;},webhook:(s:string)=>{webhook=s;},botId:(n:number)=>{botId=n;},close:()=>{tg.close();approvals.cancel();store.close();rmSync(root,{recursive:true,force:true});}};
+  return {root,store,router,approvals,binding,tg,calls,message,pair,fetcher,updates:(rows:any[])=>{queuedUpdates=rows;},file:(data:Buffer)=>{fileData=data;},fail:(n:number)=>{fail=n;},webhook:(s:string)=>{webhook=s;},botId:(n:number)=>{botId=n;},close:()=>{tg.close();approvals.cancel();store.close();rmSync(root,{recursive:true,force:true});}};
 }
 
 test('Telegram pairing is private, expires, and requires exact local account confirmation',async()=>{
@@ -325,5 +325,48 @@ test('Telegram forwarded or quoted voice cannot open screen control and spoken s
    await f.tg.receive(f.message(700+i,'',owner,{voice:{file_id:'voice',file_size:10,duration:2,mime_type:'audio/ogg'},...extra}));await mediaSettled(f.tg);
   }
   text='/screen';await f.tg.receive(f.message(710,'',owner,{voice:{file_id:'voice',file_size:10,duration:2,mime_type:'audio/ogg'}}));await mediaSettled(f.tg);assert.equal(screens,0);
+ }finally{f.close();}
+});
+
+
+test('pending Telegram link and candidate survive reconnect and a new client without extending expiry',async()=>{
+ const f=fixture();let restarted:Telegram|undefined;try{
+  await f.tg.connect(token);const first=f.tg.view();const secret=new URL(first.pairingUrl!).searchParams.get('start');
+  await f.tg.connect();assert.equal(f.tg.view().pairingUrl,first.pairingUrl);assert.equal(f.tg.view().expiresAt,first.expiresAt);
+  await f.tg.receive(f.message(801,`/start ${secret}`));assert.equal(f.tg.view().candidate?.id,owner);
+  f.tg.close();restarted=new Telegram(f.store,f.router,f.root,f.fetcher);await restarted.resume();
+  assert.equal(restarted.view().pairingUrl,first.pairingUrl);assert.equal(restarted.view().expiresAt,first.expiresAt);assert.equal(restarted.view().candidate?.id,owner);
+  assert.equal(f.store.get('telegram-owner'),undefined);restarted.confirm(owner);assert.equal(f.store.get('telegram-pairing'),undefined);
+ }finally{restarted?.close();f.close();}
+});
+
+test('unpaired Telegram gives safe feedback for stale and bare start without pairing or routing',async()=>{
+ const f=fixture();try{
+  await f.tg.connect(token);const first=f.tg.view().pairingUrl;f.calls.length=0;
+  await f.tg.receive(f.message(810,'/start stale'));await f.tg.receive(f.message(810,'/start stale'));await f.tg.receive(f.message(811,'/start'));
+  assert.deepEqual(f.calls.filter(c=>c.method==='sendMessage').map(c=>c.body.text),[
+   'This pairing link is out of date. Open the newest link from the FarFromDesk app.',
+   'Open the pairing link from the FarFromDesk app.',
+  ]);
+  assert.equal(f.tg.view().pairingUrl,first);assert.equal(f.tg.view().candidate,undefined);assert.equal(f.store.get('telegram-owner'),undefined);assert.equal(f.store.jobs().length,0);
+  const secret=new URL(first!).searchParams.get('start');
+  await f.tg.receive(f.message(812,`/start ${secret}`,owner,{forward_origin:{type:'user'}}));assert.equal(f.tg.view().candidate,undefined);
+  await f.tg.receive(f.message(813,`/start ${secret}`));assert.equal(f.tg.view().candidate?.id,owner);
+ }finally{f.close();}
+});
+
+test('expired, disconnected and foreign-bot pending links cannot be restored',async()=>{
+ const f=fixture();try{
+  await f.tg.connect(token);const first=f.tg.view().pairingUrl!;
+  const saved=JSON.parse(f.store.get('telegram-pairing')!);saved.expires=0;f.store.set('telegram-pairing',JSON.stringify(saved));f.tg.close();
+  const restarted=new Telegram(f.store,f.router,f.root,f.fetcher);
+  try{
+   await restarted.resume();assert.notEqual(restarted.view().pairingUrl,first);
+   await restarted.receive(f.message(820,'/start '+new URL(first).searchParams.get('start')));assert.equal(restarted.view().candidate,undefined);
+   const second=restarted.view().pairingUrl;restarted.disconnect();assert.equal(f.store.get('telegram-pairing'),undefined);
+   await restarted.connect(token);assert.notEqual(restarted.view().pairingUrl,second);
+   restarted.close();const record=JSON.parse(f.store.get('telegram-pairing')!);record.botId=other;f.store.set('telegram-pairing',JSON.stringify(record));
+   const third=restarted.view().pairingUrl;await restarted.resume();assert.notEqual(restarted.view().pairingUrl,third);
+  }finally{restarted.close();}
  }finally{f.close();}
 });
