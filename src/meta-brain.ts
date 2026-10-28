@@ -389,8 +389,8 @@ export class MetaBrain {
       const item=topic??this.memory.add(m.id,m.text);
       this.memory.link(m.id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
-      // The owner's follow-up answers a block the Brain recorded; a block the owner set stays.
-      if(['not started','done','waiting on owner'].includes(item.status)||item.status==='blocked'&&this.memory.items.statusBy(item.id)!=='Owner')this.memory.items.setStatus(item.id,'in progress','Brain');
+      // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.
+      if(['not started','done','waiting on owner'].includes(item.status)||item.status==='blocked'&&this.memory.items.statusBy(item.id)==='Brain evidence')this.memory.items.setStatus(item.id,'in progress','Brain');
       this.store.set(topicKey,`item:${item.id}`);
       this.store.db.prepare("UPDATE brain_tasks SET coordinator_id=?,target_session_id=?,state='queued',permission='allowed' WHERE id=?").run(coordinator!.id,target.id,m.id);
       this.store.remember(m.id);

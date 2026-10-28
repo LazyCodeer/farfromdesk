@@ -429,6 +429,17 @@ test('an unassigned item goes to the session the owner names, and a named platfo
     assert.equal(f.store.job('wa:plat'),undefined);assert.match(String((f.out().at(-1) as any).body),/another platform/);
   }finally{f.close();}
 });
+test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
+  for(const by of ['Owner','codex-proxy',undefined]){
+    const f=fixture(decision('codex'));try{
+      await f.router.receive({id:'wa:b1',text:'Codex, fix the export'});
+      new BrainMemory(f.store).items.setStatus(1,'blocked',by);
+      f.respond(async()=>({...decision(),taskIds:['item:1']}));
+      await f.router.receive({id:'wa:b2',text:'try again with CSV'});
+      assert.equal((f.store.db.prepare('SELECT status FROM items WHERE id=1').get() as any).status,'blocked',String(by));
+    }finally{f.close();}
+  }
+});
 test('a connected worker session is visible to the brain before its first task',async()=>{
   const f=fixture();try{
     const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
