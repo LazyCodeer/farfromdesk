@@ -1,39 +1,45 @@
 import 'package:flutter/material.dart';
 
-// The website's dark theme and its "What it looks like in WhatsApp" tone cards.
-// Card 03 (charcoal) is the default surface; pine marks WhatsApp and amber
-// marks requests that need the owner. Body text is >= 4.5:1 on every surface.
-const windowColor = Color(0xff121210),
-    panelColor = Color(0xff1d1d1a),
-    dialogColor = Color(0xff181815),
-    ink = Color(0xfff3f1ea),
-    muted = Color(0xffa7a69d),
-    accent = Color(0xff86c9ad),
-    accentInk = Color(0xff0f1a15),
-    accentWash = Color(0x2486c9ad),
-    action = Color(0xfff3f1ea),
-    onAction = Color(0xff121210),
-    line = Color(0xff3a3933),
-    line2 = Color(0x24f3f1ea),
-    canvas = Color(0x0ff4f1ea),
-    surface = Color(0x14ffffff),
-    hover = Color(0x0af4f1ea),
-    success = Color(0xff5fcf8f),
-    warning = Color(0xffe2a868),
-    danger = Color(0xffff9d92),
-    sand = Color(0x29e2a868),
-    successWash = Color(0x245fcf8f),
-    hairline = Color(0xff2a2925),
+// FarFromDesk Studio design (2026-10-28): near-black surfaces, one orange
+// accent, Onest. Cards are #0f0f0f with a 1px #1e1e1e inset line.
+const windowColor = Color(0xff080808),
+    sidebarColor = Color(0xff0b0b0b),
+    panelColor = Color(0xff0f0f0f),
+    dialogColor = Color(0xff0f0f0f),
+    fieldColor = Color(0xff0d0d0d),
+    raised = Color(0xff141414),
+    ink = Color(0xfff5f5f5),
+    ink2 = Color(0xffd4d4d4),
+    muted = Color(0xff8f8f8f),
+    faint = Color(0xff6b6b6b),
+    faint2 = Color(0xff575757),
+    accent = Color(0xffff6b2c),
+    accentSoft = Color(0xffff8a57),
+    accentInk = Color(0xffffffff),
+    accentWash = Color(0x1fff6b2c),
+    action = Color(0xffff6b2c),
+    onAction = Color(0xffffffff),
+    line = Color(0xff2a2a2a),
+    line2 = Color(0xff1e1e1e),
+    canvas = Color(0x06ffffff),
+    surface = Color(0xff141414),
+    hover = Color(0x0affffff),
+    success = Color(0xff3fd68c),
+    warning = Color(0xfffacc15),
+    danger = Color(0xfff87171),
+    sand = Color(0x1ffacc15),
+    successWash = Color(0x1f3fd68c),
+    hairline = Color(0xff1a1a1a),
     claudeTone = Color(0xffe08a5f),
     whatsappGreen = Color(0xff25d366);
 
-// Tone cards, flat as on the website.
-const toneCharcoal = Color(0xff25241f),
-    tonePine = Color(0xff2c5145),
-    toneAmber = Color(0xffeab676);
-const onPine = Color(0xfff4f1ea), onPineMuted = Color(0xffc9d6cc);
+// Tone cards. All dark now; pine marks the phone chat.
+const toneCharcoal = panelColor,
+    tonePine = Color(0xff1f5c44),
+    toneAmber = Color(0xff1a1405);
+const onPine = Color(0xfff5f5f5), onPineMuted = Color(0xffc9d6cc);
 
-// Ink for the light amber card, as on the website.
+// Ink for light content (kept for onLightTone callers).
 const toneInk = Color(0xff1c1d1a),
     toneMuted = Color(0xff4d4e48),
     toneAccent = Color(0xff2f5d50);
@@ -80,22 +86,22 @@ Widget onLightTone(BuildContext context, Widget child) {
   );
 }
 
-const _pill = StadiumBorder();
+final _pill = RoundedRectangleBorder(borderRadius: BorderRadius.circular(9));
 const _label = TextStyle(
-  fontFamily: 'DMSans',
-  fontSize: 14,
+  fontFamily: 'Onest',
+  fontSize: 13,
   fontWeight: FontWeight.w600,
 );
 OutlineInputBorder _field(Color color, [double width = 1]) =>
     OutlineInputBorder(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(9),
       borderSide: BorderSide(color: color, width: width),
     );
 
 ThemeData bridgeTheme() => ThemeData(
   useMaterial3: true,
   visualDensity: VisualDensity.standard,
-  fontFamily: 'DMSans',
+  fontFamily: 'Onest',
   brightness: Brightness.dark,
   scaffoldBackgroundColor: windowColor,
   colorScheme: const ColorScheme.dark(
@@ -104,28 +110,29 @@ ThemeData bridgeTheme() => ThemeData(
     surface: panelColor,
     onSurface: ink,
     secondary: accent,
-    error: warning,
+    error: danger,
   ),
   textTheme: const TextTheme(
     headlineLarge: TextStyle(
-      fontSize: 18,
+      fontSize: 22,
+      height: 28 / 22,
       fontWeight: FontWeight.w600,
-      letterSpacing: -.3,
+      letterSpacing: -.44,
       color: ink,
     ),
     titleLarge: TextStyle(
-      fontSize: 14,
+      fontSize: 14.5,
       fontWeight: FontWeight.w600,
       color: ink,
     ),
     titleMedium: TextStyle(
-      fontSize: 14,
+      fontSize: 13.5,
       fontWeight: FontWeight.w500,
       color: ink,
     ),
-    bodyLarge: TextStyle(fontSize: 13, height: 1.5, color: ink),
-    bodyMedium: TextStyle(fontSize: 13, height: 1.5, color: ink),
-    bodySmall: TextStyle(fontSize: 11, height: 1.5, color: muted),
+    bodyLarge: TextStyle(fontSize: 13.5, height: 1.5, color: ink),
+    bodyMedium: TextStyle(fontSize: 13.5, height: 1.5, color: ink),
+    bodySmall: TextStyle(fontSize: 12, height: 1.45, color: muted),
     labelLarge: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
   ),
   dividerColor: hairline,
@@ -142,13 +149,13 @@ ThemeData bridgeTheme() => ThemeData(
   ),
   inputDecorationTheme: InputDecorationTheme(
     filled: true,
-    fillColor: panelColor,
+    fillColor: fieldColor,
     isDense: true,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     border: _field(line2),
     enabledBorder: _field(line2),
-    focusedBorder: _field(accent, 1.5),
-    hintStyle: const TextStyle(color: muted, fontSize: 13.5),
+    focusedBorder: _field(accent),
+    hintStyle: const TextStyle(color: faint2, fontSize: 13),
   ),
   filledButtonTheme: FilledButtonThemeData(
     style: FilledButton.styleFrom(
@@ -156,7 +163,7 @@ ThemeData bridgeTheme() => ThemeData(
       foregroundColor: onAction,
       disabledBackgroundColor: action.withValues(alpha: .3),
       disabledForegroundColor: ink.withValues(alpha: .45),
-      minimumSize: const Size(0, 38),
+      minimumSize: const Size(0, 36),
       padding: const EdgeInsets.symmetric(horizontal: 16),
       textStyle: _label,
       shape: _pill,
@@ -164,33 +171,42 @@ ThemeData bridgeTheme() => ThemeData(
   ),
   outlinedButtonTheme: OutlinedButtonThemeData(
     style: OutlinedButton.styleFrom(
-      backgroundColor: panelColor,
-      foregroundColor: ink,
+      backgroundColor: fieldColor,
+      foregroundColor: const Color(0xffe5e5e5),
       disabledForegroundColor: ink.withValues(alpha: .4),
-      side: const BorderSide(color: line2),
-      minimumSize: const Size(0, 38),
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      textStyle: _label,
+      side: const BorderSide(color: Color(0xff232323)),
+      minimumSize: const Size(0, 36),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      textStyle: _label.copyWith(fontWeight: FontWeight.w500),
       shape: _pill,
     ),
   ),
   textButtonTheme: TextButtonThemeData(
     style: TextButton.styleFrom(
-      foregroundColor: accent,
+      foregroundColor: ink2,
       minimumSize: const Size(0, 32),
       textStyle: _label,
+      shape: _pill,
     ),
   ),
   dialogTheme: DialogThemeData(
     backgroundColor: dialogColor,
     surfaceTintColor: Colors.transparent,
-    barrierColor: const Color(0xb3060605),
+    barrierColor: const Color(0xb3000000),
     shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(22),
+      borderRadius: BorderRadius.circular(16),
       side: const BorderSide(color: line2),
     ),
   ),
   popupMenuTheme: const PopupMenuThemeData(color: panelColor),
+  tooltipTheme: TooltipThemeData(
+    decoration: BoxDecoration(
+      color: raised,
+      borderRadius: BorderRadius.circular(7),
+      border: Border.all(color: line),
+    ),
+    textStyle: const TextStyle(fontSize: 12, color: ink),
+  ),
   checkboxTheme: CheckboxThemeData(
     fillColor: WidgetStateProperty.resolveWith(
       (s) => s.contains(WidgetState.selected) ? accent : Colors.transparent,
@@ -201,14 +217,15 @@ ThemeData bridgeTheme() => ThemeData(
   ),
   progressIndicatorTheme: const ProgressIndicatorThemeData(
     color: accent,
-    linearTrackColor: hairline,
+    linearTrackColor: line2,
   ),
   switchTheme: SwitchThemeData(
     thumbColor: WidgetStateProperty.resolveWith(
-      (s) => s.contains(WidgetState.selected) ? onAction : muted,
+      (s) => s.contains(WidgetState.selected) ? Colors.white : faint,
     ),
     trackColor: WidgetStateProperty.resolveWith(
-      (s) => s.contains(WidgetState.selected) ? accent : line,
+      (s) =>
+          s.contains(WidgetState.selected) ? accent : const Color(0xff1e1e1e),
     ),
     trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
   ),

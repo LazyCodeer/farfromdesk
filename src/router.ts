@@ -1,3 +1,4 @@
+import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand } from './owner-commands.js';
 import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
@@ -12,7 +13,7 @@ import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
-export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice'};
+export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean};
 export const help = `Just tell me what you need.
 
 • Show my recent sessions.
@@ -44,12 +45,12 @@ export class Router {
     } else if(m.quotedId) {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
       this.checkQuotedPlatform(text,b);
-    } else b=this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??'');
+    } else b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
     if(!b)throw new Error('Choose an exact session before sending an attachment.');
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
     return {binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
-      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel()])};
+      identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel(),this.store.get(`owner-target:${this.store.destination()}`)])};
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
     if(this.stopped||this.store.seen(m.id))return;
@@ -73,9 +74,11 @@ export class Router {
   private async receiveOnce(m:Incoming):Promise<RouteResult> {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
+    if(m.ownerCommand&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
     const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&m.ownerCommand!==false){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     try {
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
@@ -84,8 +87,14 @@ export class Router {
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      const commandReply=m.ownerCommand&&isOwnerCommand(text)?await ownerCommand(this,m):undefined;
+      if(commandReply!==undefined){this.store.output(undefined,commandReply,`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      if(authenticatedOwner(this,m)&&m.ownerCommand&&backToProxy.test(text)&&this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'){
+        clearOwnerTarget(this);this.store.output(undefined,'Back to normal routing.',`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
+      }
+      if(this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'&&!text.startsWith('/')&&await routeOwnerTarget(this,m)){this.store.remember(m.id);this.pump();return {status:this.brain.get(m.id)?.state==='blocked'?'blocked':this.store.job(m.id)?'queued':'handled',requestId:m.id};}
       const browsing=/^(?:\/sessions(?:\s+.*)?|sessions|list sessions|show (?:me )?(?:my )?(?:recent )?sessions|list (?:my |all |recent )?sessions|(?:check|show) more(?: sessions)?|more sessions|(?:go )?back(?: in)? (?:the )?history|older sessions|previous page|(?:find|search)(?: for)? sessions? .+)$/i.test(text);
-      if(this.coordinator&&!m.quotedId&&browsing) {
+      if(this.coordinator&&!m.quotedId&&m.ownerCommand!==false&&browsing) {
         this.brain.clearChoice();
         queueOwnerReceipt(this.store,m.id,this.coordinator.master(),true);
         let search=text.replace(/^\/sessions\s*/i,'');
@@ -95,10 +104,10 @@ export class Router {
         this.store.output(undefined,await this.coordinator.list(search,more?'more':back?'back':0),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       const selection=/^(?:(?:\/select|select|choose|pick)\s+)?(\d+(?:(?:\s*,\s*|\s+and\s+|\s+)\d+)*)$/i.exec(text);
-      if(this.coordinator&&!m.quotedId&&selection&&!this.brain.hasChoice()&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
+      if(this.coordinator&&!m.quotedId&&m.ownerCommand!==false&&selection&&!this.brain.hasChoice()&&(this.store.get('selection-awaiting')==='true'||/^(?:\/select|select|choose|pick)\s/i.test(text))) {
         this.store.output(undefined,await this.coordinator.select(selection[1].replace(/\band\b/gi,',')),`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
-      if(!m.quotedId&&backToProxy.test(text)&&endDirect(this.store)) {
+      if(!m.quotedId&&m.ownerCommand!==false&&backToProxy.test(text)&&endDirect(this.store)) {
         this.store.output(undefined,'↩️ *Back to your proxy*\nYour next messages go to the proxy again.',`command:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(text.startsWith('/')) {
@@ -107,7 +116,7 @@ export class Router {
         if(cmd==='help')this.store.output(undefined,help,`command:${m.id}`);
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
         else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
-        else if(cmd==='use') {const b=this.need(args);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
+        else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
         else if(cmd==='talk')this.store.output(undefined,this.talkDirect(this.need(args)),`command:${m.id}`);
         else if(cmd==='to') {const [alias,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /to NAME message');this.queue(m.id,this.need(alias),words.join(' '));}
         else if(cmd==='status')this.store.output(undefined,`Active: ${this.store.binding(this.store.get('active')??'')?.alias??'none'}\nRunning: ${this.busy.size}\nWaiting permissions: ${this.approvals.pending.size}\n${this.store.jobs().slice(0,8).map(j=>`${j.id} · ${this.store.binding(j.binding_id)?.alias} · ${j.status}${j.error?` · ${j.error}`:''}`).join('\n')}`,`command:${m.id}`);
@@ -156,7 +165,7 @@ export class Router {
   talkDirect(b:Binding,destination?:string|null) {
     if(!b.enabled)throw new Error('That session is paused. Resume it first.');
     if(this.coordinator?.isCoordinator(b.id))throw new Error('That is a proxy. Name the session you want to talk to.');
-    startDirect(this.store,b,destination);
+    clearOwnerTarget(this);startDirect(this.store,b,destination);
     const name=this.coordinator?.name(b)??b.alias;
     return `🔀 *Now talking to ${name.replace(/[*_~`]/g,'').slice(0,60)}*\n- Your messages go straight to this session, and it answers you itself. Its permissions do not change.\nYou: say *back* to return to your proxy. After two quiet hours it switches back on its own.`;
   }

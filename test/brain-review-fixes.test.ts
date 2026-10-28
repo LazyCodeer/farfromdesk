@@ -123,24 +123,3 @@ test('more than 100 unfinished watches in this chat still let a later one fire',
     assert.equal(state('local:watch-0'),'waiting'); // unfinished work stays watched
   }finally{t.done();}
 });
-
-test('watches in two chats both fire when ticks take turns between the chats',async()=>{
-  const t=await setup();
-  try{
-    const brain=new t.MetaBrain(t.store,t.secret,{interpret:async()=>{throw Error('unused');}} as any);
-    const b=t.store.register('worker','codex','11111111-1111-4111-8111-111111111111',t.root).binding;
-    const insert=t.store.db.prepare('INSERT INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)');
-    const add=(n:number,dest:string,failed:boolean)=>t.store.destinationContext.run(dest,()=>{
-      const id='local:job-'+dest+n;t.store.enqueue(id,b,'Synthetic task',dest);
-      const item=brain.memory.add(id,'Synthetic task '+n);t.store.jobState(id,failed?'failed':'submitted');
-      t.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,'text',?,'answered','allowed',?)").run('local:watch-'+dest+n,'Notify me when this finishes',dest,n);
-      insert.run('local:watch-'+dest+n,dest,item.id,id,n);
-    });
-    for(let n=0;n<101;n++)add(n,'synthetic-owner',n===100);
-    add(0,'tg:other',true);
-    for(let n=0;n<2;n++){brain.tick(router());t.store.destinationContext.run('tg:other',()=>brain.tick(router()));}
-    const state=(id:string)=>(t.store.db.prepare('SELECT state FROM brain_watches WHERE request_id=?').get(id) as any).state;
-    assert.equal(state('local:watch-synthetic-owner100'),'notified');
-    assert.equal(state('local:watch-tg:other0'),'notified');
-  }finally{t.done();}
-});

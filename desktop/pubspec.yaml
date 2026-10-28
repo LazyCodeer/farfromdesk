@@ -67,6 +67,15 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   fonts:
+    - family: Onest
+      fonts:
+        - asset: assets/Onest-Regular.ttf
+        - asset: assets/Onest-Medium.ttf
+          weight: 500
+        - asset: assets/Onest-SemiBold.ttf
+          weight: 600
+        - asset: assets/Onest-Bold.ttf
+          weight: 700
     - family: DMSans
       fonts:
         - asset: assets/DMSans.ttf

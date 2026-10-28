@@ -1,3 +1,5 @@
+import { MetaBrain } from '../src/meta-brain.js';
+import { MetaSecret, DEFAULT_BRAIN } from '../src/meta-brain-config.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -24,6 +26,7 @@ function fixture() {
   const fetcher:typeof fetch=async(url,init)=>{
     const method=String(url).split('/').at(-1)!;const body=init?.body instanceof FormData?init.body:JSON.parse(String(init?.body??'{}'));calls.push({method,body});
     if(String(url).includes('/file/bot'))return new Response(fileData);
+    if(method==='setMyCommands')return Response.json({ok:true,result:true});
     if(method==='getFile')return Response.json({ok:true,result:{file_path:'documents/file_1.txt'}});
     if(method==='getUpdates'&&queuedUpdates.length){const result=queuedUpdates;queuedUpdates=[];return Response.json({ok:true,result});}
     if(method==='getUpdates')return await new Promise<Response>((_,reject)=>{if(init?.signal?.aborted)reject(new Error('abort'));else init?.signal?.addEventListener('abort',()=>reject(new Error('abort')),{once:true});});
@@ -186,4 +189,102 @@ test('inline keyboard callbacks bind owner, exact message and choice, and dispat
  assert.equal(f.store.jobs().length,2);assert.match(f.store.job(`tg-choice:${bot}:tap`)!.body,/Inspect/);
  assert.ok(f.calls.some(c=>c.method==='answerCallbackQuery'));
  }finally{f.close();}
+});
+
+test('command menu and bot suffixes preserve existing commands and reject other bots',async()=>{
+  const f=fixture();try{
+    await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
+    assert.deepEqual(menu.scope,{type:'all_private_chats'});
+    assert.deepEqual(menu.commands.slice(0,7).map((c:any)=>c.command),['cloud','claude','codex','brain','screen','back','help']);
+    await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
+    await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
+    await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);
+    await f.tg.receive(f.message(93,'/help@ffd_test_bot'));
+    assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>r.body.includes('Current target: test (codex)')));
+    await f.tg.receive(f.message(94,'/back'));await f.tg.receive(f.message(95,'/status@ffd_test_bot'));
+    assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),'null');
+  }finally{f.close();}
+});
+
+test('only authenticated unquoted top-level commands switch routes or open the viewer',async()=>{
+  const f=fixture();try{
+    await f.pair();let screens=0;f.router.remoteControl=async text=>{if(text!=='/remote')return; screens++;return 'Viewer requires setup';};
+    await f.tg.receive(f.message(90,'/screen',other));
+    for(const [i,extra] of [{forward_origin:{type:'user'}},{reply_to_message:{message_id:88,from:{id:owner}}},{quote:{text:'/screen'}},{via_bot:{id:other}}].entries())await f.tg.receive(f.message(91+i,'/screen',owner,extra));
+    assert.equal(screens,0);
+    await f.tg.receive(f.message(99,'/screen'));await f.tg.receive(f.message(99,'/screen'));assert.equal(screens,1);
+    const dest=telegramDestination(bot,owner);
+    await f.store.destinationContext.run(dest,()=>f.router.receive({id:'report:spoof',text:'/codex',ownerCommand:true}));
+    assert.equal(f.store.get(`owner-target:${dest}`),undefined);
+  }finally{f.close();}
+});
+
+test('Claude aliases offer stable choices and never substitute paused or changed connections',async()=>{
+  const f=fixture();try{
+    await f.pair();const a=f.store.register('claude-app','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
+    const b=f.store.register('claude-cli','claude','33333333-3333-4333-8333-333333333333',f.root,'channel').binding;
+    f.store.set('selected',JSON.stringify([a.id,b.id]));
+    await f.tg.receive(f.message(90,'/cloud'));assert.equal(f.store.jobs().length,0);
+    await f.tg.receive(f.message(91,'/claude 2'));await f.tg.receive(f.message(92,'Check this task'));
+    assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,b.id);
+    assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.destination,telegramDestination(bot,owner));
+    f.store.enable(b.id,false);await f.tg.receive(f.message(93,'Do not fall back'));assert.equal(f.store.job(telegramMessageId(bot,owner,93)),undefined);
+    f.store.enable(b.id,true);f.store.set(`execution-mode:${b.id}`,'desktop');await f.tg.receive(f.message(94,'Changed runtime'));assert.equal(f.store.job(telegramMessageId(bot,owner,94)),undefined);
+    f.store.set('enabled-apps','["codex"]');await f.tg.receive(f.message(95,'/cloud'));assert.equal(f.store.bindings().length,3);
+    assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>r.body.includes('Claude is disabled')));
+    await f.tg.receive(f.message(96,'/back'));await f.tg.receive(f.message(97,'Normal again'));assert.equal(f.store.job(telegramMessageId(bot,owner,97))?.binding_id,f.binding.id);
+  }finally{f.close();}
+});
+
+test('direct target replies remain request scoped and choices cannot cross owners',async()=>{
+  const f=fixture();try{
+    await f.pair();await f.tg.receive(f.message(90,'/codex'));await f.tg.receive(f.message(91,'Describe the result'));
+    const id=telegramMessageId(bot,owner,91),dest=telegramDestination(bot,owner);
+    f.router.channelReply(f.binding,'The requested result','final',id);
+    const reply=f.store.db.prepare('SELECT destination FROM outbox WHERE request_id=?').get(id) as any;assert.equal(reply.destination,dest);
+    f.store.set('telegram-owner',telegramDestination(bot,other));f.store.set('telegram-user-id',String(other));
+    await f.tg.receive(f.message(92,'/codex 1',other));assert.equal(f.store.job(telegramMessageId(bot,other,92)),undefined);
+    assert.equal(f.store.get(`owner-target:${telegramDestination(bot,other)}`),undefined);
+  }finally{f.close();}
+});
+
+test('brain mode requires enabled configured Meta and blocks model failures even with legacy fallback',async()=>{
+  const f=fixture();try{
+    await f.pair();f.store.set('master',f.binding.id);
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const secret=new MetaSecret(f.root);let interpretations=0;
+    f.router.brain=new MetaBrain(f.store,secret,{interpret:async()=>{interpretations++;throw Error('Synthetic offline');}});
+    await f.tg.receive(f.message(90,'/brain'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),undefined);
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'legacy'}));
+    await f.tg.receive(f.message(91,'/brain'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),undefined);
+    secret.save('synthetic-meta-key-123456789');await f.tg.receive(f.message(92,'/brain'));
+    await f.tg.receive(f.message(93,'Investigate the custom rendering bug'));assert.equal(interpretations,1);assert.equal(f.store.job(telegramMessageId(bot,owner,93)),undefined);
+    assert.equal(f.router.brain.get(telegramMessageId(bot,owner,93))?.state,'blocked');
+    secret.remove();await f.tg.receive(f.message(94,'Do not fall back when key removed'));assert.equal(f.store.job(telegramMessageId(bot,owner,94)),undefined);
+    const rows=(f.store.db.prepare('SELECT body FROM outbox').all() as any[]).map(r=>r.body).join('\n');assert.match(rows,/disabled/);assert.match(rows,/needs an API key/);
+  }finally{f.close();}
+});
+
+test('screen entry reports unavailable, setup, locked or authenticated viewer responses without changing routing',async()=>{
+  const f=fixture();try{
+    await f.pair();await f.tg.receive(f.message(90,'/codex'));const key=`owner-target:${telegramDestination(bot,owner)}`,target=f.store.get(key);
+    await f.tg.receive(f.message(91,'/screen'));
+    for(const [i,reply] of ['Set a remote password first.','Mac is locked. Unlock it first.','Native permissions are missing. Check Mac control.','Open https://viewer.example.invalid/#offer=test then enter your remote password.'].entries()){
+      f.router.remoteControl=async text=>text==='/remote'?reply:undefined;
+      await f.tg.receive(f.message(92+i,'/screen'));
+      assert.ok((f.store.db.prepare('SELECT body FROM outbox').all() as any[]).some(r=>r.body.includes(reply)),JSON.stringify(f.store.db.prepare('SELECT body FROM outbox').all()));
+    }
+    assert.equal(f.store.get(key),target);assert.equal(f.store.jobs().length,0);
+  }finally{f.close();}
+});
+
+test('selected target applies to files and mode changes invalidate an in-flight file target',async()=>{
+  const f=fixture();try{
+    await f.pair();const claude=f.store.register('claude-file','claude','22222222-2222-4222-8222-222222222222',f.root,'channel').binding;
+    f.store.set('selected',JSON.stringify([claude.id]));await f.tg.receive(f.message(90,'/cloud'));
+    const destination=telegramDestination(bot,owner),m={id:telegramMessageId(bot,owner,91),text:'Review this file',ownerCommand:false};
+    const target=f.store.destinationContext.run(destination,()=>f.router.attachmentTarget(m));assert.equal(target.binding.id,claude.id);
+    await f.tg.receive(f.message(92,'/codex'));
+    const changed=f.store.destinationContext.run(destination,()=>f.router.attachmentTarget(m));assert.notEqual(changed.identity,target.identity);assert.equal(changed.binding.id,f.binding.id);
+  }finally{f.close();}
 });

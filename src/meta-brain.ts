@@ -271,7 +271,7 @@ export class MetaBrain {
       }catch(e){this.store.db.exec('ROLLBACK TO brain_watch; RELEASE brain_watch');throw e;}
     }
   }
-  async handle(router:Router,m:Incoming):Promise<boolean> {
+  async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
     const policy=brainPolicy(this.store);
     if(!policy.enabled)return false;
     // IDs from internal delegation/reports cannot masquerade as owner input.
@@ -295,7 +295,7 @@ export class MetaBrain {
       if(this.get(m.id)?.state!=='interpreting')return true;
       // Policy changes during an HTTP call revoke its result; never silently resume under old consent.
       if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
-      if(policy.failure==='legacy'){
+      if(policy.failure==='legacy'&&!strict){
         this.store.db.prepare("UPDATE brain_tasks SET state='legacy',permission='legacy',reason='Meta unavailable; owner-selected legacy fallback' WHERE id=?").run(m.id);
         return false;
       }

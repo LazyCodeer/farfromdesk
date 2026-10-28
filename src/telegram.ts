@@ -1,3 +1,4 @@
+import { TELEGRAM_COMMANDS, telegramCommand } from './owner-commands.js';
 import { optionsMarkup } from './message-options.js';
 import { randomBytes, createHash } from 'node:crypto';
 import { constants, existsSync, openSync, closeSync, fstatSync, readFileSync, writeFileSync, fchmodSync, ftruncateSync, mkdirSync, unlinkSync } from 'node:fs';
@@ -31,7 +32,7 @@ export function telegramHTML(text:string) {
 
 type Candidate={id:number;name:string};
 export class Telegram {
-  status='disconnected'; error?:string; closed=true;
+  status='disconnected'; error?:string; menuError?:string; closed=true;
   private token?:string; private bot?:{id:number;username:string};
   private pairing?:{secret:string;expires:number;candidate?:Candidate};
   private controller?:AbortController; private timer?:NodeJS.Timeout;
@@ -61,14 +62,14 @@ export class Telegram {
   }
   view() {
     if(this.pairing&&Date.now()>this.pairing.expires){this.pairing=undefined;if(!this.store.get('telegram-owner'))this.status='pairing expired';}
-    return {status:this.status,error:this.error,configured:!!this.store.get('telegram-bot-id'),username:this.bot?.username??this.store.get('telegram-username'),ownerId:this.store.get('telegram-user-id'),ownerName:this.store.get('telegram-owner-name'),
+    return {status:this.status,error:this.error??this.menuError,menuError:this.menuError,configured:!!this.store.get('telegram-bot-id'),username:this.bot?.username??this.store.get('telegram-username'),ownerId:this.store.get('telegram-user-id'),ownerName:this.store.get('telegram-owner-name'),
       ...(this.pairing?{pairingUrl:`https://t.me/${this.bot!.username}?start=${this.pairing.secret}`,expiresAt:this.pairing.expires,candidate:this.pairing.candidate}:{}),
       maxDownloadBytes:TELEGRAM_DOWNLOAD_BYTES,maxDocumentBytes:TELEGRAM_DOCUMENT_BYTES};
   }
   private async call(method:string,body:Record<string,unknown>|FormData={},signal?:AbortSignal,token=this.token) {
     if(!token)throw new TelegramError(401);
     try {
-      const res=await this.fetcher(`https://api.telegram.org/bot${token}/${method}`,{method:'POST',headers:body instanceof FormData?undefined:{'Content-Type':'application/json'},body:body instanceof FormData?body:JSON.stringify(body),redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(method==='getUpdates'?35000:['getMe','getWebhookInfo','getFile'].includes(method)?15000:60000),...(signal?[signal]:[])])});
+      const res=await this.fetcher(`https://api.telegram.org/bot${token}/${method}`,{method:'POST',headers:body instanceof FormData?undefined:{'Content-Type':'application/json'},body:body instanceof FormData?body:JSON.stringify(body),redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(method==='getUpdates'?35000:['getMe','getWebhookInfo','getFile','setMyCommands'].includes(method)?15000:60000),...(signal?[signal]:[])])});
       const data:any=await res.json();
       if(!res.ok||data.ok!==true)throw new TelegramError(Number(data.error_code)||res.status,Math.min(3600,Math.max(1,Number(data.parameters?.retry_after)||1)));
       return data.result;
@@ -90,6 +91,8 @@ export class Telegram {
       this.store.set('telegram-bot-id',String(bot.id));this.store.set('telegram-username',bot.username);
       if(!this.store.get('telegram-owner'))this.pairing={secret:randomBytes(24).toString('base64url'),expires:Date.now()+600000};
       this.status=this.store.get('telegram-owner')?'connected':'pairing';this.closed=false;this.controller=new AbortController();
+      await this.call('setMyCommands',{commands:TELEGRAM_COMMANDS,scope:{type:'all_private_chats'}},this.controller.signal).then(()=>{this.menuError=undefined;}).catch(()=>{this.menuError='Telegram command menu could not be updated. Typed commands still work.';});
+      if(generation!==this.generation)return;
       this.timer=setInterval(()=>{void this.flush();},1500);this.timer.unref();
       void this.poll(this.controller.signal);
     }catch(e){if(generation===this.generation){this.status='disconnected';this.error=e instanceof TelegramError?e.message:e instanceof Error?e.message:'Telegram connection failed.';}throw e;}
@@ -141,7 +144,7 @@ export class Telegram {
     }
     const m=update?.message;
     if(this.closed||!this.bot||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(m.from?.id)||m.from.is_bot||m.chat.id!==m.from.id||!validId(m.message_id))return;
-    const text=typeof m.text==='string'?m.text:'';
+    let text=typeof m.text==='string'?m.text:'';
     const p=this.pairing;
     if(p&&!p.candidate&&Date.now()<=p.expires&&text===`/start ${p.secret}`){p.candidate={id:m.from.id,name:String(m.from.first_name??'Telegram account').replace(/[\x00-\x1f]/g,' ').slice(0,80)};return;}
     const destination=telegramDestination(this.bot.id,m.chat.id);
@@ -149,7 +152,9 @@ export class Telegram {
     const id=telegramMessageId(this.bot.id,m.chat.id,m.message_id);
     if(this.store.seen(id))return;
     const quotedId=m.reply_to_message?.from?.id===this.bot.id&&validId(m.reply_to_message?.message_id)?telegramMessageId(this.bot.id,m.chat.id,m.reply_to_message.message_id):undefined;
-    const incoming:Incoming={id,text:text==='/start'?'Show my recent sessions':text,quotedId};
+    const ownerCommand=!m.reply_to_message&&!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.quote&&!m.via_bot&&!m.voice&&!m.document&&!m.photo;
+    if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
+    const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand};
     await this.store.destinationContext.run(destination,async()=>{
       const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
@@ -175,14 +180,14 @@ export class Telegram {
   }
   private async processMedia(m:any,incoming:Incoming,file:any,destination:string,signal:AbortSignal) {
     let downloaded:DownloadedMedia|undefined;const voice=!!m.voice,table=voice?'audio_inbox':'media_inbox';
-    const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected')]);const original=routing();
+    const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected'),this.store.get(`owner-target:${destination}`),this.store.get(`direct:${destination}`)]);const original=routing();
     try {
       if(voice){
         this.store.output(undefined,voiceEngine(this.store)==='local'?'Voice note received. I’m transcribing it locally on your computer.':'Voice note received. I’m transcribing it with your configured speech provider.',`audio-progress:${incoming.id}`,destination);
         const text=await this.transcribe(this.store,{mimetype:file.mime_type??'audio/ogg',seconds:file.duration,fileLength:file.file_size},signal,e=>this.store.voiceEvent(incoming.id,e),async()=>this.download(file,'voice.bin',signal));
         if(routing()!==original)throw new Error('The selected session changed. Resend to the intended session.');
         if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions.');
-        incoming={...incoming,text,source:'voice'};
+        incoming={...incoming,text,source:'voice',ownerCommand:false};
       }else{
         incoming={...incoming,text:typeof m.caption==='string'?m.caption:''};
       }

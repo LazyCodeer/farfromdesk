@@ -101,3 +101,31 @@ test('relay-only proxy replies reject choices instead of silently dropping their
  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM message_options').get()!.n,1);
  }finally{f.close();}
 });
+
+
+test('choices preserve the original item across both transports and later worker replies',async()=>{
+ for(const channel of ['whatsapp','telegram']){
+  const f=fixture(channel);try{
+   f.store.linkItem('original',17);
+   const extra=channel==='telegram'?{optionToken:optionsMarkup(f.store,f.row.id)!.inline_keyboard[0][0].callback_data}:{};
+   await f.receive('item-choice',channel==='telegram'?'Selected message option':'1',extra);
+   assert.equal(f.store.itemOf('item-choice'),17);
+   assert.equal(f.store.get(`brain-topic:${f.destination}`),'item:17');
+   f.router.channelReply(f.b,'Inspection complete','final','item-choice','choice-result');
+   const result=f.store.db.prepare('SELECT body FROM outbox WHERE request_id=?').get('item-choice') as any;
+   assert.match(result.body,/#17/);
+  }finally{f.close();}
+ }
+});
+
+test('failed choice queue rolls back its item link and leaves the offer reusable',()=>{
+ const f=fixture();try{
+  f.store.linkItem('original',17);
+  const input={responseId:'item-retry',destination:f.destination,messageId:f.row.wa_id,number:1};
+  assert.throws(()=>selectOption(f.store,input,()=>{throw Error('fixture queue failure');}),/fixture queue failure/);
+  assert.equal(f.store.itemOf(input.responseId),undefined);
+  assert.equal(f.store.db.prepare('SELECT selected_id FROM message_options').get()!.selected_id,null);
+  selectOption(f.store,input,(id,text)=>f.store.enqueue(input.responseId,f.store.binding(id)!,text,f.destination));
+  assert.equal(f.store.itemOf(input.responseId),17);
+ }finally{f.close();}
+});

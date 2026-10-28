@@ -10,8 +10,11 @@ import 'package:farfromdesk/updates.dart';
 
 void main() {
   setUpAll(() async {
-    final font = FontLoader('DMSans')
-      ..addFont(rootBundle.load('assets/DMSans.ttf'));
+    final font = FontLoader('Onest')
+      ..addFont(rootBundle.load('assets/Onest-Regular.ttf'))
+      ..addFont(rootBundle.load('assets/Onest-Medium.ttf'))
+      ..addFont(rootBundle.load('assets/Onest-SemiBold.ttf'))
+      ..addFont(rootBundle.load('assets/Onest-Bold.ttf'));
     await font.load();
     final icons = FontLoader('MaterialIcons')
       ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
@@ -31,62 +34,111 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
-  testWidgets('Mac control requires opt-in, separates permission setup and can stop immediately', (tester) async {
+  testWidgets(
+    'Mac control requires opt-in, separates permission setup and can stop immediately',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      final toggle = find.byKey(const Key('mac-control-enabled'));
+      await tester.ensureVisible(toggle);
+      expect(tester.widget<Switch>(toggle).value, isFalse);
+      expect(find.byKey(const Key('mac-open-permission')), findsNothing);
+      expect(api.macActions, isEmpty);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      // Turning it on checks the permissions without a button press.
+      expect(api.macActions, ['enable', 'check']);
+      expect(find.byKey(const Key('mac-open-permission')), findsOneWidget);
+      final check = find.byKey(const Key('mac-refresh-permission'));
+      await tester.ensureVisible(check);
+      await tester.tap(check);
+      await tester.pumpAndSettle();
+      expect(api.macActions, ['enable', 'check', 'check']);
+      expect(find.text('Needs permission'), findsOneWidget);
+      expect(find.text('Screen Recording'), findsOneWidget);
+      final setup = find.byKey(const Key('mac-open-permission'));
+      await tester.ensureVisible(setup);
+      await tester.tap(setup);
+      await tester.pumpAndSettle();
+      expect(api.macActions.last, 'permission');
+      final recording = find.byKey(const Key('mac-open-capture-permission'));
+      await tester.ensureVisible(recording);
+      await tester.tap(recording);
+      await tester.pumpAndSettle();
+      expect(api.macActions.last, 'capture-permission');
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(api.macActions.last, 'disable');
+      expect(tester.widget<Switch>(toggle).value, isFalse);
+      expect(find.text('Stop and turn off'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('Remote control sets a password and stops an active link', (
+    tester,
+  ) async {
     size(tester);
-    final api = MacControlGateway();
+    final api = MacControlGateway()..linkState = 'offered';
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    final toggle = find.byKey(const Key('mac-control-enabled'));
-    await tester.ensureVisible(toggle);
-    expect(tester.widget<Switch>(toggle).value, isFalse);
-    expect(find.byKey(const Key('mac-open-permission')), findsNothing);
-    expect(api.macActions, isEmpty);
-    await tester.tap(toggle);
+    await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
-    expect(api.macActions, ['enable']);
-    expect(find.byKey(const Key('mac-open-permission')), findsOneWidget);
-    final check = find.text('Check again');
-    await tester.ensureVisible(check);
-    await tester.tap(check);
+    final field = find.byKey(const Key('remote-password'));
+    await tester.ensureVisible(field);
+    await tester.enterText(field, 'short');
+    await tester.enterText(
+      find.byKey(const Key('remote-password-confirm')),
+      'short',
+    );
+    await tester.ensureVisible(find.byKey(const Key('remote-password-save')));
+    await tester.tap(find.byKey(const Key('remote-password-save')));
     await tester.pumpAndSettle();
-    expect(api.macActions, ['enable', 'check']);
-    expect(find.text('Needs permission'), findsOneWidget);
-    expect(find.text('Screen Recording'), findsOneWidget);
-    final setup = find.byKey(const Key('mac-open-permission'));
-    await tester.ensureVisible(setup);
-    await tester.tap(setup);
+    expect(api.remoteActions, isEmpty);
+    expect(find.textContaining('at least 12 characters'), findsWidgets);
+    await tester.enterText(field, 'a long remote pass');
+    await tester.enterText(
+      find.byKey(const Key('remote-password-confirm')),
+      'a long remote pass',
+    );
+    await tester.ensureVisible(find.byKey(const Key('remote-password-save')));
+    await tester.tap(find.byKey(const Key('remote-password-save')));
     await tester.pumpAndSettle();
-    expect(api.macActions.last, 'permission');
-    final recording = find.byKey(const Key('mac-open-capture-permission'));
-    await tester.ensureVisible(recording);
-    await tester.tap(recording);
-    await tester.pumpAndSettle();
-    expect(api.macActions.last, 'capture-permission');
-    final stop = find.text('Stop and turn off');
+    expect(api.remoteActions, ['password']);
+    expect(find.text('Change'), findsOneWidget);
+    final stop = find.byKey(const Key('remote-link-stop'));
     await tester.ensureVisible(stop);
     await tester.tap(stop);
     await tester.pumpAndSettle();
-    expect(api.macActions.last, 'disable');
-    expect(tester.widget<Switch>(toggle).value, isFalse);
-    expect(find.text('Stop and turn off'), findsNothing);
-    expect(tester.takeException(), isNull);
+    expect(api.remoteActions.last, 'link-stop');
+    expect(stop, findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Mac control shows Accessibility and Screen Recording separately', (tester) async {
-    size(tester);
-    final api = MacControlGateway()
-      ..enabled = true
-      ..trusted = true
-      ..captureTrusted = true;
-    await tester.pumpWidget(FarFromDeskApp(gateway: api));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Screen Recording'));
-    expect(find.text('Allowed'), findsNWidgets(2));
-    expect(find.byKey(const Key('mac-open-capture-permission')), findsNothing);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
+  testWidgets(
+    'Mac control shows Accessibility and Screen Recording separately',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway()
+        ..enabled = true
+        ..trusted = true
+        ..captureTrusted = true;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Screen Recording'));
+      expect(find.text('Allowed'), findsNWidgets(2));
+      expect(
+        find.byKey(const Key('mac-open-capture-permission')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets(
     'Unconfigured messaging choice switches both ways without a disconnect dialog',
@@ -100,7 +152,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.byType(SegmentedButton<String>), findsNothing);
-      await tester.tap(find.text('Continue with Telegram'));
+      await tester.tap(find.text('Telegram'));
       await tester.pumpAndSettle();
       expect(api.chosen, isTrue);
       expect(api.controlChannel, 'telegram');
@@ -175,7 +227,7 @@ void main() {
       final api = PreviewGateway(fixture: 'connected');
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Messaging settings').first);
+      await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Use Telegram'));
       await tester.pumpAndSettle();
@@ -203,10 +255,10 @@ void main() {
       await tester.tap(find.text('Confirm this account'));
       await tester.pumpAndSettle();
       expect(find.text('@ffd_sample_bot'), findsOneWidget);
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
       expect(find.textContaining('Secret Chats'), findsOneWidget);
       expect(find.text('Where should replies appear?'), findsNothing);
-      await tester.tap(find.text('Messaging settings').first);
-      await tester.pumpAndSettle();
       await tester.tap(find.text('Use WhatsApp'));
       await tester.pumpAndSettle();
       expect(find.text('Switch to WhatsApp?'), findsOneWidget);
@@ -220,46 +272,40 @@ void main() {
     },
   );
 
-  testWidgets(
-    'Home disconnect is explicit and Settings shows both messaging apps',
-    (tester) async {
-      size(tester);
-      final api = PreviewGateway(fixture: 'telegram-connected');
-      await tester.pumpWidget(FarFromDeskApp(gateway: api));
-      await tester.pumpAndSettle();
-      expect(find.text('Switch app'), findsNothing);
-      expect(
-        find.image(const AssetImage('assets/logo-telegram.png')),
-        findsOneWidget,
-      );
-      await tester.tap(find.text('Disconnect'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Cancel'));
-      await tester.pumpAndSettle();
-      expect(api.telegramState, 'connected');
-      await tester.tap(find.text('Messaging settings').first);
-      await tester.pumpAndSettle();
-      expect(find.text('Messaging app'), findsOneWidget);
-      expect(find.text('Not connected'), findsOneWidget);
-      expect(find.text('Use WhatsApp'), findsOneWidget);
-      await tester.tap(find.byTooltip('Home'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Disconnect'));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.text('Disconnect'),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(api.controlChannel, 'telegram');
-      expect(api.telegramState, 'disconnected');
-      expect(api.calls, contains('/api/control-channel/disconnect'));
-      expect(find.text('Not connected'), findsWidgets);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+  testWidgets('Settings disconnect is explicit and shows both messaging apps', (
+    tester,
+  ) async {
+    size(tester);
+    final api = PreviewGateway(fixture: 'telegram-connected');
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    expect(find.text('Switch app'), findsNothing);
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Messaging app'), findsOneWidget);
+    expect(find.text('Not connected'), findsOneWidget);
+    expect(find.text('Use WhatsApp'), findsOneWidget);
+    await tester.ensureVisible(find.text('Disconnect'));
+    await tester.tap(find.text('Disconnect'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(api.telegramState, 'connected');
+    await tester.tap(find.text('Disconnect'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Disconnect'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(api.controlChannel, 'telegram');
+    expect(api.telegramState, 'disconnected');
+    expect(api.calls, contains('/api/control-channel/disconnect'));
+    expect(find.text('Not connected'), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'Telegram home fits a smaller desktop without a WhatsApp QR or group picker',
@@ -286,6 +332,8 @@ void main() {
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
       expect(api.loads, 1);
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
       expect(find.textContaining('Could not load groups.'), findsOneWidget);
       expect(
         find.text('No groups with only you as a member were found.'),
@@ -402,6 +450,8 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
     expect(api.loads, 1);
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
     expect(find.text('My notes'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
@@ -534,10 +584,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
-      for (final title in [
-        'Keep your computer available',
-        'Who can send tasks',
-      ]) {
+      for (final title in ['Keep your computer available']) {
         await tester.scrollUntilVisible(
           find.text(title),
           250,
@@ -634,7 +681,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('FarFromDesk'), findsOneWidget);
       expect(find.byTooltip('Refresh'), findsNothing);
-      expect(find.text('Check delivery after reconnecting'), findsOneWidget);
+      expect(find.text('Check delivery after reconnecting'), findsWidgets);
       expect(find.text('How recovery works'), findsOneWidget);
       if (Platform.environment['FFD_CAPTURE_ACTIVITY'] == '1') {
         await expectLater(
@@ -647,7 +694,7 @@ void main() {
         'reconnecting',
       );
       await tester.pumpAndSettle();
-      expect(find.text('Check delivery after reconnecting'), findsOneWidget);
+      expect(find.text('Check delivery after reconnecting'), findsWidgets);
       expect(find.text('Review the website changes'), findsNothing);
       await tester.tap(find.text('How recovery works'));
       await tester.pumpAndSettle();
@@ -659,7 +706,7 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
-  testWidgets('Activity request expansion remains bounded and interactive', (
+  testWidgets('Inbox selects a request and shows its thread and actions', (
     tester,
   ) async {
     size(tester);
@@ -667,11 +714,17 @@ void main() {
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
     final row = find.byKey(const PageStorageKey('request-wa:sample-wait'));
+    final title = find.descendant(
+      of: row,
+      matching: find.text('Review the website changes'),
+    );
     await tester.ensureVisible(row);
-    await tester.tap(find.text('Review the website changes'));
+    await tester.tap(title);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(tester.getSize(row).height, lessThan(450));
+    expect(find.text('Review the website changes'), findsNWidgets(3));
+    expect(find.text('Mark reviewed'), findsOneWidget);
     await tester.ensureVisible(find.text('Timing and delivery'));
     await tester.tap(find.text('Timing and delivery'));
     await tester.pumpAndSettle();
@@ -684,11 +737,15 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    await tester.ensureVisible(row);
-    await tester.tap(find.text('Review the website changes'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const PageStorageKey('request-wa:sample-queue')),
+        matching: find.text('Run the release checks'),
+      ),
+    );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Review the website changes'));
-    await tester.pumpAndSettle();
+    expect(find.text('Review the website changes'), findsOneWidget);
+    expect(find.text('Sending to Website redesign'), findsOneWidget);
     expect(tester.getSize(row).height, lessThan(450));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -743,7 +800,7 @@ void main() {
       final api = UpdateGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      for (final page in ['Home', 'Activity', 'Settings']) {
+      for (final page in ['Overview', 'Inbox', 'Settings']) {
         await tester.tap(find.byTooltip(page));
         await tester.pumpAndSettle();
         expect(find.text('Update available'), findsOneWidget);
@@ -856,7 +913,7 @@ void main() {
       await tester.enterText(find.byType(TextField).first, 'Website');
       await tester.pumpAndSettle();
       expect(find.text('1 saved chats'), findsOneWidget);
-      await tester.tap(find.text('Website redesign'));
+      await tester.tap(find.text('Website redesign').last);
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Use selected session'));
       await tester.tap(find.text('Use selected session'));
@@ -877,7 +934,6 @@ void main() {
         FarFromDeskApp(gateway: PreviewGateway(fixture: 'connected')),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Where should replies appear?'), findsOneWidget);
       await tester.ensureVisible(find.text('Manage coordinators'));
       await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
@@ -909,9 +965,12 @@ void main() {
       );
       await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Activity'));
+      await tester.tap(find.byTooltip('Inbox'));
       await tester.pumpAndSettle();
-      expect(find.text('Request history'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('activity-filter-group')),
+        findsOneWidget,
+      );
       expect(find.text('Select all'), findsNothing);
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
@@ -935,7 +994,7 @@ void main() {
         FarFromDeskApp(gateway: PreviewGateway(fixture: 'activity')),
       );
       await tester.pumpAndSettle();
-      for (final page in ['Activity', 'Settings', 'Home']) {
+      for (final page in ['Inbox', 'Settings', 'Overview']) {
         await tester.tap(find.byTooltip(page));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
@@ -1014,11 +1073,13 @@ void main() {
     },
   );
   testWidgets(
-    'Home saves Desktop immediately without a launcher or session picker',
+    'Settings saves Desktop immediately without a launcher or session picker',
     (tester) async {
       size(tester);
       final api = PreferenceGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       final codex = find.byKey(const ValueKey('platform-runtime-codex'));
       final claude = find.byKey(const ValueKey('platform-runtime-claude'));
@@ -1051,9 +1112,9 @@ void main() {
       expect(api.saved['codex']?['executionMode'], 'cli');
       expect(api.calls, everyElement('/api/platform-preference'));
       expect(api.calls.length, 2);
-      await tester.tap(find.byTooltip('Settings'));
+      await tester.tap(find.byTooltip('Overview'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Home'));
+      await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
       expect(tester.widget<DropdownButton<String>>(claude).value, 'desktop');
@@ -1542,20 +1603,60 @@ class MacControlGateway extends PreviewGateway {
   bool enabled = false;
   bool? trusted;
   bool? captureTrusted;
-  @override
-  Future<Map<String, dynamic>> get(String path) async {
+  Future<Map<String, dynamic>> status(String path) async {
     final data = await super.get(path);
-    if (path == '/api/status') data['macControl'] = {'supported': true, 'enabled': enabled, 'trusted': trusted, 'capture': {'supported': true, 'trusted': captureTrusted}};
+    if (path == '/api/status') data['macControl'] = view;
     return data;
   }
+
+  bool remotePasswordSet = false;
+  String linkState = 'idle';
+  final remoteActions = <String>[];
   @override
-  Future<Map<String, dynamic>> post(String path, Map<String, dynamic> data) async {
+  Future<Map<String, dynamic>> get(String path) async {
+    if (path == '/api/remote-control') return {'state': linkState};
+    if (path == '/api/phone-remote') {
+      return {
+        'supported': true,
+        'passwordSet': remotePasswordSet,
+        'running': false,
+        'addresses': [],
+      };
+    }
+    return status(path);
+  }
+
+  Map<String, dynamic> get view => {
+    'supported': true,
+    'enabled': enabled,
+    'trusted': trusted,
+    'capture': {'supported': true, 'trusted': captureTrusted},
+  };
+
+  @override
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    if (path == '/api/phone-remote') {
+      remoteActions.add(data['action'] as String);
+      if (data['action'] == 'password') remotePasswordSet = true;
+      return {};
+    }
+    if (path == '/api/remote-control') {
+      remoteActions.add('link-stop');
+      linkState = 'ended';
+      return {'state': linkState};
+    }
     if (path == '/api/mac-control') {
       macActions.add(data['action'] as String);
       if (data['action'] == 'enable') enabled = true;
       if (data['action'] == 'disable') enabled = false;
-      if (data['action'] == 'check') trusted = false;
-      return {};
+      if (data['action'] == 'check') {
+        trusted ??= false;
+        captureTrusted ??= false;
+      }
+      return view;
     }
     return super.post(path, data);
   }

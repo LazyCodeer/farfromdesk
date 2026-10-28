@@ -16,8 +16,13 @@ class OutcomeGateway extends PreviewGateway {
 
 void main() {
   setUpAll(() async {
-    await (FontLoader('DMSans')..addFont(rootBundle.load('assets/DMSans.ttf'))).load();
-    await (FontLoader('MaterialIcons')..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    await (FontLoader('Onest')
+          ..addFont(rootBundle.load('assets/Onest-Regular.ttf'))
+          ..addFont(rootBundle.load('assets/Onest-SemiBold.ttf')))
+        .load();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
   });
   for (final phase in ['complete', 'error', 'unreadable']) {
     testWidgets('startup handles $phase updater outcome', (tester) async {

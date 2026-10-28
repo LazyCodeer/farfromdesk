@@ -14,6 +14,8 @@ extension _MacControlPanel on _DeskState {
         ? tag('Check failed', tint: bad)
         : trusted == true
         ? tag('Ready', good: true)
+        : trusted == null
+        ? tag('Checking…')
         : tag('Needs permission', tint: warning);
     Widget permission(
       String name,
@@ -50,19 +52,43 @@ extension _MacControlPanel on _DeskState {
           const SizedBox(width: 12),
           failed
               ? tag('Unknown', tint: bad)
+              : allowed == null
+              ? tag('Checking…')
               : allowed == true
               ? tag('Allowed', good: true)
               : tag('Not allowed', tint: required ? warning : null),
-          if (!failed && allowed != true) ...[
-            const SizedBox(width: 10),
-            button(
-              'Open settings',
-              () => post('/api/mac-control', {'action': action}),
-              compact: true,
-              primary: required,
+          const SizedBox(width: 4),
+          macChecking
+              ? const SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Center(
+                    child: SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : IconButton(
+                  key: Key('mac-refresh-$action'),
+                  tooltip: 'Refresh status',
+                  iconSize: 18,
+                  color: muted,
+                  onPressed: checkMac,
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+          if (!failed && allowed == false)
+            IconButton(
               key: Key('mac-open-$action'),
+              tooltip: 'Open System Settings',
+              iconSize: 18,
+              color: required ? accent : muted,
+              onPressed: busy
+                  ? null
+                  : () => post('/api/mac-control', {'action': action}),
+              icon: const Icon(Icons.settings_outlined),
             ),
-          ],
         ],
       ),
     );
@@ -78,11 +104,25 @@ extension _MacControlPanel on _DeskState {
             Switch(
               key: const Key('mac-control-enabled'),
               value: enabled,
-              onChanged: busy
-                  ? null
-                  : (v) => post('/api/mac-control', {
-                      'action': v ? 'enable' : 'disable',
-                    }),
+              onChanged: (v) async {
+                if (v) {
+                  if (!busy) {
+                    await post('/api/mac-control', {'action': 'enable'});
+                  }
+                  return;
+                }
+                // Turning off is the emergency stop: it must work while another action is busy.
+                try {
+                  await api.post('/api/mac-control', {'action': 'disable'});
+                  if (mounted) {
+                    _macUpdate(() {
+                      status['macControl'] = {...info, 'enabled': false};
+                    });
+                  }
+                } catch (e) {
+                  if (mounted) _macUpdate(() => actionError = clean(e));
+                }
+              },
             ),
           ),
           if (!enabled) ...[
@@ -96,7 +136,7 @@ extension _MacControlPanel on _DeskState {
               trusted == true
                   ? 'Your proxy can read and press things in the window you pick.'
                   : 'Required. Lets your proxy read and press things in the window you pick.',
-              trusted == true,
+              trusted as bool?,
               'permission',
               required: true,
             ),
@@ -106,103 +146,16 @@ extension _MacControlPanel on _DeskState {
                 capture['trusted'] == true
                     ? 'Your proxy can send screenshots of the window you pick. Never the whole screen.'
                     : 'Optional. Only for screenshots of that window. Everything else works without it.',
-                capture['trusted'] == true,
+                capture['trusted'] as bool?,
                 'capture-permission',
               ),
-            gap(12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                button(
-                  'Check again',
-                  () => post('/api/mac-control', {'action': 'check'}),
-                  compact: true,
-                ),
-                small(
-                  failed
-                      ? "Couldn't check the permissions. Nothing was changed. Try again, or restart FarFromDesk if it keeps failing."
-                      : trusted == true
-                      ? 'Browser tabs may also ask for Automation the first time. macOS asks you then.'
-                      : 'Turn FarFromDesk on in System Settings › Privacy & Security, then check again. macOS asks you, not FarFromDesk.',
-                ),
-              ],
-            ),
-            if (!failed && trusted != true) ...[
-              gap(10),
+            if (failed) ...[
+              gap(12),
               small(
-                'Already allowed it? After an update, macOS can keep allowing the old version. Remove FarFromDesk from that list, add it again with +, then check again.',
+                "Couldn't check the permissions. Nothing was changed. Refresh, or restart FarFromDesk if it keeps failing.",
               ),
             ],
-            if (trusted == true && !failed)
-              ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: const Text('Try it safely'),
-                subtitle: const Text(
-                  'Ask your proxy to type here or press the button. Nothing is sent or saved.',
-                ),
-                childrenPadding: const EdgeInsets.only(bottom: 12),
-                children: [
-                  TextField(
-                    maxLength: 120,
-                    decoration: const InputDecoration(
-                      labelText: 'Practice field',
-                      hintText: 'Practice text',
-                    ),
-                  ),
-                  gap(8),
-                  FilledButton(
-                    onPressed: () =>
-                        _macUpdate(() => macTrialPressed = !macTrialPressed),
-                    child: Text(
-                      macTrialPressed ? 'Pressed' : 'Practice button',
-                    ),
-                  ),
-                ],
-              ),
-            const Divider(height: 28, color: hairline),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    // The emergency stop must remain usable while another UI action is busy.
-                    try {
-                      await api.post('/api/mac-control', {'action': 'disable'});
-                      if (mounted) {
-                        _macUpdate(() {
-                          status['macControl'] = {...info, 'enabled': false};
-                        });
-                      }
-                    } catch (e) {
-                      if (mounted) _macUpdate(() => actionError = clean(e));
-                    }
-                  },
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: const Color(0x24e85d50),
-                    foregroundColor: const Color(0xffffb4ab),
-                    side: const BorderSide(color: Color(0x73ff8a80)),
-                  ),
-                  icon: const Icon(Icons.stop_rounded, size: 18),
-                  label: const Text('Stop and turn off'),
-                ),
-                small(
-                  'Stops any action in progress and forgets the chosen windows. An action already sent may have happened, so check the window before asking again.',
-                ),
-              ],
-            ),
           ],
-          gap(12),
-          button('Remote Desktop settings', () async {
-            await Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => RemoteDesktopPage(gateway: api),
-              ),
-            );
-          }, compact: true),
         ],
       ),
     );
