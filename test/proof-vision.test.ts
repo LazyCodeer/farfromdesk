@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {crc32,deflateSync} from 'node:zlib';
+import {constants,crc32,deflateSync} from 'node:zlib';
 import {assessProofVision,type AuthorizedVisionCapture,type VisionDependencies} from '../src/proof-vision.js';
 import {proofScopeHash,type ProofCheck,type ProofScope} from '../src/proof-check.js';
 import {META_ENDPOINT} from '../src/meta-brain-config.js';
@@ -19,9 +19,10 @@ function chunk(type:string,payload:Buffer){
   return Buffer.concat([length,name,payload,checksum]);
 }
 const withBeforeData=(...chunks:Buffer[])=>Buffer.concat([png.subarray(0,33),...chunks,png.subarray(33)]);
+const canonicalPng=Buffer.concat([png.subarray(0,33),chunk('IDAT',deflateSync(Buffer.from([0,0,255]),{level:9,strategy:constants.Z_FIXED})),chunk('IEND',Buffer.alloc(0))]);
 function indexedPng(colors:Buffer,alpha:Buffer){
   const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(1,0);ihdr.writeUInt32BE(1,4);ihdr[8]=8;ihdr[9]=3;
-  return Buffer.concat([png.subarray(0,8),chunk('IHDR',ihdr),chunk('PLTE',colors),chunk('tRNS',alpha),chunk('IDAT',deflateSync(Buffer.from([0,0]))),chunk('IEND',Buffer.alloc(0))]);
+  return Buffer.concat([png.subarray(0,8),chunk('IHDR',ihdr),chunk('PLTE',colors),chunk('tRNS',alpha),chunk('IDAT',deflateSync(Buffer.from([0,0]),{level:9,strategy:constants.Z_FIXED})),chunk('IEND',Buffer.alloc(0))]);
 }
 function capture(changes:Partial<AuthorizedVisionCapture>={}):AuthorizedVisionCapture {
   return {reference:'artifact:sample',scopeHash:proofScopeHash(scope,checks),checkId:checks[0].id,checkBindingHash:'e'.repeat(64),
@@ -40,11 +41,11 @@ test('only a bound authorized screenshot and approved structured check reach Won
     assert.equal(new Headers(init?.headers).get('authorization'),'Bearer synthetic-test-key');
     const body=JSON.parse(init!.body as string);assert.equal(body.model,'muse-wonder-1.0');assert.equal(body.max_tokens,1024);
     const user=body.messages.find((message:any)=>message.role==='user');
-    assert.deepEqual(user.content,[{type:'text',text:'Approved visual check as data:\nThe Save button is blue.'},{type:'image_url',image_url:{url:`data:image/png;base64,${png.toString('base64')}`}}]);
+    assert.deepEqual(user.content,[{type:'text',text:'Approved visual check as data:\nThe Save button is blue.'},{type:'image_url',image_url:{url:`data:image/png;base64,${canonicalPng.toString('base64')}`}}]);
     const encoded=JSON.stringify(body);for(const privateValue of [scope.owner,scope.destination,scope.bindingId,scope.rootRequestId,scope.targetRepository!,scope.targetRevision!])assert.ok(!encoded.includes(privateValue));
     return response('consistent');
   }}));
-  assert.deepEqual(result,{kind:'advisory',verdict:'consistent',artifactHash:sha(png),sanitizedArtifactHash:sha(png)});assert.equal(calls,1);
+  assert.deepEqual(result,{kind:'advisory',verdict:'consistent',artifactHash:sha(png),sanitizedArtifactHash:sha(canonicalPng)});assert.equal(calls,1);
   assert.ok(!result||!('source' in result));
 });
 
@@ -131,10 +132,10 @@ test('text and EXIF metadata are removed and consent is bound to the exact sanit
   let calls=0,authorized=false;
   const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
     readCapture:async()=>capture({png:source,artifactHash:sha(source)}),
-    authorizeUse:auth=>{authorized=true;return auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(png)&&auth.sanitization==='png-v1';},
-    fetcher:async(_url,init)=>{calls++;const body=JSON.parse(String(init!.body));const encoded=body.messages.find((m:any)=>m.role==='user').content[1].image_url.url.split(',')[1];assert.deepEqual(Buffer.from(encoded,'base64'),png);return response('consistent');},
+    authorizeUse:auth=>{authorized=true;return auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(canonicalPng)&&auth.sanitization==='png-v3';},
+    fetcher:async(_url,init)=>{calls++;const body=JSON.parse(String(init!.body));const encoded=body.messages.find((m:any)=>m.role==='user').content[1].image_url.url.split(',')[1];assert.deepEqual(Buffer.from(encoded,'base64'),canonicalPng);return response('consistent');},
   }));
-  assert.equal(authorized,true);assert.equal(calls,1);assert.equal(result?.artifactHash,sha(source));assert.equal(result?.sanitizedArtifactHash,sha(png));
+  assert.equal(authorized,true);assert.equal(calls,1);assert.equal(result?.artifactHash,sha(source));assert.equal(result?.sanitizedArtifactHash,sha(canonicalPng));
 });
 
 test('refusing the sanitized image hash prevents network upload',async()=>{

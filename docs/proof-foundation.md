@@ -38,9 +38,14 @@ without asking the owner to approve a new excerpt.
 
 Before upload, the helper strips PNG text, EXIF, timestamp and resolution
 metadata, clears unused indexed-palette and transparency entries while retaining
-visible and background colors, and preserves supported image pixels. It fails
+visible and background colors, and normalizes fully transparent color channels.
+It decodes and re-encodes supported pixels using a fixed filter and compression
+strategy instead of forwarding the source's DEFLATE padding or filter choices.
+It fails
 closed on malformed data, custom color profiles, animation, interlacing,
-suggested true-color palettes and unsupported formats. It binds authorization to both the original and sanitized image hashes
-and the sanitization policy. Sanitizing metadata does not remove sensitive
-content visible in pixels. Production must not wire this until trusted capture
+suggested true-color palettes, grayscale/RGB color-key transparency, oversized
+canonical output and unsupported formats. It binds authorization to both the
+original and sanitized image hashes and the sanitization policy. This does not
+guarantee removal of data embedded in visible pixels or rendering-related color
+values. Production must not wire this until trusted capture
 provenance, nonsensitive-window selection and consent are available.

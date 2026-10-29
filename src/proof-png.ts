@@ -1,4 +1,4 @@
-import {crc32,inflateSync} from 'node:zlib';
+import {constants,crc32,deflateSync,inflateSync} from 'node:zlib';
 
 // A deliberately narrow PNG subset. Unknown chunks, custom color profiles,
 // animation, interlacing and non-8-bit pixels are not silently reinterpreted.
@@ -53,12 +53,18 @@ function validMetadata(type:string,body:Buffer) {
   return false;
 }
 
+function chunk(type:string,body:Buffer) {
+  const size=Buffer.alloc(4),name=Buffer.from(type,'ascii'),checksum=Buffer.alloc(4);
+  size.writeUInt32BE(body.length);checksum.writeUInt32BE(crc32(Buffer.concat([name,body])));
+  return Buffer.concat([size,name,body,checksum]);
+}
+
 /** Return a valid metadata-stripped PNG, or undefined for malformed/unsupported data. */
 export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
   try {
     if(!(input instanceof Uint8Array)||input.byteLength<45||input.byteLength>maxBytes)return;
     const data=Buffer.from(input);if(!data.subarray(0,8).equals(signature))return;
-    let offset=8,count=0,width=0,height=0,color=-1,palette=0,paletteChunk=-1,transparencyChunk=-1,backgroundIndex:number|undefined,seenData=false,dataEnded=false,seenEnd=false,gamma:number|undefined,chroma:number[]|undefined;
+    let offset=8,count=0,width=0,height=0,color=-1,palette=0,paletteChunk=-1,transparencyChunk=-1,backgroundChunk=-1,idatChunk=-1,backgroundIndex:number|undefined,seenData=false,dataEnded=false,seenEnd=false,gamma:number|undefined,chroma:number[]|undefined;
     const seen=new Set<string>(),image:Buffer[]=[],compressed:Buffer[]=[ ];
     while(offset+12<=data.length&&count++<1024){
       const length=data.readUInt32BE(offset),end=offset+length+12;if(end>data.length)return;
@@ -84,7 +90,8 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
         palette=length/3;paletteChunk=image.length;seen.add(type);image.push(data.subarray(offset,end));
       } else if(type==='IDAT'){
         if(dataEnded||color===3&&!palette)return;
-        seenData=true;compressed.push(body);image.push(data.subarray(offset,end));
+        if(!seenData){idatChunk=image.length;image.push(Buffer.alloc(0));}
+        seenData=true;compressed.push(body);
       } else if(type==='IEND'){
         if(length||!seenData||end!==data.length)return;
         seenEnd=true;image.push(data.subarray(offset,end));
@@ -106,13 +113,16 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
           if(length!==expected||[...body].some(value=>value<1||value>8))return;
         }
         if(type==='tRNS'){
-          if(color===0&&length!==2||color===2&&length!==6||color===3&&(!palette||length<1||length>palette)||[4,6].includes(color))return;
-          if(color===0&&body.readUInt16BE(0)>255||color===2&&(body.readUInt16BE(0)>255||body.readUInt16BE(2)>255||body.readUInt16BE(4)>255))return;
-          if(color===3)transparencyChunk=image.length;
+          // Color-key transparency can hide RGB/grayscale bytes. Converting it
+          // safely needs a separate color-model transformation, so fail closed.
+          if(color!==3)return;
+          if(!palette||length<1||length>palette)return;
+          transparencyChunk=image.length;
         }
         if(type==='bKGD'){
           if([0,4].includes(color)&&length!==2||[2,6].includes(color)&&length!==6||color===3&&(!palette||length!==1||body[0]>=palette))return;
           if([0,4].includes(color)&&body.readUInt16BE(0)>255||[2,6].includes(color)&&(body.readUInt16BE(0)>255||body.readUInt16BE(2)>255||body.readUInt16BE(4)>255))return;
+          backgroundChunk=image.length;
           if(color===3)backgroundIndex=body[0];
         }
         seen.add(type);image.push(data.subarray(offset,end));
@@ -127,34 +137,46 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
     // When sRGB is present, the PNG specification requires its accompanying
     // gamma and chromaticity values to match the sRGB color space.
     if(seen.has('sRGB')&&(gamma!==undefined&&gamma!==45455||chroma&&chroma.some((value,i)=>value!==[31270,32900,64000,33000,30000,60000,15000,6000][i])))return;
-    // Bound decompression and validate the exact number of scanlines and their
-    // filter bytes. Re-using original IDAT retains pixels and color rendering.
+    // Bound decompression and fully undo the PNG filters. Never reuse original
+    // IDAT bytes: their deflate padding and filter choices can contain hidden
+    // data unrelated to the decoded image.
     const channels=({0:1,2:3,3:1,4:2,6:4} as Record<number,number>)[color],rowBytes=width*channels,expected=(rowBytes+1)*height,encoded=Buffer.concat(compressed);
     const decoded=inflateSync(encoded,{info:true,maxOutputLength:expected+1}) as unknown as {buffer:Buffer;engine:{bytesWritten:number}};
     if(decoded.buffer.length!==expected||decoded.engine.bytesWritten!==encoded.length)return;
-    let previous=Buffer.alloc(width),current=Buffer.alloc(width);
-    const used=color===3?new Uint8Array(palette):undefined;
-    if(used&&backgroundIndex!==undefined)used[backgroundIndex]=1;
+    let previous=Buffer.alloc(rowBytes),current=Buffer.alloc(rowBytes),hasTransparency=false;
+    const pixelUsed=color===3?new Uint8Array(palette):undefined,canonical=Buffer.alloc(expected);
+    const paletteAlpha=transparencyChunk>=0?image[transparencyChunk].subarray(8,image[transparencyChunk].length-4):Buffer.alloc(0);
     for(let row=0;row<height;row++){
       const start=row*(rowBytes+1),filter=decoded.buffer[start];if(filter>4)return;
-      if(color===3){
-        for(let x=0;x<width;x++){
-          const left=x?current[x-1]:0,above=previous[x],upperLeft=x?previous[x-1]:0;
-          let predictor=0;
-          if(filter===1)predictor=left;
-          else if(filter===2)predictor=above;
-          else if(filter===3)predictor=Math.floor((left+above)/2);
-          else if(filter===4){
-            const p=left+above-upperLeft,da=Math.abs(p-left),db=Math.abs(p-above),dc=Math.abs(p-upperLeft);
-            predictor=da<=db&&da<=dc?left:db<=dc?above:upperLeft;
-          }
-          current[x]=(decoded.buffer[start+1+x]+predictor)&255;if(current[x]>=palette)return;
-          used![current[x]]=1;
+      for(let x=0;x<rowBytes;x++){
+        const left=x>=channels?current[x-channels]:0,above=previous[x],upperLeft=x>=channels?previous[x-channels]:0;
+        let predictor=0;
+        if(filter===1)predictor=left;
+        else if(filter===2)predictor=above;
+        else if(filter===3)predictor=Math.floor((left+above)/2);
+        else if(filter===4){
+          const p=left+above-upperLeft,da=Math.abs(p-left),db=Math.abs(p-above),dc=Math.abs(p-upperLeft);
+          predictor=da<=db&&da<=dc?left:db<=dc?above:upperLeft;
         }
-        [previous,current]=[current,previous];
+        current[x]=(decoded.buffer[start+1+x]+predictor)&255;
       }
+      // Filter 0 is fixed rather than selected from the untrusted input.
+      current.copy(canonical,start+1);
+      for(let x=0;x<width;x++){
+        if(color===3){
+          const index=current[x];if(index>=palette)return;
+          pixelUsed![index]=1;if((paletteAlpha[index]??255)<255)hasTransparency=true;
+        }else if(color===4||color===6){
+          const alpha=current[x*channels+channels-1];if(alpha<255)hasTransparency=true;
+          // Fully transparent color channels do not affect composited pixels;
+          // canonicalize them so they cannot carry invisible text.
+          if(alpha===0)canonical.fill(0,start+1+x*channels,start+x*channels+channels);
+        }
+      }
+      [previous,current]=[current,previous];
     }
-    if(used){
+    if(backgroundChunk>=0&&!hasTransparency)image[backgroundChunk]=Buffer.alloc(0);
+    if(pixelUsed){
       // Preserve every visible/background color and alpha. Unused entries can
       // carry arbitrary hidden bytes, so replace only those entries and update
       // the corresponding chunk CRCs without changing the image's indexes.
@@ -162,9 +184,15 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
         const source=image[index],updated=Buffer.from(source),size=updated.readUInt32BE(0),body=updated.subarray(8,8+size);
         edit(body);updated.writeUInt32BE(crc32(updated.subarray(4,8+size)),8+size);image[index]=updated;
       };
-      rewrite(paletteChunk,body=>{for(let i=0;i<used.length;i++)if(!used[i])body.fill(0,i*3,i*3+3);});
-      if(transparencyChunk>=0)rewrite(transparencyChunk,body=>{for(let i=0;i<body.length;i++)if(!used[i])body[i]=255;});
+      rewrite(paletteChunk,body=>{for(let i=0;i<pixelUsed.length;i++){
+        const background=hasTransparency&&backgroundIndex===i,alpha=paletteAlpha[i]??255;
+        if(!background&&(!pixelUsed[i]||alpha===0))body.fill(0,i*3,i*3+3);
+      }});
+      if(transparencyChunk>=0)rewrite(transparencyChunk,body=>{for(let i=0;i<body.length;i++)if(!pixelUsed[i])body[i]=255;});
     }
-    return Buffer.concat([signature,...image]);
+    // A fixed filter and compression strategy produce bytes determined by the
+    // normalized pixels, rather than by the source's encoding choices.
+    image[idatChunk]=chunk('IDAT',deflateSync(canonical,{level:9,strategy:constants.Z_FIXED,maxOutputLength:maxBytes}));
+    const output=Buffer.concat([signature,...image]);return output.length<=maxBytes?output:undefined;
   }catch{return;}
 }
