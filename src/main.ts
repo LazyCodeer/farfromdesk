@@ -31,6 +31,7 @@ try {installBundledAudio(store);}catch{console.error('Bundled voice assets could
 const approvals=new Approvals(store),native=portableAgents?new PortableNative(store,approvals):new NativeAgents(store,approvals),router=new Router(store,native,approvals),wa=new WhatsApp(store,router),telegram=new Telegram(store,router);
 router.morningBrief=new MorningBrief(store,router);
 router.stuckDetection=new StuckDetection(store,router);
+router.stuckDetection.recoverInputs();
 router.scheduledBrief=(destination,owner,occurrence,canSend)=>router.morningBrief!.scheduledBrief(destination,owner,occurrence,canSend);
 const coordinator=new Coordinator(store,native,router);router.coordinator=coordinator;
 const masters=new Masters(store,router),power=new PowerPolicy(store,router,wa,undefined,telegram);

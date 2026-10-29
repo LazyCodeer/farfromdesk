@@ -358,6 +358,134 @@ test('a quoted reply is not consumed when its association cannot be recorded',as
   }finally{f.close();}
 });
 
+test('a rejected quoted option does not suppress its unanswered choice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:bad',text:'99',quotedId:row.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(result.status,'blocked');assert.equal(f.store.db.prepare('SELECT 1 FROM stuck_quoted_replies WHERE response_id=?').get('wa:bad'),undefined);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
+test('F3 rejects a numbered choice while another contract is pending without suppressing it',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:pending',text:'Build a synthetic project',ownerCommand:true}));
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:'1',quotedId:row.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(result.status,'handled');assert.equal(f.store.job('wa:answer'),undefined);
+    assert.equal(f.store.db.prepare('SELECT 1 FROM stuck_quoted_replies WHERE response_id=?').get('wa:answer'),undefined);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
+test('a numbered choice actually held for a new F3 review suppresses its notice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:'1',quotedId:row.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(result.status,'handled');assert.ok(f.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get('wa:answer'));
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'invalid');
+    f.store.db.prepare("UPDATE task_contracts SET state='cancelled' WHERE origin_id=?").run('wa:answer');
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
+test('a pending review holds the notice, and classifier failure restores it',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    let started!:()=>void,reject!:()=>void;const entered=new Promise<void>(r=>started=r),waiting=new Promise<void>(r=>reject=r);
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>{started();await waiting;throw new Error('Synthetic classifier failure');});
+    const reply=f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:'Friday works',ownerCommand:true}));
+    await entered;assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'hold');
+    reject();assert.equal((await reply).status,'blocked');
+    assert.equal(f.store.db.prepare('SELECT 1 FROM stuck_ambiguous_choices WHERE response_id=?').get('wa:answer'),undefined);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
+test('startup reconciles interrupted inputs using durable outcomes',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:3600}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);
+    for(const id of ['wa:lost','wa:accepted','wa:rejected'])f.store.recordOwnerOrigin(id,owner,owner);
+    for(const id of ['wa:lost','wa:accepted','wa:rejected'])f.store.db.prepare("INSERT INTO stuck_quoted_replies(response_id,outbox_id,owner,destination,state,numbered) VALUES(?,?,?,?,'pending',?)").run(id,row.id,owner,owner,id==='wa:rejected'?1:0);
+    f.store.output(undefined,'A reply','task-contract-reply:wa:accepted',owner,{plain:true});
+    f.store.output(undefined,'Finish or cancel first','task-contract-reply:wa:rejected',owner,{plain:true});
+    f.detector.recoverInputs();
+    const evidence=f.store.db.prepare('SELECT response_id,state FROM stuck_quoted_replies ORDER BY response_id').all() as any[];
+    assert.deepEqual(evidence.map(row=>({...row})),[{response_id:'wa:accepted',state:'accepted'}]);
+  }finally{f.close();}
+});
+
+test('pending choice input does not hold an unrelated idle alert',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Choice');f.add('wa:idle','Other task');
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:3600}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);
+    f.store.db.prepare("INSERT INTO stuck_quoted_replies(response_id,outbox_id,owner,destination,state) VALUES(?,?,?,?,'pending')").run('wa:processing',row.id,owner,owner);
+    f.advance(11*60_000);await f.detector.tick();
+    assert.deepEqual(alerts(f.store).map(a=>a.kind),['idle']);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
+test('an expired contract control is not treated as an answer to another choice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:pending',text:'Build a synthetic project',ownerCommand:true}));
+    f.store.db.prepare('UPDATE task_contracts SET expires_at=1').run();
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:ok',text:'ok',ownerCommand:true}));
+    assert.equal(result.status,'handled');assert.equal(f.store.db.prepare('SELECT 1 FROM stuck_ambiguous_choices WHERE response_id=?').get('wa:ok'),undefined);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
+test('a reviewed explicit session reply suppresses only that session choice',async()=>{
+  for(const toOther of [false,true]){const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    const other=f.store.register('other','codex',randomUUID(),'/tmp').binding;
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:`/to ${toOther?other.alias:f.binding.alias} Friday works`,ownerCommand:true}));
+    assert.equal(result.status,'handled');assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),toOther?'ready':'invalid');
+    f.store.db.prepare("UPDATE task_contracts SET state='cancelled' WHERE origin_id=?").run('wa:answer');
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}}
+});
+
+test('an explicit target rejected by an existing F3 review leaves its choice unanswered',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:pending',text:'Build a synthetic project',ownerCommand:true}));
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:`/to ${f.binding.alias} Friday works`,ownerCommand:true}));
+    assert.equal(f.store.db.prepare('SELECT 1 FROM stuck_ambiguous_choices WHERE response_id=?').get('wa:answer'),undefined);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'ready');
+  }finally{f.close();}
+});
+
 test('a blank quoted message does not suppress a choice notice',async()=>{
   const f=fixture();try{
     f.add('wa:choice','Synthetic task');

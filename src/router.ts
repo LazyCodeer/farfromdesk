@@ -96,14 +96,19 @@ export class Router {
     if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
+    let evidenceFinalized=false;
     try{
       // History is best effort: a failure to label or record it must not fail a turn that already ran, or Telegram re-polls it.
       const failed=(e:unknown)=>{try{this.store.event(m.id,'owner_history_failed',{code:errorCode(e)});}catch{}};
       let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch(e){failed(e);}
       const result=await this.receiveOnce(m);
+      // Evidence captured before F3 yields is provisional. Rejected/ignored
+      // turns must not make a still-unanswered choice disappear.
+      try{this.stuckDetection?.finishInput(m.id,(result.status==='handled'||result.status==='queued')&&this.store.incomingOwnerCurrent());}catch{}
+      evidenceFinalized=true;
       try{if(this.store.incomingOwnerCurrent()&&label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
       return result;
-    }finally{this.receiving.delete(m.id);}
+    }finally{if(!evidenceFinalized)try{this.stuckDetection?.finishInput(m.id,false);}catch{}this.receiving.delete(m.id);}
   }
   private async receiveOnce(m:Incoming,contractApproved=false):Promise<RouteResult> {
     if(this.stopped||!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
@@ -149,7 +154,13 @@ export class Router {
             if(!m.optionToken&&(!authenticatedOwner(this,m)||m.ownerChoice!==true))throw new Error('Choose with your own direct reply. Nothing was sent.');
             if(!this.contracts.enabled())throw new Error('Send your answer as a new message so it can be reviewed. Nothing was sent.');
             const contract=await this.contracts.preflight(this,m,reviewBody,undefined,undefined,true,true);
-            if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+            if(contract.kind==='handled'){
+              // An existing F3 review can reject a choice rather than hold it.
+              // Only a newly created review for this input retains evidence.
+              const held=this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(m.id);
+              if(!held)try{this.stuckDetection?.finishInput(m.id,false);}catch{}
+              return {status:'handled',requestId:m.id};
+            }
             if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
           }
           const selected=selectOption(this.store,input,(bindingId,body)=>{if(bindingId!==preview.row.binding_id||body!==preview.body)throw new Error('These choices changed. Nothing was sent.');const b=this.need(bindingId);if(guarded&&!contractApproved){const item=this.store.itemOf(preview.row.request_id);const guardedBody=this.contracts.bindChild(this,preview.row.request_id,m.id,b,body,item);this.store.enqueue(m.id,b,guardedBody);}else this.queue(m.id,b,contractApproved?reviewBody:body);this.contracts.bindChoice(this,preview.row.request_id,m.id,preview.row.id);});
@@ -182,7 +193,10 @@ export class Router {
         // yielding to the contract classifier; no answer text is retained.
         if(!m.quotedId)try{this.stuckDetection?.recordUnquotedReview(m);}catch{throw new Error('Could not process this reply. Please resend it.');}
         const contract=await this.contracts.preflight(this,m);
-        if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+        if(contract.kind==='handled'){
+          if(/^\/to\s/i.test(m.text)&&!this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(m.id))try{this.stuckDetection?.finishInput(m.id,false);}catch{}
+          return {status:'handled',requestId:m.id};
+        }
         if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
       }
       // A quoted native answer is data even when it starts with a slash.
