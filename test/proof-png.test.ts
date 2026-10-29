@@ -42,10 +42,6 @@ test('color-rendering chunks are retained while zero-alpha colors are normalized
   const sanitized=sanitizeProofPng(rgba);assert.ok(sanitized);
   assert.deepEqual(readChunk(sanitized,'sRGB'),readChunk(rgba,'sRGB'));assert.deepEqual(readChunk(sanitized,'gAMA'),readChunk(rgba,'gAMA'));
   assert.deepEqual(inflateSync(readChunk(sanitized,'IDAT')!),Buffer.from([0,0,0,0,0]));
-  const palette=png({width:2,color:3,before:[chunk('PLTE',Buffer.from([255,0,0,0,0,255])),chunk('tRNS',Buffer.from([255,0]))],raw:Buffer.from([0,0,1])});
-  const indexed=sanitizeProofPng(palette);assert.ok(indexed);
-  assert.deepEqual(readChunk(indexed,'PLTE'),Buffer.from([255,0,0,0,0,0]));
-  assert.deepEqual(readChunk(indexed,'tRNS'),Buffer.from([255,0]));assert.deepEqual(inflateSync(readChunk(indexed,'IDAT')!),Buffer.from([0,0,1]));
 });
 
 test('unsupported color profiles, animation, interlacing and unknown chunks fail closed',()=>{
@@ -83,40 +79,49 @@ test('invalid deflate streams, scanline sizes, filters and palette indexes fail 
     png({raw:Buffer.from([0,10,20,30])}),invalidPalette])assert.equal(sanitizeProofPng(source),undefined);
 });
 
-test('palette delta filters are decoded before index validation',()=>{
+test('indexed-color images fail closed for both valid and invalid palette indexes',()=>{
   const palette=chunk('PLTE',Buffer.from([255,0,0,0,0,255]));
   const valid=png({width:2,color:3,before:[palette],raw:Buffer.from([1,1,255])}); // reconstructed indexes [1,0]
   const invalid=png({width:2,color:3,before:[palette],raw:Buffer.from([1,1,1])}); // reconstructed indexes [1,2]
-  const result=sanitizeProofPng(valid);assert.ok(result);assert.deepEqual(inflateSync(readChunk(result,'IDAT')!),Buffer.from([0,1,0]));assert.equal(sanitizeProofPng(invalid),undefined);
+  assert.equal(sanitizeProofPng(valid),undefined);assert.equal(sanitizeProofPng(invalid),undefined);
 });
 
-test('palette use is reconstructed across rows for all supported PNG filters',()=>{
+test('all indexed PNG filters fail closed',()=>{
   const palette=chunk('PLTE',Buffer.from([1,2,3,4,5,6,7,8,9,10,11,12]));
   for(const [filter,encoded] of [[0,[2,3]],[1,[2,1]],[2,[2,2]],[3,[2,2]],[4,[2,1]]] as const){
     const source=png({width:2,height:2,color:3,before:[palette],raw:Buffer.from([0,0,1,filter,...encoded])});
-    const result=sanitizeProofPng(source);assert.ok(result,`filter ${filter}`);
-    assert.deepEqual(inflateSync(readChunk(result,'IDAT')!),Buffer.from([0,0,1,0,2,3]),`filter ${filter}`);
+    assert.equal(sanitizeProofPng(source),undefined,`filter ${filter}`);
   }
 });
 
-test('unused palette and transparency entries are cleared while used and background colors remain',()=>{
+test('indexed PNGs with unused palette or background entries fail closed',()=>{
   const colors=Buffer.concat([Buffer.from([10,20,30,40,50,60,70,80,90]),Buffer.from('hidden123')]);
   const alpha=Buffer.from([255,200,100,11,22,33]);
   const source=png({width:2,color:3,before:[chunk('PLTE',colors),chunk('tRNS',alpha),chunk('bKGD',Buffer.from([2]))],raw:Buffer.from([0,0,1])});
-  const sanitized=sanitizeProofPng(source);assert.ok(sanitized);
-  assert.deepEqual(readChunk(sanitized,'PLTE'),Buffer.concat([colors.subarray(0,9),Buffer.alloc(9)]));
-  assert.deepEqual(readChunk(sanitized,'tRNS'),Buffer.from([255,200,255,255,255,255]));
-  assert.deepEqual(readChunk(sanitized,'bKGD'),Buffer.from([2]));
-  assert.deepEqual(inflateSync(readChunk(sanitized,'IDAT')!),Buffer.from([0,0,1]));
-  assert.equal(sanitized.includes(Buffer.from('hidden123')),false);
-  // Re-sanitizing validates the rewritten CRCs and is deterministic.
-  assert.deepEqual(sanitizeProofPng(sanitized),sanitized);
+  assert.equal(sanitizeProofPng(source),undefined);
 });
 
-test('an unreferenced palette background is cleared when no background chunk exists',()=>{
+test('an indexed palette without a background also fails closed',()=>{
   const source=png({color:3,before:[chunk('PLTE',Buffer.from([1,2,3,4,5,6]))],raw:Buffer.from([0,0])});
-  const sanitized=sanitizeProofPng(source);assert.ok(sanitized);
-  assert.deepEqual(readChunk(sanitized,'PLTE'),Buffer.from([1,2,3,0,0,0]));
+  assert.equal(sanitizeProofPng(source),undefined);
+});
+
+test('duplicate palette indexes cannot carry hidden text through the image',()=>{
+  const bytes=Buffer.from('SECRET','ascii'),indexes=[...bytes].flatMap(byte=>Array.from({length:8},(_,i)=>(byte>>(7-i))&1));
+  const identical=chunk('PLTE',Buffer.from([40,50,60,40,50,60]));
+  const source=png({width:indexes.length,color:3,before:[identical],raw:Buffer.from([0,...indexes])});
+  // Every index has the same visible RGB color but the choice of index encodes
+  // the text. Without a proven canonical indexed-color conversion, reject it.
+  assert.equal(sanitizeProofPng(source),undefined);
+});
+
+test('ordinary 8-bit RGB, RGBA and grayscale screenshots remain supported',()=>{
+  for(const [color,raw] of [
+    [0,[0,42]], [2,[0,42,84,126]], [4,[0,42,255]], [6,[0,42,84,126,255]],
+  ] as const){
+    const source=png({color,raw:Buffer.from(raw)}),result=sanitizeProofPng(source);
+    assert.ok(result,`color type ${color}`);assert.deepEqual(inflateSync(readChunk(result,'IDAT')!),Buffer.from(raw));
+  }
 });
 
 test('a suggested true-color palette is rejected rather than leaking unused bytes',()=>{
@@ -167,18 +172,15 @@ test('normalizing a transparent row does not change later pixels that filter aga
   assert.deepEqual(inflateSync(readChunk(result,'IDAT')!),Buffer.from([0,0,0,0,0,0,10,20,30,255]));
 });
 
-test('fully transparent indexed colors are cleared unless needed as the declared background',()=>{
+test('fully transparent indexed colors fail closed even with a declared background',()=>{
   const colors=Buffer.from([65,66,67,10,20,30]),alpha=Buffer.from([0,255]),raw=Buffer.from([0,0,1]);
-  const source=png({width:2,color:3,before:[chunk('PLTE',colors),chunk('tRNS',alpha)],raw}),result=sanitizeProofPng(source);assert.ok(result);
-  assert.deepEqual(readChunk(result,'PLTE'),Buffer.from([0,0,0,10,20,30]));assert.deepEqual(readChunk(result,'tRNS'),alpha);
-  const bg=png({width:2,color:3,before:[chunk('PLTE',colors),chunk('tRNS',alpha),chunk('bKGD',Buffer.from([0]))],raw}),background=sanitizeProofPng(bg);assert.ok(background);
-  assert.deepEqual(readChunk(background,'PLTE'),colors);assert.deepEqual(readChunk(background,'bKGD'),Buffer.from([0]));
+  const source=png({width:2,color:3,before:[chunk('PLTE',colors),chunk('tRNS',alpha)],raw});assert.equal(sanitizeProofPng(source),undefined);
+  const bg=png({width:2,color:3,before:[chunk('PLTE',colors),chunk('tRNS',alpha),chunk('bKGD',Buffer.from([0]))],raw});assert.equal(sanitizeProofPng(bg),undefined);
 });
 
 test('an unneeded background and color-key transparency do not pass hidden data through',()=>{
-  const colors=Buffer.from([1,2,3,65,66,67]);
-  const source=png({color:3,before:[chunk('PLTE',colors),chunk('tRNS',Buffer.from([255,0])),chunk('bKGD',Buffer.from([1]))],raw:Buffer.from([0,0])}),result=sanitizeProofPng(source);assert.ok(result);
-  assert.equal(readChunk(result,'bKGD'),undefined);assert.deepEqual(readChunk(result,'PLTE'),Buffer.from([1,2,3,0,0,0]));assert.deepEqual(readChunk(result,'tRNS'),Buffer.from([255,255]));
+  const source=png({color:6,before:[chunk('bKGD',Buffer.from([0,1,0,2,0,3]))],raw:Buffer.from([0,4,5,6,255])}),result=sanitizeProofPng(source);assert.ok(result);
+  assert.equal(readChunk(result,'bKGD'),undefined);assert.deepEqual(inflateSync(readChunk(result,'IDAT')!),Buffer.from([0,4,5,6,255]));
   assert.equal(sanitizeProofPng(png({color:2,before:[chunk('tRNS',Buffer.from([0,1,0,2,0,3]))],raw:Buffer.from([0,1,2,3])})),undefined);
   assert.equal(sanitizeProofPng(png({color:0,before:[chunk('tRNS',Buffer.from([0,1]))],raw:Buffer.from([0,1])})),undefined);
 });

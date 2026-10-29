@@ -132,7 +132,7 @@ test('text and EXIF metadata are removed and consent is bound to the exact sanit
   let calls=0,authorized=false;
   const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
     readCapture:async()=>capture({png:source,artifactHash:sha(source)}),
-    authorizeUse:auth=>{authorized=true;return auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(canonicalPng)&&auth.sanitization==='png-v3';},
+    authorizeUse:auth=>{authorized=true;return auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(canonicalPng)&&auth.sanitization==='png-v4';},
     fetcher:async(_url,init)=>{calls++;const body=JSON.parse(String(init!.body));const encoded=body.messages.find((m:any)=>m.role==='user').content[1].image_url.url.split(',')[1];assert.deepEqual(Buffer.from(encoded,'base64'),canonicalPng);return response('consistent');},
   }));
   assert.equal(authorized,true);assert.equal(calls,1);assert.equal(result?.artifactHash,sha(source));assert.equal(result?.sanitizedArtifactHash,sha(canonicalPng));
@@ -147,16 +147,14 @@ test('refusing the sanitized image hash prevents network upload',async()=>{
   assert.equal(result,undefined);assert.equal(calls,0);
 });
 
-test('unused palette data is removed before upload and hash authorization',async()=>{
+test('indexed palette images are never uploaded, even when the owner consented',async()=>{
   const colors=Buffer.concat([Buffer.from([1,2,3]),Buffer.from('hidden123')]),alpha=Buffer.from([255,11,22,33]);
-  const source=indexedPng(colors,alpha),expected=indexedPng(Buffer.from([1,2,3,0,0,0,0,0,0,0,0,0]),Buffer.from([255,255,255,255]));
-  let calls=0;
+  const source=indexedPng(colors,alpha);let calls=0,authorized=false;
   const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
     readCapture:async()=>capture({png:source,artifactHash:sha(source)}),
-    authorizeUse:auth=>auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(expected),
-    fetcher:async(_url,init)=>{calls++;const body=JSON.parse(String(init!.body));const encoded=body.messages.find((m:any)=>m.role==='user').content[1].image_url.url.split(',')[1];const uploaded=Buffer.from(encoded,'base64');assert.deepEqual(uploaded,expected);assert.equal(uploaded.includes(Buffer.from('hidden123')),false);return response('consistent');},
+    authorizeUse:()=>{authorized=true;return true;},fetcher:async()=>{calls++;return response('consistent');},
   }));
-  assert.equal(calls,1);assert.equal(result?.sanitizedArtifactHash,sha(expected));
+  assert.equal(result,undefined);assert.equal(authorized,false);assert.equal(calls,0);
 });
 
 test('a PNG with a non-ASCII chunk type is never uploaded even if its CRC is valid',async()=>{
