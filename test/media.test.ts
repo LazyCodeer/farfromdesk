@@ -124,9 +124,23 @@ test('changing selections during transcription fails closed; restart reports int
   const f=fixture();try {
     f.wa.transcribe=async()=>{f.store.set('selected','["different"]');return 'do task';};
     await f.wa.receiveMessage(note('changed'));assert.equal(f.store.jobs().length,0);
-    f.store.db.prepare("INSERT INTO audio_inbox VALUES('wa:interrupted',?,'processing',0)").run(owner);
+    const captured=f.store.captureIncomingOwner(owner,'whatsapp');assert.ok(captured);
+    f.store.incomingOwnerContext.run(captured,()=>{
+      f.store.db.prepare("INSERT INTO audio_inbox VALUES('wa:interrupted',?,'processing',0)").run(owner);
+      f.store.recordIncomingInput('wa:interrupted');
+    });
     f.store.recover();f.store.recover();assert.equal(f.store.seen('wa:interrupted'),true);
     assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE source='audio-error:wa:interrupted:0'").get()?.n,1);
+  }finally{f.close();}
+});
+
+test('restart does not send interrupted audio notices without a recorded owner',()=>{
+  const f=fixture();try {
+    f.store.db.prepare("INSERT INTO audio_inbox VALUES('wa:legacy',?,'processing',0)").run(owner);
+    f.store.recover();f.store.recover();
+    assert.equal(f.store.seen('wa:legacy'),true);
+    assert.equal(f.store.db.prepare("SELECT status FROM audio_inbox WHERE id='wa:legacy'").get()?.status,'interrupted');
+    assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE source='audio-error:wa:legacy:0'").get()?.n,0);
   }finally{f.close();}
 });
 
