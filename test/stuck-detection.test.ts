@@ -261,6 +261,33 @@ test('an F3-intercepted quoted reply does not suppress a different choice',async
   }finally{f.close();}
 });
 
+test('a quoted reply is not consumed when its association cannot be recorded',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:pending',text:'Build a synthetic project',ownerCommand:true}));
+    f.store.db.exec("CREATE TEMP TRIGGER fail_stuck_quote BEFORE INSERT ON stuck_quoted_replies BEGIN SELECT RAISE(ABORT,'synthetic failure'); END");
+    const answer=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:'Friday works',quotedId:row.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(answer.status,'blocked');assert.equal(f.store.job('wa:answer'),undefined);
+    const notice=f.store.db.prepare("SELECT body FROM outbox WHERE source='stuck-reply-error:wa:answer:0'").get() as {body:string};assert.match(notice.body,/resend/i);
+    assert.ok(f.store.db.prepare("SELECT 1 FROM task_contracts WHERE state='pending'").get());
+  }finally{f.close();}
+});
+
+test('a blank quoted message does not suppress a choice notice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:blank',text:'   ',quotedId:row.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(result.status,'ignored');assert.equal(f.store.db.prepare('SELECT 1 FROM stuck_quoted_replies').get(),undefined);
+    await f.detector.tick();assert.equal(alerts(f.store)[0]?.kind,'choice');
+  }finally{f.close();}
+});
+
 test('an ambiguous same-task or unlinked follow-up fails closed, but another item or binding does not suppress a choice',async()=>{
   for(const which of ['same','unlinked','other-item','other-binding'] as const){
     const f=fixture();try{

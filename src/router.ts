@@ -114,7 +114,12 @@ export class Router {
       try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
       // Capture a reply to the exact message before task-review or other
       // routing can intercept it; no answer text is retained here.
-      if(m.quotedId)try{this.stuckDetection?.recordQuotedReply(m);}catch{}
+      if(m.quotedId&&m.text.trim())try{this.stuckDetection?.recordQuotedReply(m);}catch{
+        // Do not let F3 consume a reply while its exact association could not
+        // be recorded: a later notice could incorrectly say it is unanswered.
+        try{this.store.output(undefined,'Could not process this reply. Please resend it.',`stuck-reply-error:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}catch{}
+        return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+      }
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
     this.morningBrief?.firstMessage(m);
