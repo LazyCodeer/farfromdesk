@@ -108,6 +108,70 @@ test('unread log output cannot keep the supervisor alive past its deadline', {ti
   }
 });
 
+test('a failed output relay cannot turn a successful worker into success',{timeout:5000},async()=>{
+  const moduleUrl=new URL('../smoke_supervisor.mjs',import.meta.url).href;
+  const worker="console.log('synthetic output');setTimeout(()=>process.exit(0),700)";
+  const harness=`import {runSupervisedSmoke} from ${JSON.stringify(moduleUrl)};process.exitCode=await runSupervisedSmoke(process.execPath,['-e',${JSON.stringify(worker)}],{deadlineMs:3000});`;
+  const parent=spawn(process.execPath,['--input-type=module','-e',harness],{stdio:['ignore','pipe','pipe']});
+  parent.stdout.destroy();parent.stderr.resume();
+  try {const [code]=await once(parent,'close');assert.equal(code,1);}
+  finally {parent.kill('SIGKILL');}
+});
+
+// On macOS a write to a full TTY can block synchronously, unlike a full pipe.
+for(const mode of ['stdout','stderr','both'])test(`unread ${mode} TTY cannot stall the deadline`,{skip:process.platform!=='darwin',timeout:7000},()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ffd-supervisor-tty-')),pidFile=join(dir,'worker-pid');
+  const moduleUrl=new URL('../smoke_supervisor.mjs',import.meta.url).href;
+  const worker=`require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));const b='x'.repeat(65536);for(const s of [process.stdout,process.stderr]){function write(){while(s.write(b)){}s.once('drain',write)}write()}`;
+  const harness=`import {runSupervisedSmoke} from ${JSON.stringify(moduleUrl)};const code=await runSupervisedSmoke(process.execPath,['-e',${JSON.stringify(worker)}],{deadlineMs:800});process.exit(code);`;
+  const python=`import os, pty, signal, subprocess, sys, time
+mode, node, harness, pidfile = sys.argv[1:]
+master, slave = pty.openpty()
+p = None
+try:
+    p = subprocess.Popen([node, '--input-type=module', '-e', harness], stdout=slave if mode in ('stdout','both') else subprocess.DEVNULL, stderr=slave if mode in ('stderr','both') else subprocess.DEVNULL, start_new_session=True)
+    os.close(slave)
+    start = time.monotonic()
+    try:
+        code = p.wait(timeout=4)
+    except subprocess.TimeoutExpired:
+        raise AssertionError('supervisor blocked on unread TTY')
+    assert code == 124, 'expected timeout 124, got %s' % code
+    assert time.monotonic() - start < 4
+finally:
+    if p:
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        p.wait()
+    try:
+        with open(pidfile) as f: pid = int(f.read())
+        os.killpg(pid, signal.SIGKILL)
+    except (FileNotFoundError, ProcessLookupError): pass
+    os.close(master)
+`;
+  try {
+    const result=spawnSync('python3',['-c',python,mode,process.execPath,harness,pidFile],{encoding:'utf8',timeout:6000});
+    assert.equal(result.status,0,result.stderr||String(result.error));
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('supervisor releases runner pipes after a detached GUI inherits worker output',{skip:process.platform==='win32',timeout:7000},async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ffd-supervisor-runner-pipes-')),pidFile=join(dir,'gui-pid');
+  const moduleUrl=new URL('../smoke_supervisor.mjs',import.meta.url).href;
+  const worker=`const {spawn}=require('node:child_process'),fs=require('node:fs');const app=spawn(process.execPath,['-e',"setInterval(()=>{},1000)"],{detached:true,stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidFile)},String(app.pid));process.send({type:'app-started',pid:app.pid});setInterval(()=>{},1000);`;
+  const harness=`import {runSupervisedSmoke} from ${JSON.stringify(moduleUrl)};const code=await runSupervisedSmoke(process.execPath,['-e',${JSON.stringify(worker)}],{deadlineMs:800});process.exitCode=code;`;
+  const parent=spawn(process.execPath,['--input-type=module','-e',harness],{stdio:['ignore','pipe','pipe']});
+  let diagnostic='';parent.stdout.resume();parent.stderr.on('data',chunk=>diagnostic+=chunk);
+  try {
+    const [code]=await Promise.race([once(parent,'close'),new Promise((_,reject)=>setTimeout(()=>reject(new Error('runner output pipes remained open')),4500))]);
+    assert.equal(code,124,diagnostic);assert.match(diagnostic,/supervisor exceeded/);
+  } finally {
+    parent.kill('SIGKILL');
+    try{process.kill(-Number(readFileSync(pidFile,'utf8')),'SIGKILL');}catch{}
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
 test('deadline requests authenticated shutdown of the separate detached smoke backend', {skip:process.platform==='win32',timeout:9000}, async()=>{
   const dir=mkdtempSync(join(tmpdir(),'ffd-native-smoke-')),guiFile=join(dir,'gui-pid'),backendFile=join(dir,'backend-pid');let guiPid,backendPid;
   let captured='';const sink=new Writable({write(chunk,_encoding,done){captured+=chunk;done();}});
