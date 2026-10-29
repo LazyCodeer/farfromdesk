@@ -151,7 +151,7 @@ AppRelease? selectRelease(
   return best;
 }
 
-/// One small public metadata request per six hours; never carries local credentials.
+/// Bounded public metadata checks every six hours; never carries local credentials.
 class UpdateChecker {
   final String current, platform, architecture;
   final http.Client Function() clientFactory;
@@ -223,30 +223,55 @@ class UpdateChecker {
     attemptedAt = clock();
     final client = clientFactory();
     _client = client;
+    // A full GitHub release object includes notes and every asset. Fetching 20
+    // at once eventually exceeds the old 512 KiB response cap as history grows.
+    // Keep the same 20-release selection window, with independent page and
+    // aggregate byte limits and one deadline for the entire check.
+    var active = true;
     try {
       final data = await (() async {
-        final request = http.Request(
-          'GET',
-          Uri.https('api.github.com', '/repos/$releaseRepository/releases', {
-            'per_page': '20',
-          }),
-        )..followRedirects = false;
-        request.headers.addAll({
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'FarFromDesk-update-check',
-        });
-        final response = await client.send(request);
-        if (response.statusCode != 200) {
-          throw const FormatException('Release feed unavailable');
-        }
-        final bytes = <int>[];
-        await for (final part in response.stream) {
-          if (bytes.length + part.length > 512 * 1024) {
-            throw const FormatException('Release feed too large');
+        const pageSize = 5, maxPages = 4;
+        const maxPageBytes = 512 * 1024, maxTotalBytes = 1536 * 1024;
+        var totalBytes = 0;
+        final releases = <dynamic>[];
+        for (var page = 1; page <= maxPages; page++) {
+          if (!active || _closed) throw const FormatException('Check stopped');
+          final request = http.Request(
+            'GET',
+            Uri.https('api.github.com', '/repos/$releaseRepository/releases', {
+              'per_page': '$pageSize',
+              'page': '$page',
+            }),
+          )..followRedirects = false;
+          request.headers.addAll({
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'FarFromDesk-update-check',
+          });
+          final response = await client.send(request);
+          if (!active || _closed) throw const FormatException('Check stopped');
+          if (response.statusCode != 200) {
+            throw const FormatException('Release feed unavailable');
           }
-          bytes.addAll(part);
+          final bytes = <int>[];
+          await for (final part in response.stream) {
+            if (!active || _closed) {
+              throw const FormatException('Check stopped');
+            }
+            if (bytes.length + part.length > maxPageBytes ||
+                totalBytes + bytes.length + part.length > maxTotalBytes) {
+              throw const FormatException('Release feed too large');
+            }
+            bytes.addAll(part);
+          }
+          totalBytes += bytes.length;
+          final result = jsonDecode(utf8.decode(bytes));
+          if (result is! List || result.length > pageSize) {
+            throw const FormatException('Invalid release page');
+          }
+          releases.addAll(result);
+          if (result.length < pageSize) break;
         }
-        return jsonDecode(utf8.decode(bytes));
+        return releases;
       })().timeout(const Duration(seconds: 12));
       final release = selectRelease(data, current, platform, architecture);
       _cachedData = data;
@@ -259,6 +284,7 @@ class UpdateChecker {
         checkedAt: attemptedAt,
       );
     } finally {
+      active = false;
       client.close();
       _client = null;
     }
