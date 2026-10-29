@@ -9,10 +9,12 @@ import {Store} from '../src/store.js';
 import {Router} from '../src/router.js';
 import {Approvals} from '../src/approvals.js';
 import {Coordinator} from '../src/coordinator.js';
+import {NativeAgents} from '../src/native.js';
 import {MorningBrief} from '../src/morning-brief.js';
 import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,brainPolicy,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts,contractDeliveryState} from '../src/task-contracts.js';
+import {optionsMarkup} from '../src/message-options.js';
 import type {ContractDecision} from '../src/task-contract-model.js';
 
 const proposal=(question=''):ContractDecision=>({kind:'contract',goal:'Add the requested dark theme',exclusions:['Do not publish'],checks:['Theme can be enabled','Existing theme still works'],question});
@@ -106,6 +108,31 @@ test('a quoted reply to the contract itself cannot approve it',async()=>{
   }finally{f.close();}
 });
 
+test('agent-authored message choices cannot bypass task-contract review',async()=>{
+  for(const token of [false,true]){const f=fixture();try{
+    const owner='owner@s.whatsapp.net';f.store.enqueue('wa:legacy',f.binding,'Original task',owner);
+    f.store.output(f.binding,'Choose next','legacy-offer',owner,{requestId:'wa:legacy',kind:'progress',origin:'agent',options:{choices:[{id:'go',label:'Deploy now'},{id:'no',label:'Do not deploy'}],expiresInSeconds:60}});
+    const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='legacy-offer:0'").get() as any;f.store.sent(offer.id);
+    const callback=optionsMarkup(f.store,offer.id)!.inline_keyboard[0][0].callback_data;
+    const result=await f.r.receive({id:'wa:choice',text:token?'Selected message option':'1',quotedId:offer.wa_id,optionToken:token?callback:undefined,ownerIntent:true,ownerChoice:true});
+    assert.equal(result.status,'blocked');assert.equal(f.store.job('wa:choice'),undefined);
+    assert.equal(f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id)?.selected_id,null);
+    assert.match(f.out().at(-1).body,/reviewed|nothing was sent/i);
+  }finally{f.close();}}
+});
+
+test('disabling new contract reviews does not bypass an existing approved contract via choices',async()=>{
+  const f=fixture();try{
+    const owner='owner@s.whatsapp.net';await f.send('request','Add the dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');
+    f.store.output(f.binding,'Choose next','guarded-offer',owner,{requestId:'wa:approved',kind:'progress',origin:'agent',options:{choices:[{id:'go',label:'Deploy now'},{id:'no',label:'Do not deploy'}],expiresInSeconds:60}});
+    const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='guarded-offer:0'").get() as any;f.store.sent(offer.id);
+    saveBrainConfig(f.store,f.secret,{policy:{...brainPolicy(f.store),taskContracts:false}});
+    const result=await f.r.receive({id:'wa:choice',text:'1',quotedId:offer.wa_id,ownerIntent:true,ownerChoice:true});
+    assert.equal(result.status,'blocked');assert.equal(f.store.job('wa:choice'),undefined);
+    assert.equal(f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id)?.selected_id,null);
+  }finally{f.close();}
+});
+
 test('forwarded text cannot approve a contract and a changed native identity cannot receive it',async()=>{
   const f=fixture();try{
     await f.send('1','Add dark theme');f.markSent();
@@ -180,4 +207,56 @@ test('an approval saved before interruption resumes the original request, not th
     assert.match(f.store.job(incoming.id)!.body,/Do NOT publish/);assert.doesNotMatch(f.store.job(incoming.id)!.body,/^ok$/);
     await f.r.receive(incoming);assert.equal(f.store.jobs().length,1);
   }finally{f.close();}
+});
+
+async function contractedReport(f:ReturnType<typeof fixture>,channel=false){
+  if(channel){f.store.db.prepare("UPDATE bindings SET mode='channel' WHERE id=?").run(f.binding.id);Object.assign(f.binding,f.store.binding(f.binding.id));}
+  const c=new Coordinator(f.store,f.r.native,f.r,()=>{});f.r.coordinator=c;c.registry.register(f.binding);f.store.set('master',f.binding.id);
+  f.r.brain.handle=async()=>false;
+  const worker=f.store.register('worker','codex',randomUUID(),'/tmp/worker').binding;f.store.set('selected',JSON.stringify([worker.id]));
+  const created=await f.send('request','Add the dark theme. Do NOT publish.');f.markSent();const confirmed=await f.send('approved','ok');
+  const parent=f.store.job('wa:approved')!;assert.ok(parent,JSON.stringify({created,confirmed,replies:f.out().map(o=>o.body)}));
+  const [childId]=c.dispatch(parent.id,[worker.id],'Inspect the requested theme.','report-fixture');
+  f.store.jobState(parent.id,'submitted');f.store.jobState(childId,'completed');
+  c.workerReply(worker,'Inspection finished.',childId,false,'final');
+  const report=f.store.db.prepare("SELECT id FROM inbox WHERE id LIKE 'report:%'").get() as {id:string};assert.ok(report);
+  return {parent,worker,childId,reportId:report.id};
+}
+
+test('contracted worker reports bind owner, item, parent, source and target identities',async()=>{
+  for(const change of ['owner','target','source','parent','item','body','destination','approval','source-record']){const f=fixture();try{
+    const {parent,worker,childId,reportId}=await contractedReport(f);const report=f.store.job(reportId)!;
+    assert.match(report.body,/Owner-approved task contract/);assert.equal(f.r.assertDispatchAllowed(reportId,f.binding),true);
+    if(change==='owner')f.store.set('whatsapp-owner','other@s.whatsapp.net');
+    if(change==='target')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+    if(change==='source')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);
+    if(change==='parent')f.store.jobState(parent.id,'completed');
+    if(change==='item'){const other=f.r.brain.memory.items.add('Another task').id;f.store.db.prepare('UPDATE item_requests SET item_id=? WHERE request_id=?').run(other,childId);}
+    if(change==='body')f.store.db.prepare('UPDATE inbox SET body=? WHERE id=?').run('Altered report',reportId);
+    if(change==='destination')f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run('another@g.us',reportId);
+    if(change==='approval')f.store.db.prepare("UPDATE task_contracts SET state='cancelled'").run();
+    if(change==='source-record')f.store.db.prepare('DELETE FROM task_contract_report_sources WHERE job_id=?').run(reportId);
+    assert.throws(()=>f.r.assertDispatchAllowed(reportId,f.store.binding(f.binding.id)!),/changed|not sent|unavailable/i,change);
+  }finally{f.close();}}
+});
+
+test('contracted reports fail closed at the channel-poll boundary after owner changes',async()=>{
+  const f=fixture();try{
+    const {reportId}=await contractedReport(f,true);f.store.set('whatsapp-owner','other@s.whatsapp.net');
+    assert.equal(f.r.channelPoll(f.binding,'synthetic-client'),null);
+    assert.equal(f.store.job(reportId)?.status,'failed');
+  }finally{f.close();}
+});
+
+test('contracted report rechecks its source after native readiness and never sends to a changed session',async()=>{
+  const f=fixture();try{
+    const {worker,reportId}=await contractedReport(f);let start!:()=>void,release!:()=>void;
+    const started=new Promise<void>(r=>start=r),waiting=new Promise<void>(r=>release=r);let sent=0;
+    const native:any={store:f.store,connections:{assert:async()=>{start();await waiting;},route:()=>({transport:'managed-cli',executionMode:'cli'})},run:NativeAgents.prototype.run,managedRun:async()=>{sent++;}};
+    native.beforeDispatch=(binding:any,id:string)=>f.r.assertDispatchAllowed(id,binding);f.r.native=native;f.r.brain.tick=()=>{};
+    Router.prototype.pump.call(f.r);await started;
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);release();
+    await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(sent,0);assert.equal(f.store.job(reportId)?.status,'failed');assert.match(f.store.job(reportId)?.error??'',/not sent|nothing was sent/i);
+  }finally{f.r.stopped=true;f.close();}
 });

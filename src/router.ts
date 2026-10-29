@@ -115,7 +115,13 @@ export class Router {
       ownerReply=true;const targetReply=pickOwnerTarget(this,m);ownerReply=false;
       if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
-        const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>this.queue(m.id,this.need(bindingId),body));
+        const origin=this.store.db.prepare('SELECT o.request_id FROM message_options o JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,this.store.destination()??'') as {request_id:string}|undefined;
+        const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>{
+          // A choice label is agent-authored and cannot prove that the owner approved
+          // its side effects. Ask for an ordinary message that can be reviewed.
+          if(this.contracts.enabled()||origin&&this.contracts.hasGuard(origin.request_id))throw new Error('Send your answer as a new message so it can be reviewed. Nothing was sent.');
+          this.queue(m.id,this.need(bindingId),body);
+        });
         if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');

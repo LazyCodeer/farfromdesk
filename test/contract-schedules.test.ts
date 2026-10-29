@@ -138,7 +138,11 @@ test('delegated scheduled work carries the approved contract and rechecks both s
     const [id]=c.dispatch(root.id,[worker.id],'Check the PR only.','event');const child=f.store.job(id)!;
     assert.match(child.body,/Owner-approved task contract/);assert.match(child.body,/Do not deploy/);
     assert.equal(f.store.itemOf(child.id),f.store.itemOf(root.id));assert.equal(f.router.assertDispatchAllowed(child.id,worker),true);
+    f.store.jobState(child.id,'completed');c.workerReply(worker,'Check finished.',child.id,false,'final');
+    const report=f.store.db.prepare("SELECT id FROM inbox WHERE id LIKE 'report:%'").get() as {id:string};assert.ok(report);
+    assert.match(f.store.job(report.id)!.body,/Owner-approved task contract/);assert.equal(f.router.assertDispatchAllowed(report.id,f.binding),true);
     f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
     assert.throws(()=>f.router.assertDispatchAllowed(child.id,worker),/not sent|changed/i);
+    assert.throws(()=>f.router.assertDispatchAllowed(report.id,f.store.binding(f.binding.id)!),/not sent|changed/i);
   }finally{f.close();}
 });

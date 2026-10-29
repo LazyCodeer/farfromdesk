@@ -40,7 +40,8 @@ export class TaskContracts {
       CREATE TABLE IF NOT EXISTS task_contract_schedule_drafts(contract_id TEXT PRIMARY KEY,payload TEXT NOT NULL,payload_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_contract_brief_drafts(contract_id TEXT PRIMARY KEY,payload TEXT NOT NULL,payload_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_contract_schedules(schedule_id TEXT PRIMARY KEY,contract_id TEXT,payload TEXT NOT NULL,payload_hash TEXT NOT NULL,expected_next INTEGER NOT NULL,valid_until INTEGER NOT NULL,policy_hash TEXT NOT NULL,key_hash TEXT NOT NULL,mode TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS task_contract_jobs(job_id TEXT PRIMARY KEY,contract_id TEXT NOT NULL,parent_id TEXT,binding_id TEXT NOT NULL,binding_hash TEXT NOT NULL,raw_hash TEXT NOT NULL,body_hash TEXT NOT NULL,item_id INTEGER);`);
+      CREATE TABLE IF NOT EXISTS task_contract_jobs(job_id TEXT PRIMARY KEY,contract_id TEXT NOT NULL,parent_id TEXT,binding_id TEXT NOT NULL,binding_hash TEXT NOT NULL,raw_hash TEXT NOT NULL,body_hash TEXT NOT NULL,item_id INTEGER);
+      CREATE TABLE IF NOT EXISTS task_contract_report_sources(job_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,source_binding_id TEXT NOT NULL,source_binding_hash TEXT NOT NULL,source_body_hash TEXT NOT NULL,parent_id TEXT NOT NULL);`);
   }
   enabled(){const p=brainPolicy(this.store);return p.enabled&&p.taskContracts;}
   private row(id:string){return this.store.db.prepare('SELECT * FROM task_contracts WHERE id=?').get(id) as ContractRow|undefined;}
@@ -235,6 +236,28 @@ export class TaskContracts {
     return text;
   }
   childMatches(id:string,body:string){const row=this.store.db.prepare('SELECT raw_hash FROM task_contract_jobs WHERE job_id=?').get(id) as {raw_hash:string}|undefined;return !!row&&row.raw_hash===hash(body);}
+  /** Reports remain bound to the owner, parent, exact source session and task contract. */
+  bindReport(r:Router,parentId:string,sourceId:string|undefined,id:string,target:Binding,body:string){
+    const row=this.jobContract(parentId);
+    if(!row){if(this.hasGuard(parentId)||sourceId&&this.hasGuard(sourceId))throw new Error('The task contract is unavailable. Nothing was sent.');return body;}
+    const parent=this.store.job(parentId),parentBinding=parent&&this.store.binding(parent.binding_id);
+    if(!parent||!parentBinding||target.id!==parentBinding.id||!row.item_id||this.store.itemOf(parentId)!==row.item_id)throw new Error('The approved task or session changed. Nothing was sent.');
+    this.assertDispatch(r,parentId,parentBinding,parent.body);
+    let sourceBinding:Binding|undefined,sourceBodyHash='';
+    if(sourceId){const source=this.store.job(sourceId);sourceBinding=source&&this.store.binding(source.binding_id);
+      if(!source||!sourceBinding||this.store.get(`parent:${sourceId}`)!==parentId||this.store.itemOf(sourceId)!==row.item_id||source.destination!==row.destination||this.jobContract(sourceId)?.id!==row.id)throw new Error('The report source changed. Nothing was sent.');
+      this.assertDispatch(r,sourceId,sourceBinding,source.body);sourceBodyHash=hash(source.body);
+    }
+    const text=this.render(row,body),identity=bindingHash(r,target),prior=this.store.db.prepare('SELECT contract_id,parent_id,binding_id,binding_hash,raw_hash,body_hash,item_id FROM task_contract_jobs WHERE job_id=?').get(id) as {contract_id:string;parent_id:string;binding_id:string;binding_hash:string;raw_hash:string;body_hash:string;item_id:number}|undefined;
+    if(prior&&(prior.contract_id!==row.id||prior.parent_id!==parentId||prior.binding_id!==target.id||prior.binding_hash!==identity||prior.raw_hash!==hash(body)||prior.body_hash!==hash(text)||prior.item_id!==row.item_id))throw new Error('The report changed. Nothing was sent.');
+    this.store.linkItem(id,row.item_id);
+    this.store.db.prepare('INSERT OR IGNORE INTO task_contract_jobs(job_id,contract_id,parent_id,binding_id,binding_hash,raw_hash,body_hash,item_id) VALUES(?,?,?,?,?,?,?,?)').run(id,row.id,parentId,target.id,identity,hash(body),hash(text),row.item_id);
+    const priorSource=this.store.db.prepare('SELECT * FROM task_contract_report_sources WHERE job_id=?').get(id) as {source_id:string;source_binding_id:string;source_binding_hash:string;source_body_hash:string;parent_id:string}|undefined;
+    const sourceIdentity=sourceBinding?bindingHash(r,sourceBinding):'',sourceBindingId=sourceBinding?.id??'',sourceKey=sourceId??'';
+    if(priorSource&&(priorSource.source_id!==sourceKey||priorSource.source_binding_id!==sourceBindingId||priorSource.source_binding_hash!==sourceIdentity||priorSource.source_body_hash!==sourceBodyHash||priorSource.parent_id!==parentId))throw new Error('The report source changed. Nothing was sent.');
+    this.store.db.prepare('INSERT OR IGNORE INTO task_contract_report_sources VALUES(?,?,?,?,?,?)').run(id,sourceKey,sourceBindingId,sourceIdentity,sourceBodyHash,parentId);
+    return text;
+  }
   private render(row:ContractRow,body:string){
     const draft=JSON.parse(row.draft) as Draft,edits=JSON.parse(row.edits) as string[];
     const text=[body,'',`Owner's original request: ${row.original}`,...(row.review_text!==row.original?[`Owner-reviewed task: ${row.review_text}`]:[]),'Owner-approved task contract:',`Build: ${draft.goal}`,`Do not touch: ${draft.exclusions.join('; ')||'No exclusions specified.'}`,'Checks:',...draft.checks.map((c,i)=>`${i+1}. ${c.text}`),...(edits.length?['Owner corrections:',...edits.map((e,i)=>`${i+1}. ${e}`)]:[]),'The original owner request remains authoritative.'].join('\n');
@@ -263,9 +286,16 @@ export class TaskContracts {
     const brief=this.store.db.prepare('SELECT payload_hash FROM task_contract_brief_drafts WHERE contract_id=?').get(row.id) as {payload_hash:string}|undefined;
     const approvedHash=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.edits,row.draft,draft?.payload_hash??null,brief?.payload_hash??null]));
     if(approvedHash!==row.approved_hash)throw new Error('The approved task contract changed. Nothing was sent.');
+    const job=this.store.job(id);if(!job||job.binding_id!==binding.id||job.destination!==row.destination||job.body!==body)throw new Error('The approved task or destination changed. Nothing was sent.');
     const link=this.store.db.prepare('SELECT * FROM task_contract_jobs WHERE job_id=? AND contract_id=?').get(id,row.id) as {parent_id:string|null;binding_id:string;binding_hash:string;body_hash:string;item_id:number|null}|undefined;
     const bound=link??{binding_id:row.binding_id,binding_hash:row.binding_hash,body_hash:row.body_hash,item_id:row.item_id};
     if(!dispatchContextValid(r,row)||hash(this.secret.read()??'')!==row.key_hash||bound.binding_id!==binding.id||bound.binding_hash!==bindingHash(r,binding)||bound.body_hash!==hash(body)||!bound.item_id||row.item_id!==bound.item_id||this.store.itemOf(id)!==bound.item_id)throw new Error('The approved task or session changed. Nothing was sent.');
+    const report=this.store.db.prepare('SELECT * FROM task_contract_report_sources WHERE job_id=?').get(id) as {source_id:string;source_binding_id:string;source_binding_hash:string;source_body_hash:string;parent_id:string}|undefined;
+    if(id.startsWith('report:')&&link&&(!report||report.parent_id!==link.parent_id))throw new Error('The report source is unavailable. Nothing was sent.');
+    if(report?.source_id){const source=this.store.job(report.source_id),sourceBinding=source&&this.store.binding(source.binding_id);
+      if(!source||!sourceBinding||source.binding_id!==report.source_binding_id||bindingHash(r,sourceBinding)!==report.source_binding_hash||hash(source.body)!==report.source_body_hash||source.destination!==row.destination||this.store.get(`parent:${report.source_id}`)!==report.parent_id||this.store.itemOf(report.source_id)!==row.item_id||this.jobContract(report.source_id)?.id!==row.id)throw new Error('The report source changed. Nothing was sent.');
+      this.assertDispatch(r,report.source_id,sourceBinding,source.body,new Set(visited));
+    }
     if(link?.parent_id){const parent=this.store.job(link.parent_id),parentBinding=parent&&this.store.binding(parent.binding_id);if(!parent||!parentBinding||!['queued','dispatched','submitted'].includes(parent.status))throw new Error('The owner request has ended. Nothing was sent.');this.assertDispatch(r,link.parent_id,parentBinding,parent.body,visited);}
   }
   rejectDispatch(id:string,reason:string){
