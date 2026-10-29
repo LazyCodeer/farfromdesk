@@ -2,7 +2,7 @@
 
 This is not a working job-search feature. Nothing here is connected to the
 router, session tools, WhatsApp, the F3 contract UI, or a document sender.
-There is no production evidence verifier, public-web search provider, automatic
+There is no integrated production evidence verifier, public-web search provider, automatic
 browser navigation, application opener or submit action. A selected page is
 not by itself proof of a current job listing or a working query-stripped URL.
 
@@ -27,7 +27,18 @@ yet the tailored document required by the approved plan.
   source, link, title, availability and request ownership; use bounded
   responses/timeouts, protect against private-network targets/DNS rebinding,
   revalidate each redirect, and record source/attempt provenance. No such
-  adapter exists in this branch, so real shortlists must not be delivered.
+  adapter is integrated, so real shortlists must not be delivered.
+- `errand-greenhouse.ts` is an isolated, unwired verifier for exact Greenhouse
+  board and job IDs, not a search provider. It independently checks the fixed
+  Greenhouse API and the matching public listing URL. It uses no credentials,
+  accepts no query parameters, does not follow redirects, restricts hosts and
+  pins a public IPv4 DNS answer for each bounded HTTPS request. It does not
+  attest workplace mode, eligibility, salary or geographic restrictions. It
+  has only offline synthetic tests, has not been verified against the live
+  service and must receive a trusted request-bound ID source and authority
+  adapter before use. API or page changes, redirects and links with query
+  parameters fail closed. The generic API and page checks are not proof that a
+  job matches the owner's criteria.
 - `existingTabListingReader` only reads tabs already selected for the exact
   browser request scope. It returns `selected-page` observations, deliberately
   not `public-listing-verified` listings. BrowserTabs strips URL queries, so a
