@@ -247,6 +247,19 @@ for(const change of ['native-id','owner','disabled','route','item','mode'] as co
     if(change==='owner')assert.equal(notice,undefined);else assert.equal(notice?.destination,'owner@s.whatsapp.net');
   }finally{f.close();}
 });
+test('a revoked inbound context settles a brief action without sending its rejection notice',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    const captured=f.store.captureIncomingOwner('owner@s.whatsapp.net','whatsapp')!;
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner','owner@s.whatsapp.net');
+    f.store.incomingOwnerContext.run(captured,()=>f.router.failBeforeSubmission('wa:action','Nothing was sent.'));
+    assert.equal(f.store.job('wa:action')?.status,'failed');assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined);
+  }finally{f.close();}
+});
 test('a queued channel action is never delivered if its saved session identity changes',async()=>{
   const f=setup();try{
     f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});

@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../src/store.js';
 import {DEFAULT_BRAIN,MetaSecret} from '../src/meta-brain-config.js';
-import {Schedules,scheduleDeliveryState,scheduleJobState,scheduleOwnerValid} from '../src/schedules.js';
+import {Schedules,scheduleDeliveryState,scheduleJobState,scheduleOwnerValid,failScheduledBeforeSubmission} from '../src/schedules.js';
 import {localInstants,nextOccurrence} from '../src/schedule-time.js';
 import type {ScheduleDecision,ScheduleInterpreter} from '../src/schedule-model.js';
 import {Router} from '../src/router.js';
@@ -112,6 +112,19 @@ test('scheduled session is bound to exact explicit session and cannot dispatch a
     const job=f.store.db.prepare('SELECT id,binding_id FROM inbox').get() as {id:string;binding_id:string};
     assert.equal(job.binding_id,binding.id);assert.equal(scheduleOwnerValid(f.store,'job',job.id),true);
     f.store.set('whatsapp-owner','other@s.whatsapp.net');assert.equal(scheduleOwnerValid(f.store,'job',job.id),false);
+  }finally{f.close();}
+});
+
+test('a revoked inbound context settles a scheduled action without sending its rejection notice',async()=>{
+  const f=fixture();try{
+    f.store.register('site','codex','11111111-1111-4111-8111-111111111111','/tmp/example');
+    f.setDecision({action:'session',text:'check PR 20',target:'site'});
+    await f.send('1','At 6 PM ask site to check PR 20');f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
+    const job=f.store.db.prepare('SELECT id FROM inbox').get() as {id:string};
+    const captured=f.store.captureIncomingOwner('owner@s.whatsapp.net','whatsapp')!;
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner','owner@s.whatsapp.net');
+    f.store.incomingOwnerContext.run(captured,()=>failScheduledBeforeSubmission(f.router,job.id,'Nothing was sent.'));
+    assert.equal(f.store.job(job.id)?.status,'failed');assert.equal(f.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`schedule-error:${job.id}:0`),undefined);
   }finally{f.close();}
 });
 

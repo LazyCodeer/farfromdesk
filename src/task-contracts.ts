@@ -351,7 +351,7 @@ export class TaskContracts {
       this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Task contract was not sent' WHERE status='queued' AND source=?").run(`native-opening:${id}:0`);
       const validOwner=this.store.ownerFor(row.destination)===row.owner&&this.store.controlChannel()===row.channel&&
         (row.channel==='telegram'?row.destination===this.store.get('telegram-owner'):row.destination===row.owner||row.destination===this.store.get('destination-jid')&&!!this.store.get(`owned-group:${row.destination}`));
-      if(validOwner){
+      if(validOwner&&this.store.incomingOwnerCurrent()&&(!this.store.incomingOwnerContext.getStore()||this.store.incomingOwnerContext.getStore()!.destination===row.destination)){
         const source=`task-contract-error:${id}`;this.store.output(undefined,reason,source,row.destination,{requestId:id,kind:'system',origin:'system',plain:true});
         const parts=this.store.db.prepare('SELECT id FROM outbox WHERE source LIKE ? AND destination=?').all(`${source}:%`,row.destination) as {id:string}[];
         for(const part of parts)this.store.db.prepare('INSERT OR IGNORE INTO task_contract_outbox VALUES(?,?,?,?)').run(part.id,row.id,row.revision,'error');
