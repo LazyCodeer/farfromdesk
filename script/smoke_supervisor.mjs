@@ -25,9 +25,35 @@ async function unixIdentity(pid) {
   return {parent:Number(m[1]),group:Number(m[2]),fingerprint:`${m[2]}|${m[3]}|${m[4]}`};
 }
 
+// Terminal writes can block synchronously on macOS, before write() returns
+// false. Only disposable relays write to inherited runner output; the timer
+// process writes to their bounded, nonblocking stdin pipes.
+function logRelay(target) {
+  if(target!==process.stdout&&target!==process.stderr)return {sink:target};
+  const source="process.stdin.on('error',()=>{});process.stdout.on('error',()=>process.exit(1));process.stdin.pipe(process.stdout);";
+  const child=spawn(process.execPath,['-e',source],{stdio:['pipe',target,'ignore']});
+  const relay={sink:child.stdin,child,failed:false,closing:false};
+  child.stdin.on('error',()=>{relay.failed=true;});
+  child.on('error',()=>{relay.failed=true;});
+  child.on('exit',(code,signal)=>{if(!relay.closing||code!==0||signal)relay.failed=true;});
+  return relay;
+}
+async function closeRelay(relay) {
+  if(!relay.child)return;
+  const child=relay.child;relay.closing=true;
+  if(child.exitCode!==null||child.signalCode!==null){child.stdin.destroy();child.unref();return;}
+  await new Promise(done=>{
+    let finished=false,killTimer,forceTimer;
+    const finish=()=>{if(finished)return;finished=true;clearTimeout(killTimer);clearTimeout(forceTimer);child.stdin.destroy();child.unref();done();};
+    child.once('exit',finish);child.once('error',finish);child.stdin.end();
+    killTimer=setTimeout(()=>{relay.failed=true;child.stdin.destroy();child.kill('SIGKILL');forceTimer=setTimeout(finish,500);},500);
+  });
+}
+
 /** Return the child exit status, or 124 when its independent deadline expires. */
 export function runSupervisedSmoke(command,args,{deadlineMs=210000,pipeGraceMs=1000,env=process.env,stdout=process.stdout,stderr=process.stderr}={}) {
   return new Promise(resolveResult=>{
+    const outputRelay=logRelay(stdout),errorRelay=logRelay(stderr);
     const child=spawn(command,args,{stdio:['ignore','pipe','pipe','ipc'],detached:process.platform!=='win32',env});
     let finished=false,phase='initial setup',app,exitTimer,backend,backendPid,backendExited=false;
     const blocked=new WeakSet();
@@ -36,10 +62,10 @@ export function runSupervisedSmoke(command,args,{deadlineMs=210000,pipeGraceMs=1
       if(!stream.write(data)) {blocked.add(stream);stream.once('drain',()=>blocked.delete(stream));return false;}
       return true;
     };
-    const say=message=>forward(stderr,`${message}\n`);
+    const say=message=>forward(errorRelay.sink,`${message}\n`);
     let warned=false;
     const logs=(stream,data)=>{if(!forward(stream,data)&&!warned){warned=true;say('Native smoke output was truncated because the log consumer stopped reading.');}};
-    child.stdout.on('data',data=>logs(stdout,data));child.stderr.on('data',data=>logs(stderr,data));
+    child.stdout.on('data',data=>logs(outputRelay.sink,data));child.stderr.on('data',data=>logs(errorRelay.sink,data));
     child.on('message',message=>{
       if(!message||typeof message!=='object')return;
       if(message.type==='phase'&&typeof message.name==='string')phase=message.name;
@@ -97,7 +123,9 @@ export function runSupervisedSmoke(command,args,{deadlineMs=210000,pipeGraceMs=1
       }
       // Never wait for a detached descendant that inherited the worker pipe.
       child.stdout.destroy();child.stderr.destroy();
-      if(child.connected)child.disconnect();child.unref();resolveResult(code);
+      if(child.connected)child.disconnect();child.unref();
+      await Promise.all([closeRelay(outputRelay),closeRelay(errorRelay)]);
+      resolveResult(code===0&&(outputRelay.failed||errorRelay.failed)?1:code);
     }
     const deadline=setTimeout(()=>{say(`Native smoke supervisor exceeded ${Math.round(deadlineMs/1000)} seconds during ${phase}.`);finish(124,{stop:true});},deadlineMs);
     child.once('error',error=>{say(`Native smoke supervisor could not start the worker: ${error.message}`);finish(1,{stop:true});});
