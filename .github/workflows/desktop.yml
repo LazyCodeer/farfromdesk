@@ -141,10 +141,10 @@ jobs:
         run: python script/test_windows_installer.py --version ${{ needs.version.outputs.version }}
         timeout-minutes: 6
       - if: runner.os == 'Linux'
-        run: xvfb-run -a node script/smoke_desktop_app.mjs
+        run: xvfb-run -a node script/smoke_supervisor.mjs
         timeout-minutes: 4
       - if: runner.os != 'Linux'
-        run: node script/smoke_desktop_app.mjs
+        run: node script/smoke_supervisor.mjs
         timeout-minutes: 4
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
