@@ -32,6 +32,14 @@ not followed. Tests can inject fakes and use a loopback server. This is not an
 OS sandbox: raw sockets, other HTTP clients and
 subprocesses that replace their environment can still access the network.
 
+Before creating temporary state, the runner resolves the temporary base and the
+configured and default app-state paths (including symlink aliases) and refuses
+to run if the temporary base is inside either app-state directory. Resolving
+these paths uses filesystem metadata, not app-state contents. If a sandbox or
+permissions prevent resolving an existing app-state path, the runner fails
+closed. Choose a separate writable temporary directory and use a sandbox that
+permits the necessary path metadata while denying access to app-state contents.
+
 `npm test` and `npm run test:portable` also use the isolated test runner, but
 the npm process itself starts before that runner can clear `NODE_OPTIONS`.
 Therefore, a pre-existing Node startup hook may already execute in npm;

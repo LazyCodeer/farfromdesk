@@ -1,8 +1,8 @@
 // Run tests with a fresh state root established before any application imports.
 // Direct node/tsx test invocations bypass this runner; use npm run test:file.
-import {mkdtempSync,mkdirSync,chmodSync,readdirSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {mkdtempSync,mkdirSync,chmodSync,readdirSync,rmSync,realpathSync} from 'node:fs';
+import {tmpdir,homedir} from 'node:os';
+import {join,resolve,relative,dirname,basename,isAbsolute,sep} from 'node:path';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:net';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -24,6 +24,40 @@ const inheritedNames=new Set([
   'ISOLATION_SENTINEL','ISOLATION_PROBE_FAIL','ISOLATION_EXPECT_AUDIO',
 ]);
 
+function defaultAppState() {
+  const home=homedir();
+  if(process.platform==='darwin')return join(home,'Library','Application Support','WhatsApp Session Bridge');
+  if(process.platform==='win32')return join(process.env.LOCALAPPDATA||join(home,'AppData','Local'),'FarFromDesk');
+  return join(process.env.XDG_DATA_HOME||join(home,'.local','share'),'farfromdesk');
+}
+
+// Resolve aliases in every existing path component, even when the final state
+// directory has not been created. An inaccessible component is not assumed to
+// be safe: it could itself be a symlink into the candidate temp directory.
+function canonicalPotential(path) {
+  let current=resolve(path);const suffix=[];
+  for(;;) {
+    try{return resolve(realpathSync(current),...suffix);}
+    catch(error) {
+      if(error?.code!=='ENOENT')throw new Error('Cannot verify test temp isolation against app state.');
+      const parent=dirname(current);if(parent===current)throw new Error('Cannot verify test temp isolation against app state.');
+      suffix.unshift(basename(current));current=parent;
+    }
+  }
+}
+
+/** Reject an existing temp base inside an app-state root, including aliases. */
+export function safeTestTempBase(candidate,stateRoots) {
+  let base;try{base=realpathSync(resolve(candidate));}
+  catch{throw new Error('Cannot verify the test temp directory.');}
+  for(const root of stateRoots) {
+    const state=canonicalPotential(root),part=relative(state,base);
+    if(part===''||(!isAbsolute(part)&&part!=='..'&&!part.startsWith(`..${sep}`)))
+      throw new Error('The test temp directory must be outside app state.');
+  }
+  return base;
+}
+
 export function selectedTests(mode,args) {
   if(mode==='files') {
     if(!args.length)throw new Error('Specify at least one test file.');
@@ -38,7 +72,9 @@ export function selectedTests(mode,args) {
 
 export async function startTests(mode,args) {
   const {files,options}=selectedTests(mode,args);
-  const root=mkdtempSync(join(tmpdir(),'farfromdesk-tests-'));
+  const roots=[...(process.env.WSB_STATE_DIR===undefined?[]:[process.env.WSB_STATE_DIR]),defaultAppState()];
+  const base=safeTestTempBase(tmpdir(),roots);
+  const root=mkdtempSync(join(base,'farfromdesk-tests-'));
   let guardPort;
   try {
     chmodSync(root,0o700);
