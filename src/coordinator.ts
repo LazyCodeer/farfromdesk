@@ -31,7 +31,7 @@ export class Coordinator {
     else {
       const line=text.trim().split('\n').find(l=>l.trim())!.replace(/[*_`#>]/g,'').trim();
       const title=line.length>80?line.slice(0,80).replace(/\s+\S*$/,'')+'…':line;
-      id=items.add(title,this.master()?this.name(this.master()!):undefined,target?.id,`auto:${parentRequest}`).id;
+      id=items.add(title,this.master()?this.name(this.master()!):undefined,target?.id,`auto:${parentRequest}`,parentRequest).id;
     }
     this.store.linkItem(parentRequest,id);
     if(target&&!this.isCoordinator(target.id)) {
@@ -44,7 +44,7 @@ export class Coordinator {
   itemReport(b:Binding,text:string,requestId:string) {
     const id=this.store.itemOf(requestId);if(!id||this.isCoordinator(b.id))return;
     const line=text.split('\n').map(l=>l.replace(/[*_`]/g,'').replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u,'').trim()).find(Boolean)??'';
-    this.items().note(id,`${this.name(b).slice(0,60)} reported: ${line.slice(0,200)}`,undefined,`report:${requestId}`);
+    this.items().note(id,`${this.name(b).slice(0,60)} reported: ${line.slice(0,200)}`,undefined,`report:${requestId}`,requestId);
   }
   requestMaster(id:string){const job=this.store.job(id);return job&&this.isCoordinator(job.binding_id)?this.store.binding(job.binding_id):undefined;}
   private scopeKey(key:string){return this.scope.getStore()?`${key}:${this.scope.getStore()}`:key;}

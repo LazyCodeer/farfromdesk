@@ -123,7 +123,7 @@ export class Workers {
     const generation=this.workspaceGeneration;
     const grant=(async()=>{
       const master=this.router.coordinator!.requestMaster(op.requestId)!;
-      const answer=await this.router.approvals.ask(master,`Allow FarFromDesk to create new coding projects inside ${root}?\nThis approval applies to future owner-requested projects here. Codex uses workspace-write with native approvals; Claude CLI uses acceptEdits; Claude Desktop retains its own native permissions and may require initial folder approval. Commands or access requiring further native permission are sent here. This does not grant access to arbitrary folders.`);
+      const answer=await this.router.approvals.ask(master,`Allow FarFromDesk to create new coding projects inside ${root}?\nThis approval applies to future owner-requested projects here. Codex uses workspace-write with native approvals; Claude CLI uses acceptEdits; Claude Desktop retains its own native permissions and may require initial folder approval. Commands or access requiring further native permission are sent here. This does not grant access to arbitrary folders.`,'approval',op.requestId);
       if(this.closed||generation!==this.workspaceGeneration)return null;
       // A cancelled origin cannot grant shared access, but must not turn another waiting session uncertain.
       try{this.router.coordinator!.ownerRequest(op.requestId);}catch{throw new WorkspaceApprovalExpired('The request that opened this workspace approval is closed. No access was granted. Recover the operation with a new owner request to ask again.');}

@@ -37,6 +37,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,status TEXT NOT NULL,binding_id TEXT,event_id TEXT UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS item_notes(id INTEGER PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES items(id),at INTEGER NOT NULL,by TEXT,note TEXT NOT NULL,event_id TEXT UNIQUE);
       CREATE TABLE IF NOT EXISTS item_requests(request_id TEXT PRIMARY KEY,item_id INTEGER NOT NULL,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS owner_request_origins(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS item_owner_origins(item_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(item_id,destination,owner));
+      CREATE TABLE IF NOT EXISTS item_note_origins(note_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(note_id,destination,owner));
+      CREATE TABLE IF NOT EXISTS item_add_fingerprints(item_id INTEGER PRIMARY KEY,fingerprint TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS hook_updates(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,turn_id TEXT,at INTEGER NOT NULL,text TEXT NOT NULL);
     `);
     if(!this.db.prepare('PRAGMA table_info(inbox)').all().some((c:any)=>c.name==='updated_at')) {
@@ -72,6 +76,30 @@ export class Store {
     return undefined;
   }
   linkItem(requestId:string,itemId:number){this.db.prepare('INSERT OR IGNORE INTO item_requests VALUES(?,?,?)').run(requestId,itemId,Date.now());}
+  /** Only the authenticated inbound WhatsApp path may call this. Never upgrade an existing request to a different owner. */
+  recordOwnerOrigin(requestId:string,destination:string,owner:string){
+    const old=this.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(requestId) as {owner:string;destination:string}|undefined;
+    if(old&&(old.owner!==owner||old.destination!==destination))throw new Error('This request belongs to another owner or chat.');
+    this.db.prepare('INSERT OR IGNORE INTO owner_request_origins VALUES(?,?,?,?)').run(requestId,owner,destination,Date.now());
+  }
+  /** A bounded parent chain must retain one destination and end in a captured owner turn. */
+  requestOwnerOrigin(requestId:string){
+    let id=requestId;const visited=new Set<string>(),destinations:(string|null|undefined)[]=[];
+    for(let depth=0;depth<6;depth++){
+      if(visited.has(id))return undefined;visited.add(id);
+      const job=this.job(id);if(job)destinations.push(job.destination);
+      const parent=this.get(`parent:${id}`)??this.get(`report-parent:${id}`);
+      if(parent){id=parent;continue;}
+      if(!id.startsWith('wa:'))return undefined;
+      const origin=this.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(id) as {owner:string;destination:string}|undefined;
+      if(!origin||destinations.some(d=>d!==origin.destination)||this.ownerFor(origin.destination)!==origin.owner)return undefined;
+      if(origin.destination!==origin.owner&&!this.get(`owned-group:${origin.destination}`))return undefined;
+      // Before the first owner job is queued, accept only the still-active authenticated destination context.
+      if(!destinations.length&&this.destinationContext.getStore()!==origin.destination)return undefined;
+      return {owner:origin.owner,destination:origin.destination};
+    }
+    return undefined;
+  }
   bindings() { return this.db.prepare('SELECT * FROM bindings ORDER BY created_at').all() as Binding[]; }
   binding(id: string) { return this.db.prepare('SELECT * FROM bindings WHERE id=? OR alias=?').get(id, id) as Binding | undefined; }
   register(alias: string, provider: Provider, nativeId: string, cwd: string, mode: Binding['mode'] = 'desktop') {
@@ -142,6 +170,7 @@ export class Store {
   hookUpdate(id:string){return this.db.prepare('SELECT text FROM hook_updates WHERE id=?').get(id);}
   recover() {
     this.db.prepare("UPDATE outbox SET status='uncertain',error='Telegram delivery was interrupted; check the bot before resending' WHERE status='sending' AND destination LIKE 'tg:%'").run();
+    this.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery was interrupted; check your chat before retrying' WHERE status='sending' AND source LIKE 'morning-brief:%'").run();
     for(const row of this.db.prepare("SELECT id,destination FROM inbox WHERE status='dispatched'").all() as {id:string;destination:string|null}[]) {
       // The opening receipt survives native submission, so a restart here cannot
       // prove the message was unsent. Never ask the owner to resend blindly.

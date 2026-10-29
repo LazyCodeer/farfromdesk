@@ -1,4 +1,5 @@
 import { WhatsAppPolls } from './whatsapp-polls.js';
+import { canDeliverBrief } from './morning-brief.js';
 import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,normalizeMessageContent,Browsers,proto,type WASocket} from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { join } from 'node:path';
@@ -290,10 +291,13 @@ export class WhatsApp {
         const m=this.store.outbound();if(!m)break;
         if(m.binding_id&&!this.store.binding(m.binding_id)?.enabled)continue;
         const destination:string=m.destination??this.selfJid;
+        let briefSending=false;
         try {
           const sock:GuardedSocket=this.sock;
+          if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           if(destination!==this.selfJid)await this.verifyGroup(destination);
           if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
+          if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           const poll=this.polls.message(m.id);
           if(poll){
             this.store.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(m.id);
@@ -312,11 +316,14 @@ export class WhatsApp {
               });
             }else content={document:Buffer.from(a.data),fileName:a.filename,mimetype:a.mime,caption:m.body};
           }
-          if(!sent)sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
+          if(!sent){
+            if(m.source.startsWith('morning-brief:')){const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claimed.changes)continue;briefSending=true;}
+            sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
+          }
           if(sent?.message)this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(sent.message,BufferJSON.replacer),m.id);
           this.store.sent(m.id);this.polls.queue(m.id);
         }
-        catch(e){this.error=(e as Error).message;if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
+        catch(e){this.error=briefSending?'Morning brief delivery could not be confirmed.':(e as Error).message;if(briefSending)this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery could not be confirmed; check your chat before retrying' WHERE id=? AND status='sending'").run(m.id);else if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
       }
     } finally {this.flushing=false;}
   }

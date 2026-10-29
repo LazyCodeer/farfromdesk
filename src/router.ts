@@ -12,6 +12,7 @@ import { updateRole, turnEnvelope } from './roles.js';
 import { errorCode, type ReplyContext, type RequestOutcome } from './request-events.js';
 import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
+import type { MorningBrief } from './morning-brief.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
 export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean};
@@ -29,6 +30,7 @@ export class Router {
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
+  morningBrief?:MorningBrief;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
@@ -83,7 +85,12 @@ export class Router {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
-    const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
+      const destination=this.store.destination(),owner=this.store.ownerFor(destination);
+      try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
+    }
+    let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    this.morningBrief?.firstMessage(m);
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
@@ -100,6 +107,15 @@ export class Router {
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      const briefAction=this.morningBrief?.action(m);
+      if(briefAction?.reply){this.store.output(undefined,briefAction.reply,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      if(briefAction?.text&&briefAction.target&&briefAction.itemId){
+        this.store.db.exec('SAVEPOINT brief_action');
+        try{
+          this.store.linkItem(m.id,briefAction.itemId);if(this.store.itemOf(m.id)!==briefAction.itemId)throw new Error('This reply is already associated with a different item.');this.queue(m.id,this.need(briefAction.target),briefAction.text);if(briefAction.ack)this.store.output(undefined,briefAction.ack,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE brief_action');}
+        catch(e){this.store.db.exec('ROLLBACK TO brief_action; RELEASE brief_action');throw e;}
+        this.pump();return {status:'queued',requestId:m.id};
+      }
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;

@@ -122,13 +122,19 @@ export async function runFfd(args:string[],self:{id:string},call:Call,stdin:()=>
   if(op==='items')return (await call('/api/master/items',{op:'list',all:args[0]==='all'})).text;
   if(op==='item') {
     const [sub,...rest]=args;
-    if(sub==='add'){const [title,session]=rest;if(!title)throw new Error("Use ffd item add 'title' [session]");return (await call('/api/master/items',{op:'add',title,session,eventId:`item-${hash(title,session??'')}`})).text;}
+    if(sub==='add'){
+      const marker=rest.indexOf('--request');if(marker>=0&&(marker!==rest.length-2||!rest[marker+1]))throw new Error("Use ffd item add 'title' [session] [--request REQUEST-ID]");
+      const requestId=marker>=0?rest[marker+1]:undefined,fields=marker>=0?rest.slice(0,marker):rest;
+      const [title,session,...extra]=fields;if(!title||extra.length)throw new Error("Use ffd item add 'title' [session] [--request REQUEST-ID]");
+      return (await call('/api/master/items',{op:'add',title,session,eventId:`item-${requestId?hash(title,session??'',requestId):hash(title,session??'')}`,...requestId?{requestId}:{}})).text;
+    }
     if(sub==='show')return (await call('/api/master/items',{op:'show',id:Number(rest[0])})).text;
     if(sub==='set') {
-      const [id,field,...value]=rest;
+      const [id,field,...raw]=rest;let value=raw,requestId:string|undefined;
+      if(field==='note'){const marker=raw.indexOf('--request');if(marker>=0){if(marker!==raw.length-2||!raw[marker+1])throw new Error("Use ffd item set N note 'text' [--request REQUEST-ID]");requestId=raw[marker+1];value=raw.slice(0,marker);}}
       if(!id||field!=='status'&&field!=='session'&&field!=='note'||!value.length)throw new Error("Use ffd item set N status 'in progress'|session NAME|note 'text'");
       const v=value.join(' ');
-      return (await call('/api/master/items',{op:'set',id:Number(id),[field]:v,...field==='note'?{eventId:`note-${hash(id,v)}`}:{}})).text;
+      return (await call('/api/master/items',{op:'set',id:Number(id),[field]:v,...field==='note'?{eventId:`note-${requestId?hash(id,v,requestId):hash(id,v)}`,...requestId?{requestId}:{}}:{}})).text;
     }
     throw new Error("Use ffd item add 'title' [session] | show N | set N status|session|note VALUE");
   }
