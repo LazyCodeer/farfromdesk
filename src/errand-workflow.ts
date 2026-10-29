@@ -12,6 +12,7 @@ import type {Incoming,Router} from './router.js';
 
 type Request={board:string;contract:ErrandContract};
 type Guard={outbox_id:string;mission_id:string;root_request:string;request_id:string;owner:string;destination:string;binding_id:string;binding_identity:string;kind:string;body_hash:string;authority_generation:string};
+const draftText=(draft:{title:string;url:string;text:string})=>`Draft for ${draft.title}\n${draft.url}\n\n${draft.text}\n\nReview the listing and draft yourself. Application availability is unverified.`;
 
 /** Exact, owner-authored criteria only. No free text is interpreted as authority. */
 export function parseGreenhouseRequest(text:string):Request|undefined {
@@ -251,7 +252,7 @@ export class ErrandWorkflow {
     try{
       s.enqueue(m.id,b,m.text,d);s.jobState(m.id,'submitted');
       const draft=this.ledger.draft(latest.mission_id,scope,choice.number);
-      const text=`Draft for ${draft.title}\n${draft.url}\n\n${draft.text}\n\nReview the listing and draft yourself. Application availability is unverified.`;
+      const text=draftText(draft);
       this.queueGuarded(latest.mission_id,latest.root_request,scope,'draft',text);s.remember(m.id);s.db.exec('RELEASE queue_errand_draft');return true;
     }catch(e){s.db.exec('ROLLBACK TO queue_errand_draft; RELEASE queue_errand_draft');throw e;}
   }
@@ -271,7 +272,11 @@ export class ErrandWorkflow {
       if(!mission||!this.authorized(scope,JSON.parse(mission.contract_json),g.root_request))return 'invalid';
       this.ledger.viewShortlist(g.mission_id,scope);
       if(g.kind==='shortlist'&&toWhatsApp(this.ledger.shortlistText(g.mission_id,scope))!==o.body)return 'invalid';
-      if(g.kind==='draft'&&!s.db.prepare('SELECT 1 FROM errand_draft_claims WHERE request_id=? AND mission_id=? AND owner=? AND destination=? AND draft_json IS NOT NULL').get(g.request_id,g.mission_id,g.owner,g.destination))return 'invalid';
+      if(g.kind==='draft'){
+        const claim=s.db.prepare(`SELECT c.position FROM errand_draft_claims d JOIN errand_candidates c ON c.id=d.candidate_id AND c.mission_id=d.mission_id
+          WHERE d.request_id=? AND d.mission_id=? AND d.owner=? AND d.destination=? AND d.draft_json IS NOT NULL AND d.candidate_hash IS NOT NULL`).get(g.request_id,g.mission_id,g.owner,g.destination) as {position:number|null}|undefined;
+        if(!claim?.position||toWhatsApp(draftText(this.ledger.draft(g.mission_id,scope,claim.position)))!==o.body)return 'invalid';
+      }
       return 'ready';
     }catch{return 'invalid';}
   }

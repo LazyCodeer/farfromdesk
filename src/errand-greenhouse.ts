@@ -137,13 +137,15 @@ export function greenhouseListingReader(current:(scope:ErrandScope)=>boolean,now
       // A narrow parsed shape from an observed Greenhouse layout, not text in
       // scripts or comments. Unknown layouts fail closed; it is not a promise
       // that applications are open or that this layout is an API contract.
-      if(!/^text\/html\b/i.test(page.contentType)||!greenhousePageIdentity(page.body,link.hostname,job.board,job.id,data.title.trim()))throw new Error('The public listing page is unavailable or does not match.');
+      const metadata:{employer?:string}={};
+      if(!/^text\/html\b/i.test(page.contentType)||!greenhousePageIdentity(page.body,link.hostname,job.board,job.id,data.title.trim(),metadata))throw new Error('The public listing page is unavailable or does not match.');
       if(explicitlyClosed(page.body))throw new Error('The public listing page says applications are closed.');
       const observedAt=now();if(applicationDeadline!==undefined&&applicationDeadline<=observedAt)throw new Error('The published listing deadline has passed.');
       // The API establishes publication, not that applications are open. The
       // ledger preserves that distinction and displays availability as unknown.
-      const location=typeof data.location?.name==='string'?data.location.name.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,160):'';
-      result.push({sourceUrl:`https://boards-api.greenhouse.io${apiPath}`,url:link.href,title:data.title.trim(),excerpt:[data.title.trim(),location].filter(Boolean).join(' — '),observedAt,applicationDeadline,
+      const location=typeof data.location?.name==='string'?data.location.name.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/\s+/g,' ').trim():'';
+      if(location.length>160||/[\u202a-\u202e\u2066-\u2069]/.test(location))throw new Error('The public listing location is invalid.');
+      result.push({sourceUrl:`https://boards-api.greenhouse.io${apiPath}`,url:link.href,title:data.title.trim(),excerpt:[data.title.trim(),location].filter(Boolean).join(' — '),...(location?{location}:{}),...(metadata.employer?{employer:metadata.employer}:{}),observedAt,applicationDeadline,
         sourceHash:createHash('sha256').update(api.body).update('\0').update(page.body).digest('hex'),workplace:'unknown',verification:applicationDeadline===undefined?'public-listing-published-no-deadline':'public-listing-published'});
     }
     return result;

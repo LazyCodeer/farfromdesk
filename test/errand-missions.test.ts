@@ -164,6 +164,15 @@ test('known credential patterns are refused before criteria or listing text reac
     assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM errand_candidates').get() as {n:number}).n,0);
   }finally{f.close();}
 });
+test('invalid public metadata cannot enter a draft snapshot',async()=>{
+  for(const [field,value] of [['location','x'.repeat(161)],['location','Bangalore\u202eunsafe'],['location','https://evil.example'],['employer','person@example.test']] as const){
+    const f=fixture();try{
+      (f.sources[0] as any)[field]=value;
+      await assert.rejects(f.ledger.gather(f.id,f.scope,{},new AbortController().signal),/empty, oversized, private or duplicated/);
+      assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM errand_candidates').get() as {n:number}).n,0);
+    }finally{f.close();}
+  }
+});
 test('owner, binding or approval changes during search cannot persist results',async()=>{
   for(const change of ['owner','binding','approval'] as const){
     const f=fixture();try{

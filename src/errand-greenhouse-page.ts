@@ -12,7 +12,8 @@ function matchingUrl(value:string,host:string,board:string,id:string) {
   return !url.search||url.search===`?gh_jid=${id}`;
 }
 type Work={node:HTML.Node;depth:number;hidden:boolean;head:boolean;body:boolean;title:boolean;heading:boolean};
-export function greenhousePageIdentity(html:string,host:string,board:string,id:string,title:string):boolean {
+export function greenhousePageIdentity(html:string,host:string,board:string,id:string,title:string,metadata?:{employer?:string}):boolean {
+  if(metadata)delete metadata.employer;
   if(Buffer.byteLength(html)>MAX_HTML_BYTES)return false;
   let ambiguous=false;
   const doc=parse(html,{sourceCodeLocationInfo:true,onParseError:error=>{if(error.code==='duplicate-attribute')ambiguous=true;}});
@@ -53,5 +54,12 @@ export function greenhousePageIdentity(html:string,host:string,board:string,id:s
     for(let i=element.childNodes.length-1;i>=0;i--)work.push({node:element.childNodes[i],depth:frame.depth+1,hidden:isHidden,head:inHead,body:inBody,title:inTitle,heading:inHeading});
   }
   const expected=normalized(title),prefix=`Job Application for ${expected} at `,actualTitle=normalized(titleText);
-  return heads===1&&bodies===1&&titles===1&&headings===1&&meta===1&&form===1&&normalized(headingText)===expected&&actualTitle.startsWith(prefix)&&actualTitle.length>prefix.length;
+  const matched=heads===1&&bodies===1&&titles===1&&headings===1&&meta===1&&form===1&&normalized(headingText)===expected&&actualTitle.startsWith(prefix)&&actualTitle.length>prefix.length;
+  if(matched&&metadata){
+    // This is a bounded page-title label, not independently verified identity.
+    // Do not copy links, addresses, control characters or arbitrary markup.
+    const employer=actualTitle.slice(prefix.length);
+    if(/^[\p{L}\p{N}][\p{L}\p{N}\p{M} .,&#'’()\-+!/]{0,159}$/u.test(employer))metadata.employer=employer;
+  }
+  return matched;
 }

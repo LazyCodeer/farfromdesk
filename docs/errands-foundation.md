@@ -4,8 +4,7 @@ This is an experimental WhatsApp-only Greenhouse workflow, not a general job
 search. In a direct WhatsApp owner chat, a typed request can use `greenhouse jobs; board=example;
 role=Engineer; location=Bangalore`, with optional `salary=`, `avoid=` or
 `skills=Dart, Flutter` fields. Only skills explicitly supplied in that request
-are used, to annotate literal title mentions and prompt the owner to consider
-relevant examples, without changing the ranking.
+are used to annotate literal title mentions without changing the ranking.
 Those mentions do not establish a requirement, qualification or fit.
 It searches only that public board, preserves F3 review when applicable, and
 prepares an owner-only text draft after a delivered shortlist and a reply with
@@ -18,10 +17,13 @@ page is not by itself proof of a current job listing or a working query-stripped
 The ledger supports a scoped approved mission, a bounded source-verifier seam,
 an immutable numbered shortlist and a local draft. It does not submit forms,
 sign in, enter a password or personal ID, contact anyone, make purchases, or
-send a message. The draft names the selected listing and includes cover-letter
-and resume prompts with blank spaces for the owner to fill with verified facts.
-Explicit skill terms are suggestions to consider, not claims. This is not yet
-the profile-grounded document required by the approved plan.
+send a message. The draft names the selected listing, shows its public location
+and page-title employer label when available, and asks the owner to choose a
+responsibility and add a verified example. Those source labels do not establish
+eligibility or independently verify the employer. It neither reads About-you nor
+copies the stated skill terms into the draft. This is not yet the profile-grounded
+document required by the approved plan. The existing bridge still persists the
+owner's typed request and its criteria, including any supplied skill terms.
 
 ## Trust boundaries
 
@@ -66,7 +68,10 @@ the profile-grounded document required by the approved plan.
   The board search sends only the board identifier and filters role and
   location locally. It checks at most ten candidates and propagates transport
   failures. It is not general internet search and does not verify salary or
-  workplace eligibility.
+  workplace eligibility. The separately stored public location is the API's
+  field, not an inference from the owner's requested location; it does not
+  establish geographic eligibility. The employer label is a bounded page-title
+  suffix, not independently verified identity; unsafe labels are omitted.
   The Greenhouse [Job Board API documentation](https://developers.greenhouse.io/job-board.html)
   describes published jobs and includes an `application_deadline` field. A
   published listing or future or absent deadline does not establish that it is
@@ -133,6 +138,8 @@ the profile-grounded document required by the approved plan.
 - Expired evidence requires a new owner request and a new mission. Existing
   missions cannot be reset or reused. A draft claim and its local result are
   committed together and a repeated identical request recovers that result;
+  a digest binds the draft to its selected listing snapshot at delivery. Older
+  queued drafts without a snapshot digest fail closed and need a new request.
   a future sender must still atomically queue delivery or make it idempotent.
   A dispatched owner job marked uncertain during bridge recovery is not an
   active request here, so its saved draft cannot yet be recovered through this

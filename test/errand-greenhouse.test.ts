@@ -23,6 +23,8 @@ test('returns published evidence without claiming applications are open',async()
   assert.equal(rows.length,1);assert.equal(rows[0].url,'https://job-boards.greenhouse.io/example/jobs/12345');
   assert.equal(rows[0].verification,'public-listing-published');assert.equal(rows[0].workplace,'unknown');assert.ok(rows[0].applicationDeadline!>1234);
   assert.equal(rows[0].excerpt,'Flutter Engineer — Bangalore');
+  assert.equal(rows[0].location,'Bangalore');
+  assert.equal(rows[0].employer,'Example');
   assert.match(rows[0].sourceHash,/^[a-f0-9]{64}$/);
   assert.deepEqual(fake.calls,[{host:'boards-api.greenhouse.io',path:'/v1/boards/example/jobs/12345',address:'8.8.8.8'},{host:'job-boards.greenhouse.io',path:'/example/jobs/12345',address:'8.8.8.8'}]);
 });
@@ -67,6 +69,19 @@ test('rejects mismatched IDs, unsafe links, generic pages and malformed input',a
   const fake=transport(),reader=greenhouseListingReader(()=>true,()=>1234,fake);
   for(const invalid of [{jobs:[{board:'../private',id:'123'}]},{jobs:[{board:'sk-'+ 'a'.repeat(20),id:'123'}]},{jobs:[{board:'example',id:'1?token=private'}]},{jobs:Array(11).fill(input.jobs[0])}])await assert.rejects(reader(scope,invalid,new AbortController().signal));
   assert.equal(fake.calls.length,0);
+});
+test('location data with spoofing controls or oversized content is not used',async()=>{
+  for(const name of ['Bangalore\u202eevil','Bangalore'+'.'.repeat(160)]){
+    const fake=transport({api:JSON.stringify({...JSON.parse(api()),location:{name}})});
+    await assert.rejects(greenhouseListingReader(()=>true,()=>1234,fake)(scope,input,new AbortController().signal),/location is invalid/);
+  }
+});
+test('unusable page-title employer metadata is omitted rather than guessed',async()=>{
+  for(const value of ['https://evil.example','Example\u202eevil','Example'.repeat(30),'person@example.test']){
+    const fake=transport({page:page().replace('at Example','at '+value)});
+    const [row]=await greenhouseListingReader(()=>true,()=>1234,fake)(scope,input,new AbortController().signal);
+    assert.equal(row.employer,undefined);
+  }
 });
 test('allows an absent deadline as distinct unverified evidence but rejects invalid or expired deadlines',async()=>{
   for(const value of [undefined,null]){

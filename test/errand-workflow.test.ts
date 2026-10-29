@@ -48,7 +48,8 @@ test('owner request searches exact board and queues a labelled shortlist and own
     assert.equal(f.sent.length,2);assert.match(f.sent[1].content.text,/Draft for Flutter Engineer/);assert.match(f.sent[1].content.text,/Review the listing and draft yourself/);
     assert.match(f.sent[1].content.text,/complete the brackets before using/i);
     assert.match(f.sent[1].content.text,/Resume prompts:/);
-    assert.match(f.sent[1].content.text,/stated terms \(Flutter, Dart\).*real example/);
+    assert.match(f.sent[1].content.text,/Choose one responsibility from the listing/);
+    assert.doesNotMatch(f.sent[1].content.text,/Listing location|Bangalore|Dart/);
     assert.doesNotMatch(f.sent[1].content.text,/I (?:have|built|developed|worked)|years of experience|degree/i);
     assert.equal(f.store.job('wa:choice')?.status,'completed');assert.equal(f.store.pendingJobs().some(x=>x.id==='wa:root'||x.id==='wa:choice'),false);
     assert.ok(f.sent.every(x=>x.jid===owner));assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,1);
@@ -60,17 +61,41 @@ test('a synthetic published listing without a deadline flows through search, del
     const job={id:12345,title:'Flutter Engineer',location:{name:'Bangalore'},absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345'};
     const transport={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>({status:200,contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html',body:host==='boards-api.greenhouse.io'?JSON.stringify(path.endsWith('/jobs')?{jobs:[job]}:job):page})};
     f.router.errands=new ErrandWorkflow(f.router,greenhouseBoardReader(()=>true,()=>Date.now(),transport),async rows=>rows.map(x=>x.id));
-    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    let privateReads=0;f.router.brain.owner.read=()=>{privateReads++;throw new Error('Private profile access is forbidden in this test.');};
+    await f.wa.receiveMessage(f.msg('root',request+'; skills=SyntheticPrivateSkill'));await f.wa.flush();
     assert.equal(f.sent.length,1);assert.match(f.sent[0].content.text,/Deadline not provided/);assert.match(f.sent[0].content.text,/application availability.*unverified/i);assert.match(f.sent[0].content.text,/Mentions Bangalore/);
     const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
     f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
     await f.wa.receiveMessage(f.msg('choice','draft 1'));await f.wa.flush();
     assert.match(f.sent[1].content.text,/Draft for Flutter Engineer/);
+    assert.match(f.sent[1].content.text,/Listing employer \(source metadata; unverified\): Example/);
+    assert.match(f.sent[1].content.text,/Listing location \(source metadata; eligibility unverified\): Bangalore/);
+    assert.match(f.sent[1].content.text,/Choose one responsibility from the listing/);
+    assert.doesNotMatch(f.sent[1].content.text,/SyntheticPrivateSkill|I (?:have|built|developed|worked)|years of experience|degree/i);
+    const claim=f.store.db.prepare('SELECT draft_json FROM errand_draft_claims WHERE request_id=?').get('wa:choice') as {draft_json:string};
+    assert.doesNotMatch(claim.draft_json,/SyntheticPrivateSkill/);assert.equal(privateReads,0);
     f.store.db.prepare('UPDATE errand_candidates SET observed_at=?').run(Date.now()-3600001);
     await f.wa.receiveMessage(f.msg('expired','draft 1'));await f.wa.flush();
     assert.ok(f.sent.some(x=>/That shortlist is no longer available/.test(x.content.text)));
     assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,1);
   }finally{f.close();}
+});
+test('a queued draft is invalidated when its listing context changes or has no snapshot binding',async()=>{
+  for(const mode of ['location','employer','excerpt','legacy'] as const){
+    const f=fixture();try{
+      await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+      const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+      f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+      await f.wa.receiveMessage(f.msg('choice','draft 1'));
+      if(mode==='location')f.store.db.prepare("UPDATE errand_candidates SET listing_location='Changed'").run();
+      if(mode==='employer')f.store.db.prepare("UPDATE errand_candidates SET listing_employer='Changed'").run();
+      if(mode==='excerpt')f.store.db.prepare("UPDATE errand_candidates SET excerpt='Changed'").run();
+      if(mode==='legacy')f.store.db.prepare('UPDATE errand_draft_claims SET candidate_hash=NULL').run();
+      await f.wa.flush();
+      assert.ok(f.sent.every(x=>!/Draft for Flutter Engineer/.test(x.content.text)),mode);
+      assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source='errand-draft:wa:choice:0'").get() as {status:string}).status,'cancelled',mode);
+    }finally{f.close();}
+  }
 });
 test('group searches and draft choices are stopped before review or search',async()=>{
   const f=fixture(),group='owner-group@g.us';try{
