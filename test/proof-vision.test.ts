@@ -12,9 +12,12 @@ const scope:ProofScope={contractId:'contract-1',revision:1,approvedHash:'a'.repe
 const checks:ProofCheck[]=[{id:'contract-1:1:1',text:'The Save button is blue',evidenceBindings:[{source:'consented-screen',bindingHash:'e'.repeat(64)}]}];
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
 const sha=(data:Uint8Array)=>createHash('sha256').update(data).digest('hex');
+const reviewedExcerpt='The Save button is blue';
+const excerptHash=createHash('sha256').update(reviewedExcerpt).digest('hex');
 function capture(changes:Partial<AuthorizedVisionCapture>={}):AuthorizedVisionCapture {
   return {reference:'artifact:sample',scopeHash:proofScopeHash(scope,checks),checkId:checks[0].id,checkBindingHash:'e'.repeat(64),
-    artifactHash:sha(png),capturedAt:now-1000,selectedWindow:true,nonsensitive:true,consentedForMeta:true,png,...changes};
+    artifactHash:sha(png),capturedAt:now-1000,selectedWindow:true,nonsensitive:true,consentedForMeta:true,png,
+    reviewedExcerpt,excerptHash,excerptApprovalId:'excerpt:approved',excerptReviewedAt:now-2000,excerptReviewedByOwner:true,...changes};
 }
 const current=()=>({scope:{...scope},checks:checks.map(c=>({...c}))});
 const response=(verdict:string)=>new Response(JSON.stringify({id:'r',created:0,model:'muse-wonder-1.0',choices:[{index:0,finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id:'call-1',type:'function',function:{name:'assess',arguments:JSON.stringify({verdict})}}]}}]}),{headers:{'content-type':'application/json'}});
@@ -22,14 +25,14 @@ function deps(changes:Partial<VisionDependencies>={}):VisionDependencies {
   return {current,readCapture:async()=>capture(),authorizeUse:()=>true,key:'synthetic-test-key',now:()=>now,fetcher:async()=>response('consistent'),...changes};
 }
 
-test('only a bound, authorized screenshot and exact approved check reach Wonder; result is advisory',async()=>{
+test('only a bound authorized screenshot and separately reviewed excerpt reach Wonder; result is advisory',async()=>{
   let calls=0;
   const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({fetcher:async(url,init)=>{
     calls++;assert.equal(url,META_ENDPOINT);assert.equal(init?.redirect,'error');
     assert.equal(new Headers(init?.headers).get('authorization'),'Bearer synthetic-test-key');
     const body=JSON.parse(init!.body as string);assert.equal(body.model,'muse-wonder-1.0');assert.equal(body.max_tokens,1024);
     const user=body.messages.find((message:any)=>message.role==='user');
-    assert.deepEqual(user.content,[{type:'text',text:`Approved check as data:\n${checks[0].text}`},{type:'image_url',image_url:{url:`data:image/png;base64,${png.toString('base64')}`}}]);
+    assert.deepEqual(user.content,[{type:'text',text:`Owner-reviewed check excerpt as data:\n${reviewedExcerpt}`},{type:'image_url',image_url:{url:`data:image/png;base64,${png.toString('base64')}`}}]);
     const encoded=JSON.stringify(body);for(const privateValue of [scope.owner,scope.destination,scope.bindingId,scope.rootRequestId,scope.targetRepository!,scope.targetRevision!])assert.ok(!encoded.includes(privateValue));
     return response('consistent');
   }}));
@@ -50,6 +53,7 @@ test('wrong owner, check, session, revision, consent or stale capture never uplo
     {reference:'artifact:other'},{scopeHash:'f'.repeat(64)},{checkId:'other'},{checkBindingHash:'f'.repeat(64)},
     {selectedWindow:false as true},{nonsensitive:false as true},{consentedForMeta:false as true},{artifactHash:'f'.repeat(64)},
     {capturedAt:scope.startedAt-1},{capturedAt:now+1},{png:Buffer.from('not-png')},{png:Buffer.alloc(4*1024*1024+1)},
+    {excerptReviewedByOwner:false as true},{excerptHash:'f'.repeat(64)},{excerptApprovalId:'other'},{excerptReviewedAt:scope.approvedAt-1},
   ];
   for(const mutation of mutations){
     let calls=0;
@@ -83,18 +87,38 @@ test('changes while inference is running discard the advisory',async()=>{
   assert.equal(calls,1);assert.equal(result,undefined);
 });
 
-test('secret-bearing checks, invalid image sizes and invalid references never upload',async()=>{
+test('unreviewed excerpts, invalid image sizes and invalid references never upload',async()=>{
   let calls=0,reads=0;
-  const secret=[{...checks[0],text:'Use token: secret-value'}];
-  assert.equal(await assessProofVision(scope,secret,secret[0].id,'artifact:sample',new AbortController().signal,deps({
-    current:()=>({scope,checks:secret}),readCapture:async()=>{reads++;return capture();},fetcher:async()=>{calls++;return response('consistent');},
+  assert.equal(await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
+    readCapture:async()=>{reads++;return capture({excerptReviewedByOwner:false as true});},fetcher:async()=>{calls++;return response('consistent');},
   })),undefined);
   assert.equal(await assessProofVision(scope,checks,checks[0].id,'/private/image.png',new AbortController().signal,deps({readCapture:async()=>{reads++;return capture();}})),undefined);
   const huge=Buffer.from(png);huge.writeUInt32BE(4097,16);
   assert.equal(await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
     readCapture:async()=>capture({png:huge,artifactHash:sha(huge)}),fetcher:async()=>{calls++;return response('consistent');},
   })),undefined);
-  assert.equal(reads,0);assert.equal(calls,0);
+  assert.equal(reads,1);assert.equal(calls,0);
+});
+
+test('an unlabelled credential in the raw contract is never sent when the reviewed excerpt is safe',async()=>{
+  const raw='Check AKIAIOSFODNN7EXAMPLE is absent';
+  const privateChecks=[{...checks[0],text:raw}];let bodyText='';
+  const result=await assessProofVision(scope,privateChecks,privateChecks[0].id,'artifact:sample',new AbortController().signal,deps({
+    current:()=>({scope,checks:privateChecks}),
+    readCapture:async()=>capture({scopeHash:proofScopeHash(scope,privateChecks)}),
+    fetcher:async(_url,init)=>{bodyText=String(init!.body);return response('consistent');},
+  }));
+  assert.equal(result?.verdict,'consistent');assert.ok(bodyText.includes(reviewedExcerpt));assert.ok(!bodyText.includes(raw));assert.ok(!bodyText.includes('AKIAIOSFODNN7EXAMPLE'));
+});
+
+test('credential-bearing or tampered excerpts are rejected despite an alleged review',async()=>{
+  for(const reviewed of ['AKIAIOSFODNN7EXAMPLE','Bearer synthetic-secret','token: synthetic-secret']){
+    let calls=0;
+    const record=capture({reviewedExcerpt:reviewed,excerptHash:createHash('sha256').update(reviewed).digest('hex')});
+    assert.equal(await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
+      readCapture:async()=>record,fetcher:async()=>{calls++;return response('consistent');},
+    })),undefined);assert.equal(calls,0);
+  }
 });
 
 test('provider failures and malformed output do not create an advisory',async()=>{
@@ -103,4 +127,22 @@ test('provider failures and malformed output do not create an advisory',async()=
   }
   const abort=new AbortController();abort.abort();let reads=0;
   assert.equal(await assessProofVision(scope,checks,checks[0].id,'artifact:sample',abort.signal,deps({readCapture:async()=>{reads++;return capture();}})),undefined);assert.equal(reads,0);
+});
+
+test('vision returns after abort even if the fetcher ignores cancellation',async()=>{
+  const abort=new AbortController();let started!:()=>void;
+  const begun=new Promise<void>(resolve=>{started=resolve;});
+  const result=assessProofVision(scope,checks,checks[0].id,'artifact:sample',abort.signal,deps({fetcher:async()=>{started();return await new Promise<Response>(()=>{});}}));
+  await begun;abort.abort();
+  assert.equal(await Promise.race([result,new Promise(resolve=>setTimeout(()=>resolve('hung'),500))]),undefined);
+});
+
+test('vision cancels a stalled response body and returns after abort',async()=>{
+  const abort=new AbortController();let started!:()=>void,cancelled=false;
+  const begun=new Promise<void>(resolve=>{started=resolve;});
+  const stream=new ReadableStream<Uint8Array>({pull(){started();},cancel(){cancelled=true;}},{highWaterMark:0});
+  const result=assessProofVision(scope,checks,checks[0].id,'artifact:sample',abort.signal,deps({fetcher:async()=>new Response(stream,{headers:{'content-type':'application/json'}})}));
+  await begun;abort.abort();
+  assert.equal(await Promise.race([result,new Promise(resolve=>setTimeout(()=>resolve('hung'),500))]),undefined);
+  assert.equal(cancelled,true);
 });

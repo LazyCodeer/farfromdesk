@@ -40,3 +40,21 @@ test('missing tool call, provider errors, oversized response and abort fail clos
   assert.equal(await wonderProofJudge('synthetic-test-key',async()=>{calls++;return response({});})(input,aborted.signal),undefined);
   assert.equal(calls,0);
 });
+
+test('the text judge returns after abort even if the fetcher ignores cancellation',async()=>{
+  const abort=new AbortController();let started!:()=>void;
+  const begun=new Promise<void>(resolve=>{started=resolve;});
+  const judge=wonderProofJudge('synthetic-test-key',async()=>{started();return await new Promise<Response>(()=>{});});
+  const result=judge(input,abort.signal);await begun;abort.abort();
+  assert.equal(await Promise.race([result,new Promise(resolve=>setTimeout(()=>resolve('hung'),500))]),undefined);
+});
+
+test('the text judge cancels a stalled response body after abort',async()=>{
+  const abort=new AbortController();let started!:()=>void,cancelled=false;
+  const begun=new Promise<void>(resolve=>{started=resolve;});
+  const stream=new ReadableStream<Uint8Array>({pull(){started();},cancel(){cancelled=true;}},{highWaterMark:0});
+  const judge=wonderProofJudge('synthetic-test-key',async()=>new Response(stream,{headers:{'content-type':'application/json'}}));
+  const result=judge(input,abort.signal);await begun;abort.abort();
+  assert.equal(await Promise.race([result,new Promise(resolve=>setTimeout(()=>resolve('hung'),500))]),undefined);
+  assert.equal(cancelled,true);
+});

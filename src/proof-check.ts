@@ -74,9 +74,13 @@ export function proofScopeHash(scope:ProofScope,checks:ProofCheck[]) {
 
 export class ProofChecks {
   constructor(private store:Store,private clock:()=>number=Date.now){
-    store.db.exec(`CREATE TABLE IF NOT EXISTS proof_runs(
+    store.db.exec(`CREATE TABLE IF NOT EXISTS proof_evaluations(
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,scope_hash TEXT NOT NULL,evaluation_id TEXT NOT NULL,
+      reference_hash TEXT NOT NULL,state TEXT NOT NULL,UNIQUE(scope_hash,evaluation_id));
+      CREATE INDEX IF NOT EXISTS proof_evaluations_scope ON proof_evaluations(scope_hash,sequence);
+      CREATE TABLE IF NOT EXISTS proof_runs(
       id TEXT PRIMARY KEY,scope_hash TEXT NOT NULL,evaluation_id TEXT NOT NULL,reference_hash TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,
-      contract_id TEXT NOT NULL,revision INTEGER NOT NULL,results TEXT NOT NULL,created_at INTEGER NOT NULL,
+      contract_id TEXT NOT NULL,revision INTEGER NOT NULL,results TEXT NOT NULL,created_at INTEGER NOT NULL,evaluation_sequence INTEGER NOT NULL REFERENCES proof_evaluations(sequence),
       UNIQUE(scope_hash,evaluation_id));
       CREATE TABLE IF NOT EXISTS proof_corrections(
       owner TEXT NOT NULL,destination TEXT NOT NULL,contract_id TEXT NOT NULL,revision INTEGER NOT NULL,
@@ -86,6 +90,14 @@ export class ProofChecks {
     return (JSON.parse(encoded) as ProofResult[]).map(result=>result.verdict!=='unverified'&&(!result.expiresAt||result.expiresAt<=this.clock())
       ?{...result,verdict:'unverified',reason:'The independent evidence has expired. Check again.',evidenceDigests:[],expiresAt:null}
       :result);
+  }
+  private latest(scopeHash:string,sequence:number){
+    const latest=this.store.db.prepare('SELECT sequence FROM proof_evaluations WHERE scope_hash=? ORDER BY sequence DESC LIMIT 1').get(scopeHash) as {sequence:number}|undefined;
+    return latest?.sequence===sequence;
+  }
+  private visibleRun(encoded:string,scopeHash:string,sequence:number):ProofResult[] {
+    if(this.latest(scopeHash,sequence))return this.visible(encoded);
+    return this.visible(encoded).map(result=>({...result,verdict:'unverified',reason:'A newer proof assessment has started.',evidenceDigests:[],expiresAt:null}));
   }
 
   /**
@@ -103,16 +115,25 @@ export class ProofChecks {
     if(entries.length>checks.length||entries.some(([key,ids])=>!checks.some(c=>c.id===key)||!Array.isArray(ids)||ids.length>10||ids.some(id=>typeof id!=='string'||!ref.test(id))))throw new Error('Invalid evidence references.');
     const frozenRefs=checks.map(check=>[check.id,[...new Set(references[check.id]??[])].sort()] as const);
     const referenceHash=digest(JSON.stringify(frozenRefs));
-    let prior:any;
+    let prior:any,sequence=0;
     this.store.db.exec('SAVEPOINT proof_existing');
     try {
       const current=deps.current();
       if(!current||proofScopeHash(current.scope,current.checks)!==scopeHash)throw new Error('The approved task or session changed.');
-      prior=this.store.db.prepare('SELECT * FROM proof_runs WHERE scope_hash=? AND evaluation_id=?').get(scopeHash,evaluationId);
-      if(prior&&prior.reference_hash!==referenceHash)throw new Error('Proof evaluation ID was reused with different evidence.');
+      const existing=this.store.db.prepare('SELECT * FROM proof_evaluations WHERE scope_hash=? AND evaluation_id=?').get(scopeHash,evaluationId) as {sequence:number;reference_hash:string;state:string}|undefined;
+      if(existing){
+        if(existing.reference_hash!==referenceHash)throw new Error('Proof evaluation ID was reused with different evidence.');
+        if(existing.state!=='complete')throw new Error('Proof evaluation is still in progress. Use a new evaluation ID after interruption.');
+        prior=this.store.db.prepare('SELECT * FROM proof_runs WHERE scope_hash=? AND evaluation_id=?').get(scopeHash,evaluationId);
+        if(!prior)throw new Error('Proof evaluation is unavailable.');
+        sequence=existing.sequence;
+      } else {
+        this.store.db.prepare('INSERT INTO proof_evaluations(scope_hash,evaluation_id,reference_hash,state) VALUES(?,?,?,?)').run(scopeHash,evaluationId,referenceHash,'started');
+        sequence=Number((this.store.db.prepare('SELECT last_insert_rowid() AS id').get() as {id:number}).id);
+      }
       this.store.db.exec('RELEASE proof_existing');
     }catch(e){this.store.db.exec('ROLLBACK TO proof_existing; RELEASE proof_existing');throw e;}
-    if(prior)return {id:prior.id,scope,checks:this.visible(prior.results),createdAt:prior.created_at};
+    if(prior)return {id:prior.id,scope,checks:this.visibleRun(prior.results,scopeHash,sequence),createdAt:prior.created_at};
     const collected:ProofObservation[][]=[];
     const deadline=AbortSignal.timeout(30_000);
     for(const [index,check] of checks.entries()){
@@ -140,7 +161,8 @@ export class ProofChecks {
     // Wonder sees no check text, paths, personal identifiers, transcripts or
     // model-supplied claims. It cannot manufacture pass/fail without verified
     // evidence; a positive observation needs model agreement for a pass.
-    const input:ProofJudgeInput[]=checks.map((check,index)=>({index:index+1,category:category(check.text),signals:collected[index].map(({source,verdict})=>({source,verdict}))}));
+    const conflicts=collected.map(observations=>observations.some(x=>observations.some(y=>x.source===y.source&&x.bindingHash===y.bindingHash&&x.verdict!==y.verdict)));
+    const input:ProofJudgeInput[]=checks.map((check,index)=>({index:index+1,category:category(check.text),signals:conflicts[index]?[]:collected[index].map(({source,verdict})=>({source,verdict}))}));
     let judgments:ProofJudgment[]|undefined;
     if(deps.judge&&collected.some(v=>v.length)&&!deadline.aborted){
       const signal=AbortSignal.any([deadline,AbortSignal.timeout(20_000)]);
@@ -152,8 +174,8 @@ export class ProofChecks {
     const validJudgments=Array.isArray(judgments)&&judgments.length===checks.length&&new Set(judgments.map(j=>j?.index)).size===checks.length&&judgments.every(j=>Number.isSafeInteger(j?.index)&&j.index>=1&&j.index<=checks.length&&['pass','fail','unverified'].includes(j.verdict))?judgments:undefined;
     const results:ProofResult[]=checks.map((check,index)=>{
       const valid=collected[index],judgment=validJudgments?.find(j=>j.index===index+1);
-      const verdict=valid.some(x=>x.verdict==='fail')?'fail':valid.some(x=>x.verdict==='pass')&&judgment?.verdict==='pass'?'pass':'unverified';
-      return {checkId:check.id,verdict,reason:verdict==='unverified'?'Independent evidence or a matching Wonder assessment is unavailable.':
+      const verdict=conflicts[index]?'unverified':valid.some(x=>x.verdict==='fail')?'fail':valid.some(x=>x.verdict==='pass')&&judgment?.verdict==='pass'?'pass':'unverified';
+      return {checkId:check.id,verdict,reason:conflicts[index]?'Conflicting independent evidence requires a new check.':verdict==='unverified'?'Independent evidence or a matching Wonder assessment is unavailable.':
         verdict==='fail'?'Independent evidence reports this check failed.':'Independent evidence and the assessment report this check passed.',
         evidenceDigests:verdict==='unverified'?[]:[...new Set(valid.map(x=>x.digest))],expiresAt:verdict==='unverified'?null:Math.min(...valid.map(x=>x.observedAt+ageLimit))};
     });
@@ -161,13 +183,15 @@ export class ProofChecks {
     try {
       const after=deps.current();
       if(!after||proofScopeHash(after.scope,after.checks)!==scopeHash)throw new Error('The approved task or session changed.');
+      if(!this.latest(scopeHash,sequence))throw new Error('Proof evaluation was superseded by a newer assessment.');
       // Immutable per evaluation; an explicit new ID allows a later recheck.
       const id=randomUUID(),createdAt=this.clock();
-      this.store.db.prepare('INSERT OR IGNORE INTO proof_runs VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,scopeHash,evaluationId,referenceHash,scope.owner,scope.destination,scope.contractId,scope.revision,JSON.stringify(results),createdAt);
-      const saved=this.store.db.prepare('SELECT id,reference_hash,results,created_at FROM proof_runs WHERE scope_hash=? AND evaluation_id=?').get(scopeHash,evaluationId) as any;
+      this.store.db.prepare('INSERT OR IGNORE INTO proof_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,scopeHash,evaluationId,referenceHash,scope.owner,scope.destination,scope.contractId,scope.revision,JSON.stringify(results),createdAt,sequence);
+      this.store.db.prepare("UPDATE proof_evaluations SET state='complete' WHERE sequence=? AND state='started'").run(sequence);
+      const saved=this.store.db.prepare('SELECT id,reference_hash,results,created_at,evaluation_sequence FROM proof_runs WHERE scope_hash=? AND evaluation_id=?').get(scopeHash,evaluationId) as any;
       if(saved.reference_hash!==referenceHash)throw new Error('Proof evaluation ID was reused with different evidence.');
       this.store.db.exec('RELEASE proof_finalize');
-      return {id:saved.id,scope,checks:this.visible(saved.results),createdAt:saved.created_at};
+      return {id:saved.id,scope,checks:this.visibleRun(saved.results,scopeHash,saved.evaluation_sequence),createdAt:saved.created_at};
     }catch(e){this.store.db.exec('ROLLBACK TO proof_finalize; RELEASE proof_finalize');throw e;}
   }
 
@@ -178,9 +202,9 @@ export class ProofChecks {
     try {
       const actual=current();
       const row=actual&&proofScopeHash(actual.scope,actual.checks)===scopeHash
-        ?this.store.db.prepare('SELECT id,results,created_at FROM proof_runs WHERE id=? AND scope_hash=? AND owner=? AND destination=?').get(id,scopeHash,scope.owner,scope.destination) as any:undefined;
+        ?this.store.db.prepare('SELECT id,results,created_at,evaluation_sequence FROM proof_runs WHERE id=? AND scope_hash=? AND owner=? AND destination=?').get(id,scopeHash,scope.owner,scope.destination) as any:undefined;
       this.store.db.exec('RELEASE proof_read');
-      return row?{id:row.id,checks:this.visible(row.results),createdAt:row.created_at}:undefined;
+      return row?{id:row.id,checks:this.visibleRun(row.results,scopeHash,row.evaluation_sequence),createdAt:row.created_at}:undefined;
     }catch(e){this.store.db.exec('ROLLBACK TO proof_read; RELEASE proof_read');throw e;}
   }
 
@@ -193,9 +217,8 @@ export class ProofChecks {
       const actual=current();
       if(!actual||proofScopeHash(actual.scope,actual.checks)!==scopeHash){this.store.db.exec('RELEASE proof_correction');return false;}
       // Do not act on an earlier failure after a newer evaluation has passed.
-      const row=this.store.db.prepare(`SELECT results FROM proof_runs WHERE id=? AND scope_hash=? AND owner=? AND destination=?
-        AND id=(SELECT id FROM proof_runs WHERE scope_hash=? ORDER BY created_at DESC,rowid DESC LIMIT 1)`).get(runId,scopeHash,scope.owner,scope.destination,scopeHash) as {results:string}|undefined;
-      const changed=!!row&&this.visible(row.results).some(r=>r.verdict==='fail')&&!!this.store.db.prepare('INSERT OR IGNORE INTO proof_corrections VALUES(?,?,?,?,?,?)').run(scope.owner,scope.destination,scope.contractId,scope.revision,runId,this.clock()).changes;
+      const row=this.store.db.prepare('SELECT results,evaluation_sequence FROM proof_runs WHERE id=? AND scope_hash=? AND owner=? AND destination=?').get(runId,scopeHash,scope.owner,scope.destination) as {results:string;evaluation_sequence:number}|undefined;
+      const changed=!!row&&this.latest(scopeHash,row.evaluation_sequence)&&this.visible(row.results).some(r=>r.verdict==='fail')&&!!this.store.db.prepare('INSERT OR IGNORE INTO proof_corrections VALUES(?,?,?,?,?,?)').run(scope.owner,scope.destination,scope.contractId,scope.revision,runId,this.clock()).changes;
       this.store.db.exec('RELEASE proof_correction');return changed;
     }catch(e){this.store.db.exec('ROLLBACK TO proof_correction; RELEASE proof_correction');throw e;}
   }

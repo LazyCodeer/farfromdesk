@@ -35,8 +35,9 @@ Checks without sufficient evidence are unverified. Records store check IDs,
 verdicts and evidence hashes, not source contents. An evaluation ID makes a
 request idempotent; a new ID permits an explicit recheck when evidence arrives.
 One correction claim per approved contract revision is persisted before any
-dispatch and is never automatically replayed. A newer result or expired proof
-cannot be used to act on an old failure.
+dispatch and is never automatically replayed. A newer evaluation, even while
+still running, makes an older failure non-actionable. Interrupted evaluations
+are not replayed automatically; an explicit new evaluation ID is required.
 
 ## Integration still required
 
@@ -51,9 +52,11 @@ cannot be used to act on an old failure.
    Treat model output and task/session text as untrusted. Its signal evaluator
    is intentionally coarse and cannot understand an actual screenshot or log.
 4. `assessProofVision` is an unwired advisory-only helper, tested with a fake
-   fetcher. It takes the exact approved check and a previously captured PNG
+   fetcher. It takes a separately reviewed check excerpt and a captured PNG
    only after a trusted adapter verifies an explicit Meta-use consent and a
-   request/check/attempt-bound, selected nonsensitive window. It rechecks the
+   request/check/attempt-bound, selected nonsensitive window. The full approved
+   check may contain credentials and is never uploaded; only an exact excerpt
+   separately reviewed by the owner and bound to that check may be sent. It rechecks the
    owner and authorization immediately before network I/O and after inference,
    checks the PNG hash, and limits image dimensions and bytes. Its result is
    *not* an independently verified pass or fail. Existing capture artifacts do

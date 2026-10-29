@@ -182,6 +182,50 @@ test('an old failure cannot trigger a correction after a later check passes',asy
   }finally{f.store.close();}
 });
 
+test('an earlier slow failed evaluation cannot supersede a later passing evaluation',async()=>{
+  const f=fixture();try{
+    let release!:()=>void,started!:()=>void;
+    const blocked=new Promise<void>(done=>{release=done;}),begun=new Promise<void>(done=>{started=done;});
+    const slow=f.proof.evaluate(scope,checks,{[checks[0].id]:['fail-ref']},'eval-old',{
+      current,observe:async()=>{started();await blocked;return observation(checks[0].id,'fail');},
+    });
+    await begun;
+    const fresh=await f.proof.evaluate(scope,checks,{[checks[0].id]:['pass-ref']},'eval-new',{
+      current,judge:confirm,observe:async()=>observation(checks[0].id,'pass'),
+    });
+    release();await assert.rejects(slow,/superseded/);
+    assert.equal(fresh.checks[0].verdict,'pass');assert.equal(f.proof.claimCorrection(fresh.id,scope,checks,current),false);
+    assert.equal((f.store.db.prepare('SELECT count(*) AS n FROM proof_runs').get() as {n:number}).n,1);
+  }finally{f.store.close();}
+});
+
+test('starting a newer evaluation makes an earlier failure non-actionable immediately',async()=>{
+  const f=fixture();try{
+    const old=await f.proof.evaluate(scope,checks,{[checks[0].id]:['fail-ref']},'eval-old',{
+      current,observe:async()=>observation(checks[0].id,'fail'),
+    });
+    let release!:()=>void,started!:()=>void;
+    const blocked=new Promise<void>(done=>{release=done;}),begun=new Promise<void>(done=>{started=done;});
+    const newer=f.proof.evaluate(scope,checks,{[checks[0].id]:['pass-ref']},'eval-new',{
+      current,judge:confirm,observe:async()=>{started();await blocked;return observation(checks[0].id,'pass');},
+    });
+    await begun;
+    assert.equal(f.proof.get(old.id,scope,checks,current)?.checks[0].verdict,'unverified');
+    assert.equal(f.proof.claimCorrection(old.id,scope,checks,current),false);
+    release();assert.equal((await newer).checks[0].verdict,'pass');
+  }finally{f.store.close();}
+});
+
+test('contradictory observations from the same binding are unverified regardless of model output',async()=>{
+  const f=fixture();try{
+    const run=await f.proof.evaluate(scope,checks,{[checks[0].id]:['a','b']},'eval-1',{
+      current,judge:confirm,observe:async(id)=>observation(checks[0].id,id==='a'?'fail':'pass',{observedAt:id==='a'?now-2000:now-1000}),
+    });
+    assert.equal(run.checks[0].verdict,'unverified');assert.match(run.checks[0].reason,/conflicting/i);
+    assert.equal(f.proof.claimCorrection(run.id,scope,checks,current),false);
+  }finally{f.store.close();}
+});
+
 test('model assessment cannot manufacture proof from session claims or absent evidence',async()=>{
   const f=fixture();try{
     let called=0;
