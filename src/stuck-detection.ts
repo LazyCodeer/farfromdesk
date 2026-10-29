@@ -14,7 +14,10 @@ type Alert={id:string;owner:string;destination:string;item_id:number;request_id:
 type Writer=(kinds:Kind[],key:string,observe?:MetaObserver)=>Promise<string>;
 const LIMIT=100,MAX_NOTICES_PER_TICK=3,IDLE_MS=10*60_000,OFFER_MS=10*60_000;
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const safeTitle=(v:string)=>v.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[—–]/g,',').replace(/\s+/g,' ').trim().slice(0,100);
+const safeTitle=(v:string)=>v.replace(/[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Cc}]/gu,' ').replace(/[—–]/g,',').replace(/\s+/g,' ').trim().slice(0,100);
+// Hidden formatting and non-newline separators can make a decision label or
+// quoted request render differently from the underlying permission text.
+const unsafePermission=/[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\x00-\x09\x0b-\x1f\x7f-\x9f]/u;
 const openings=['A task needs your attention.','There is a task waiting for you.','One task may need your help.'];
 
 /** Meta receives only fixed signal categories, never task text, identifiers or permission prompts. */
@@ -222,7 +225,7 @@ export class StuckDetection {
     return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind:'idle',incident:digest(['idle',job.id,job.attempt_id,progress,identity])};
   }
   private message(signal:Signal,token:string,opening:string) {
-    if(signal.kind==='approval'&&signal.permissionCode&&signal.permissionText&&!/[\x00-\x09\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(signal.permissionText)){
+    if(signal.kind==='approval'&&signal.permissionCode&&signal.permissionText&&!unsafePermission.test(signal.permissionText)){
       const quoted=signal.permissionText.split('\n').map(line=>`> ${line}`).join('\n');
       const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nA permission is waiting. Review the recorded request below.\n\n${quoted}\n\nReply to this notice with 1 to deny or 2 to allow this exact request. This responds to the request without operating the Mac UI. The notice expires in 10 minutes. Dismiss with /stuck dismiss ${token}.`;
       if(text.length<=3000)return {text,choiceId:undefined,permissionCode:signal.permissionCode};

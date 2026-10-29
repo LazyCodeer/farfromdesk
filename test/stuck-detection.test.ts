@@ -170,6 +170,17 @@ test('a permission notice never approves a different pending request',async()=>{
   }finally{f.close();}
 });
 
+test('hidden Unicode formatting or alternate line separators never become actionable permission notices',async()=>{
+  for(const char of ['\u200e','\u200f','\u061c','\u200b','\u200d','\ufeff','\u2028','\u2029','\u0085','\ud800']){const f=fixture();try{
+    f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
+    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,`Before${char}after`,'approval','wa:permission'));
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
+    const notice=alertOut(f.store)[0];assert.equal(alerts(f.store)[0].permission_code,null);f.store.sent(notice.id);
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:unsafe-unicode',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
+    assert.equal(result.status,'blocked');assert.equal(f.approvals.pending.size,1);
+  }finally{f.close();}}
+});
+
 test('WhatsApp self-chat can decide a permission by quoting its delivered notice',async()=>{
   const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
