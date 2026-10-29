@@ -33,6 +33,12 @@ export class ManagedCollaboration {
   }
   private get store(){return this.router.store;}
   private row(id:string){return this.store.db.prepare('SELECT * FROM managed_collaboration_handoffs WHERE job_id=?').get(id) as Row|undefined;}
+  private sourceOwner(root:string,owner:string,destination:string,channel:string){
+    const origin=this.store.recordedIncomingInput(root);
+    if(!origin||origin.owner!==owner||origin.destination!==destination||origin.channel!==channel||
+      origin.generation!==(this.store.get('incoming-owner-generation')??''))throw new Error('The source owner connection changed or cannot be verified.');
+    return origin.generation;
+  }
   private identity(b:Binding){return hash(JSON.stringify([b.id,b.native_id,b.cwd,b.mode,b.provider,b.enabled,b.token_hash,this.store.get(`execution-mode:${b.id}`),this.store.get(`session-route:${b.id}`),this.router.coordinator?.registry.entry(b.id)]));}
   private managed(b:Binding){return b.mode!=='channel'&&this.router.native.connections?.route(b)?.transport==='managed-cli';}
   private context(row:Row):CollaborationScope {
@@ -44,6 +50,7 @@ export class ManagedCollaboration {
       this.identity(target)!==row.target_identity||!this.managed(target)||!contract||contract.id!==row.contract_id||
       contract.revision!==row.revision||contract.approved_hash!==row.approved_hash||contract.dispatch_id!==row.root_id||
       contract.item_id!==row.item_id||contract.owner!==row.owner||contract.destination!==row.destination)throw new Error('The source, target or approved contract changed.');
+    if(this.sourceOwner(row.root_id,row.owner,row.destination,contract.channel)!==row.owner_generation)throw new Error('The source owner connection changed.');
     this.router.contracts.assertDispatch(this.router,source.id,binding,source.body,new Set(),true);
     const scope={owner:row.owner,destination:row.destination,rootRequestId:row.root_id,itemId:row.item_id,
       contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash};
@@ -65,6 +72,7 @@ export class ManagedCollaboration {
     if(!/^[A-Za-z0-9._:-]{1,100}$/.test(eventId)||!body.trim()||body.length>24000)throw new Error('A bounded task and stable event ID are required.');
     const contract=this.router.contracts.approved(sourceId),item=this.store.itemOf(sourceId),root=contract?.dispatch_id;
     if(!contract||!item||contract.item_id!==item||!root||!contract.approved_hash||!this.store.job(root))throw new Error('An exact approved owner contract and item are required.');
+    const ownerGeneration=this.sourceOwner(root,contract.owner,contract.destination,contract.channel);
     this.router.contracts.assertDispatch(this.router,sourceId,from,source.body);
     const scope={owner:contract.owner,destination:contract.destination,rootRequestId:root,itemId:item,contractId:contract.id,revision:contract.revision,approvedHash:contract.approved_hash};
     if(!this.authority.allows(scope,from,target,body))throw new Error('The owner did not authorize this handoff. Nothing was sent.');
@@ -82,7 +90,7 @@ export class ManagedCollaboration {
       this.store.enqueue(jobId,target,scoped,contract.destination);
       this.store.db.prepare(`INSERT INTO managed_collaboration_handoffs(job_id,source_id,source_attempt,source_binding,source_identity,source_body,
         target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,this.store.get('incoming-owner-generation')??'');
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,ownerGeneration);
       this.store.db.exec('RELEASE managed_collaboration_stage');return jobId;
     }catch(e){this.store.db.exec('ROLLBACK TO managed_collaboration_stage; RELEASE managed_collaboration_stage');throw e;}
   }
@@ -149,13 +157,15 @@ export class ManagedCollaboration {
     try {
       const rows=this.store.db.prepare(`SELECT h.* FROM managed_collaboration_handoffs h
         JOIN inbox i ON i.id=h.job_id JOIN collaboration_claims c ON c.item_id=h.item_id
+        JOIN incoming_owner_inputs a ON a.id=h.root_id
         WHERE h.state='claimed' AND h.submission_started=0 AND h.target_attempt IS NOT NULL
         AND i.status='uncertain' AND i.error='Bridge restarted during delivery. Check the native session before retrying.'
         AND i.attempt_id=h.target_attempt AND i.binding_id=h.target_binding
         AND c.token=h.claim_token AND c.generation=h.generation AND c.holder_id=h.target_binding
         AND c.owner=h.owner AND c.destination=h.destination AND c.root_request_id=h.root_id
         AND c.contract_id=h.contract_id AND c.contract_revision=h.revision AND c.approved_hash=h.approved_hash
-        AND h.owner_generation IS NOT NULL AND c.owner_generation=h.owner_generation AND h.owner_generation=?`).all(this.store.get('incoming-owner-generation')??'') as Row[];
+        AND h.owner_generation IS NOT NULL AND c.owner_generation=h.owner_generation AND h.owner_generation=?
+        AND a.owner=h.owner AND a.destination=h.destination AND a.generation=h.owner_generation AND a.channel=?`).all(this.store.get('incoming-owner-generation')??'',this.store.controlChannel()) as Row[];
       for(const row of rows){
         const cleared=this.store.db.prepare(`UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL
           WHERE item_id=? AND generation=? AND token=? AND holder_id=? AND owner=? AND destination=? AND root_request_id=?
@@ -189,7 +199,8 @@ export class ManagedCollaboration {
     this.store.db.exec('SAVEPOINT managed_collaboration_reject');
     try {
       if(job.status!=='failed')this.store.jobState(id,'failed',reason);
-      if(row.claim_token&&row.generation!==null&&row.owner_generation!==null&&row.owner_generation===(this.store.get('incoming-owner-generation')??''))this.store.db.prepare(`UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL
+      let sourceCurrent=false;try{const contract=this.router.contracts.approved(row.source_id);sourceCurrent=!!contract&&this.sourceOwner(row.root_id,row.owner,row.destination,contract.channel)===row.owner_generation;}catch{}
+      if(row.claim_token&&row.generation!==null&&row.owner_generation!==null&&sourceCurrent)this.store.db.prepare(`UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL
         WHERE item_id=? AND generation=? AND token=? AND holder_id=? AND owner=? AND destination=? AND root_request_id=?
         AND contract_id=? AND contract_revision=? AND approved_hash=? AND owner_generation=?`).run(row.item_id,row.generation,row.claim_token,row.target_binding,row.owner,row.destination,row.root_id,row.contract_id,row.revision,row.approved_hash,row.owner_generation);
       this.store.db.prepare("UPDATE managed_collaboration_handoffs SET state='invalid' WHERE job_id=? AND state IN ('waiting','claimed') AND submission_started=0").run(id);

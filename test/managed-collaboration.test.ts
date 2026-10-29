@@ -23,7 +23,7 @@ function deferred<T=void>(){let resolve!:(v:T)=>void;const promise=new Promise<T
 const turn=()=>new Promise<void>(resolve=>setImmediate(resolve));
 async function until(predicate:()=>boolean){for(let i=0;i<100&&!predicate();i++)await turn();assert.ok(predicate(),'operation did not reach the expected state');}
 
-async function fixture(){
+async function fixture(delaySource=false,beforePump?:(store:InstanceType<typeof Store>,owner:string)=>void){
   const dir=mkdtempSync(join(root,'case-')),store=new Store(join(dir,'test.sqlite')),approvals=new Approvals(store),sourceEnd=deferred(),targetEnd=deferred();
   const starts:{id:string;body:string}[]=[],routes=new Map<string,{transport:string;executionMode:string}>();
   const native:any={connections:{route:(b:any)=>routes.get(b.id)},stop:()=>{},run:async(b:any,body:string,id:string)=>{native.beforeDispatch?.(b,id);native.beforeManagedSubmission?.(b,id);starts.push({id,body});if(id==='wa:approve')await sourceEnd.promise;else if(id.includes(':f5-'))await targetEnd.promise;}};
@@ -39,7 +39,9 @@ async function fixture(){
   r.contracts=new TaskContracts(store,secret,async()=>({kind:'contract',goal:'Add dark theme',exclusions:['Do not publish'],checks:['Theme works','Existing theme works'],question:''}));
   const send=(id:string,text:string)=>store.destinationContext.run(owner,()=>r.receive({id:`wa:${id}`,text,source:'text',ownerIntent:true,ownerCommand:true}));
   const first=await send('request','Add dark theme. Do NOT publish.');assert.equal(first.status,'handled');store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
-  const approved=await send('approve','ok');assert.equal(approved.status,'queued',JSON.stringify(store.db.prepare('SELECT body FROM outbox ORDER BY rowid').all()));await until(()=>starts.some(x=>x.id==='wa:approve'));
+  const originalPump=r.pump;if(delaySource)r.pump=()=>{};
+  const approved=await send('approve','ok');assert.equal(approved.status,'queued',JSON.stringify(store.db.prepare('SELECT body FROM outbox ORDER BY rowid').all()));
+  if(delaySource){beforePump?.(store,owner);r.pump=originalPump;r.pump();}await until(()=>starts.some(x=>x.id==='wa:approve'));
   const collab=new ManagedCollaboration(r,{allows:()=>true});r.collaboration=collab;
   return {dir,store,r,c,native,proxy,worker,owner,starts,routes,sourceEnd,targetEnd,collab,
     async close(){r.stopped=true;sourceEnd.resolve();targetEnd.resolve();await turn();await until(()=>r.busy.size===0);await turn();approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
@@ -167,6 +169,37 @@ test('owner and channel changes away and back invalidate a staged handoff',async
       assert.equal(f.starts.filter(x=>x.id===id).length,0,mode);
     }finally{await f.close();}
   }
+});
+
+test('a background-started source cannot stage after owner or channel changes away and back',async()=>{
+  for(const mode of ['owner','channel']){
+    const f=await fixture(true);try{
+      if(mode==='owner'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
+      else{f.store.set('control-channel','telegram');f.store.set('control-channel','whatsapp');}
+      assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement',`prestage-${mode}`),/source owner connection changed/);
+      assert.equal(f.starts.filter(x=>x.id.includes(':f5-')).length,0);
+    }finally{await f.close();}
+  }
+});
+
+test('an owner or channel roundtrip before background dispatch cannot authorize a later handoff',async()=>{
+  for(const mode of ['owner','channel']){
+    const f=await fixture(true,(s,owner)=>{
+      if(mode==='owner'){s.set('whatsapp-owner','replacement@s.whatsapp.net');s.set('whatsapp-owner',owner);}
+      else{s.set('control-channel','telegram');s.set('control-channel','whatsapp');}
+    });try{
+      assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement',`before-dispatch-${mode}`),/source owner connection changed/);
+      assert.equal(f.starts.filter(x=>x.id.includes(':f5-')).length,0);
+    }finally{await f.close();}
+  }
+});
+
+test('a background-started source without a durable owner approval cannot stage a handoff',async()=>{
+  const f=await fixture(true);try{
+    f.store.db.prepare('DELETE FROM incoming_owner_inputs WHERE id=?').run('wa:approve');
+    assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement','legacy-source'),/cannot be verified/);
+    assert.equal(f.starts.filter(x=>x.id.includes(':f5-')).length,0);
+  }finally{await f.close();}
 });
 
 test('a stale owner context cannot stage a new handoff',async()=>{
@@ -323,7 +356,7 @@ test('a provider-bound failure remains uncertain and retains its exact claim',as
 });
 
 test('restart releases only a proven unsent exact attempt and never replays a handoff',async()=>{
-  for(const phase of ['before','after','legacy','other-fence','owner-roundtrip','legacy-owner']){
+  for(const phase of ['before','after','legacy','other-fence','owner-roundtrip','legacy-owner','missing-origin','changed-origin']){
     const f=await fixture();let reopened:InstanceType<typeof Store>|undefined;try{
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`recovery-${phase}`),ready=deferred(),started=deferred(),providerEnd=deferred();let calls=0;
       const prior=f.native.run;f.native.store=f.store;
@@ -336,6 +369,8 @@ test('restart releases only a proven unsent exact attempt and never replays a ha
       if(phase==='other-fence')f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(randomUUID(),item);
       if(phase==='owner-roundtrip'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
       if(phase==='legacy-owner')f.store.db.exec('ALTER TABLE managed_collaboration_handoffs DROP COLUMN owner_generation');
+      if(phase==='missing-origin')f.store.db.prepare('DELETE FROM incoming_owner_inputs WHERE id=?').run('wa:approve');
+      if(phase==='changed-origin')f.store.db.prepare('UPDATE incoming_owner_inputs SET generation=? WHERE id=?').run('different-generation','wa:approve');
       reopened=new Store(join(f.dir,'test.sqlite'));reopened.recover();
       let replayed=0;const n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{replayed++;}};
       const a=new Approvals(reopened),r=new Router(reopened,n,a),c=new Coordinator(reopened,n,r,()=>{});r.coordinator=c;
