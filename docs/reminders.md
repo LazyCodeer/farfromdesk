@@ -1,0 +1,11 @@
+# Reminders and schedules
+
+In the paired owner's self-chat, say “Remind me tomorrow at 6 PM to call the bank”, “Every weekday at 9 AM send my brief”, or “At 3 PM check whether PR 20 is green and tell me.” The Meta Brain must be enabled and have a key. Wonder interprets the owner's words, then the bridge validates the result before creating a schedule. If the time, action or session is unclear, it asks for clarification. List schedules with “list my reminders”, then cancel one using “cancel 2”. Numbers refer to the latest list and expire after ten minutes.
+
+Times use the configured `schedule-timezone` IANA zone, defaulting to `Asia/Kolkata`; a different zone must be explicitly named. One-time, daily and weekday schedules are supported. A one-time time that falls in a daylight-saving gap or repeated hour is rejected. Daily schedules skip nonexistent local times and use the first occurrence of a repeated local time.
+
+The maintenance loop checks due schedules once a minute while the bridge is active. Schedules survive restart. A missed recurring schedule queues at most one occurrence on recovery and advances to the next future time. The occurrence and its outbox message or session job are committed together with a stable ID. This prevents duplicate local enqueue; it does not guarantee exactly-once network delivery. A delivery that may have reached Telegram before a connection error remains uncertain and is not automatically retried. WhatsApp follows its existing stable-message-ID retry policy.
+
+Every schedule records the paired owner and exact self-chat. Owner or session changes invalidate the associated work; switching the active control channel holds it until that channel is selected again. Owned-group scheduling is not yet supported. Scheduled session requests use the named connected session; the exact read-only request to check whether a numbered PR is green may use the configured default proxy, which is named in the confirmation. No scheduled action approves permissions or submits forms.
+
+Scheduled briefs use the same daily enqueue key as the regular morning brief. If the first-message brief was already queued that day, the later scheduled brief is not duplicated. The bridge revalidates the owner and cancellation state before it enqueues and again at delivery.

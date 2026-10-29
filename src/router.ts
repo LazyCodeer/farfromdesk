@@ -2,6 +2,7 @@ import { DesktopReadinessError } from './session-activation.js';
 import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel } from './owner-commands.js';
 import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
+import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
@@ -28,6 +29,8 @@ Reply to a permission message with “Yes, allow it” or “No, deny it”. Rep
 export class Router {
   coordinator?:Coordinator;
   brain:MetaBrain;
+  schedules:Schedules;
+  scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
@@ -39,7 +42,7 @@ export class Router {
   uncertainNoticeMs=120_000;
   attachments:Attachments;
   private ownerReplyPolicy:OwnerReplyPolicy;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -50,6 +53,7 @@ export class Router {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
       this.checkQuotedPlatform(text,b);
     } else b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
+    if(this.schedules.isScheduleLike(text))throw new Error('Send schedules as a new text message in your own chat. Attachments cannot schedule or immediately send future actions.');
     if(!b)throw new Error('Choose an exact session before sending an attachment.');
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
@@ -117,6 +121,8 @@ export class Router {
         catch(e){this.store.db.exec('ROLLBACK TO brief_action; RELEASE brief_action');throw e;}
         this.pump();return {status:'queued',requestId:m.id};
       }
+      if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
+      if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent))return {status:'handled',requestId:m.id};
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
@@ -208,7 +214,8 @@ export class Router {
   resolveOwner(id:string,outcome:RequestOutcome,acknowledgingReport?:string) {
     const job=this.store.job(id),master=this.coordinator?.requestMaster(id);
     if(this.coordinator?.scope.getStore()&&master?.id!==this.coordinator.scope.getStore())throw new Error('Request belongs to another coordinator.');
-    if(!job||!/^(wa|tg|local|master):/.test(id)||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
+    const scheduleState=scheduleRootState(this,id);
+    if(!job||!/^(wa|tg|local|master|schedule):/.test(id)||scheduleState==='invalid'||scheduleState==='hold'||id.startsWith('schedule:')&&scheduleState!=='ready'||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
     if(!['done','blocked','reviewed','cancelled'].includes(outcome))throw new Error('An explicit outcome is required.');
     if(job.status==='completed'){if(job.outcome!==outcome)throw new Error('This request already has a different outcome.');return;}
     const children=this.store.db.prepare(`SELECT i.id,i.binding_id FROM inbox i JOIN settings s ON s.key='parent:'||i.id WHERE s.value=?`).all(id) as {id:string;binding_id:string}[];
@@ -312,13 +319,23 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const guard=briefDispatchGuard(this.store,id);if(!guard)return false;
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id);
+    if(!scheduled&&!guard)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
-    if(!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
+    if(scheduled&&(job.binding_id!==b.id||scheduleJobState(this,id)!=='ready')){const reason='The scheduled request was not sent because its owner, session or channel changed.';this.failBeforeSubmission(id,reason);throw new DispatchNotSubmittedError(reason);}
+    if(guard&&!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
     return true;
   }
-  /** F2 can extend this boundary for its own durable guard before integrating. */
-  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);}
+  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);}
+  private routableJob(b:Binding) {
+    for(;;){
+      const job=this.store.routableQueued(b.id,this.store.controlChannel());if(!job)return;
+      const state=scheduleJobState(this,job.id);
+      if(state==='hold')return;
+      if(state==='invalid'){this.failBeforeSubmission(job.id,'The paired owner or session changed; scheduled request was not sent.');if(this.store.job(job.id)?.status==='queued')this.store.jobState(job.id,'failed','Request ownership is unavailable; nothing was sent.');continue;}
+      return job;
+    }
+  }
   pump() {
     if(this.stopped)return;
     this.brain.tick(this);
@@ -327,7 +344,7 @@ export class Router {
     }
     for(const b of this.store.bindings()) {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
-      const job=this.store.queued(b.id);if(!job)continue;
+      const job=this.routableJob(b);if(!job)continue;
       try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;}
       this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
       const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
@@ -353,7 +370,7 @@ export class Router {
     if(prior&&prior.id!==client&&Date.now()-prior.seen<20000)throw new Error('Another channel client owns this binding.');
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
-    const job=this.store.queued(b.id);if(!job)return null;
+    const job=this.routableJob(b);if(!job)return null;
     try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};

@@ -13,6 +13,7 @@ import { Artifacts } from '../src/artifacts.js';
 import { Coordinator } from '../src/coordinator.js';
 import { queueCoordinatorUpdates, initializeCoordinatorUpdates, COORDINATOR_UPDATE_INTERVAL_MS } from '../src/coordinator-updates.js';
 import { Attachments } from '../src/attachments.js';
+import { Schedules } from '../src/schedules.js';
 
 const token='123456:'+('x'.repeat(35)),bot=123456,owner=777,other=888;
 function fixture() {
@@ -82,6 +83,22 @@ test('reply delivery and quoted follow-up stay in the exact bot chat, isolated f
 test('network-uncertain send is held, never replayed; errors never include the token',async()=>{
   const f=fixture();try{await f.pair();f.fail(1);f.store.output(f.binding,'answer','out',telegramDestination(bot,owner));await f.tg.flush();await f.tg.flush();
     const rows=f.store.db.prepare('SELECT * FROM outbox').all() as any[];assert.equal(rows[0].status,'uncertain');assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,1);assert.ok(!JSON.stringify([rows,f.tg.view()]).includes(token));
+  }finally{f.close();}
+});
+test('a scheduled Telegram reminder with uncertain delivery is held across retry and recovery',async()=>{
+  const f=fixture();try{await f.pair();
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true}));
+    const secret=new MetaSecret(f.root);secret.save('synthetic-secret-not-real-123');
+    let now=Date.parse('2026-10-29T12:29:00Z');
+    f.router.schedules=new Schedules(f.store,secret,async()=>({kind:'create',action:'message',date:'2026-10-29',time:'18:00',zone:'Asia/Kolkata',repeat:'once',text:'call the bank',target:'',question:''}),()=>now);
+    const destination=telegramDestination(bot,owner);
+    await f.store.destinationContext.run(destination,()=>f.router.schedules.handle(f.router,{id:`${destination}:22`,text:'Remind me at 6 PM to call the bank',ownerCommand:true},true));
+    await f.tg.flush();const before=f.calls.filter(c=>c.method==='sendMessage').length;
+    now=Date.parse('2026-10-29T12:30:00Z');await f.router.schedules.tick(f.router);f.fail(1);
+    await f.tg.flush();await f.tg.flush();f.store.recover();await f.router.schedules.tick(f.router);await f.tg.flush();
+    const row=f.store.db.prepare("SELECT status FROM outbox WHERE body LIKE '%Reminder: call the bank%'").get();
+    assert.equal(row?.status,'uncertain');assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,before+1);
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedule_occurrences').get()?.n,1);
   }finally{f.close();}
 });
 test('only explicit rate rejection retries with backoff; blocked bot fails without retry',async()=>{

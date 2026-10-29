@@ -91,6 +91,15 @@ export class Store {
       const job=this.job(id);if(job)destinations.push(job.destination);
       const parent=this.get(`parent:${id}`)??this.get(`report-parent:${id}`);
       if(parent){id=parent;continue;}
+      if(id.startsWith('schedule:')){
+        if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schedule_jobs'").get())return undefined;
+        const guarded=this.db.prepare(`SELECT j.owner,j.destination,j.channel,j.binding_id,j.body_hash FROM schedule_jobs j
+          JOIN schedule_occurrences o ON o.id=j.occurrence_id AND o.owner=j.owner AND o.destination=j.destination AND o.channel=j.channel
+          JOIN schedules s ON s.id=o.schedule_id AND s.owner=j.owner AND s.destination=j.destination AND s.channel=j.channel
+          WHERE j.job_id=? AND j.occurrence_id=j.job_id`).get(id) as {owner:string;destination:string;channel:string;binding_id:string;body_hash:string}|undefined;
+        if(!guarded||!job||guarded.channel!=='whatsapp'||this.controlChannel()!=='whatsapp'||guarded.destination!==guarded.owner||this.ownerFor(guarded.destination)!==guarded.owner||job.binding_id!==guarded.binding_id||hash(job.body)!==guarded.body_hash||destinations.some(d=>d!==guarded.destination))return undefined;
+        return {owner:guarded.owner,destination:guarded.destination};
+      }
       if(!id.startsWith('wa:'))return undefined;
       const origin=this.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(id) as {owner:string;destination:string}|undefined;
       if(!origin||destinations.some(d=>d!==origin.destination)||this.ownerFor(origin.destination)!==origin.owner)return undefined;
@@ -133,6 +142,8 @@ export class Store {
   unfinished(id:string) { return this.db.prepare("SELECT * FROM inbox WHERE binding_id=? AND status IN ('queued','dispatched','submitted') ORDER BY created_at").all(id) as Job[]; }
   hasDispatched(id:string) { return !!this.db.prepare("SELECT 1 FROM inbox WHERE binding_id=? AND status='dispatched'").get(id); }
   queued(id: string) { return this.db.prepare("SELECT * FROM inbox WHERE binding_id=? AND status='queued' ORDER BY created_at LIMIT 1").get(id) as Job | undefined; }
+  /** Skip scheduled work held for the inactive control channel, without starving ordinary jobs. */
+  routableQueued(id:string,channel:string) {return this.db.prepare("SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) ORDER BY i.created_at,i.rowid LIMIT 1").get(id,channel) as Job|undefined;}
   jobState(id: string, status: string, error: string | null = null, outcome?:RequestOutcome) {
     const prior=this.job(id);if(!prior)return;
     const now=Date.now(),attempt=status==='dispatched'?randomUUID():prior.attempt_id??null;
@@ -283,6 +294,8 @@ export class Store {
     for(const row of rows)this.db.prepare("UPDATE outbox SET request_id=?,reply_kind='system' WHERE id=?").run(requestId,row.id);
   }
   outbound(channel:'whatsapp'|'telegram'='whatsapp') { cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT * FROM outbox WHERE status='queued' AND next_at<=? AND (CASE WHEN destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (binding_id IS NULL OR binding_id IN (SELECT id FROM bindings WHERE enabled=1)) ORDER BY created_at LIMIT 1").get(Date.now(),channel) as any; }
+  /** A held scheduled message must not block other replies for its transport. */
+  routableOutbound(channel:'whatsapp'|'telegram') {cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT o.* FROM outbox o LEFT JOIN schedule_outbox s ON s.outbox_id=o.id WHERE o.status='queued' AND o.next_at<=? AND (CASE WHEN o.destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (o.binding_id IS NULL OR o.binding_id IN (SELECT id FROM bindings WHERE enabled=1)) AND (s.outbox_id IS NULL OR s.channel=?) ORDER BY o.created_at,o.rowid LIMIT 1").get(Date.now(),channel,this.controlChannel()) as any;}
   sent(id: string) { const row=this.db.prepare('SELECT request_id,sent_at FROM outbox WHERE id=?').get(id) as any;this.db.prepare("UPDATE outbox SET status='sent',error=NULL,sent_at=COALESCE(sent_at,?) WHERE id=?").run(Date.now(),id);if(row?.request_id&&!row.sent_at)this.event(row.request_id,'reply_sent'); }
   deliveryReceipt(waId:string,destination:string,kind:'delivered'|'read') {
     const row=this.db.prepare('SELECT id,request_id,delivered_at,read_at FROM outbox WHERE wa_id=? AND destination=?').get(waId,destination) as any;

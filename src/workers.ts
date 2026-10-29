@@ -9,6 +9,7 @@ import type { Masters } from './masters.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { saveBindingCredentials } from './server.js';
 import type { SessionRoute } from './connections.js';
+import { bindScheduledChild,scheduleRootState } from './schedules.js';
 
 type Creation={workspaceRoot?:string;taskOwnerRequestId?:string;recoveryAttemptId?:string;recoveryPrevious?:{status:Creation['status'];error?:string};route?:SessionRoute;executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'checking'|'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain'|'blocked'|'needs_action';originRequestId?:string;stage?:'preflight'|'workspace'|'native'|'dispatch';bindingId?:string;cwd?:string;error?:string};
 class WorkspaceApprovalExpired extends Error {}
@@ -282,10 +283,12 @@ export class Workers {
   private reportStatus(op:Creation) {
     const master=this.router.coordinator!.requestMaster(op.requestId),parent=this.store.job(op.requestId);
     if(!master||master.id!==op.masterId||!parent||parent.status==='replaced')return;
+    const scheduleState=scheduleRootState(this.router,op.requestId);if(scheduleState==='invalid'||scheduleState==='hold')return;
     const reportId=`report:creation:${op.id}:${op.status}:${op.requestId}${op.recoveryAttemptId?`:${op.recoveryAttemptId}`:''}`;
-    this.store.set(`report-parent:${reportId}`,op.requestId);
     const next=op.status==='ready'?'This workspace recovery request is finished. Report restored access only, not task completion. Do not resume or rerun the task or duplicate the notification.':op.status==='needs_action'?'Keep this owner request open: the bridge connects the session and queues its task once the owner presses Send in Claude. Do not open, start or create anything yourself, and do not duplicate the notification.':'Close this owner request as blocked if no further work is possible; do not create a replacement or duplicate the notification.';
-    this.store.enqueue(reportId,master,`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. ${next}`,parent.destination??null);
+    const body=`Creation operation ${op.id} for owner request ${op.requestId} is ${op.status}. ${op.error??'The owner did not approve workspace access.'} This is a status report, not authorization to retry. The user already received the status. ${next}`;
+    this.store.db.exec('SAVEPOINT schedule_creation_report');try{this.store.set(`report-parent:${reportId}`,op.requestId);bindScheduledChild(this.router,op.requestId,reportId,master,body);this.store.enqueue(reportId,master,body,parent.destination??null);this.store.db.exec('RELEASE schedule_creation_report');}
+    catch(e){this.store.db.exec('ROLLBACK TO schedule_creation_report; RELEASE schedule_creation_report');throw e;}
     this.router.pump();
   }
   close(){this.closed=true;}
