@@ -59,6 +59,8 @@ export class NativeAgents {
   private catalogCache=new Map<string,{expires:number;page:{sessions:Session[];cursor:string|null}}>();
   beforeRun?:(b:Binding)=>void;
   beforeDispatch?:(b:Binding,jobId:string)=>boolean;
+  /** Synchronous fence immediately before managed provider submission. */
+  beforeManagedSubmission?:(b:Binding,jobId:string)=>void;
   connectionChanged?:(b:Binding)=>void;
   managedRun?:(b:Binding,message:string,jobId:string)=>Promise<void>;
   configPath=join(stateDir,'desktop-sync.json');
@@ -253,6 +255,7 @@ export class NativeAgents {
       if(!this.managedRun)throw new Error('Managed native runtime is unavailable.');
       if(guarded)this.beforeRun?.(b);
       this.beforeDispatch?.(b,jobId);
+      this.beforeManagedSubmission?.(b,jobId);
       handedOff=true;
       await this.managedRun(b,message,jobId);envelope.acknowledge();return;
     }
