@@ -1,4 +1,5 @@
 import { WhatsAppPolls } from './whatsapp-polls.js';
+import { ErrandOrder } from './errand-order.js';
 import { canDeliverBrief } from './morning-brief.js';
 import { scheduleDeliveryState } from './schedules.js';
 import { contractDeliveryState } from './task-contracts.js';
@@ -37,10 +38,11 @@ export class WhatsApp {
   downloadFile=(media:any,kind:AttachmentKind,signal?:AbortSignal)=>this.router.attachments.download(media,kind,signal);
   artifacts:Artifacts;
   readonly polls:WhatsAppPolls;
+  readonly errandOrder:ErrandOrder;
   sendDocument=sendDiskDocument;
   transcribe=(audio:any,signal?:AbortSignal,observe?:AudioObserver,origin?:VoiceOrigin)=>transcribeAudio(this.store,audio,signal,observe,undefined,origin);
   constructor(private store:Store,private router:Router,private authDirectory=join(stateDir,'whatsapp-auth')) {
-    this.artifacts=new Artifacts(store);this.polls=new WhatsAppPolls(store);
+    this.artifacts=new Artifacts(store);this.polls=new WhatsAppPolls(store);this.errandOrder=new ErrandOrder(store);
     router.attachments.interrupt('The bridge restarted while downloading your attachment. Please resend it.');
     router.attachments.cleanup();this.artifacts.cleanup();
   }
@@ -194,8 +196,15 @@ export class WhatsApp {
     if(this.closed||this.loggingOut||this.status!=='connected'||key.fromMe!==true||!key.id||!key.remoteJid)return false;
     const destination=key.remoteJid.endsWith('@g.us')?key.remoteJid:this.owners.includes(jidNormalizedUser(key.remoteJid))?this.selfJid:undefined;
     if(!destination)return false;
-    if(status===proto.WebMessageInfo.Status.READ||status===proto.WebMessageInfo.Status.PLAYED)return this.store.deliveryReceipt(key.id,destination,'read');
-    if(status===proto.WebMessageInfo.Status.DELIVERY_ACK)return this.store.deliveryReceipt(key.id,destination,'delivered');
+    const kind=status===proto.WebMessageInfo.Status.READ||status===proto.WebMessageInfo.Status.PLAYED?'read':status===proto.WebMessageInfo.Status.DELIVERY_ACK?'delivered':undefined;
+    if(kind){
+      this.store.db.exec('SAVEPOINT whatsapp_receipt_order');
+      try{
+        const recorded=this.store.deliveryReceipt(key.id,destination,kind);
+        if(recorded){const row=this.store.db.prepare('SELECT id FROM outbox WHERE wa_id=? AND destination=?').get(key.id,destination) as {id:string}|undefined;if(row)this.errandOrder.delivery(row.id,destination);}
+        this.store.db.exec('RELEASE whatsapp_receipt_order');return recorded;
+      }catch(e){this.store.db.exec('ROLLBACK TO whatsapp_receipt_order; RELEASE whatsapp_receipt_order');throw e;}
+    }
     return false; // SERVER_ACK alone proves neither delivery nor reading.
   }
   async receiveMessage(m:any) {
@@ -215,9 +224,16 @@ export class WhatsApp {
     this.receiving.add(id);
     try {
       await this.store.incomingOwnerContext.run(owner,async()=>{
+      // Record ordering before group verification or routing can await.
+      const context=msg?.extendedTextMessage?.contextInfo;
+      const orderOwner=owner.owner;
+      const draftIngress=!audio&&!media&&!msg?.pollUpdateMessage&&typeof text==='string'&&
+        !context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore&&/^\s*(?:please\s+)?draft\s+[1-5]\s*[.!?]*\s*$/i.test(text);
+      if(draftIngress)this.errandOrder.capture(id,orderOwner,origin,text!);
       if(group)await this.verifyGroup(destination!);
       if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
       const activityScope={destination:origin,owner:owner.owner};
+      if(draftIngress&&!this.errandOrder.confirm(id,orderOwner,origin,text!))return;
       await this.store.destinationContext.run(origin,async()=>{
         if(msg?.pollUpdateMessage){const vote=this.polls.vote({...m,message:msg},origin,this.owners);if(vote)await this.router.receive({...vote,activityScope});return;}
         if(media) {
@@ -284,7 +300,6 @@ export class WhatsApp {
           }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare("UPDATE audio_inbox SET status='interrupted' WHERE id=? AND status='processing'").run(id);if(started)this.audioBusy--;this.audioControllers.delete(controller);}
           return;
         }
-        const context=msg?.extendedTextMessage?.contextInfo;
         const ownerCommand=!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
         if(self&&ownerCommand&&text!.trim()==='/self') {
           const selecting=this.selectDestination(),updated=this.store.captureIncomingOwner(origin,'whatsapp');await selecting;

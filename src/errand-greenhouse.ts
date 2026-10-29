@@ -13,7 +13,7 @@ const MAX_BYTES=512*1024,MAX_IDS=10,TIMEOUT_MS=8000;
 const BOARD=/^[a-z0-9][a-z0-9_-]{0,49}$/;
 const CREDENTIAL=/^(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9_]{16,}|xox[baprs]-[a-z0-9-]{12,}|akia[a-z0-9]{16})$/i;
 function validPath(host:string,path:string) {
-  const match=(host==='boards-api.greenhouse.io'?/^\/v1\/boards\/([^/]+)\/jobs\/([1-9][0-9]{0,17})$/:/^\/([^/]+)\/jobs\/([1-9][0-9]{0,17})$/).exec(path);
+  const match=(host==='boards-api.greenhouse.io'?/^\/v1\/boards\/([^/]+)\/jobs(?:\/([1-9][0-9]{0,17}))?$/:/^\/([^/]+)\/jobs\/([1-9][0-9]{0,17})$/).exec(path);
   return HOSTS.has(host)&&!!match&&BOARD.test(match[1])&&!CREDENTIAL.test(match[1]);
 }
 const blocked=new BlockList();
@@ -136,5 +136,44 @@ export function greenhouseListingReader(current:(scope:ErrandScope)=>boolean,now
         sourceHash:createHash('sha256').update(api.body).update('\0').update(page.body).digest('hex'),workplace:'unknown',verification:'public-listing-published'});
     }
     return result;
+  };
+}
+
+/**
+ * Narrow board-local search. The caller supplies an already-authorized board
+ * and contract; filtering happens locally and never sends owner criteria.
+ * It does not search the whole web or infer salary or workplace eligibility.
+ */
+export function greenhouseBoardReader(current:(scope:ErrandScope)=>boolean,now=()=>Date.now(),transport?:Transport):VerifiedListingReader {
+  const exact=greenhouseListingReader(current,now,transport);
+  return async(scope,raw,signal)=>{
+    const q=raw as {board?:unknown;role?:unknown;location?:unknown}|null;
+    if(!q||typeof q.board!=='string'||!BOARD.test(q.board)||CREDENTIAL.test(q.board)||typeof q.role!=='string'||!q.role.trim()||q.role.length>120||typeof q.location!=='string'||!q.location.trim()||q.location.length>120)throw new Error('A Greenhouse board, role and location are required.');
+    if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
+    const response=await greenhouseGet('boards-api.greenhouse.io',`/v1/boards/${q.board}/jobs`,signal,transport,()=>current(scope));
+    if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
+    if(!/^application\/json\b/i.test(response.contentType))throw new Error('Unexpected Greenhouse response.');
+    let data:any;try{data=JSON.parse(response.body);}catch{throw new Error('Unexpected Greenhouse response.');}
+    if(!Array.isArray(data?.jobs)||data.jobs.length>2000)throw new Error('The public job board is unavailable or too large.');
+    const norm=(s:string)=>s.replace(/\s+/g,' ').trim().toLocaleLowerCase();
+    const role=norm(q.role),location=norm(q.location),ids:string[]=[];
+    for(const item of data.jobs){
+      if(!item||typeof item.title!=='string'||typeof item.location?.name!=='string')continue;
+      const id=typeof item.id==='number'&&Number.isSafeInteger(item.id)?String(item.id):typeof item.id==='string'?item.id:'';
+      if(!/^[1-9][0-9]{0,17}$/.test(id)||ids.includes(id)||!norm(item.title).includes(role)||!norm(item.location.name).includes(location))continue;
+      ids.push(id);if(ids.length===MAX_IDS)break;
+    }
+    const listings:Listing[]=[];
+    for(const id of ids){
+      if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
+      try{listings.push(...await exact(scope,{jobs:[{board:q.board,id}]},signal));}
+      catch(error){
+        if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
+        // Skip only a specifically unverifiable candidate; a transport error
+        // must not be reported as an empty board.
+        if(!/^(?:The published listing |The public listing |Unsupported Greenhouse listing link|Invalid Greenhouse listing link)/.test((error as Error).message))throw error;
+      }
+    }
+    return listings;
   };
 }

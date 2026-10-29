@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import type {request as httpsRequest} from 'node:https';
-import {greenhouseGet,greenhouseListingReader,publicGreenhouseAddress,requestPinned} from '../src/errand-greenhouse.js';
+import {greenhouseBoardReader,greenhouseGet,greenhouseListingReader,publicGreenhouseAddress,requestPinned} from '../src/errand-greenhouse.js';
 import {greenhousePageIdentity} from '../src/errand-greenhouse-page.js';
 import type {ErrandScope} from '../src/errand-missions.js';
 
@@ -76,6 +76,27 @@ test('requires an explicit valid future deadline and rechecks it after fetching 
   const boundary=Date.parse('2099-12-31T00:00:00Z');let time=boundary-1;
   const fake=transport({onRequest:()=>{if(fake.calls.length===2)time=boundary;}});
   await assert.rejects(greenhouseListingReader(()=>true,()=>time,fake)(scope,input,new AbortController().signal),/deadline/);
+});
+test('searches only the authorized board, matching role and location locally and verifying exact jobs',async()=>{
+  const calls:{host:string;path:string}[]=[];
+  const fake={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>{
+    calls.push({host,path});
+    if(path==='/v1/boards/example/jobs')return {status:200,contentType:'application/json',body:JSON.stringify({jobs:[
+      {id:12345,title:'Flutter Engineer',location:{name:'Bangalore'}},{id:999,title:'Designer',location:{name:'Bangalore'}},{id:888,title:'Flutter Engineer',location:{name:'London'}},
+    ]})};
+    return {status:200,contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html',body:host==='boards-api.greenhouse.io'?api():page()};
+  }};
+  const result=await greenhouseBoardReader(()=>true,()=>1234,fake)(scope,{board:'example',role:'Flutter',location:'Bangalore'},new AbortController().signal);
+  assert.equal(result.length,1);assert.equal(result[0].verification,'public-listing-published');
+  assert.deepEqual(calls.map(x=>x.path),['/v1/boards/example/jobs','/v1/boards/example/jobs/12345','/example/jobs/12345']);
+  assert.ok(calls.every(x=>!x.path.includes('Flutter')&&!x.path.includes('Bangalore')&&!x.path.includes('?')));
+});
+test('board search does not turn a transport failure into an empty result',async()=>{
+  const fake={resolve:async()=>['8.8.8.8'],request:async(_host:string,path:string)=>{
+    if(path==='/v1/boards/example/jobs')return {status:200,contentType:'application/json',body:JSON.stringify({jobs:[{id:12345,title:'Flutter Engineer',location:{name:'Bangalore'}}]})};
+    throw new Error('Synthetic network outage');
+  }};
+  await assert.rejects(greenhouseBoardReader(()=>true,()=>1234,fake)(scope,{board:'example',role:'Flutter',location:'Bangalore'},new AbortController().signal),/network outage/);
 });
 test('recognizes only structural page identity, never script or error-page substrings',()=>{
   const match=(html:string)=>greenhousePageIdentity(html,'job-boards.greenhouse.io','example','12345','Flutter Engineer');

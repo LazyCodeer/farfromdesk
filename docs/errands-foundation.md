@@ -30,7 +30,7 @@ yet the tailored document required by the approved plan.
   revalidate each redirect, and record source/attempt provenance. No such
   adapter is integrated, so real shortlists must not be delivered.
 - `errand-greenhouse.ts` is an isolated, unwired source for exact Greenhouse
-  board and job IDs, not a search provider. It independently checks the fixed
+  board and job IDs, plus a board-local search. It independently checks the fixed
   Greenhouse API and the matching public listing URL, and returns a distinct
   published-listing evidence type with application availability unverified.
   It requires an explicit future deadline, and rejects recognizable closed
@@ -53,6 +53,10 @@ yet the tailored document required by the approved plan.
   before use. API or page changes, redirects and links with query
   parameters fail closed. The generic API and page checks are not proof that a
   job matches the owner's criteria.
+  The board search sends only the board identifier and filters role and
+  location locally. It checks at most ten candidates and propagates transport
+  failures. It is not general internet search and does not verify salary or
+  workplace eligibility.
   The Greenhouse [Job Board API documentation](https://developers.greenhouse.io/job-board.html)
   describes published jobs and includes an `application_deadline` field. A
   published listing or future or absent deadline does not establish that it is
@@ -92,8 +96,11 @@ yet the tailored document required by the approved plan.
   exact text of a new top-level authenticated owner request in the same
   owner/chat and a trusted check of the original approved contract.
 - Draft selection also requires a bridge-owned ingress ordering proof for the
-  authenticated owner message and the exact delivered shortlist. No such
-  adapter exists here: selection fails closed by default. `inbox.received_at`
+  authenticated owner message and the exact delivered shortlist. An initial
+  WhatsApp adapter captures a typed draft choice before async group checks,
+  confirms the owner afterward, and records the bound shortlist receipt in
+  the same database sequence. It is not yet wired to selection, which fails
+  closed by default. `inbox.received_at`
   is set after asynchronous routing and must never be used as ingress time.
   The future adapter must durably capture order before any async work, and
   prove the selected shortlist was delivered before the owner sent the reply.
