@@ -36,7 +36,9 @@ export const requestPinned=(host:string,path:string,address:string,signal:AbortS
   const options:RequestOptions={hostname:host,path,method:'GET',port:443,servername:host,family:4,agent:false,
     headers:{accept:'application/json, text/html','accept-encoding':'identity','user-agent':'FarFromDesk'},signal,
     // DNS is never repeated after validation. TLS still verifies the hostname.
-    lookup:((_host:string,_options:unknown,callback:(error:NodeJS.ErrnoException|null,address:string,family:number)=>void)=>callback(null,address,4)) as RequestOptions['lookup']};
+    // Deferring lookup avoids re-entering TLS connection setup before the
+    // request has installed its socket and error listeners.
+    lookup:((_host:string,_options:unknown,callback:(error:NodeJS.ErrnoException|null,address:string,family:number)=>void)=>process.nextTick(callback,null,address,4)) as RequestOptions['lookup']};
   const req=requestFn(options,res=>{
     const status=res.statusCode??0;
     if(status!==200){fail(new Error('Public listing could not be verified.'));req.destroy();return;}

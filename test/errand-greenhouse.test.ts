@@ -165,8 +165,21 @@ test('pinned HTTPS uses fixed SNI and validated lookup, rejects a changed peer a
   const get=()=>requestPinned('boards.greenhouse.io','/example/jobs/12345','8.8.8.8',new AbortController().signal,fakeRequest as typeof httpsRequest);
   assert.equal((await get()).body,'matching');const opts=attempts[0].options;
   assert.equal(opts.hostname,'boards.greenhouse.io');assert.equal(opts.servername,'boards.greenhouse.io');assert.equal(opts.method,'GET');assert.equal(opts.agent,false);
-  let pinned='';opts.lookup('boards.greenhouse.io',{},(_err:unknown,address:string)=>{pinned=address;});assert.equal(pinned,'8.8.8.8');
+  let pinned='';opts.lookup('boards.greenhouse.io',{},(_err:unknown,address:string)=>{pinned=address;});assert.equal(pinned,'');await new Promise<void>(resolve=>process.nextTick(resolve));assert.equal(pinned,'8.8.8.8');
   peer='127.0.0.1';await assert.rejects(get(),/address changed/);assert.equal(attempts[1].destroyed,true);
   peer='8.8.8.8';status=302;await assert.rejects(get(),/verified/);assert.equal(attempts[2].destroyed,true);
   status=200;body='x'.repeat(512*1024+1);await assert.rejects(get(),/too large/);assert.equal(attempts[3].destroyed,true);
+});
+test('pinned lookup is deferred so a denied socket rejects after error handlers are attached',async()=>{
+  let returned=false;
+  const fakeRequest=(opts:any)=>{
+    const req:any=new EventEmitter();req.end=()=>{};
+    opts.lookup('boards.greenhouse.io',{},()=>{
+      assert.equal(returned,true);
+      const error=Object.assign(new Error('Synthetic socket denied'),{code:'EPERM'});
+      req.emit('error',error);
+    });
+    returned=true;return req;
+  };
+  await assert.rejects(requestPinned('boards.greenhouse.io','/example/jobs/12345','8.8.8.8',new AbortController().signal,fakeRequest as typeof httpsRequest),/Synthetic socket denied/);
 });

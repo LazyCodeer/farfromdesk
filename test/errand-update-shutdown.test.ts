@@ -1,7 +1,12 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createServer} from 'node:net';
+import {join} from 'node:path';
+
+// Application modules capture the coordinator root at import time.
+process.env.FARFROMDESK_HOME=join(process.env.WSB_STATE_DIR!,'projects');
 
 test('an update restart waits for incoming messages, transcription, review and active searches',async()=>{
   const probe=createServer();await new Promise<void>(resolve=>probe.listen(0,'127.0.0.1',resolve));
