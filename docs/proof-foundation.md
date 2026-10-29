@@ -30,8 +30,16 @@ cannot trigger a correction.
 ## Vision advisory
 
 The screenshot helper is advisory only. It needs existing trusted provenance
-for the exact selected nonsensitive capture, separate owner consent for Meta,
-and a separately owner-reviewed excerpt tied to the approved check. It does
-not capture screens or create proof. Credential-pattern filters are a defense
-in depth and cannot establish that text or an image contains no secrets.
-Production must not wire it until capture provenance and consent are available.
+for the exact selected nonsensitive capture and owner consent for Meta. It does
+not capture screens or create proof. It derives a fixed prompt only for a
+narrow allowlist of exact, already-approved button-color and light/dark-mode
+checks. It never copies other check text; unsupported checks remain unverified
+without asking the owner to approve a new excerpt.
+
+Before upload, the helper strips PNG text, EXIF, timestamp and resolution
+metadata, retains supported rendering chunks and image pixels, and fails closed
+on malformed data, custom color profiles, animation, interlacing and unsupported
+formats. It binds authorization to both the original and sanitized image hashes
+and the sanitization policy. Sanitizing metadata does not remove sensitive
+content visible in pixels. Production must not wire this until trusted capture
+provenance, nonsensitive-window selection and consent are available.
