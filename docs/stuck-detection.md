@@ -35,3 +35,21 @@ permissions, merge changes, or start follow-up work. Existing native prompts
 that lack an exact request identity cannot be attributed and are not included.
 The message includes no screenshot. These limitations mean this is not yet the
 complete proactive unblock workflow described in the hackathon plan.
+
+## CI experiment
+
+The unwired `stuck-ci-observer` prototype can compare one explicitly
+owner-approved public PR, exact head and exact check-run ID against fixed
+GitHub API responses. A failed result describes that particular run only;
+it does not establish current aggregate CI, required checks, review state or
+merge readiness. The PR can move again after a read, so an eventual sender
+must revalidate before delivery. The prototype cannot fetch or notify by
+itself, and has no authority adapter or production caller.
+
+The existing product does not store the owner's approval of a particular PR,
+repository, revision and check run for an item. A PR link in a session's
+report is an unverified claim, not that approval. Before wiring this feature,
+add a delivered owner approval and durable owner/chat generation-bound record,
+a bridge-owned fixed-origin transport, and tests for revocation, changed PR
+head and uncertain delivery. Do not silently infer merge readiness, merge a PR,
+or treat an old failed run as the current CI state.
