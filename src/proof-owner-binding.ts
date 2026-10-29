@@ -24,7 +24,7 @@ export class ProofOwnerBindings {
    */
   approve(m:Incoming):{checkId:string;repository:string;checkName:string} {
     const s=this.router.store,origin=s.incomingOwnerContext.getStore();
-    if(!origin||origin.owner!==origin.destination||!s.incomingOwnerCurrent()||m.ownerCommand!==true||m.source==='voice'||m.quotedId||!authenticatedOwner(this.router,m))
+    if(!origin||origin.owner!==origin.destination||s.destination()!==origin.destination||!s.incomingOwnerCurrent()||m.ownerCommand!==true||m.source==='voice'||m.quotedId||!authenticatedOwner(this.router,m))
       throw new Error('Send this as a new typed message in your direct owner chat.');
     const match=m.text.length<=1000?/^\/proof bind (\S+) ([1-3]) ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.exec(m.text.trim()):null;
     if(!match)throw new Error('Use /proof bind REQUEST_ID CHECK_NUMBER OWNER/REPO.');

@@ -20,6 +20,8 @@ import { PortableNative } from './portable-native.js';
 import { portableAgents } from './platform.js';
 import { acquireServiceLock } from './service-lock.js';
 import { MorningBrief } from './morning-brief.js';
+import { ProofScopeFence } from './proof-contract-scope.js';
+import { ProofOwnerBindings } from './proof-owner-binding.js';
 
 const token=initializeState();
 const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
@@ -28,6 +30,8 @@ const agentInstaller=new AgentInstaller(store);
 initializeCoordinatorUpdates(store);
 try {installBundledAudio(store);}catch{console.error('Bundled voice assets could not be initialized. Reinstall the app or configure local speech tools.');}
 const approvals=new Approvals(store),native=portableAgents?new PortableNative(store,approvals):new NativeAgents(store,approvals),router=new Router(store,native,approvals),wa=new WhatsApp(store,router),telegram=new Telegram(store,router);
+// A failed proof setup leaves ordinary task routing available and proof disabled.
+try{new ProofScopeFence(store);router.proofBindings=new ProofOwnerBindings(router);}catch{console.error('Owner proof bindings are unavailable.');}
 router.morningBrief=new MorningBrief(store,router);
 router.scheduledBrief=(destination,owner,occurrence,canSend)=>router.morningBrief!.scheduledBrief(destination,owner,occurrence,canSend);
 const coordinator=new Coordinator(store,native,router);router.coordinator=coordinator;

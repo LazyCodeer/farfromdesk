@@ -14,8 +14,9 @@ import {TaskContracts} from '../src/task-contracts.js';
 import {ProofScopeFence,contractProofScope} from '../src/proof-contract-scope.js';
 import {ProofOwnerBindings} from '../src/proof-owner-binding.js';
 import {ProofChecks} from '../src/proof-check.js';
+import {WhatsApp} from '../src/whatsapp.js';
 
-async function fixture(persistent=false){
+async function fixture(persistent=false,autoCapture=false){
   const dir=mkdtempSync(join(tmpdir(),'ffd-proof-binding-')),store=new Store(persistent?join(dir,'state.sqlite'):':memory:'),approvals=new Approvals(store);
   const router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);router.pump=()=>{};new ProofScopeFence(store);
   const owner='owner@s.whatsapp.net';store.set('whatsapp-owner',owner);
@@ -24,9 +25,10 @@ async function fixture(persistent=false){
   router.brain=new MetaBrain(store,secret,{interpret:async()=>{throw Error('not called');}} as any);
   saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'block'}});
   router.contracts=new TaskContracts(store,secret,async()=>({kind:'contract',goal:'Change theme',exclusions:[],checks:['GitHub check Backend tests passed','Theme works'],question:''}));
+  if(autoCapture)router.proofBindings=new ProofOwnerBindings(router);
   await router.receive({id:'wa:request',text:'Change theme',ownerIntent:true,ownerCommand:true});
   store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
-  const context=store.captureIncomingOwner(owner,'whatsapp')!;store.incomingOwnerContext.run(context,()=>store.recordIncomingInput('wa:approval'));
+  if(!autoCapture){const context=store.captureIncomingOwner(owner,'whatsapp')!;store.incomingOwnerContext.run(context,()=>store.recordIncomingInput('wa:approval'));}
   await router.receive({id:'wa:approval',text:'ok',ownerIntent:true,ownerCommand:true});
   store.jobState('wa:approval','dispatched');router.channelReply(binding,'Done','final','wa:approval',undefined,{outcome:'done'});
   const bindings=new ProofOwnerBindings(router),id='wa:approval';
@@ -49,6 +51,37 @@ test('only an exact approved contract check can receive an owner binding',async(
   }finally{f.close();}
 });
 
+test('typed contract approval and proof command use the real router path',async()=>{
+  const f=await fixture(false,true);try{
+    assert.ok(f.store.recordedIncomingInput(f.id));assert.ok(contractProofScope(f.router,f.id));
+    const result=await f.router.receive({id:'wa:binding-command',text:`/proof bind ${f.id} 1 example/project`,ownerCommand:true});
+    assert.equal(result.status,'handled');assert.equal(f.store.job('wa:binding-command'),undefined);
+    const row=f.store.db.prepare("SELECT id,body FROM outbox WHERE source='command:wa:binding-command:0'").get() as {id:string;body:string};
+    assert.match(row.body,/does not verify the task or any run/);assert.equal(f.store.incomingOwnerDelivery(row.id),true);
+    assert.equal(f.bindings.approved(f.id).length,1);
+  }finally{f.close();}
+});
+
+test('WhatsApp self-chat accepts a typed binding but not a forwarded one',async()=>{
+  const f=await fixture(false,true),wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=f.owner;wa.owners=[f.owner];
+  try{
+    const text=`/proof bind ${f.id} 1 example/project`;
+    await wa.receiveMessage({key:{id:'forwarded',fromMe:true,remoteJid:f.owner},message:{extendedTextMessage:{text,contextInfo:{isForwarded:true,forwardingScore:1}}}} as any);
+    assert.equal(f.bindings.approved(f.id).length,0);
+    await wa.receiveMessage({key:{id:'direct',fromMe:true,remoteJid:f.owner},message:{conversation:text}} as any);
+    assert.equal(f.bindings.approved(f.id).length,1);assert.equal(f.store.job('wa:direct'),undefined);
+  }finally{wa.close();f.close();}
+});
+
+test('a failed confirmation rolls back the binding rather than saving silently',async()=>{
+  const f=await fixture(false,true);try{
+    const output=f.store.output.bind(f.store);
+    (f.store as any).output=(...args:any[])=>{(f.store as any).output=output;throw Error('synthetic output failure');};
+    const result=await f.router.receive({id:'wa:failed-confirm',text:`/proof bind ${f.id} 1 example/project`,ownerCommand:true});
+    assert.equal(result.status,'blocked');assert.equal(f.bindings.approved(f.id).length,0);
+  }finally{f.close();}
+});
+
 test('voice, quoted, forwarded, other-owner and mismatched checks cannot approve',async()=>{
   const f=await fixture();try{
     for(const message of [{ownerCommand:false},{source:'voice'},{quotedId:'other'},{id:'parent:unsafe'},
@@ -58,6 +91,18 @@ test('voice, quoted, forwarded, other-owner and mismatched checks cannot approve
     const group='111@g.us';f.store.set('destination-jid',group);f.store.set(`owned-group:${group}`,'test');
     const groupContext=f.store.captureIncomingOwner(group,'whatsapp')!;
     assert.throws(()=>f.store.incomingOwnerContext.run(groupContext,()=>f.store.destinationContext.run(group,()=>f.bindings.approve({id:'wa:group',text:'/proof bind wa:approval 1 example/project',ownerCommand:true}))));
+  }finally{f.close();}
+});
+
+test('a self-chat capture cannot authorize a different active destination',async()=>{
+  const f=await fixture();try{
+    const direct=f.store.captureIncomingOwner(f.owner,'whatsapp')!,group='111@g.us';
+    f.store.set('destination-jid',group);f.store.set(`owned-group:${group}`,'test');
+    const fresh=f.store.captureIncomingOwner(f.owner,'whatsapp')!;
+    // An internally inconsistent pair of contexts is not an owner self-chat.
+    assert.notEqual(direct.generation,fresh.generation);
+    assert.throws(()=>f.store.incomingOwnerContext.run(fresh,()=>f.store.destinationContext.run(group,()=>f.bindings.approve({id:'wa:cross',text:'/proof bind wa:approval 1 example/project',ownerCommand:true}))));
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM proof_owner_bindings').get()?.n,0);
   }finally{f.close();}
 });
 
