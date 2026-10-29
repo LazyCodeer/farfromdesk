@@ -8,6 +8,9 @@ import {join} from 'node:path';
 import {Store} from '../src/store.js';
 import {Router} from '../src/router.js';
 import {Approvals} from '../src/approvals.js';
+import {Coordinator} from '../src/coordinator.js';
+import {MorningBrief} from '../src/morning-brief.js';
+import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,brainPolicy,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts,contractDeliveryState} from '../src/task-contracts.js';
 import type {ContractDecision} from '../src/task-contract-model.js';
@@ -20,6 +23,7 @@ function fixture(answer:ContractDecision=proposal()){
   r.pump=()=>{};store.set('whatsapp-owner','owner@s.whatsapp.net');
   const binding=store.register('codex-one','codex',randomUUID(),'/tmp').binding;store.set('active',binding.id);
   const secret=new MetaSecret(dir);secret.save('synthetic-key-not-a-real-secret');
+  r.brain=new MetaBrain(store,secret,{interpret:async()=>{throw new Error('unused');}} as any);
   saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'block'}});
   let decide:()=>Promise<ContractDecision>=async()=>answer;
   r.contracts=new TaskContracts(store,secret,async()=>decide());
@@ -124,4 +128,21 @@ test('revoked keys and stale routing cannot deliver or approve a queued contract
     assert.equal(contractDeliveryState(f.r,pending.id),'invalid');
     f.markSent();await f.send('2','ok');assert.equal(f.store.jobs().length,0);
   }finally{f.close();}}
+});
+
+test('a brief go action needing a contract cannot queue until owner approves the exact item',async()=>{
+  const f=fixture();try{
+    const coordinator=new Coordinator(f.store,f.r.native,f.r,()=>{});f.r.coordinator=coordinator;
+    const owner='owner@s.whatsapp.net',worker=f.binding,when=Date.parse('2026-10-29T03:00:00Z');
+    f.store.recordOwnerOrigin('wa:original',owner,owner);
+    const item=f.store.destinationContext.run(owner,()=>f.r.brain.memory.add('wa:original','Build the invoice page'));
+    f.r.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.r,async()=>({opening:'Hello.',priorities:[]}),()=>when);f.r.morningBrief=brief;
+    await brief.request(owner,'first-message');const briefOut=f.out().find(x=>x.source.startsWith('morning-brief:'));assert.ok(briefOut);f.store.sent(briefOut.id);
+    assert.equal((await f.send('go','go 1')).status,'handled');assert.equal(f.store.job('wa:go'),undefined);
+    const contract=f.out().find(x=>x.source.startsWith('task-contract:'));assert.match(contract.body,/Task to review/);f.markSent();
+    assert.equal((await f.send('approve','ok')).status,'queued');
+    const job=f.store.job('wa:approve')!;assert.equal(job.binding_id,worker.id);assert.equal(f.store.itemOf(job.id),item.id);
+    assert.match(job.body,/Owner-approved task contract/);assert.equal(f.r.assertDispatchAllowed(job.id,worker),true);
+  }finally{f.close();}
 });

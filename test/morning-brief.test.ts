@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -17,7 +18,7 @@ const testState=mkdtempSync(join(tmpdir(),'ffd-brief-media-'));process.env.WSB_S
 function setup(file?:string){
   const dir=mkdtempSync(join(tmpdir(),'ffd-brief-')),store=new Store(file??join(dir,'test.db'));
   store.set('whatsapp-owner','owner@s.whatsapp.net');
-  store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,allowRouting:true,providers:['codex','claude']}));
+  store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowStatus:true,allowRouting:true,providers:['codex','claude']}));
   const approvals=new Approvals(store),native={run:async()=>{},stop:()=>{}},router=new Router(store,native as any,approvals);
   const secret=new MetaSecret(dir);secret.save('synthetic-test-key-not-real');router.brain=new MetaBrain(store,secret,{interpret:async()=>{throw Error('unused');}});
   return {dir,store,router,approvals,secret,close(){approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
