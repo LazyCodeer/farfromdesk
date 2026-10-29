@@ -29,34 +29,21 @@ cannot trigger a correction.
 
 ## Project snapshot prototype
 
-`ProofProjectSnapshots` is an unwired local prototype stacked on F3. It checks
-the approved F3 contract, owner, destination, binding, item and dispatch attempt
-against the bridge database, then reads Git at the exact canonical bound project
-root. It records before and after HEAD, local origin, project and Git directory
-identity, and whether Git reports tracked or untracked changes. It rejects
-linked worktrees, submodules, non-GitHub origins and paths that cannot be
-validated. The post snapshot must match the pre snapshot's directory and origin.
-Owner or session changes during capture prevent recording. Unsupported cases
-remain unavailable, rather than stopping or rerouting the task.
+`ProofProjectSnapshots` is disabled: it reads no Git data and never records
+or verifies a snapshot. Any records from earlier experiments are untrusted.
+Git commands at a pathname can observe a different repository that was swapped
+in and restored between directory checks. Git configuration may read outside
+the project or run filters; status can overlook assume-unchanged or ignored
+files. An attempt marked dispatched may already have been submitted, so it does
+not establish the pre-submission boundary either.
 
-These snapshots do not prove an owner approved a repository or a check, link a
-GitHub check run to this attempt, or prove a commit was produced by the task.
-Git status excludes ignored files; a clean result is not a guarantee that all
-files match the commit or that a test passed. The read is not an atomic file
-system snapshot and must be revalidated when used. The local origin is not a
-verified remote identity. An attempt marked dispatched can already have been
-submitted, so calling the prototype alone does not establish that the before
-read preceded native submission. Production must capture at an awaited
-pre-submission lifecycle boundary and revalidate authorization before dispatch.
-This prototype is not called from production, does not access GitHub, and needs
-independent security review of Git execution and filesystem races before wiring.
-It currently supports macOS only. Git runs in a sandbox that denies network,
-writes and other child executables, and warnings or errors reject the capture:
-even a zero exit status may accompany a failed repository clean filter. The
-sandbox does not yet confine reads caused by Git configuration includes, so
-its read scope must also be fixed before production use.
-No unique check-run association can be derived from these snapshots alone;
-ambiguous, unavailable or unlinked checks remain unverified.
+A future design needs a bridge-controlled, stable, immutable project observation
+with strictly contained reads, captured at an awaited lifecycle boundary before
+native submission and revalidated against the approved F3 owner, session and
+attempt. It also needs a trustworthy binding of the target repository, commit,
+check and unique run to that attempt. Inode checks, local origin, a clean Git
+status or a matching GitHub head alone cannot establish those facts. Until such
+a design is independently reviewed, checks remain unverified.
 
 ## Vision advisory
 
