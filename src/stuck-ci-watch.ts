@@ -95,6 +95,20 @@ export class StuckCiWatch {
     this.store.db.prepare('INSERT INTO stuck_ci_api_reads(at) VALUES(?)').run(this.clock());
     return this.fetcher(input,init);
   };
+  /** Only an expired notice known never to have been attempted may be re-observed. */
+  private rearmExpired(w:Watch){
+    const rows=this.store.db.prepare(`SELECT a.outbox_id,a.incident,o.source FROM stuck_ci_alerts a JOIN outbox o ON o.id=a.outbox_id
+      WHERE a.watch_id=? AND a.expires_at<=? AND o.status IN ('queued','cancelled') AND o.attempts=0 AND o.sent_at IS NULL AND o.wa_message IS NULL`).all(w.id,this.clock()) as {outbox_id:string;incident:string;source:string}[];
+    this.store.db.exec('SAVEPOINT stuck_ci_rearm');
+    try{
+      for(const row of rows){
+        if(row.source!==`stuck-ci-alert:${digest([w.id,row.incident])}:0`)continue;
+        const removed=this.store.db.prepare("DELETE FROM outbox WHERE id=? AND status IN ('queued','cancelled') AND attempts=0 AND sent_at IS NULL AND wa_message IS NULL").run(row.outbox_id);
+        if(removed.changes){this.store.db.prepare('DELETE FROM stuck_ci_alerts WHERE outbox_id=?').run(row.outbox_id);this.store.db.prepare('DELETE FROM reply_receipts WHERE source=?').run(row.source.slice(0,-2));this.retryAfter.delete(row.outbox_id);}
+      }
+      this.store.db.exec('RELEASE stuck_ci_rearm');
+    }catch(e){this.store.db.exec('ROLLBACK TO stuck_ci_rearm; RELEASE stuck_ci_rearm');throw e;}
+  }
   command(m:Incoming):string|undefined {
     if(!/^\/stuck\s+ci(?:\s|$)/i.test(m.text.trim()))return;
     const match=/^\/stuck\s+ci\s+(?:#([1-9][0-9]{0,8})\s+(\S+)|remove\s+#([1-9][0-9]{0,8}))$/i.exec(m.text.trim());
@@ -133,8 +147,10 @@ export class StuckCiWatch {
       const rows=this.store.db.prepare('SELECT * FROM stuck_ci_watches WHERE owner=? AND destination=? AND generation=? AND expires_at>? AND last_checked<=? ORDER BY last_checked,id LIMIT 20').all(owner,destination,generation,now,now-checkInterval) as Watch[];
       // Keep enough reads for both discovery and one final delivery recheck.
       const w=rows.find(row=>this.valid(row));if(!w||!this.budget(12))return;
+      this.rearmExpired(w);
       this.store.db.prepare('UPDATE stuck_ci_watches SET last_checked=? WHERE id=?').run(now,w.id);w.last_checked=now;
-      const result=await discoverApprovedCiFailure(this.approved(w),new AbortController().signal,()=>this.valid(w),this.read,this.clock);
+      const result=await discoverApprovedCiFailure(this.approved(w),new AbortController().signal,()=>this.valid(w),this.read,this.clock,
+        (head,id,name,completedAt)=>!!this.store.db.prepare('SELECT 1 FROM stuck_ci_alerts WHERE watch_id=? AND head_sha=? AND check_run_id=? AND check_name=? AND completed_at=?').get(w.id,head,id,name,completedAt));
       if(!result||!this.valid(w))return;
       const f=result.failure,source=`stuck-ci-alert:${digest([w.id,f.incident])}`;
       this.store.db.exec('SAVEPOINT stuck_ci_enqueue');

@@ -24,12 +24,14 @@ function fixture(){
   const binding=store.register('worker','codex',randomUUID(),'/tmp').binding;
   store.recordOwnerOrigin('wa:root',owner,owner);store.destinationContext.run(owner,()=>store.enqueue('wa:root',binding,'synthetic',owner));
   const item=store.destinationContext.run(owner,()=>router.brain.memory.add('wa:root','Synthetic task'));
-  let now=Date.now(),calls:string[]=[],failed=true,headSha=head,privateRepo=false,hook:(()=>void)|undefined;
+  let now=Date.now(),calls:string[]=[],failed=true,headSha=head,privateRepo=false,second=false,hook:(()=>void)|undefined;
+  const completedAt=new Date(now-1000).toISOString();
   const fetcher:typeof fetch=async(url,init)=>{
     calls.push(String(url));assert.equal(init?.redirect,'error');assert.equal(new Headers(init?.headers).has('authorization'),false);hook?.();
     if(String(url).includes('/pulls/'))return reply({number:12,state:'open',merged_at:null,base:{repo:{full_name:'example/project',private:privateRepo}},head:{sha:headSha}});
-    const run={id:19,name:'Synthetic checks',head_sha:head,status:'completed',conclusion:failed?'failure':'success',completed_at:new Date(now-1000).toISOString()};
-    return reply(String(url).includes('/commits/')?{check_runs:[run]}:run);
+    const run={id:19,name:'Synthetic checks',head_sha:head,status:'completed',conclusion:failed?'failure':'success',completed_at:completedAt};
+    const next={...run,id:20,name:'Other checks'};
+    return reply(String(url).includes('/commits/')?{check_runs:second?[run,next]:[run]}:String(url).endsWith('/check-runs/20')?next:run);
   };
   const watch=new StuckCiWatch(store,router,fetcher,()=>now);router.stuckCiWatch=watch;
   const command=(text:string,extra:Record<string,unknown>={})=>watch.command({id:'wa:command',text,ownerCommand:true,...extra});
@@ -37,7 +39,7 @@ function fixture(){
   const out=()=>store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'stuck-ci-alert:%'").all() as any[];
   const close=()=>{router.stopped=true;approvals.cancel();store.close();};
   return {store,router,binding,item,watch,command,add,out,close,calls,advance:(ms:number)=>{now+=ms;},
-    setFailure:(v:boolean)=>{failed=v;},setHead:(v:string)=>{headSha=v;},setPrivate:(v:boolean)=>{privateRepo=v;},onFetch:(fn:(()=>void)|undefined)=>{hook=fn;}};
+    setFailure:(v:boolean)=>{failed=v;},setHead:(v:string)=>{headSha=v;},setPrivate:(v:boolean)=>{privateRepo=v;},setSecond:(v:boolean)=>{second=v;},onFetch:(fn:(()=>void)|undefined)=>{hook=fn;}};
 }
 
 test('only an exact public PR link and a direct authenticated self-chat command can create a watch',()=>{
@@ -118,6 +120,25 @@ test('the hourly API budget prevents new network requests when nearly exhausted'
     await f.watch.tick();assert.equal(f.calls.length,0);assert.equal(f.out().length,0);
     f.advance(61*60_000);await f.watch.tick();assert.equal(f.out().length,1);
   }finally{f.close();}
+});
+
+test('a previously reported failure does not hide a second failed check on the same head',async()=>{
+  const f=fixture();try{
+    f.setSecond(true);f.add();await f.watch.tick();assert.equal(f.out().length,1);assert.match(f.out()[0].body,/Synthetic checks/);
+    f.store.sent(f.out()[0].id);f.advance(5*60_000+1);await f.watch.tick();
+    assert.equal(f.out().length,2);assert.ok(f.out().some(row=>/Other checks/.test(row.body)));
+    assert.deepEqual((f.store.db.prepare('SELECT check_run_id FROM stuck_ci_alerts ORDER BY check_run_id').all() as {check_run_id:number}[]).map(x=>x.check_run_id),[19,20]);
+  }finally{f.close();}
+});
+
+test('an expired never-attempted notice is freshly observed; an uncertain one is never replayed',async()=>{
+  for(const status of ['queued','cancelled','uncertain'] as const){const f=fixture();try{
+    f.add();await f.watch.tick();const old=f.out()[0];
+    if(status!=='queued')f.store.db.prepare('UPDATE outbox SET status=?,attempts=? WHERE id=?').run(status,status==='uncertain'?1:0,old.id);
+    f.advance(10*60_000+1);await f.watch.tick();const rows=f.out();assert.equal(rows.length,1);
+    if(status==='uncertain'){assert.equal(rows[0].id,old.id);assert.equal(rows[0].status,'uncertain');}
+    else {assert.notEqual(rows[0].id,old.id);assert.equal(rows[0].status,'queued');}
+  }finally{f.close();}}
 });
 
 test('the last response cannot outrun revocation of the watched item',async()=>{
