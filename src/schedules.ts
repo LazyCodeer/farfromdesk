@@ -356,7 +356,7 @@ export function failScheduledBeforeSubmission(router:Router,id:string,reason:str
   try{
     router.store.jobState(id,'failed',reason);
     router.store.db.prepare("UPDATE outbox SET status='cancelled',error='Scheduled action was not sent' WHERE status='queued' AND source=?").run(`native-opening:${id}:0`);
-    if(guard&&validScheduleOwner(router.store,guard.owner,guard.destination,guard.channel)&&router.store.controlChannel()===guard.channel){
+    if(guard&&validScheduleOwner(router.store,guard.owner,guard.destination,guard.channel)&&router.store.controlChannel()===guard.channel&&router.store.incomingOwnerCurrent()&&(!router.store.incomingOwnerContext.getStore()||router.store.incomingOwnerContext.getStore()!.destination===guard.destination)){
       const source=`schedule-error:${id}`;router.store.output(undefined,reason,source,guard.destination,{plain:true});
       const out=router.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as {id:string}|undefined;
       if(out)router.store.db.prepare('INSERT OR IGNORE INTO schedule_outbox VALUES(?,?,?,?,?)').run(out.id,id,guard.owner,guard.destination,guard.channel);

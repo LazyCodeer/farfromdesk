@@ -15,6 +15,7 @@ import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,brainPolicy,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts,contractDeliveryState} from '../src/task-contracts.js';
 import {optionsMarkup} from '../src/message-options.js';
+import {DispatchNotSubmittedError} from '../src/brief-dispatch-guard.js';
 import type {ContractDecision} from '../src/task-contract-model.js';
 
 const proposal=(question=''):ContractDecision=>({kind:'contract',goal:'Add the requested dark theme',exclusions:['Do not publish'],checks:['Theme can be enabled','Existing theme still works'],question});
@@ -48,6 +49,21 @@ test('unclear task waits for typed owner approval and keeps immutable contract o
     assert.ok(contract.approved_hash);assert.equal(contract.revision,1);assert.equal(contract.binding_id,f.binding.id);
     assert.deepEqual(JSON.parse(contract.draft).checks.map((x:any)=>x.id),[`${contract.id}:1:1`,`${contract.id}:1:2`]);
     await f.send('3','ok');assert.equal(f.store.jobs().length,1);
+  }finally{f.close();}
+});
+
+test('a revoked inbound context settles a rejected contract dispatch without sending a notice',async()=>{
+  const f=fixture();try{
+    await f.send('1','Add dark theme');f.markSent();await f.send('2','ok');
+    const captured=f.store.captureIncomingOwner('owner@s.whatsapp.net','whatsapp')!;
+    let release!:()=>void,started!:()=>void;
+    const wait=new Promise<void>(r=>release=r),entered=new Promise<void>(r=>started=r);
+    (f.r.native as any).run=async()=>{started();await wait;throw new DispatchNotSubmittedError('Nothing was sent.');};
+    f.store.incomingOwnerContext.run(captured,()=>Router.prototype.pump.call(f.r));await entered;
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner','owner@s.whatsapp.net');
+    release();for(let i=0;i<20&&f.r.busy.size;i++)await new Promise<void>(r=>setImmediate(r));
+    assert.equal(f.r.busy.size,0);assert.equal(f.store.job('wa:2')?.status,'failed');
+    assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='task-contract-error:wa:2:0'").get(),undefined);
   }finally{f.close();}
 });
 
