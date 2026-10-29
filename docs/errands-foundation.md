@@ -8,11 +8,11 @@ are used to annotate literal title mentions without changing the ranking.
 Those mentions do not establish a requirement, qualification or fit.
 The owner may list up to three distinct boards in `board=alpha,beta,gamma`.
 It searches only those public boards, preserves F3 review when applicable, and
-prepares an owner-only text draft after a delivered shortlist and a reply with
+prepares an owner-only `.txt` draft document after a delivered shortlist and a reply with
 the displayed code, for example `draft 2 1a2b3c4d`. A bare `draft 2` works only
 while exactly one shortlist has been delivered in that owner chat.
-There is no general web search, resume integration, document sender,
-automatic browser navigation, application opener or submit action. A selected
+There is no general web search, resume integration, automatic browser
+navigation, application opener or submit action. A selected
 page is not by itself proof of a current job listing or a working query-stripped URL.
 
 The ledger supports a scoped approved mission, a bounded source-verifier seam,
@@ -174,7 +174,18 @@ normal owner-only outbox and draft claim retain selected profile notes.
   The sender atomically queues delivery with the claim.
   A dispatched owner job marked uncertain during bridge recovery is not an
   active request here, so its saved draft cannot yet be recovered through this
-  API. Design and test that recovery before connecting delivery.
+  API. An interrupted document upload or relay is marked uncertain and is not
+  automatically retried; the owner should check the chat before trying again.
+  If the guard itself is missing, recovery settles a matching request but cannot
+  safely send its usual owner notice.
+- The draft document is encrypted and uploaded before a synchronous recheck of
+  the exact outbox row, owner, socket, mission, listing and applicable profile
+  revision immediately before relay. A changed guard or scope blocks relay.
+  A crash or failure after the send is claimed is treated as uncertain. WhatsApp
+  automatic retry lookup excludes errand messages, and the socket disables its
+  in-memory recent-message retry cache; ordinary messages use persisted retry
+  lookup. This can reduce retry availability for messages absent from storage.
+  Synthetic tests exercise this boundary; real transport remains unvalidated.
 - The `publicListingUrl` lexical check rejects local names, literal IPs,
   known credential patterns, queries, fragments and non-HTTPS URLs. It does
   not silently strip a query and claim the result works. It does not resolve
@@ -187,7 +198,7 @@ The independent review of the unwired profile prototype is in
 [errand-profile-review.md](errand-profile-review.md).
 
 Implement general search and a live-validated listing verification source,
-profile-grounded fit assessment, a usable tailored document with no fabricated
+profile-grounded fit assessment, further document tailoring without fabricated
 qualifications, and an owner-controlled application-opening flow. Re-review
 all source ingestion, profile handling, cancellation, account
 changes, prompt injection and the prohibition on submitting or sending. A real

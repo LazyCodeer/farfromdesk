@@ -1,7 +1,7 @@
 import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -11,6 +11,7 @@ import {Router} from '../src/router.js';
 import {Approvals} from '../src/approvals.js';
 import {WhatsApp} from '../src/whatsapp.js';
 import {GuardedSocket} from '../src/wa-guard.js';
+import {sendErrandDraftDocument} from '../src/errand-document.js';
 import {ErrandWorkflow,parseGreenhouseRequest} from '../src/errand-workflow.js';
 import {greenhouseBoardReader} from '../src/errand-greenhouse.js';
 import {errandBindingIdentity} from '../src/errand-missions.js';
@@ -30,8 +31,8 @@ function fixture(path=':memory:'){
   const calls:unknown[]=[];
   const listing:Listing={sourceUrl:'https://boards-api.greenhouse.io/v1/boards/example/jobs/12345',url:'https://job-boards.greenhouse.io/example/jobs/12345',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
   router.errands=new ErrandWorkflow(router,async(scope,request)=>{calls.push({scope,request});return [listing];},async rows=>rows.map(x=>x.id));
-  const sent:any[]=[];const sock=new GuardedSocket({sendMessage:async(jid:string,content:any)=>{sent.push({jid,content});return {message:{conversation:content.text}};},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
-  const wa=new WhatsApp(store,router);wa.sock=sock;wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+  const sent:any[]=[];const sock=new GuardedSocket({user:{id:owner},sendMessage:async(jid:string,content:any)=>{sent.push({jid,content});return {message:{conversation:content.text}};},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
+  const wa=new WhatsApp(store,router);wa.sendErrandDocument=async(_sock,jid,text,_id,beforeRelay)=>{beforeRelay();sent.push({jid,content:{text,document:Buffer.from(text)}});return {message:{documentMessage:{fileName:'job-draft.txt'}}} as any;};wa.sock=sock;wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
   const msg=(id:string,text:string)=>({key:{id,fromMe:true,remoteJid:owner},message:{conversation:text}});
   return {store,router,wa,binding,sent,calls,msg,close:()=>{wa.close();approvals.cancel();store.close();}};
 }
@@ -889,4 +890,106 @@ test('recovery settles a partially cancelled search even if its optional notice 
     assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='errand-cancel-recovery:wa:root:0'").get(),undefined);
     assert.equal(f.calls.length,0);
   }finally{f.close();}
+});
+
+async function queueDocument(f:ReturnType<typeof fixture>){
+  await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+  const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+  f.wa.receiveReceipt({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK,true);
+  await f.wa.receiveMessage(f.msg('choice','draft 1'));
+  return f.store.db.prepare("SELECT id,wa_id,body FROM outbox WHERE source LIKE 'errand-draft:%'").get() as {id:string;wa_id:string;body:string};
+}
+function realDocumentTransport(f:ReturnType<typeof fixture>){
+  const relays:any[]=[];
+  f.wa.sock=new GuardedSocket({user:{id:owner},relayMessage:async(jid:string,message:any,options:any)=>{relays.push({jid,message,options});},sendMessage:async(jid:string,content:any)=>{f.sent.push({jid,content});return {message:{conversation:content.text}};},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
+  f.wa.sendErrandDocument=sendErrandDraftDocument;
+  return relays;
+}
+test('document delivery encrypts the exact draft and relays only to the owner',async()=>{
+  const f=fixture();try{
+    const draft=await queueDocument(f),relays=realDocumentTransport(f);
+    f.wa.errandDocumentUpload=async()=>({mediaUrl:'https://synthetic.invalid/media',directPath:'/synthetic'});
+    await f.wa.flush();assert.equal(relays.length,1);assert.equal(relays[0].jid,owner);assert.equal(relays[0].options.messageId,draft.wa_id);
+    const doc=relays[0].message.documentMessage;assert.equal(doc.fileName,'job-draft.txt');assert.equal(doc.mimetype,'text/plain');
+    assert.match(doc.caption,/Review the listing/);assert.deepEqual(Buffer.from(doc.fileSha256),createHash('sha256').update(draft.body).digest());
+    assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(draft.id) as any).status,'sent');
+    assert.equal(f.wa.retryMessage(draft.wa_id),undefined);
+  }finally{f.close();}
+});
+test('changes during encrypted upload prevent relay and never retry the draft',async()=>{
+  for(const mode of ['owner','root','profile','guard','wa_id','body','binding','request','destination','artifact'] as const){
+    const f=fixture();let profileRevision='one';try{
+      const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+      f.router.errands=new ErrandWorkflow(f.router,async()=>[listing],async rows=>rows.map(x=>x.id),fetch,()=>({text:'# Synthetic profile\n- Built a synthetic Flutter prototype.',revision:profileRevision}));
+      const draft=await queueDocument(f),relays=realDocumentTransport(f);
+      let release!:()=>void,started!:()=>void;const blocked=new Promise<void>(r=>release=r),uploading=new Promise<void>(r=>started=r);
+      f.wa.errandDocumentUpload=async()=>{started();await blocked;return {mediaUrl:'https://synthetic.invalid/media',directPath:'/synthetic'};};
+      const pending=f.wa.flush();await uploading;
+      if(mode==='owner')f.store.set('whatsapp-owner','456@s.whatsapp.net');
+      else if(mode==='root')f.store.db.prepare("UPDATE inbox SET body='changed' WHERE id='wa:root'").run();
+      else if(mode==='profile')profileRevision='two';
+      else if(mode==='guard')f.store.db.prepare('DELETE FROM errand_outbox_guards WHERE outbox_id=?').run(draft.id);
+      else if(mode==='binding')f.store.db.prepare('UPDATE outbox SET binding_id=? WHERE id=?').run(f.store.register('other','codex',randomUUID(),'/tmp').binding.id,draft.id);
+      else if(mode==='request')f.store.db.prepare('UPDATE outbox SET request_id=? WHERE id=?').run('wa:root',draft.id);
+      else f.store.db.prepare(`UPDATE outbox SET ${mode==='wa_id'?'wa_id':mode==='binding'?'binding_id':mode==='request'?'request_id':mode==='artifact'?'artifact_id':mode}=? WHERE id=?`).run('changed',draft.id);
+      release();await pending;assert.equal(relays.length,0,mode);
+      assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(draft.id) as any).status,'uncertain',mode);
+      f.router.errands.recover();await f.wa.flush();assert.equal(relays.length,0,mode);
+      if(mode==='guard')assert.equal(f.store.job('wa:choice')?.status,'uncertain');
+    }finally{f.close();}
+  }
+});
+test('a draft with an altered artifact cannot enter generic document or poll delivery',async()=>{
+  const f=fixture();try{
+    const draft=await queueDocument(f),relays=realDocumentTransport(f);let generic=0;
+    f.wa.sendDocument=async()=>{generic++;return {} as any;};
+    f.store.db.prepare("UPDATE outbox SET artifact_id='synthetic' WHERE id=?").run(draft.id);
+    await f.wa.flush();assert.equal(generic,0);assert.equal(relays.length,0);
+    assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(draft.id) as any).status,'cancelled');
+  }finally{f.close();}
+});
+test('draft retry lookup stays unavailable across states and missing-guard restart',async()=>{
+  const f=fixture();try{
+    const draft=await queueDocument(f);
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    assert.equal(f.wa.retryMessage(shortlist.wa_id),undefined);
+    for(const state of ['queued','sending','uncertain','sent']){
+      f.store.db.prepare('UPDATE outbox SET status=?,wa_message=? WHERE id=?').run(state,JSON.stringify({conversation:'synthetic'}),draft.id);
+      assert.equal(f.wa.retryMessage(draft.wa_id),undefined,state);
+    }
+    f.store.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(draft.id);
+    f.store.db.prepare('DELETE FROM errand_outbox_guards WHERE outbox_id=?').run(draft.id);
+    f.router.errands.recover();assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(draft.id) as any).status,'uncertain');assert.equal(f.store.job('wa:choice')?.status,'uncertain');
+    assert.equal(f.wa.retryMessage(draft.wa_id),undefined);await f.wa.flush();assert.equal(f.sent.length,1);
+  }finally{f.close();}
+});
+
+test('missing queued errand guards block delivery and settle the matching request',async()=>{
+  for(const kind of ['shortlist','draft'] as const)for(const restartFirst of [false,true]){
+    const f=fixture();try{
+      if(kind==='draft')await queueDocument(f);else await f.wa.receiveMessage(f.msg('root',request));
+      const row=f.store.db.prepare('SELECT id FROM outbox WHERE source LIKE ?').get(`errand-${kind}:%`) as {id:string};
+      f.store.db.prepare('DELETE FROM errand_outbox_guards WHERE outbox_id=?').run(row.id);
+      if(restartFirst)f.router.errands.recover();
+      await f.wa.flush();f.router.errands.recover();f.router.errands.recover();
+      assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(row.id) as any).status,'cancelled');
+      assert.equal(f.store.job(kind==='draft'?'wa:choice':'wa:root')?.status,'failed');assert.equal(f.sent.length,kind==='draft'?1:0);
+    }finally{f.close();}
+  }
+});
+
+test('guard loss while a successful send is in flight settles the request as uncertain',async()=>{
+  for(const kind of ['shortlist','draft'] as const){
+    const f=fixture();try{
+      if(kind==='draft')await queueDocument(f);else await f.wa.receiveMessage(f.msg('root',request));
+      const row=f.store.db.prepare('SELECT id FROM outbox WHERE source LIKE ?').get(`errand-${kind}:%`) as {id:string};
+      let release!:()=>void,started!:()=>void;const blocked=new Promise<void>(r=>release=r),sending=new Promise<void>(r=>started=r);
+      f.wa.sock=new GuardedSocket({user:{id:owner},sendMessage:async()=>{started();await blocked;return {message:{conversation:'synthetic'}};},relayMessage:async()=>{started();await blocked;},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
+      f.wa.sendErrandDocument=sendErrandDraftDocument;f.wa.errandDocumentUpload=async()=>({mediaUrl:'https://synthetic.invalid/media',directPath:'/synthetic'});
+      const pending=f.wa.flush();await sending;f.store.db.prepare('DELETE FROM errand_outbox_guards WHERE outbox_id=?').run(row.id);release();await pending;
+      assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(row.id) as any).status,'uncertain',kind);
+      assert.equal(f.store.job(kind==='draft'?'wa:choice':'wa:root')?.status,'uncertain',kind);
+      f.router.errands.recover();assert.equal(f.store.job(kind==='draft'?'wa:choice':'wa:root')?.status,'uncertain',kind);
+    }finally{f.close();}
+  }
 });

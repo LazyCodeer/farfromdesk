@@ -18,6 +18,8 @@ import { BufferJSON } from '@whiskeysockets/baileys';
 import { disposeIncoming, incomingMetadata, type AttachmentKind, type IncomingFile } from './attachments.js';
 import { Artifacts } from './artifacts.js';
 import { sendDiskDocument, MediaHostLimitError } from './document-delivery.js';
+import {sendErrandDraftDocument} from './errand-document.js';
+import type {WAMediaUploadFunction} from '@whiskeysockets/baileys';
 import { errorCode } from './request-events.js';
 import { GuardedSocket, isSelfMessage, ownerOnlyGroup } from './wa-guard.js';
 
@@ -41,6 +43,8 @@ export class WhatsApp {
   readonly polls:WhatsAppPolls;
   readonly errandOrder:ErrandOrder;
   sendDocument=sendDiskDocument;
+  sendErrandDocument=sendErrandDraftDocument;
+  errandDocumentUpload?:WAMediaUploadFunction;
   transcribe=(audio:any,signal?:AbortSignal,observe?:AudioObserver,origin?:VoiceOrigin)=>transcribeAudio(this.store,audio,signal,observe,undefined,origin);
   constructor(private store:Store,private router:Router,private authDirectory=join(stateDir,'whatsapp-auth')) {
     this.artifacts=new Artifacts(store);this.polls=new WhatsAppPolls(store);this.errandOrder=new ErrandOrder(store);
@@ -135,6 +139,12 @@ export class WhatsApp {
     for(const g of matches)this.store.set(`owned-group:${g.id}`,g.subject);
     return matches.map(g=>({id:g.id,name:g.subject}));
   }
+  /** Guarded errand outputs cannot be replayed by Baileys outside the owner checks. */
+  retryMessage(id:string) {
+    const r=this.store.db.prepare('SELECT o.body,o.artifact_id,o.wa_message,o.source,g.kind FROM outbox o LEFT JOIN errand_outbox_guards g ON g.outbox_id=o.id WHERE o.wa_id=?').get(id) as any;
+    if(!r||r.source.startsWith('errand-')||r.kind)return undefined;
+    return r.wa_message?JSON.parse(r.wa_message,BufferJSON.reviver):!r.artifact_id?{conversation:r.body}:undefined;
+  }
   async connect() {
     if(this.closed||this.connecting||this.sock||this.loggingOut)return;
     this.connecting=true;
@@ -151,8 +161,8 @@ export class WhatsApp {
       const setKeys=state.keys.set;
       state.keys.set=data=>write(async()=>{await setKeys(data);});
       this.status='connecting';
-      const sock=new GuardedSocket(makeWASocket({auth:state,logger:pino({level:'silent'}),browser:(process.platform==='win32'?Browsers.windows:process.platform==='darwin'?Browsers.macOS:Browsers.ubuntu)('FarFromDesk'),markOnlineOnConnect:false,syncFullHistory:false,shouldSyncHistoryMessage:()=>false,emitOwnEvents:false,
-        getMessage:async key=>{const r=this.store.db.prepare('SELECT body,artifact_id,wa_message FROM outbox WHERE wa_id=?').get(key.id??'') as any;return r?.wa_message?JSON.parse(r.wa_message,BufferJSON.reviver):r&&!r.artifact_id?{conversation:r.body}:undefined;}}),
+      const sock=new GuardedSocket(makeWASocket({auth:state,logger:pino({level:'silent'}),browser:(process.platform==='win32'?Browsers.windows:process.platform==='darwin'?Browsers.macOS:Browsers.ubuntu)('FarFromDesk'),markOnlineOnConnect:false,syncFullHistory:false,shouldSyncHistoryMessage:()=>false,emitOwnEvents:false,enableRecentMessageCache:false,
+        getMessage:async key=>this.retryMessage(key.id??'')}),
         {owners:()=>this.owners,ownedGroup:jid=>!!this.store.get(`owned-group:${jid}`)});
       this.sock=sock;
       sock.ev.on('creds.update',()=>void write(saveCreds).catch(()=>{this.error='Could not save WhatsApp credentials';}));
@@ -330,6 +340,7 @@ export class WhatsApp {
       this.router.errands.sweepDisabled();
       for(let i=0;i<5;i++) {
         const m=this.store.routableOutbound('whatsapp');if(!m)break;
+        if((m.source.startsWith('errand-draft:')||m.source.startsWith('errand-shortlist:'))&&!this.store.db.prepare('SELECT 1 FROM errand_outbox_guards WHERE outbox_id=?').get(m.id)){this.router.errands.settleOrphanErrand(m.id);continue;}
         if(!this.store.incomingOwnerDelivery(m.id)){if(!this.router.errands.invalidate(m.id,'Original owner connection changed.'))this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
         const scheduleState=scheduleDeliveryState(this.store,m.id);if(scheduleState==='hold')return;
         if(scheduleState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=?").run(m.id);continue;}
@@ -353,13 +364,31 @@ export class WhatsApp {
           const checkedErrand=this.router.errands.deliveryState(m.id);if(checkedErrand==='hold')return;
           if(checkedErrand==='invalid'){if(!this.router.errands.invalidate(m.id,'The errand, owner or session changed.'))this.store.db.prepare("UPDATE outbox SET status='cancelled',error='The errand, owner or session changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
+          let content:any={text:m.body},sent:any;
+          {
+            const errandGuard=this.store.db.prepare('SELECT kind FROM errand_outbox_guards WHERE outbox_id=?').get(m.id) as {kind:string}|undefined;
+            if(m.source.startsWith('errand-shortlist:')&&!errandGuard){
+              this.store.db.prepare("UPDATE outbox SET status='cancelled',error='The job-search guard is unavailable.' WHERE id=? AND status='queued'").run(m.id);this.router.errands.settleOrphanErrand(m.id);continue;
+            }
+            if(m.source.startsWith('errand-draft:')||errandGuard?.kind==='draft'){
+              const pin=this.router.errands.pinDraftDocument(m.id);
+              if(!pin||pin.destination!==destination||pin.messageId!==m.wa_id||pin.body!==m.body){
+                if(!this.router.errands.invalidate(m.id,'The job draft changed before delivery.')){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='The job draft guard is unavailable.' WHERE id=? AND status='queued'").run(m.id);this.router.errands.settleOrphanErrand(m.id);}
+                continue;
+              }
+              const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued' AND wa_id=? AND body=? AND source=? AND destination=? AND binding_id=? AND request_id=? AND artifact_id IS NULL").run(m.id,pin.messageId,pin.body,pin.source,pin.destination,pin.bindingId,pin.requestId);
+              if(!claimed.changes)continue;errandSending=true;
+              sent=await this.sendErrandDocument(sock,pin.destination,pin.body,pin.messageId,()=>{
+                if(this.closed||this.loggingOut||this.router.stopped||this.status!=='connected'||this.sock!==sock||!this.selfJid||this.selfJid!==pin.destination||this.store.get('whatsapp-owner')!==pin.destination||!sock.user?.id||jidNormalizedUser(sock.user.id)!==pin.destination||!this.router.errands.draftDocumentReady(pin))throw new Error('The owner or job draft changed before relay.');
+              },this.errandDocumentUpload);
+            }
+          }
           const poll=this.polls.message(m.id);
-          if(poll){
+          if(!sent&&poll){
             this.store.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(m.id);
             await sock.relayMessage(destination,poll,{messageId:m.wa_id});this.store.sent(m.id);continue;
           }
-          let content:any={text:m.body},sent:any;
-          if(m.artifact_id) {
+          if(!sent&&m.artifact_id) {
             const a=this.store.db.prepare('SELECT * FROM artifacts WHERE id=? AND binding_id=?').get(m.artifact_id,m.binding_id) as any;
             const b=this.store.binding(m.binding_id),job=a&&this.store.job(a.request_id);
             if(!a||a.removed_at||a.owner&&a.owner!==this.selfJid||a.native_id&&a.native_id!==b?.native_id||!job||job.binding_id!==m.binding_id||['replaced','cancelled','reviewed','auto_closed'].includes(job.status)||a.destination&&a.destination!==destination||!a.storage_key&&createHash('sha256').update(a.data).digest('hex')!==a.sha256){this.store.db.prepare("UPDATE outbox SET status='failed',error='Prepared document integrity or ownership check failed' WHERE id=?").run(m.id);continue;}
@@ -379,9 +408,9 @@ export class WhatsApp {
             sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
           }
           if(sent?.message)this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(sent.message,BufferJSON.replacer),m.id);
-          this.store.sent(m.id);try{this.router.errands.sent(m.id);}catch{/* Never resend an already sent message. */}this.polls.queue(m.id);
+          this.store.sent(m.id);try{this.router.errands.sent(m.id);if((m.source.startsWith('errand-draft:')||m.source.startsWith('errand-shortlist:'))&&!this.store.db.prepare('SELECT 1 FROM errand_outbox_guards WHERE outbox_id=?').get(m.id))this.router.errands.settleOrphanErrand(m.id);}catch{/* Never resend an already sent message. */}this.polls.queue(m.id);
         }
-        catch(e){this.error=briefSending?'Morning brief delivery could not be confirmed.':errandSending?'Job-search delivery could not be confirmed.':(e as Error).message;if(briefSending)this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery could not be confirmed; check your chat before retrying' WHERE id=? AND status='sending'").run(m.id);else if(errandSending)this.router.errands.invalidate(m.id,'Job-search delivery could not be confirmed.',true);else if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
+        catch(e){this.error=briefSending?'Morning brief delivery could not be confirmed.':errandSending?'Job-search delivery could not be confirmed.':(e as Error).message;if(briefSending)this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery could not be confirmed; check your chat before retrying' WHERE id=? AND status='sending'").run(m.id);else if(errandSending){if(!this.router.errands.invalidate(m.id,'Job-search delivery could not be confirmed.',true))this.router.errands.settleOrphanErrand(m.id);}else if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
       }
     } finally {this.flushing=false;}
   }

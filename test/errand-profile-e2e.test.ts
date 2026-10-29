@@ -35,7 +35,7 @@ test('synthetic WhatsApp text through the Meta memory tool grounds an owner-only
     }});
     const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
     router.errands=new ErrandWorkflow(router,async()=>[listing],async rows=>rows.map(x=>x.id));
-    const sent:any[]=[];wa=new WhatsApp(store,router);wa.sock=new GuardedSocket({sendMessage:async(jid:string,content:any)=>{sent.push({jid,content});return {message:{conversation:content.text}};},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+    const sent:any[]=[];wa=new WhatsApp(store,router);wa.sock=new GuardedSocket({user:{id:owner},sendMessage:async(jid:string,content:any)=>{sent.push({jid,content});return {message:{conversation:content.text}};},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});wa.sendErrandDocument=async(_sock,jid,text,_id,beforeRelay)=>{beforeRelay();sent.push({jid,content:{text,document:Buffer.from(text)}});return {message:{documentMessage:{fileName:'job-draft.txt'}}} as any;};wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
     const msg=(id:string,text:string)=>({key:{id,fromMe:true,remoteJid:owner},message:{conversation:text}}),fact='I built a synthetic Flutter prototype.';
     await wa.receiveMessage(msg('memory',fact));
     assert.ok(store.db.prepare('SELECT 1 FROM errand_profile_inputs WHERE request_id=?').get('wa:memory'));

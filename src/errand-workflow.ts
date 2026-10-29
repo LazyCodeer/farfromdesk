@@ -13,6 +13,7 @@ import type {Incoming,Router} from './router.js';
 
 type Request={board:string|string[];contract:ErrandContract};
 type Guard={outbox_id:string;mission_id:string;root_request:string;request_id:string;owner:string;destination:string;binding_id:string;binding_identity:string;kind:string;body_hash:string;authority_generation:string};
+export type ErrandDocumentPin={outboxId:string;guard:Guard;source:string;messageId:string;body:string;bindingId:string;requestId:string;destination:string};
 const draftText=(draft:{title:string;url:string;text:string})=>`Draft for ${draft.title}\n${draft.url}\n\n${draft.text}\n\nReview the listing and draft yourself. Application availability is unverified.`;
 
 /** Exact, owner-authored criteria only. No free text is interpreted as authority. */
@@ -304,7 +305,7 @@ export class ErrandWorkflow {
       this.queueGuarded(latest.mission_id,latest.root_request,scope,'draft',text);s.remember(m.id);s.db.exec('RELEASE queue_errand_draft');return true;
     }catch(e){s.db.exec('ROLLBACK TO queue_errand_draft; RELEASE queue_errand_draft');throw e;}
   }
-  deliveryState(outboxId:string):'ready'|'hold'|'invalid' {
+  deliveryState(outboxId:string,allowSending=false):'ready'|'hold'|'invalid' {
     const s=this.router.store,g=s.db.prepare('SELECT * FROM errand_outbox_guards WHERE outbox_id=?').get(outboxId) as Guard|undefined;
     if(!g){
       const n=s.db.prepare('SELECT * FROM errand_notice_guards WHERE outbox_id=?').get(outboxId) as {owner:string;destination:string;body_hash:string;authority_generation:string}|undefined;
@@ -314,7 +315,7 @@ export class ErrandWorkflow {
     }
     if(s.controlChannel()!=='whatsapp')return 'hold';
     const o=s.db.prepare('SELECT body,destination,status FROM outbox WHERE id=?').get(outboxId) as {body:string;destination:string|null;status:string}|undefined;
-    if(!o||o.status!=='queued'||o.destination!==g.destination||hash(o.body)!==g.body_hash)return 'invalid';
+    if(!o||!(o.status==='queued'||allowSending&&o.status==='sending')||o.destination!==g.destination||hash(o.body)!==g.body_hash)return 'invalid';
     const scope:ErrandScope={requestId:g.request_id,owner:g.owner,destination:g.destination,bindingId:g.binding_id,bindingIdentity:g.binding_identity};
     try{const mission=s.db.prepare('SELECT contract_json FROM errand_missions WHERE id=? AND root_request=?').get(g.mission_id,g.root_request) as {contract_json:string}|undefined;
       if(!mission||!this.authorized(scope,JSON.parse(mission.contract_json),g.root_request))return 'invalid';
@@ -327,6 +328,19 @@ export class ErrandWorkflow {
       }
       return 'ready';
     }catch{return 'invalid';}
+  }
+  /** Pin the exact guarded draft before upload; no caller supplies its destination or bytes. */
+  pinDraftDocument(outboxId:string):ErrandDocumentPin|undefined {
+    const s=this.router.store,g=s.db.prepare('SELECT * FROM errand_outbox_guards WHERE outbox_id=?').get(outboxId) as Guard|undefined;
+    const o=s.db.prepare('SELECT status,source,wa_id,body,binding_id,request_id,destination,artifact_id FROM outbox WHERE id=?').get(outboxId) as {status:string;source:string;wa_id:string;body:string;binding_id:string|null;request_id:string|null;destination:string|null;artifact_id:string|null}|undefined;
+    if(!g||g.kind!=='draft'||!o||o.status!=='queued'||o.source!==`errand-draft:${g.request_id}:0`||o.binding_id!==g.binding_id||o.request_id!==g.request_id||o.destination!==g.owner||g.destination!==g.owner||o.artifact_id!==null||hash(o.body)!==g.body_hash||this.deliveryState(outboxId)!=='ready')return;
+    return {outboxId,guard:g,source:o.source,messageId:o.wa_id,body:o.body,bindingId:g.binding_id,requestId:g.request_id,destination:g.destination};
+  }
+  /** Recheck the pinned row, guard and owner-bound snapshot after upload, immediately before relay. */
+  draftDocumentReady(pin:ErrandDocumentPin):boolean {
+    const s=this.router.store,g=s.db.prepare('SELECT * FROM errand_outbox_guards WHERE outbox_id=?').get(pin.outboxId) as Guard|undefined;
+    const o=s.db.prepare('SELECT status,source,wa_id,body,binding_id,request_id,destination,artifact_id FROM outbox WHERE id=?').get(pin.outboxId) as {status:string;source:string;wa_id:string;body:string;binding_id:string|null;request_id:string|null;destination:string|null;artifact_id:string|null}|undefined;
+    return !!g&&JSON.stringify(g)===JSON.stringify(pin.guard)&&g.kind==='draft'&&!!o&&o.status==='sending'&&o.source===pin.source&&o.wa_id===pin.messageId&&o.body===pin.body&&o.binding_id===pin.bindingId&&o.request_id===pin.requestId&&o.destination===pin.destination&&o.artifact_id===null&&pin.destination===g.owner&&hash(o.body)===g.body_hash&&s.incomingOwnerDelivery(pin.outboxId)&&this.deliveryState(pin.outboxId,true)==='ready';
   }
   /** Called after a guarded outbox message has been sent, never before I/O. */
   sent(outboxId:string){
@@ -350,6 +364,32 @@ export class ErrandWorkflow {
       try{this.notice(g.owner,g.destination,g.authority_generation,`errand-delivery-notice:${outboxId}`,text);}catch{}
       s.db.exec('RELEASE invalidate_errand_output');return true;
     }catch(e){s.db.exec('ROLLBACK TO invalidate_errand_output; RELEASE invalidate_errand_output');throw e;}
+  }
+  /** Settle a missing-guard output without attributing it to an unrelated request. */
+  settleOrphanErrand(outboxId:string){
+    const s=this.router.store;
+    s.db.prepare("UPDATE outbox SET status='uncertain',error='Job-search delivery could not be confirmed; check your chat before retrying' WHERE id=? AND status='sending'").run(outboxId);
+    s.db.prepare("UPDATE outbox SET status='cancelled',error='The job-search guard is unavailable.' WHERE id=? AND status='queued' AND NOT EXISTS (SELECT 1 FROM errand_outbox_guards g WHERE g.outbox_id=outbox.id)").run(outboxId);
+    s.db.prepare("UPDATE outbox SET status='uncertain',error='Job-search delivery could not be confirmed; check your chat before retrying' WHERE id=? AND status='sent' AND NOT EXISTS (SELECT 1 FROM errand_outbox_guards g WHERE g.outbox_id=outbox.id)").run(outboxId);
+    const row=s.db.prepare(`SELECT i.id FROM outbox o JOIN errand_draft_claims c ON c.request_id=o.request_id
+      JOIN errand_missions m ON m.id=c.mission_id JOIN inbox i ON i.id=c.request_id
+      JOIN owner_request_origins origin ON origin.request_id=i.id
+      WHERE o.id=? AND o.status IN ('uncertain','cancelled') AND o.source='errand-draft:'||i.id||':0'
+      AND o.binding_id=m.binding_id AND i.binding_id=m.binding_id AND o.destination=c.destination
+      AND i.destination=c.destination AND c.destination=c.owner AND m.owner=c.owner AND m.destination=c.destination
+      AND origin.owner=c.owner AND origin.destination=c.destination AND i.status='submitted'
+      AND NOT EXISTS (SELECT 1 FROM errand_outbox_guards g WHERE g.outbox_id=o.id)`).get(outboxId) as {id:string}|undefined;
+    const shortlist=s.db.prepare(`SELECT i.id FROM outbox o JOIN errand_shortlist_messages l ON l.outbox_id=o.id
+      JOIN errand_missions m ON m.id=l.mission_id JOIN inbox i ON i.id=m.root_request
+      JOIN owner_request_origins origin ON origin.request_id=i.id
+      WHERE o.id=? AND o.status IN ('uncertain','cancelled') AND o.source='errand-shortlist:'||m.id||':0'
+      AND o.request_id=i.id AND o.binding_id=m.binding_id AND i.binding_id=m.binding_id
+      AND o.destination=l.destination AND i.destination=l.destination AND l.destination=l.owner
+      AND m.owner=l.owner AND m.destination=l.destination AND l.root_request=i.id
+      AND origin.owner=l.owner AND origin.destination=l.destination AND i.status='submitted'
+      AND NOT EXISTS (SELECT 1 FROM errand_outbox_guards g WHERE g.outbox_id=o.id)`).get(outboxId) as {id:string}|undefined;
+    const request=row??shortlist,out=s.db.prepare('SELECT status FROM outbox WHERE id=?').get(outboxId) as {status:string}|undefined;
+    if(request&&out)s.jobState(request.id,out.status==='uncertain'?'uncertain':'failed',out.status==='uncertain'?'The errand message delivery could not be confirmed.':'The errand message was not delivered.');
   }
   /** Outbox selection skips disabled bindings, so settle their guarded rows explicitly. */
   sweepDisabled(){
@@ -381,6 +421,8 @@ export class ErrandWorkflow {
     for(const row of sent)this.sent(row.outbox_id);
     const sending=s.db.prepare("SELECT g.outbox_id FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id WHERE o.status='sending'").all() as {outbox_id:string}[];
     for(const row of sending)this.invalidate(row.outbox_id,'Job-search delivery was interrupted; check your chat.',true);
+    const orphanOutputs=s.db.prepare("SELECT id FROM outbox WHERE status IN ('queued','sending','sent','uncertain','cancelled') AND (source LIKE 'errand-draft:%' OR source LIKE 'errand-shortlist:%') AND NOT EXISTS (SELECT 1 FROM errand_outbox_guards g WHERE g.outbox_id=outbox.id)").all() as {id:string}[];
+    for(const row of orphanOutputs)this.settleOrphanErrand(row.id);
     const invalid=s.db.prepare("SELECT g.outbox_id FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id WHERE o.status IN ('cancelled','failed','uncertain') AND NOT (o.status='cancelled' AND COALESCE(o.error,'')='Cancelled by owner.')").all() as {outbox_id:string}[];
     for(const row of invalid)this.invalidate(row.outbox_id,'The errand message was not delivered.');
     const interrupted=s.db.prepare(`SELECT m.root_request,m.owner,m.destination,sg.authority_generation FROM errand_missions m JOIN inbox i ON i.id=m.root_request LEFT JOIN errand_search_guards sg ON sg.root_request=m.root_request
