@@ -134,6 +134,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                   'briefed',
                   'scheduled',
                   'heard',
+                  'contracted',
                 }.contains(row['stage']) &&
                 {'completed', 'failed'}.contains(row['status']) &&
                 duration is num &&
@@ -175,6 +176,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       'briefed': 'Morning brief',
       'scheduled': 'Reminder interpretation',
       'heard': 'Voice transcription',
+      'contracted': 'Task contract',
     };
     return box(
       Column(

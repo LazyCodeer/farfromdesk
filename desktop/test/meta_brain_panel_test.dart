@@ -113,6 +113,12 @@ void main() {
     final api = MetaGateway();
     api.activity = [
       {
+        'stage': 'contracted',
+        'status': 'completed',
+        'durationMs': 125,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+      {
         'stage': 'sorted',
         'status': 'completed',
         'durationMs': 2400,
@@ -142,6 +148,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Meta activity'), findsOneWidget);
     expect(find.text('Message interpretation'), findsOneWidget);
+    expect(find.text('Task contract'), findsOneWidget);
     expect(find.text('2.4 s'), findsOneWidget);
     expect(find.text('Voice transcription'), findsOneWidget);
     expect(find.text('Request failed'), findsOneWidget);

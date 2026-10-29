@@ -1,3 +1,4 @@
+import {metaObserver} from './meta-timeline.js';
 import {randomUUID} from 'node:crypto';
 import {brainPolicy,MetaSecret} from './meta-brain-config.js';
 import {ContractDecision,interpretContract,type ContractInterpreter} from './task-contract-model.js';
@@ -151,7 +152,7 @@ export class TaskContracts {
       const edit=text.replace(/^(?:edit\s*:\s*|\/contract\s+edit\s+)/i,'').trim();
       if(!edit||edit.length>2000){this.answer(m,'Send a short answer or use edit: followed by your correction.');return {kind:'handled'};}
       const edits=JSON.parse(pending.edits) as string[];if(edits.length>=8){this.answer(m,'This contract has too many edits. Cancel it and send a new task.');return {kind:'handled'};}
-      const decision=ContractDecision.parse(await this.interpret(this.secret.read()??'',pending.review_text,[...edits,edit]));
+      const decision=ContractDecision.parse(await this.interpret(this.secret.read()??'',pending.review_text,[...edits,edit],metaObserver(this.store,'contracted',pending.destination,pending.owner)));
       if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
       if(!contextValid(r,pending)||hash(this.secret.read()??'')!==pending.key_hash){this.answer(m,'The task or connection changed. Send the task again. Nothing was sent.');return {kind:'handled'};}
       // Once offered, editing never silently bypasses approval even if the model returns pass.
@@ -171,7 +172,7 @@ export class TaskContracts {
     if(text.startsWith('/')&&!/^\/to\s+/i.test(text))return {kind:'pass'};
     const key=this.secret.read();if(!key)throw new Error('The task contract needs a Meta key. Nothing was sent.');
     const review=(reviewText??text).trim();if(text.length>4000||review.length>4000)throw new Error('Please send a task under 4,000 characters for review. Nothing was sent.');
-    const decision=ContractDecision.parse(await this.interpret(key,review,[]));
+    const decision=ContractDecision.parse(await this.interpret(key,review,[],metaObserver(this.store,'contracted',context.destination,context.owner)));
     if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
     if(!contextValid(r,context)||hash(this.secret.read()??'')!==hash(key))throw new Error('Your connection or settings changed. Nothing was sent.');
     if(decision.kind==='pass')return {kind:'pass'};

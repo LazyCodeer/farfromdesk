@@ -14,6 +14,7 @@ const {MetaModel}=await import('../src/meta-model.js');
 const {DEFAULT_BRAIN,MetaSecret}=await import('../src/meta-brain-config.js');
 const {MetaBrain}=await import('../src/meta-brain.js');
 const {interpretSchedule}=await import('../src/schedule-model.js');
+const {interpretContract}=await import('../src/task-contract-model.js');
 const {transcribeCloud}=await import('../src/voice-cloud.js');
 const {writeVoiceKey}=await import('../src/voice-cloud.js');
 const {transcribeAudio}=await import('../src/audio.js');
@@ -179,4 +180,17 @@ test('a real brief writer records its Meta call without storing its prompt or re
     const rows=metaTimeline(s) as any[];assert.equal(rows.length,1);assert.equal(rows[0].stage,'briefed');assert.equal(rows[0].status,'completed');
     assert.doesNotMatch(JSON.stringify(s.db.prepare('SELECT * FROM meta_timeline').all()),/Good morning|synthetic-not-a-real-secret/);
   }finally{globalThis.fetch=originalFetch;approvals.cancel();s.close();}
+});
+
+
+test('contract timeline records actual API calls without storing task content',async()=>{
+  const s=fixture(),originalFetch=globalThis.fetch;try{
+    globalThis.fetch=async()=>toolResponse('decide',{kind:'contract',goal:'Build a feature',exclusions:[],checks:['Check one','Check two'],question:''});
+    await interpretContract('synthetic-key','PRIVATE TASK',[],metaObserver(s,'contracted','owner@s.whatsapp.net'));
+    const rows=metaTimeline(s) as any[];assert.equal(rows.length,1);assert.equal(rows[0].stage,'contracted');assert.equal(rows[0].status,'completed');
+    assert.doesNotMatch(JSON.stringify(s.db.prepare('SELECT * FROM meta_timeline').all()),/PRIVATE TASK|synthetic-key/);
+    globalThis.fetch=async()=>new Response('PRIVATE ERROR',{status:503});
+    await assert.rejects(interpretContract('synthetic-key','PRIVATE TASK',[],metaObserver(s,'contracted','owner@s.whatsapp.net')));
+    assert.equal((metaTimeline(s) as any[])[0].status,'failed');
+  }finally{globalThis.fetch=originalFetch;s.close();}
 });
