@@ -17,6 +17,7 @@ import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
+import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -37,6 +38,8 @@ export class Router {
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
   contracts:TaskContracts;
+  /** Optional internal prototype; no production route enables it. */
+  collaboration?:ManagedCollaboration;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
@@ -48,7 +51,7 @@ export class Router {
   uncertainNoticeMs=120_000;
   attachments:Attachments;
   private ownerReplyPolicy:OwnerReplyPolicy;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.contracts=new TaskContracts(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.contracts=new TaskContracts(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);native.beforeManagedSubmission=(b,id)=>this.collaboration?.markSubmissionStarted(id,b);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -374,8 +377,8 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id);
-    if(!scheduled&&!guard&&!contract&&!choice)return false;
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id),collaboration=this.collaboration?.has(id)??false;
+    if(!scheduled&&!guard&&!contract&&!choice&&!collaboration)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
     if(scheduled){
       const state=job.binding_id===b.id?scheduleJobState(this,id):'invalid';
@@ -385,15 +388,17 @@ export class Router {
     if(choice){try{this.contracts.assertOption(this,id,b,true);}catch{throw new DispatchNotSubmittedError('The original choice or session changed. Nothing was sent.');}if(this.contracts.optionChannel(id)!==this.store.controlChannel())throw new ScheduledChannelHold('Choice held until its original channel is active.');}
     if(contract){const approved=this.contracts.approved(id);if(approved&&this.store.controlChannel()!==approved.channel){try{this.contracts.assertDispatch(this,id,b,job.body,new Set(),true);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}throw new ScheduledChannelHold('Task held until its original channel is active.');}try{this.contracts.assertDispatch(this,id,b,job.body);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}}
     if(guard&&!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
+    if(collaboration)this.collaboration!.assertDispatch(id,b);
     return true;
   }
-  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);this.contracts.rejectDispatch(id,reason);const j=this.store.job(id);if(j&&this.contracts.hasOptionGuard(id)&&['queued','dispatched'].includes(j.status))this.store.jobState(id,'failed',reason);}
+  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);this.contracts.rejectDispatch(id,reason);const j=this.store.job(id);if(j&&this.contracts.hasOptionGuard(id)&&['queued','dispatched'].includes(j.status))this.store.jobState(id,'failed',reason);this.collaboration?.reject(id,reason);}
   private routableJob(b:Binding) {
     for(;;){
       const channel=this.store.controlChannel();
-      const job=this.store.db.prepare(`SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id
+      const jobs=this.store.db.prepare(`SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id
         LEFT JOIN task_contract_jobs cj ON cj.job_id=i.id LEFT JOIN task_contracts c ON c.id=cj.contract_id OR c.dispatch_id=i.id LEFT JOIN task_contract_option_proofs p ON p.job_id=i.id
-        WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) AND (c.id IS NULL OR c.channel=?) AND (p.job_id IS NULL OR p.channel=?) ORDER BY i.created_at,i.rowid LIMIT 1`).get(b.id,channel,channel,channel) as import('./store.js').Job|undefined;if(!job)return;
+        WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) AND (c.id IS NULL OR c.channel=?) AND (p.job_id IS NULL OR p.channel=?) ORDER BY i.created_at,i.rowid${this.collaboration?'':' LIMIT 1'}`).all(b.id,channel,channel,channel) as unknown as import('./store.js').Job[];
+      const job=jobs.find(j=>!this.collaboration?.shouldHold(j.id));if(!job)return;
       const state=scheduleJobState(this,job.id);
       if(state==='hold')return;
       if(state==='invalid'){this.failBeforeSubmission(job.id,'The paired owner or session changed; scheduled request was not sent.');if(this.store.job(job.id)?.status==='queued')this.store.jobState(job.id,'failed','Request ownership is unavailable; nothing was sent.');continue;}
@@ -409,21 +414,36 @@ export class Router {
     for(const b of this.store.bindings()) {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.routableJob(b);if(!job)continue;
-      try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold)continue;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;}
-      this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
+      // The claim and attempt belong to one SQLite transaction: a failed or
+      // concurrent dispatch must never leave an orphaned claim behind.
+      const collaboration=this.collaboration?.has(job.id)??false;
+      if(collaboration)this.store.db.exec('SAVEPOINT collaboration_dispatch');
+      try{
+        if(collaboration&&this.store.job(job.id)?.status!=='queued')throw new CollaborationHold('The handoff is no longer queued.');
+        this.assertDispatchAllowed(job.id,b);
+        this.store.jobState(job.id,'dispatched');
+        if(collaboration)this.collaboration!.captureDispatchAttempt(job.id);
+        if(collaboration)this.store.db.exec('RELEASE collaboration_dispatch');
+      }catch(e){
+        if(collaboration)this.store.db.exec('ROLLBACK TO collaboration_dispatch; RELEASE collaboration_dispatch');
+        if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold)continue;
+        if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;
+      }
+      this.busy.add(b.id);
       const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
-      void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
-        if(e instanceof ScheduledChannelHold){if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
-        if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return;}
+      void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');this.collaboration?.managedTurnEnded(job.id,b);}).catch(e=>{
+        if((e instanceof ScheduledChannelHold||e instanceof CollaborationHold)&&!this.collaboration?.mayHaveSubmitted(job.id)){this.collaboration?.heldBeforeSubmission(job.id);if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
+        if(e instanceof DispatchNotSubmittedError&&!this.collaboration?.mayHaveSubmitted(job.id)){this.failBeforeSubmission(job.id,e.message);return;}
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
-        this.store.jobState(job.id,'uncertain',(e as Error).message);
+        const failure=e instanceof DispatchNotSubmittedError&&this.collaboration?.mayHaveSubmitted(job.id)?new Error('The managed session may have received this request. Check the session before retrying.'):e;
+        this.store.jobState(job.id,'uncertain',(failure as Error).message);
         // A slow native hand-off often still lands. Internal report deliveries never reach the owner; for
         // owner messages, warn only if the session has not answered by the time the notice is due.
         if(job.id.startsWith('report:'))return;
         if(e instanceof DesktopReadinessError){this.store.output(b,e.message,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});return;}
         const notice=()=>{if(this.stopped||this.store.job(job.id)?.status!=='uncertain')return;
-          this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(e as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});};
+          this.store.output(b,`I couldn't confirm a reply from this session, so I won't repeat the task automatically. Please check the native session before sending a new request.\nDetails: ${(failure as Error).message}\nReference: ${job.id}`,`error:${job.id}`,job.destination??this.store.get('whatsapp-owner')??null,{requestId:job.id,kind:'system',origin:'system'});};
         // ponytail: in-memory timer, so a restart inside the window drops the notice; the request stays uncertain.
         if(this.uncertainNoticeMs>0)setTimeout(notice,this.uncertainNoticeMs).unref?.();else notice();
       }).finally(()=>{this.busy.delete(b.id);this.pump();});
@@ -436,7 +456,7 @@ export class Router {
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.routableJob(b);if(!job)return null;
-    try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold)return null;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
+    try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold)return null;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
   }
