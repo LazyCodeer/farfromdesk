@@ -52,3 +52,31 @@ owner-visible timeline and brief integration, session roles from approved
 Collaboration memory, an actual Wonder drift check grounded in the contract,
 and a single run-bound proof check after the final handoff. Test a complete
 plan/build/review flow and concurrent claimants before considering release.
+
+## Claude Desktop handoff blocker
+
+The existing signals do not establish that the exact Claude Desktop turn has
+stopped, so this prototype rejects Desktop as both source and target:
+
+- `NativeAgents.requestStatus` returns no observation for Claude. The Codex
+  observer reads a native thread and uniquely matches the request envelope;
+  that implementation is not a Claude Desktop status API.
+- `native/desktop_sync.py` sends a frame to the discovered Claude socket and
+  returns `submitted` with `deliveryConfirmed: false`. This is neither a turn
+  completion receipt nor proof the frame was processed. The helper's message
+  ID is not linked to a verified provider turn by the bridge.
+- A Claude `Stop` hook can arrive without an exact request or turn ID. The
+  existing hook path holds unlinked updates, and even linked updates are output
+  evidence, not a trusted completion event for an exact claimed attempt. A
+  final reply also changes request status without proving the provider has
+  stopped running. Neither signal is sufficient to transfer exclusivity.
+
+Supporting Desktop requires a reliable, request-bound provider lifecycle signal
+with exact session, connection and attempt provenance; persisted correlation
+and recovery rules; and final-boundary claim checks for all competing dispatch
+paths. Offline tests must cover concurrent turns, lost/duplicate/stale events,
+session replacement, owner and contract changes, and restart on both sides of
+submission. An external Desktop session may also receive work outside the
+bridge, so completion of one request alone cannot prove global exclusivity.
+Until these conditions are established, keep the managed-only gate and never
+infer completion from a socket acknowledgement, reply or elapsed time.
