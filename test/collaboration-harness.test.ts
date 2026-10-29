@@ -12,6 +12,7 @@ process.env.WSB_STATE_DIR=root;process.env.FARFROMDESK_HOME=join(root,'home');
 test.after(()=>rmSync(root,{recursive:true,force:true}));
 const {Store}=await import('../src/store.js');
 const {CollaborationHarness}=await import('../src/collaboration-harness.js');
+const {ensureProviderSetupSchema}=await import('../src/provider-setup-barrier.js');
 type Scope=import('../src/collaboration-harness.js').CollaborationScope;
 type Binding=import('../src/store.js').Binding;
 
@@ -80,6 +81,26 @@ test('simultaneous processes produce exactly one successful claim',async()=>{
     const results=await Promise.race([Promise.all([a.result,b.result]),timeout]);
     assert.equal(results.filter(Boolean).length,1);
     assert.equal(f.ledger.history(f.request,f.itemId).filter(x=>x.kind==='claimed').length,1);
+  }finally{for(const child of children)child.kill();f.close();}
+});
+
+test('a setup reservation and an item claim cannot both win across processes',async()=>{
+  const f=fixture(),children:ChildProcess[]=[];try {
+    ensureProviderSetupSchema(f.store);
+    const run=(mode:string)=>{
+      const child=spawn(process.execPath,['--import','tsx','test/fixtures/provider-setup-race-worker.mts',f.db,mode,f.owner,f.request,String(f.itemId),f.a.id],{stdio:['ignore','ignore','ignore','ipc']});children.push(child);
+      let readyResolve!:()=>void,resultResolve!:(value:boolean)=>void;
+      const ready=new Promise<void>(r=>{readyResolve=r;}),result=new Promise<boolean>(r=>{resultResolve=r;});
+      child.on('message',(msg:any)=>{if(msg?.ready)readyResolve();else if(typeof msg?.ok==='boolean')resultResolve(msg.ok);});
+      return {child,ready,result};
+    };
+    const setup=run('setup'),claim=run('claim'),timeout=new Promise<never>((_,reject)=>{const t=setTimeout(()=>reject(Error('setup race workers timed out')),10000);t.unref();});
+    await Promise.race([Promise.all([setup.ready,claim.ready]),timeout]);setup.child.send?.('go');claim.child.send?.('go');
+    const results=await Promise.race([Promise.all([setup.result,claim.result]),timeout]);
+    assert.equal(results.filter(Boolean).length,1);
+    const reservations=f.store.db.prepare('SELECT count(*) n FROM collaboration_setup_barriers').get() as {n:number};
+    const claims=f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get() as {n:number};
+    assert.equal(reservations.n+claims.n,1);
   }finally{for(const child of children)child.kill();f.close();}
 });
 

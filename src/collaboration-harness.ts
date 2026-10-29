@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hash, type Binding, type Store } from './store.js';
+import {hasUnresolvedProviderSetup} from './provider-setup-barrier.js';
 
 /** A scope resolved from an owner-approved contract by trusted bridge code. */
 export type CollaborationScope = {
@@ -135,6 +136,7 @@ export class CollaborationHarness {
   claim(root:string,itemId:number,bindingId:string,eventId:string):Claim {
     return this.transaction(()=>{
       const s=this.scope(root,itemId),b=this.binding(s,bindingId),now=this.clock(),identity=this.bindingIdentity(b);
+      if(hasUnresolvedProviderSetup(this.store))throw new Error('Provider setup or recovery is unresolved.');
       this.requireClaimable(itemId);
       const fp=fingerprint([root,itemId,bindingId,s.owner,s.destination,s.contractId,s.revision,s.approvedHash,s.ownerGeneration]);
       const prior=this.event(eventId,'claimed',fp),r=this.row(itemId);

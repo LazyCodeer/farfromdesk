@@ -10,6 +10,7 @@ import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { saveBindingCredentials } from './server.js';
 import type { SessionRoute } from './connections.js';
 import { bindScheduledChild,scheduleRootState } from './schedules.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 
 type Creation={workspaceRoot?:string;taskOwnerRequestId?:string;recoveryAttemptId?:string;recoveryPrevious?:{status:Creation['status'];error?:string};route?:SessionRoute;executionMode?:ExecutionMode;desktopParentId?:string;id:string;requestId:string;masterId:string;provider:Provider;name:string;text:string;eventId:string;status:'checking'|'awaiting_approval'|'needs_approval'|'creating'|'ready'|'denied'|'uncertain'|'blocked'|'needs_action';originRequestId?:string;stage?:'preflight'|'workspace'|'native'|'dispatch';bindingId?:string;cwd?:string;error?:string};
 class WorkspaceApprovalExpired extends Error {}
@@ -77,6 +78,13 @@ export class Workers {
   }
   async start(input:{requestId:string;provider:Provider;name:string;text:string;eventId:string;executionMode?:unknown}):Promise<any> {
     if(this.closed||this.router.stopped)throw new Error('Background operation is paused.');
+    this.router.coordinator!.ownerRequest(input.requestId);
+    if(!['codex','claude'].includes(input.provider)||!this.router.coordinator!.enabled().includes(input.provider))throw new Error('Choose an enabled platform.');
+    if(typeof input.name!=='string'||!input.name.trim()||input.name.length>100||/[\r\n]/.test(input.name)||typeof input.text!=='string'||!input.text.trim()||input.text.length>24000||typeof input.eventId!=='string'||!/^[a-zA-Z0-9._:-]{1,100}$/.test(input.eventId))throw new Error('A short project name, task and stable event ID are required.');
+    return withProviderSetup(this.store,'worker-start',()=>this.startScoped(input));
+  }
+  private async startScoped(input:{requestId:string;provider:Provider;name:string;text:string;eventId:string;executionMode?:unknown}):Promise<any> {
+    if(this.closed||this.router.stopped)throw new Error('Background operation is paused.');
     const parent=this.router.coordinator!.ownerRequest(input.requestId);
     if(!['codex','claude'].includes(input.provider)||!this.router.coordinator!.enabled().includes(input.provider))throw new Error('Choose an enabled platform.');
     if(typeof input.name!=='string'||!input.name.trim()||input.name.length>100||/[\r\n]/.test(input.name)||typeof input.text!=='string'||!input.text.trim()||input.text.length>24000||typeof input.eventId!=='string'||!/^[a-zA-Z0-9._:-]{1,100}$/.test(input.eventId))throw new Error('A short project name, task and stable event ID are required.');
@@ -139,9 +147,13 @@ export class Workers {
     this.workspaceGrants.set(root,grant);return grant;
   }
   async create(op:Creation) {
+    return withProviderSetup(this.store,'worker-create',()=>this.createScoped(op));
+  }
+  private async createScoped(op:Creation) {
     op={...op,stage:'workspace',status:'awaiting_approval'};this.save(op);
     const w=await this.approveWorkspace(op);
     if(this.closed)return;
+    assertProviderSetup(this.store);
     if(!w){this.save({...op,status:'denied'});this.store.output(undefined,'Project creation was not approved. No session was created.',`worker-create:${op.id}:denied:${op.recoveryAttemptId}`);this.reportStatus(this.get(op.id)!);return;}
     this.router.coordinator!.ownerRequest(op.requestId);
     if(this.router.stopped||!this.router.coordinator!.enabled().includes(op.provider))throw new Error('Background operation or this platform is paused.');
@@ -163,7 +175,7 @@ export class Workers {
       this.store.set(`master-support:${b.id}`,support);
     }
     op={...op,stage:'native'};this.save(op);
-    await this.masters.provisionWorker(b);
+    assertProviderSetup(this.store);await this.masters.provisionWorker(b);
     if(this.closed)return;
     b=this.store.binding(b.id)!;this.saveCredentials(b,r.token);
     if(this.workspace(this.operationRoot(op))?.approvedAt!==w.approvedAt){this.masters.stopWorker(b.id);throw new Error('Workspace approval changed during creation. The new session remains inactive.');}
@@ -178,6 +190,12 @@ export class Workers {
     this.store.output(undefined,`Created “${op.name}” in ${op.provider} and queued your task. Your other sessions remain connected.`, `worker-create:${op.id}:ready:${op.recoveryAttemptId}`);
   }
   async recover(requestId:string,id:string) {
+    if(this.closed||this.router.stopped)throw new Error('Background operation is paused.');
+    this.router.coordinator!.ownerRequest(requestId);
+    if(!this.get(id))throw new Error('No exact creation operation is available to recover. Check creation status first.');
+    return withProviderSetup(this.store,'worker-recover',()=>this.recoverScoped(requestId,id));
+  }
+  private async recoverScoped(requestId:string,id:string) {
     if(this.closed||this.router.stopped)throw new Error('Background operation is paused.');
     const parent=this.router.coordinator!.ownerRequest(requestId),op=this.get(id);
     if(op&&this.router.coordinator!.scope.getStore()&&op.masterId!==parent.binding_id)throw new Error('Creation belongs to another coordinator.');
@@ -199,6 +217,7 @@ export class Workers {
       if(needsWorkspace){
         const w=await this.approveWorkspace({...op,requestId,masterId:parent.binding_id});
         if(this.closed)return;
+        assertProviderSetup(this.store);
         try{this.router.coordinator!.ownerRequest(requestId);}catch{throw new WorkspaceApprovalExpired('This recovery request is closed. No session work was resumed. Ask to recover again with a new owner request.');}
         if(!w){
           // Denial changes access, not the known state of the existing session/task.
@@ -218,7 +237,7 @@ export class Workers {
         }
       }
       this.save({...next,status:'creating',recoveryPrevious:undefined});
-      await this.masters.recoverWorker(b!);b=this.store.binding(op.bindingId!)!;
+      assertProviderSetup(this.store);await this.masters.recoverWorker(b!);b=this.store.binding(op.bindingId!)!;
       if(this.closed)return;
       this.router.coordinator!.ownerRequest(requestId);this.ensureRun(b);
       if(this.router.stopped||!this.router.coordinator!.enabled().includes(b.provider))throw new Error('Background operation or platform is paused.');

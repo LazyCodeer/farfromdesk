@@ -17,9 +17,15 @@ const {DEFAULT_BRAIN,MetaSecret,saveBrainConfig}=await import('../src/meta-brain
 const {TaskContracts}=await import('../src/task-contracts.js');
 const {ManagedCollaboration}=await import('../src/managed-collaboration.js');
 const {CollaborationHarness}=await import('../src/collaboration-harness.js');
+const {withProviderSetup,assertProviderSetup}=await import('../src/provider-setup-barrier.js');
+const {Workers}=await import('../src/workers.js');
+const {Masters}=await import('../src/masters.js');
+const {DesktopStarts}=await import('../src/desktop-start.js');
 const {CollaborationRoles}=await import('../src/collaboration-roles.js');
 const {NativeAgents}=await import('../src/native.js');
 const {DispatchNotSubmittedError}=await import('../src/brief-dispatch-guard.js');
+// Synthetic provider only: no real runtime supplies this ownership proof.
+const fakeExclusive={authorize:()=> 'fake-session-lease',authorizeReport:()=> 'fake-report-lease',finished:()=>true};
 
 function deferred<T=void>(){let resolve!:(v:T)=>void,reject!:(error:Error)=>void;const promise=new Promise<T>((r,j)=>{resolve=r;reject=j;});return {promise,resolve,reject};}
 const turn=()=>new Promise<void>(resolve=>setImmediate(resolve));
@@ -44,7 +50,7 @@ async function fixture(delaySource=false,beforePump?:(store:InstanceType<typeof 
   const originalPump=r.pump;if(delaySource)r.pump=()=>{};
   const approved=await send('approve','ok');assert.equal(approved.status,'queued',JSON.stringify(store.db.prepare('SELECT body FROM outbox ORDER BY rowid').all()));
   if(delaySource){beforePump?.(store,owner);r.pump=originalPump;r.pump();}await until(()=>starts.some(x=>x.id==='wa:approve'));
-  const collab=new ManagedCollaboration(r,{authorize:()=> 'test-approval'});r.collaboration=collab;
+  const collab=new ManagedCollaboration(r,{authorize:()=> 'test-approval'},fakeExclusive);r.collaboration=collab;
   return {dir,store,r,c,native,proxy,worker,owner,starts,routes,sourceEnd,targetEnd,collab,
     async close(){r.stopped=true;sourceEnd.resolve();targetEnd.resolve();await turn();await until(()=>r.busy.size===0);await turn();approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -99,7 +105,7 @@ test('replacing an approved role policy during readiness cannot submit a staged 
   const f=await fixture();try {
     const roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Planning: Codex',revision:'fake-1'}),(_scope,digest,receipt)=>receipt===digest),scope=roleScope(f);
     const rules=roleRules(f),proposal=roles.propose(scope,rules);
-    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles,fakeExclusive);
     assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','wrong-role','build'),/authorize/);
     const id=f.collab.stage('wa:approve',f.worker.id,'Plan','policy-roundtrip','plan');
     assert.equal(f.collab.history(scope.rootRequestId,scope.itemId)[0].role,'plan');
@@ -127,7 +133,7 @@ test('approval must still match after the trusted verifier returns',async()=>{
 
 test('a changed role approval during staging rolls back the queued task and item link',async()=>{
   const f=await fixture();try {
-    let checks=0;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>++checks===1?'old-revision':'new-revision'});
+    let checks=0;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>++checks===1?'old-revision':'new-revision'},fakeExclusive);
     const id=`master:wa:approve:f5-race:${f.worker.id}`;
     assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','race','plan'),/unavailable/);
     assert.equal(f.store.job(id),undefined);assert.equal(f.store.itemOf(id),undefined);
@@ -139,7 +145,7 @@ test('revoking role approval after submission keeps the claim until the outcome 
   const f=await fixture();try {
     const roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Planning: Codex',revision:'fake-1'}),(_scope,digest,receipt)=>receipt===digest),scope=roleScope(f);
     const proposal=roles.propose(scope,roleRules(f));
-    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles,fakeExclusive);
     const id=f.collab.stage('wa:approve',f.worker.id,'Plan','revoke-after-submit','plan');
     f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
     roles.revoke(scope.rootRequestId);f.r.channelReply(f.worker,'Plan reported.','final',id);
@@ -191,6 +197,173 @@ test('managed-only handoff waits for the source turn, claims once, and carries t
   }finally{await f.close();}
 });
 
+test('without provider-enforced session exclusivity no handoff can be staged',async()=>{
+  const f=await fixture();try {
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'});
+    assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','missing-provider-fence'),/session exclusivity is unavailable/);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM managed_collaboration_handoffs').get()?.n,0);
+  }finally{await f.close();}
+});
+
+test('provider ownership revision is rechecked after readiness and bound to the target attempt',async()=>{
+  const f=await fixture(),waiting=deferred(),started=deferred();try {
+    let revision='lease-1',seenAttempt:string|undefined,sent=0;
+    const exclusivity={authorize:(_scope:any,_from:any,_to:any,_source:string,_owner:string,target?:string)=>{if(target)seenAttempt=target;return revision;},authorizeReport:()=> 'report-lease',finished:()=>true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','ownership-roundtrip');
+    const prior=f.native.run;f.native.store=f.store;
+    f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id){started.resolve();await waiting.promise;}};
+    f.native.managedRun=async()=>{sent++;};
+    f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
+    f.sourceEnd.resolve();await started.promise;assert.equal(seenAttempt,f.store.job(id)?.attempt_id);
+    revision='lease-2';waiting.resolve();await until(()=>f.store.job(id)?.status==='failed');
+    assert.equal(sent,0);
+  }finally{waiting.resolve();await f.close();}
+});
+
+test('losing provider exclusivity after submission retains the claim',async()=>{
+  const f=await fixture();try {
+    let revision='lease-1';const exclusivity={authorize:()=>revision,authorizeReport:()=> 'report-lease',finished:()=>true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','ownership-lost-after-submit');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    revision='lease-2';f.r.channelReply(f.worker,'Plan report.','final',id);f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state,'claimed');
+    assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token);
+  }finally{await f.close();}
+});
+
+test('a legacy handoff without provider exclusivity proof cannot yield',async()=>{
+  const f=await fixture();try {
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','legacy-provider-fence');
+    f.store.db.prepare('UPDATE managed_collaboration_handoffs SET exclusive_revision=NULL WHERE job_id=?').run(id);
+    f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id===id),false);
+  }finally{await f.close();}
+});
+
+test('an unproved coordinator report never starts after the plan turn ends',async()=>{
+  const f=await fixture();try {
+    const exclusivity={authorize:()=> 'session-lease',authorizeReport:()=>undefined,finished:()=>true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','no-report-fence');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'Plan report.','final',id);f.targetEnd.resolve();
+    await until(()=>f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state==='complete');
+    const report=`report:${id}`;f.r.pump();await turn();
+    assert.equal(f.store.job(report)?.status,'queued');assert.equal(f.starts.some(x=>x.id===report),false);
+    assert.equal(f.store.db.prepare('SELECT 1 FROM collaboration_report_attempts WHERE job_id=?').get(report),undefined);
+  }finally{await f.close();}
+});
+
+test('a revoked report fence cannot create a trusted completion record',async()=>{
+  const f=await fixture(),reportGate=deferred();try {
+    let reportRevision='report-1';
+    const exclusivity={authorize:()=> 'session-lease',authorizeReport:()=>reportRevision,finished:()=>true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    const prior=f.native.run;f.native.run=async(b:any,body:string,id:string)=>{if(id.startsWith('report:')){f.native.beforeDispatch?.(b,id);f.starts.push({id,body});await reportGate.promise;}else await prior(b,body,id);};
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','report-revoked');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'Plan report.','final',id);f.targetEnd.resolve();const report=`report:${id}`;await until(()=>f.starts.some(x=>x.id===report));
+    reportRevision='report-2';f.r.channelReply(f.proxy,'Plan report acknowledged.','final',report);reportGate.resolve();await until(()=>!f.r.busy.has(f.proxy.id));
+    assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=?').get(report),undefined);
+  }finally{reportGate.resolve();await f.close();}
+});
+
+test('a provider return with unverified background work cannot yield, release or finish a report',async()=>{
+  for(const phase of ['source','target','report'] as const){const f=await fixture(),reportGate=deferred();try {
+    let target='';
+    const exclusivity={authorize:()=> 'session-lease',authorizeReport:()=> 'report-lease',
+      finished:(_scope:any,_binding:any,id:string)=>phase==='source'?id!=='wa:approve':phase==='target'?id!==target:!id.startsWith('report:')};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    const prior=f.native.run;f.native.run=async(b:any,body:string,id:string)=>{if(id.startsWith('report:')){f.native.beforeDispatch?.(b,id);f.starts.push({id,body});await reportGate.promise;}else await prior(b,body,id);};
+    target=f.collab.stage('wa:approve',f.worker.id,'Plan',`background-${phase}`);f.sourceEnd.resolve();
+    if(phase==='source'){
+      await until(()=>!f.r.busy.has(f.proxy.id));f.r.pump();await turn();
+      assert.equal(f.starts.some(x=>x.id===target),false);
+      assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=?').get('wa:approve'),undefined);
+      continue;
+    }
+    await until(()=>f.starts.some(x=>x.id===target));f.r.channelReply(f.worker,'Plan report.','final',target);f.targetEnd.resolve();
+    if(phase==='target'){
+      await until(()=>!f.r.busy.has(f.worker.id));
+      assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(target)?.state,'claimed');
+      assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(target)!)?.token);
+      continue;
+    }
+    const report=`report:${target}`;await until(()=>f.starts.some(x=>x.id===report));
+    f.r.channelReply(f.proxy,'Plan report acknowledged.','final',report);reportGate.resolve();await until(()=>!f.r.busy.has(f.proxy.id));
+    assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=?').get(report),undefined);
+  }finally{reportGate.resolve();await f.close();}}
+});
+
+test('revoking a recorded source completion before submission holds the target',async()=>{
+  const f=await fixture(),waiting=deferred(),started=deferred();try {
+    let sourceFinished=true,sent=0;
+    const exclusivity={authorize:()=> 'session-lease',authorizeReport:()=> 'report-lease',finished:(_s:any,_b:any,id:string)=>id==='wa:approve'?sourceFinished:true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','completion-revoked'),prior=f.native.run;f.native.store=f.store;
+    f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id){started.resolve();await waiting.promise;}};
+    f.native.managedRun=async()=>{sent++;};f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
+    f.sourceEnd.resolve();await started.promise;sourceFinished=false;waiting.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.equal(sent,0);assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token);
+  }finally{waiting.resolve();await f.close();}
+});
+
+test('revoking target completion evidence keeps its report queued',async()=>{
+  const f=await fixture();try {
+    let target='',targetFinished=true;
+    const exclusivity={authorize:()=> 'session-lease',authorizeReport:()=> 'report-lease',finished:(_s:any,_b:any,id:string)=>id===target?targetFinished:true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    target=f.collab.stage('wa:approve',f.worker.id,'Plan','target-completion-revoked');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===target));
+    f.r.channelReply(f.worker,'Plan report.','final',target);f.r.stopped=true;f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(target)?.state,'complete');
+    targetFinished=false;f.r.stopped=false;f.r.pump();await turn();
+    assert.equal(f.store.job(`report:${target}`)?.status,'queued');assert.equal(f.starts.some(x=>x.id===`report:${target}`),false);
+  }finally{await f.close();}
+});
+
+test('revoked target completion holds unrelated work after claim release',async()=>{
+  const f=await fixture();try {
+    let target='',targetFinished=true;
+    const exclusivity={authorize:()=> 'session-lease',authorizeReport:()=> 'report-lease',finished:(_s:any,_b:any,id:string)=>id===target?targetFinished:true};
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},exclusivity);
+    target=f.collab.stage('wa:approve',f.worker.id,'Plan','target-completion-unrelated');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===target));
+    f.r.channelReply(f.worker,'Plan report.','final',target);f.r.stopped=true;f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(target)?.state,'complete');
+    assert.equal(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(target)!)?.token,null);
+    targetFinished=false;f.store.enqueue('wa:unrelated-after-completion',f.worker,'Another owner task',f.owner);f.r.stopped=false;f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id==='wa:unrelated-after-completion'),false);
+    assert.equal(f.store.job('wa:unrelated-after-completion')?.status,'queued');
+    // A second connection cannot revalidate the external evidence, so the
+    // durable fence also holds this session after the evidence is restored.
+    targetFinished=true;f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id==='wa:unrelated-after-completion'),false);
+  }finally{await f.close();}
+});
+
+test('another router cannot dispatch ordinary work to a completed target',async()=>{
+  const f=await fixture();let other:InstanceType<typeof Store>|undefined;try {
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','completed-target-other-router');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'Plan report.','final',id);f.r.stopped=true;f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state,'complete');
+    f.store.enqueue('wa:other-router-after-completion',f.worker,'Another owner task',f.owner);
+    other=new Store(join(f.dir,'test.sqlite'));let sent=0;
+    const native:any={connections:{route:()=>({transport:'managed-cli',executionMode:'cli'})},stop:()=>{},run:async()=>{sent++;}};
+    const approvals=new Approvals(other),router=new Router(other,native,approvals);router.pump();await turn();
+    assert.equal(sent,0);assert.equal(other.job('wa:other-router-after-completion')?.status,'queued');
+    router.stopped=true;approvals.cancel();
+  }finally{other?.close();await f.close();}
+});
+
+test('an exact completed coordinator target can release its claim',async()=>{
+  const f=await fixture();try {
+    f.store.set(`session-route:${f.worker.id}`,JSON.stringify({provider:'codex',executionMode:'cli',transport:'managed-cli',profileId:'other-account'}));
+    f.c.registry.register(f.worker);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','coordinator-target');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'The plan is ready to review.','final',id);f.targetEnd.resolve();
+    await until(()=>f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state==='complete');
+    assert.equal(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token,null);
+  }finally{await f.close();}
+});
+
 test('a permissive authority callback cannot bypass stage order',async()=>{
   const f=await fixture();try {
     assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Build first','bad-build','build'),/stage order/);
@@ -220,7 +393,7 @@ test('synthetic managed sessions plan, build and review in sequence under one co
       {role:'build',fromBindingId:f.proxy.id,toBindingId:builder.id},
       {role:'review',fromBindingId:f.proxy.id,toBindingId:f.worker.id},
     ]);
-    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles,fakeExclusive);
     assert.throws(()=>f.collab.stage('wa:approve',builder.id,'Unapproved task.','unauthorized','plan'),/did not authorize/);
     assert.throws(()=>f.collab.stage('wa:approve',builder.id,'Build first.','skip-plan','build'),/did not authorize/);
     assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Review first.','skip-to-review','review'),/did not authorize/);
@@ -271,6 +444,7 @@ test('synthetic managed sessions plan, build and review in sequence under one co
     assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
     f.r.channelReply(f.worker,'Review reported: checks still require independent proof.','final',review);gates.get(review)!.resolve();
     await until(()=>f.collab.history('wa:approve',item).filter(h=>h.state==='complete').length===3);
+    assert.throws(()=>withProviderSetup(f.store,'after-review',()=>{}),/collaboration workflow or claim exists/);
     assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.summary),['Plan the approved change.','Build the approved plan.','Review the approved change.']);
     assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.role),['plan','build','review']);
     assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.result),['Plan recorded: implement the theme and preserve existing settings.','Build reported: theme implementation prepared.','Review reported: checks still require independent proof.'].map(text=>({kind:'session_report',verification:'unverified',text})));
@@ -283,7 +457,7 @@ test('a blocked or cancelled plan cannot authorize a build even after the provid
   for(const outcome of ['blocked','cancelled'] as const){const f=await fixture();try {
     const scope=roleScope(f),roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Codex stages',revision:'fake-1'}),(_scope,digest,receipt)=>digest===receipt);
     const proposal=roles.propose(scope,roleRules(f));roles.activate(proposal,proposal.digest);
-    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles,fakeExclusive);
     const id=f.collab.stage('wa:approve',f.worker.id,'Plan','blocked-plan','plan');
     f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
     f.r.channelReply(f.worker,'The plan cannot continue.','final',id,undefined,{outcome});
@@ -300,7 +474,7 @@ test('a predecessor session roundtrip or new approval cannot be spliced into an 
     f.store.set('selected',JSON.stringify([f.worker.id,builder.id]));
     const scope=roleScope(f),roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Codex stages',revision:'fake-1'}),(_scope,digest,receipt)=>digest===receipt);
     const rules=roleRules(f);rules[1].toBindingId=builder.id;const proposal=roles.propose(scope,rules),revision=roles.activate(proposal,proposal.digest);
-    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles,fakeExclusive);
     const id=f.collab.stage('wa:approve',f.worker.id,'Plan','plan-for-aba','plan');
     f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
     f.r.channelReply(f.worker,'Plan report.','final',id);f.targetEnd.resolve();
@@ -317,10 +491,11 @@ test('a predecessor session roundtrip or new approval cannot be spliced into an 
 test('only a provably unsent invalid stage may be retried',async()=>{
   for(const mode of ['unsent','submitted','legacy'] as const){const f=await fixture();try {
     const scope=roleScope(f),roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Codex stages',revision:'fake-1'}),(_scope,digest,receipt)=>digest===receipt);
-    const proposal=roles.propose(scope,roleRules(f));roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    const proposal=roles.propose(scope,roleRules(f));roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles,fakeExclusive);
     const id=f.collab.stage('wa:approve',f.worker.id,'Plan','first-invalid','plan');
     f.store.jobState(id,'failed');
     f.store.db.prepare("UPDATE managed_collaboration_handoffs SET state='invalid',submission_started=?,role_order_version=? WHERE job_id=?").run(mode==='submitted'?1:0,mode==='legacy'?null:1,id);
+    assert.throws(()=>withProviderSetup(f.store,'invalid-stage',()=>{}),/collaboration workflow or claim exists/);
     if(mode==='unsent')assert.ok(f.collab.stage('wa:approve',f.worker.id,'Plan','safe-retry','plan'));
     else assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','unsafe-retry','plan'),/did not authorize/);
   }finally{await f.close();}}
@@ -351,7 +526,10 @@ test('late progress after an uncertain coordinator turn cannot make it a parked 
 test('a stale managed completion cannot mark a different dispatch attempt finished',async()=>{
   const f=await fixture();try{
     const original=f.store.job('wa:approve')!.attempt_id!,next=f.collab.stage('wa:approve',f.worker.id,'Implement','new-attempt');
-    const replacement=randomUUID();f.store.db.prepare('UPDATE inbox SET attempt_id=? WHERE id=?').run(replacement,'wa:approve');
+    const replacement=randomUUID();
+    assert.throws(()=>f.store.db.prepare('UPDATE inbox SET attempt_id=? WHERE id=?').run(replacement,'wa:approve'),/collaboration claim fence/);
+    // Also exercise a stale callback against a legacy database without the trigger.
+    f.store.db.exec('DROP TRIGGER collaboration_fence_dispatch');f.store.db.prepare('UPDATE inbox SET attempt_id=? WHERE id=?').run(replacement,'wa:approve');
     f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));
     assert.notEqual(original,replacement);assert.equal(f.starts.some(x=>x.id===next),false);
     assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=? AND attempt_id=?').get('wa:approve',replacement),undefined);
@@ -414,10 +592,158 @@ test('a parked ancestor requires exact recorded attempt, identity, owner and con
     const reopened=new Store(join(f.dir,'test.sqlite')),a=new Approvals(reopened),n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{}};
     try{
       reopened.recover();const router=new Router(reopened,n,a),c=new Coordinator(reopened,n,router,()=>{});router.coordinator=c;
-      router.contracts=new TaskContracts(reopened,new MetaSecret(f.dir));const collab=new ManagedCollaboration(router,{authorize:()=> 'test-approval'});
+      router.contracts=new TaskContracts(reopened,new MetaSecret(f.dir));const collab=new ManagedCollaboration(router,{authorize:()=> 'test-approval'},fakeExclusive);
       assert.equal((collab as any).parkedAncestor(report,reopened.job('wa:approve')),false);
     }finally{a.cancel();reopened.close();}
   }finally{reportGate.resolve();await f.close();}
+});
+
+test('setup reserved by another connection blocks F5 and remains uncertain after return and restart',async()=>{
+  const f=await fixture(),gate=deferred(),started=deferred();let other:InstanceType<typeof Store>|undefined;try {
+    other=new Store(join(f.dir,'test.sqlite'));
+    const pending=withProviderSetup(other,'synthetic-setup',async()=>{started.resolve();await gate.promise;});await started.promise;
+    assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','setup-first'),/setup or recovery is unresolved/);
+    gate.resolve();await pending;other.close();other=new Store(join(f.dir,'test.sqlite'));
+    assert.equal(other.db.prepare('SELECT count(*) n FROM collaboration_setup_barriers').get()?.n,1);
+    assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','setup-after-return'),/setup or recovery is unresolved/);
+  }finally{gate.resolve();other?.close();await f.close();}
+});
+
+test('F5-first blocks setup and legacy metadata writes from another connection',async()=>{
+  const f=await fixture();let other:InstanceType<typeof Store>|undefined;try {
+    f.store.set('master-operation','null');
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','setup-second');
+    other=new Store(join(f.dir,'test.sqlite'));let invoked=0;
+    assert.throws(()=>withProviderSetup(other!,'synthetic-setup',()=>{invoked++;}),/collaboration workflow or claim exists/);
+    for(const key of ['worker-create:old','master-attempt:old','desktop-start:old','master-operation'])
+      assert.throws(()=>other!.set(key,JSON.stringify({status:'creating'})),/collaboration setup fence/);
+    assert.throws(()=>other!.db.prepare("DELETE FROM settings WHERE key='master-operation'").run(),/collaboration setup fence/);
+    assert.equal(invoked,0);assert.equal(f.store.job(id)?.status,'queued');
+  }finally{other?.close();await f.close();}
+});
+
+test('the workflow reservation holds setup between handoffs and across restart',async()=>{
+  const f=await fixture();let other:InstanceType<typeof Store>|undefined;try {
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','workflow-gap');
+    f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'Plan report.','final',id);f.targetEnd.resolve();
+    await until(()=>f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state==='complete');
+    const claim=f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!) as {token:string|null};assert.equal(claim.token,null);
+    other=new Store(join(f.dir,'test.sqlite'));
+    assert.throws(()=>withProviderSetup(other!,'between-stages',()=>{}),/collaboration workflow or claim exists/);
+    assert.throws(()=>other!.set('worker-create:gap',JSON.stringify({status:'creating'})),/collaboration setup fence/);
+    assert.throws(()=>other!.db.prepare('DELETE FROM collaboration_workflow_reservations').run(),/workflow remains unresolved/);
+    other.close();other=new Store(join(f.dir,'test.sqlite'));
+    assert.throws(()=>withProviderSetup(other!,'after-restart',()=>{}),/collaboration workflow or claim exists/);
+  }finally{other?.close();await f.close();}
+});
+
+test('legacy workflow migration refuses unresolved setup and backfills before setup can start',async()=>{
+  const f=await fixture();try {
+    f.collab.stage('wa:approve',f.worker.id,'Plan','legacy-workflow');
+    const triggers=f.store.db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%collaboration_workflow_reservations%'").all() as {name:string}[];
+    for(const {name} of triggers){assert.match(name,/^collaboration_fence_/);f.store.db.exec(`DROP TRIGGER "${name}"`);}
+    f.store.db.exec('DROP TABLE collaboration_workflow_reservations');
+    assert.throws(()=>withProviderSetup(f.store,'pre-migration',()=>{}),/collaboration workflow or claim exists/);
+    // Simulate an unresolved setup record left by an older process before the migration.
+    f.store.db.prepare("INSERT INTO collaboration_setup_barriers VALUES(?,'legacy','uncertain',0)").run(randomUUID());
+    assert.throws(()=>new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},fakeExclusive),/both unresolved/);
+    assert.equal(f.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_workflow_reservations'").get(),undefined);
+    assert.throws(()=>f.store.db.prepare('DELETE FROM collaboration_setup_barriers').run(),/provider setup remains unresolved/);
+    f.store.db.exec('DROP TRIGGER collaboration_fence_setup_barrier_delete');f.store.db.prepare('DELETE FROM collaboration_setup_barriers').run();
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},fakeExclusive);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_workflow_reservations').get()?.n,1);
+    assert.throws(()=>withProviderSetup(f.store,'after-migration',()=>{}),/collaboration workflow or claim exists/);
+  }finally{await f.close();}
+});
+
+test('another router cannot dispatch item or coordinator work while a stage report runs',async()=>{
+  const f=await fixture(),reportGate=deferred(),liveGate=deferred(),liveStarted=deferred();let other:InstanceType<typeof Store>|undefined;try {
+    const prior=f.native.run;
+    f.native.run=async(b:any,body:string,id:string)=>{if(id==='wa:gap-running'){liveStarted.resolve();await liveGate.promise;}else if(id.startsWith('report:')){f.native.beforeDispatch?.(b,id);f.starts.push({id,body});await reportGate.promise;}else await prior(b,body,id);};
+    const running=f.store.register('gap-running','codex',randomUUID(),'/tmp').binding;
+    f.routes.set(running.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${running.id}`,'cli');
+    f.store.enqueue('wa:gap-running',running,'Initially unrelated work',f.owner);f.store.set('parent:wa:gap-running','gap-parent');f.r.pump();await liveStarted.promise;
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','report-gap');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'Plan report.','final',id);f.targetEnd.resolve();await until(()=>f.starts.some(x=>x.id===`report:${id}`));
+    const item=f.store.itemOf(id)!,outsider=f.store.register('gap-outsider','codex',randomUUID(),'/tmp').binding;
+    f.store.enqueue('wa:gap-item',outsider,'Conflicting task',f.owner);f.store.linkItem('wa:gap-item',item);
+    f.store.enqueue('wa:gap-source',f.proxy,'Unlinked coordinator work',f.owner);
+    other=new Store(join(f.dir,'test.sqlite'));let sent=0;const native:any={connections:{route:()=>({transport:'managed-cli',executionMode:'cli'})},stop:()=>{},run:async()=>{sent++;}};
+    const approvals=new Approvals(other),router=new Router(other,native,approvals);router.pump();await turn();
+    assert.equal(sent,0);assert.equal(other.job('wa:gap-item')?.status,'queued');assert.equal(other.job('wa:gap-source')?.status,'queued');
+    assert.throws(()=>f.store.linkItem('wa:gap-running',item),/collaboration link fence/);
+    assert.throws(()=>f.store.set('parent:gap-parent','wa:approve'),/collaboration link fence/);
+    const scope=roleScope(f),core=new CollaborationHarness(other,{approved:()=>scope,mayWork:()=>true,ignoreLive:()=>true});
+    assert.throws(()=>core.claim(scope.rootRequestId,item,outsider.id,'gap-claim'),/collaboration claim fence/);
+    router.stopped=true;approvals.cancel();
+  }finally{f.r.stopped=true;reportGate.resolve();liveGate.resolve();other?.close();await f.close();}
+});
+
+test('a report cannot be dispatched by an old router after owner or session changes',async()=>{
+  for(const mode of ['owner','session'] as const){const f=await fixture();let other:InstanceType<typeof Store>|undefined;try {
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan',`report-stale-${mode}`);f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(f.worker,'Plan report.','final',id);f.r.stopped=true;f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    const report=`report:${id}`;assert.equal(f.store.job(report)?.status,'queued');
+    if(mode==='owner'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
+    else f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.worker.id);
+    other=new Store(join(f.dir,'test.sqlite'));let sent=0;const native:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{sent++;}};
+    const approvals=new Approvals(other),router=new Router(other,native,approvals);router.contracts=new TaskContracts(other,new MetaSecret(f.dir));
+    router.pump();await turn();assert.equal(sent,0);assert.ok(['queued','failed'].includes(other.job(report)?.status??''));
+    assert.equal(other.db.prepare('SELECT 1 FROM collaboration_report_attempts WHERE job_id=?').get(report),undefined);
+    router.stopped=true;approvals.cancel();
+  }finally{other?.close();await f.close();}}
+});
+
+test('legacy setup records and stale nested reservations fail closed',async()=>{
+  for(const key of ['worker-create:legacy','master-attempt:legacy','desktop-start:legacy','master-operation']){
+    const f=await fixture();try {
+      f.store.set(key,JSON.stringify({status:'ready'}));
+      assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan',`legacy-${key}`),/setup or recovery is unresolved/);
+    }finally{await f.close();}
+  }
+  const f=await fixture();try {
+    await withProviderSetup(f.store,'outer',async()=>{
+      await withProviderSetup(f.store,'nested',async()=>assertProviderSetup(f.store));
+      assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_setup_barriers').get()?.n,1);
+      assert.throws(()=>f.store.db.prepare('DELETE FROM collaboration_setup_barriers').run(),/provider setup remains unresolved/);
+      f.store.db.exec('DROP TRIGGER collaboration_fence_setup_barrier_delete');f.store.db.prepare('DELETE FROM collaboration_setup_barriers').run();
+      assert.throws(()=>assertProviderSetup(f.store),/reservation is unavailable/);
+    });
+  }finally{await f.close();}
+});
+
+test('worker preflight reserves before its first await and F5 holds worker startup',async()=>{
+  const f=await fixture(),gate=deferred(),started=deferred();try {
+    f.store.set('platform-preference:codex',JSON.stringify({executionMode:'cli'}));let creations=0;
+    const masters:any={connections:{prepare:async()=>{started.resolve();await gate.promise;throw new Error('synthetic preflight');}},provisionWorker:async()=>{creations++;},stopWorker:()=>{}};
+    const workers=new Workers(f.store,f.r,masters,join(f.dir,'projects'),()=>{});
+    const pending=workers.start({requestId:'wa:approve',provider:'codex',name:'Fake project',text:'Plan work',eventId:'setup-first'});
+    await started.promise;assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','worker-preflight'),/setup or recovery is unresolved/);
+    gate.resolve();await assert.rejects(pending,/synthetic preflight/);assert.equal(creations,0);workers.close();
+  }finally{gate.resolve();await f.close();}
+  const g=await fixture();try {
+    g.store.set('platform-preference:codex',JSON.stringify({executionMode:'cli'}));g.collab.stage('wa:approve',g.worker.id,'Plan','f5-first');
+    let probes=0;const workers=new Workers(g.store,g.r,{connections:{prepare:async()=>{probes++;}}} as any,join(g.dir,'projects'),()=>{});
+    await assert.rejects(workers.start({requestId:'wa:approve',provider:'codex',name:'Fake project',text:'Plan work',eventId:'worker-later'}),/collaboration workflow or claim exists/);
+    assert.equal(probes,0);workers.close();
+  }finally{await g.close();}
+});
+
+test('F5 blocks coordinator and Desktop setup entry points before provider effects',async()=>{
+  const f=await fixture();try {
+    const masters=new Masters(f.store,f.r);let opened=0;
+    const desktop=new DesktopStarts(f.store,f.native,0,async()=>{opened++;});
+    f.collab.stage('wa:approve',f.worker.id,'Plan','setup-entry-points');
+    await assert.rejects(masters.create('codex',randomUUID(),'cli'),/collaboration workflow or claim exists/);
+    await assert.rejects(masters.useSession('codex','cli',randomUUID(),randomUUID()),/collaboration workflow or claim exists/);
+    await assert.rejects(masters.provisionWorker(f.worker),/collaboration workflow or claim exists/);
+    await assert.rejects(masters.recoverWorker(f.worker),/collaboration workflow or claim exists/);
+    await assert.rejects(desktop.createDirect(f.worker,'synthetic setup'),/collaboration workflow or claim exists/);
+    await assert.rejects(desktop.confirm(f.worker,true),/collaboration workflow or claim exists/);
+    assert.throws(()=>masters.activate(f.worker),/collaboration workflow or claim exists/);
+    assert.equal(opened,0);desktop.close();masters.close();
+  }finally{await f.close();}
 });
 
 test('without explicit internal activation, no collaboration guard is installed',async()=>{
@@ -438,7 +764,7 @@ test('desktop or unapproved handoffs fail before queueing',async()=>{
 test('changed owner or target before source turn end fails closed without sending',async()=>{
   for(const mode of ['owner','target','authority']){
     const f=await fixture();try{
-      if(mode==='authority')f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>undefined});
+      if(mode==='authority')f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>undefined},fakeExclusive);
       if(mode==='authority'){assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement','unauthorized'),/authorize/);continue;}
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`changed-${mode}`);
       if(mode==='owner')f.store.set('whatsapp-owner','new-owner@s.whatsapp.net');
@@ -510,13 +836,13 @@ test('deep and cyclic ancestry cannot hide live work when staging a handoff',asy
   }finally{await f.close();}}
 });
 
-test('a queued later item follow-up does not prevent release after managed final',async()=>{
+test('a queued later item follow-up stays held after the stage claim is released',async()=>{
   const f=await fixture();try{
     const id=f.collab.stage('wa:approve',f.worker.id,'Implement','followup');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
     const later='wa:later';f.store.enqueue(later,f.worker,'Later follow-up',f.owner);f.store.linkItem(later,f.store.itemOf(id)!);
     f.r.channelReply(f.worker,'Implementation reported complete.','final',id);f.targetEnd.resolve();
     await until(()=>f.collab.history('wa:approve',f.store.itemOf(id)!)[0]?.state==='complete');
-    await until(()=>f.starts.some(x=>x.id===later));
+    await turn();assert.equal(f.store.job(later)?.status,'queued');assert.equal(f.starts.some(x=>x.id===later),false);
   }finally{await f.close();}
 });
 
@@ -569,7 +895,7 @@ test('ancestry changes cannot attach an active descendant to a claimed item',asy
 test('a second router without the adapter cannot dispatch a claimed item or session',async()=>{
   const f=await fixture();let reopened:InstanceType<typeof Store>|undefined;try {
     f.store.db.exec("DROP TRIGGER collaboration_fence_dispatch; CREATE TRIGGER collaboration_fence_dispatch BEFORE UPDATE ON inbox WHEN 0 BEGIN SELECT 1; END");
-    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'});
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=> 'test-approval'},fakeExclusive);
     const id=f.collab.stage('wa:approve',f.worker.id,'Plan','second-router');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
     const item=f.store.itemOf(id)!,other=f.store.register('other','codex',randomUUID(),'/tmp').binding;
     const channel=f.store.register('other-channel','codex',randomUUID(),'/tmp','channel').binding;
@@ -734,7 +1060,7 @@ test('a dispatch failure rolls back both the claim and the attempt',async()=>{
 test('identity or authorization changes during asynchronous readiness never submit',async()=>{
   for(const mode of ['source','owner','target-route','contract','authority','item-status','other-active']){
     const f=await fixture();try{
-      let allowed=true;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>allowed?'test-approval':undefined});
+      let allowed=true;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>allowed?'test-approval':undefined},fakeExclusive);
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`async-${mode}`),waiting=deferred(),started=deferred();let sent=0;
       const prior=f.native.run;f.native.store=f.store;
       f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id){started.resolve();await waiting.promise;}};
@@ -767,7 +1093,7 @@ test('a real database reopen does not replay an interrupted managed handoff',asy
       let deliveries=0;const n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{deliveries++;}};
       const a=new Approvals(reopened),r=new Router(reopened,n,a),c=new Coordinator(reopened,n,r,()=>{});r.coordinator=c;
       const secret=new MetaSecret(f.dir);r.contracts=new TaskContracts(reopened,secret);
-      r.collaboration=new ManagedCollaboration(r,{authorize:()=> 'test-approval'});r.pump();await turn();
+      r.collaboration=new ManagedCollaboration(r,{authorize:()=> 'test-approval'},fakeExclusive);r.pump();await turn();
       assert.equal(deliveries,0,phase);
       if(phase==='target')assert.equal(reopened.job(id)?.status,'uncertain');
       else assert.notEqual(reopened.job(id)?.status,'submitted');
@@ -776,7 +1102,7 @@ test('a real database reopen does not replay an interrupted managed handoff',asy
   }
 });
 
-test('an unsent readiness failure releases only its own claim and a new attempt can run',async()=>{
+test('an unsent readiness failure releases its claim but retains the workflow fence',async()=>{
   const f=await fixture();try{
     const id=f.collab.stage('wa:approve',f.worker.id,'Implement','first-fails'),waiting=deferred(),started=deferred();let sent=0;
     const prior=f.native.run;f.native.store=f.store;
@@ -789,15 +1115,11 @@ test('an unsent readiness failure releases only its own claim and a new attempt 
     assert.equal(sent,0);
     const claim=f.store.db.prepare('SELECT holder_id,token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!);
     assert.equal(claim?.holder_id,null);assert.equal(claim?.token,null);
-    // The owner unblocks the item and starts a new authorized source turn.
+    // Starting a new source attempt requires future workflow reconciliation.
     f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(f.worker.native_id,f.worker.id);
     f.store.db.prepare("UPDATE items SET status='in progress' WHERE id=?").run(f.store.itemOf(id)!);
-    f.store.jobState('wa:approve','dispatched');f.r.busy.add(f.proxy.id);
-    const retry=f.collab.stage('wa:approve',f.worker.id,'Implement','retry');
-    f.store.jobState('wa:approve','submitted');f.collab.managedTurnEnded('wa:approve',f.proxy,f.store.job('wa:approve')!.attempt_id!);f.r.busy.delete(f.proxy.id);
-    f.r.pump();for(let n=0;n<10;n++)await turn();
-    assert.ok(f.starts.some(x=>x.id===retry),JSON.stringify({job:f.store.job(retry),handoff:f.store.db.prepare('SELECT state,yielded FROM managed_collaboration_handoffs WHERE job_id=?').get(retry)}));
-    assert.equal(f.starts.filter(x=>x.id===retry).length,1);
+    assert.throws(()=>f.store.jobState('wa:approve','dispatched'),/collaboration claim fence/);
+    assert.throws(()=>withProviderSetup(f.store,'recovery',()=>{}),/collaboration workflow or claim exists/);
   }finally{await f.close();}
 });
 
@@ -809,7 +1131,10 @@ test('an old rejected handoff cannot release a different fenced claim',async()=>
     f.native.managedRun=async()=>{throw new Error('should not submit');};
     f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
     f.sourceEnd.resolve();await started.promise;
-    const newer=randomUUID();f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(newer,f.store.itemOf(id)!);
+    const newer=randomUUID();
+    assert.throws(()=>f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(newer,f.store.itemOf(id)!),/collaboration claim fence/);
+    f.store.db.exec('DROP TRIGGER collaboration_fence_workflow_claim_update');
+    f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(newer,f.store.itemOf(id)!);
     waiting.resolve();await until(()=>f.store.job(id)?.status==='failed');
     assert.equal(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token,newer);
   }finally{await f.close();}
@@ -836,16 +1161,16 @@ test('a provider-bound failure remains uncertain and retains its exact claim',as
 
 test('restart releases only a proven unsent exact attempt and never replays a handoff',async()=>{
   for(const phase of ['before','after','legacy','other-fence','owner-roundtrip','legacy-owner','missing-origin','changed-origin']){
-    const f=await fixture();let reopened:InstanceType<typeof Store>|undefined;try{
-      const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`recovery-${phase}`),ready=deferred(),started=deferred(),providerEnd=deferred();let calls=0;
+    const f=await fixture(),ready=deferred(),started=deferred(),providerEnd=deferred();let reopened:InstanceType<typeof Store>|undefined;try{
+      const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`recovery-${phase}`);let calls=0;
       const prior=f.native.run;f.native.store=f.store;
       f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id&&phase!=='after'){started.resolve();await ready.promise;}};
       f.native.managedRun=async()=>{calls++;started.resolve();await providerEnd.promise;};
       f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
       f.sourceEnd.resolve();await started.promise;f.r.stopped=true;
       const item=f.store.itemOf(id)!;
-      if(phase==='legacy')f.store.db.exec('DROP TRIGGER collaboration_fence_dispatch; ALTER TABLE managed_collaboration_handoffs DROP COLUMN submission_started');
-      if(phase==='other-fence')f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(randomUUID(),item);
+      if(phase==='legacy')f.store.db.exec('DROP TRIGGER collaboration_fence_dispatch; DROP TRIGGER collaboration_fence_insert_dispatched; ALTER TABLE managed_collaboration_handoffs DROP COLUMN submission_started');
+      if(phase==='other-fence'){f.store.db.exec('DROP TRIGGER collaboration_fence_workflow_claim_update');f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(randomUUID(),item);}
       if(phase==='owner-roundtrip'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
       if(phase==='legacy-owner')f.store.db.exec('ALTER TABLE managed_collaboration_handoffs DROP COLUMN owner_generation');
       if(phase==='missing-origin')f.store.db.prepare('DELETE FROM incoming_owner_inputs WHERE id=?').run('wa:approve');
@@ -854,7 +1179,7 @@ test('restart releases only a proven unsent exact attempt and never replays a ha
       let replayed=0;const n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{replayed++;}};
       const a=new Approvals(reopened),r=new Router(reopened,n,a),c=new Coordinator(reopened,n,r,()=>{});r.coordinator=c;
       const secret=new MetaSecret(f.dir);r.contracts=new TaskContracts(reopened,secret);
-      r.collaboration=new ManagedCollaboration(r,{authorize:()=> 'test-approval'});r.pump();await turn();
+      r.collaboration=new ManagedCollaboration(r,{authorize:()=> 'test-approval'},fakeExclusive);r.pump();await turn();
       const claim=reopened.db.prepare('SELECT holder_id,token FROM collaboration_claims WHERE item_id=?').get(item);
       if(phase==='before'){
         assert.equal(reopened.job(id)?.status,'failed');assert.equal(claim?.holder_id,null);assert.equal(claim?.token,null);
@@ -867,6 +1192,6 @@ test('restart releases only a proven unsent exact attempt and never replays a ha
       r.stopped=true;a.cancel();reopened.close();reopened=undefined;
       ready.resolve();providerEnd.resolve();await turn();
       assert.equal(calls,phase==='after'?1:0,`old process must not submit after ${phase} recovery`);
-    }finally{reopened?.close();await f.close();}
+    }finally{ready.resolve();providerEnd.resolve();reopened?.close();await f.close();}
   }
 });

@@ -24,6 +24,7 @@ import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { masterPolicy } from './master-policy.js';
 import { roleConfig, coordinatorRoleStatus } from './roles.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections, usableCLIConnection } from './connections.js';
@@ -232,7 +233,7 @@ export class Masters {
   }
   async recover(operationId?:string) {
     const op=this.operation(operationId);if(!op)throw new Error('No exact setup to recover.');
-    return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.recoverScoped(op.id));
+    return withProviderSetup(this.store,'coordinator-recover',()=>this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.recoverScoped(op.id)));
   }
   private async recoverScoped(operationId?:string) {
     this.assertIdle();
@@ -241,7 +242,7 @@ export class Masters {
     const b=this.store.binding(op.bindingId);if(!b||(op.nativeId&&b.native_id!==op.nativeId))throw new Error('Creation identity is incomplete.');
     this.setAside();this.creating=true;this.saveOperation({...op,status:'creating',stage:'Connecting your created session',error:undefined});
     void (async()=>{
-      await this.connections.assert(b);
+      await this.connections.assert(b);assertProviderSetup(this.store);
       if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b,true);
       else if(b.provider==='codex') {
         const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(b,m,p));
@@ -252,7 +253,7 @@ export class Masters {
       }else if(op.needsTrust||/workspace not trusted/i.test(op.error??''))await this.provisionClaude(b);
       else if(/Claude authentication expired/i.test(op.error??'')) {
         const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
-        try{await runtime.initialize();await runtime.run('Connection recovery only. Return READY without tools. Do not repeat earlier work.');this.store.set(`managed-claude:${b.id}`,'true');}
+        try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('Connection recovery only. Return READY without tools. Do not repeat earlier work.');this.store.set(`managed-claude:${b.id}`,'true');}
         catch(e){this.stopWorker(b.id);throw e;}
       }else await this.router.native.validate(b.provider,b.native_id,b.cwd);
       this.activate(this.store.binding(b.id)!,op.id);
@@ -261,7 +262,7 @@ export class Masters {
   }
   abandon(operationId?:string) {
     const op=this.operation(operationId);if(!op)throw new Error('No exact setup to abandon.');
-    return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.abandonScoped(op.id));
+    return withProviderSetup(this.store,'coordinator-abandon',()=>this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.abandonScoped(op.id)));
   }
   private abandonScoped(operationId?:string) {
     this.assertIdle();const op=this.operation(operationId);
@@ -271,6 +272,9 @@ export class Masters {
     return this.operation(op.id);
   }
   activate(b:Binding,operationId?:string) {
+    return withProviderSetup(this.store,'coordinator-activate',()=>this.activateScoped(b,operationId));
+  }
+  private activateScoped(b:Binding,operationId?:string) {
     if(operationId&&this.operation()?.id!==operationId)throw new Error('This setup was superseded.');
     const old=this.registry.bindingFor(b);
     const replacing=old&&old.id!==b.id;
@@ -315,7 +319,8 @@ export class Masters {
   mcpConfig(b:Binding){return {command:process.execPath,args:[join(root,'dist/master-channel.js'),join(stateDir,'bindings',`${b.alias}.json`)],env:{WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port}};}
   async useDesktop(sessionId:string,operationId:string){return this.useSession('claude','desktop',sessionId,operationId);}
   async useSession(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string,connectionRevision?:string) {
-    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.useSessionScoped(provider,requestedMode,sessionId,operationId,connectionRevision));
+    if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
+    return withProviderSetup(this.store,'coordinator-select',()=>this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.useSessionScoped(provider,requestedMode,sessionId,operationId,connectionRevision)));
   }
   private async useSessionScoped(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string,connectionRevision?:string) {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
@@ -337,7 +342,7 @@ export class Masters {
       const priorRoute=b?this.connections.route(b):undefined;
       if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountKey!==route.accountKey||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
       if(b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
-      this.setAside();
+      assertProviderSetup(this.store);this.setAside();
       if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
       this.stopWorker(b.id);this.store.set(`execution-mode:${b.id}`,mode);
       this.connections.save(b,route);
@@ -349,7 +354,8 @@ export class Masters {
     }finally{this.creating=false;}
   }
   async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string):Promise<any> {
-    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId));
+    if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+    return withProviderSetup(this.store,'coordinator-create',()=>this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId)));
   }
   private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string):Promise<any> {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
@@ -370,7 +376,7 @@ export class Masters {
     const route=await this.connections.prepare({provider,cwd:workspace?.cwd??coordinatorFolder(operationId,name)},mode,mode==='cli',workspace?.accountScope??undefined,connectionRevision);
     if(this.operation(operationId))return this.create(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId);
     this.assertIdle();
-    this.setAside();this.creating=true;
+    assertProviderSetup(this.store);this.setAside();this.creating=true;
     const op={id:operationId,provider,executionMode:mode,desktopParentId,workspaceId,workspaceCwd:workspace?.cwd,route,status:'creating',stage:'Preparing workspace',startedAt:Date.now(),name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
     void (async()=>{
       const launcher=provider==='claude'&&mode==='desktop'&&workspace?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined,sessions):undefined;
@@ -380,6 +386,9 @@ export class Masters {
     return op;
   }
   async provision(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
+    return withProviderSetup(this.store,'coordinator-provision',()=>this.provisionScoped(provider,operationId,mode,desktopParentId));
+  }
+  private async provisionScoped(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
     const selected=this.operation()?.workspaceCwd;
     let cwd=selected?realpathSync(selected):coordinatorFolder(operationId,this.operation()?.name??'coordinator');
     if(selected&&cwd!==selected)throw new Error('Selected workspace path changed. Choose it again.');
@@ -393,7 +402,7 @@ export class Masters {
     const registered=this.store.register(alias,provider,randomUUID(),cwd);
     let b=registered.binding;this.store.set(`execution-mode:${b.id}`,mode);this.store.enable(b.id,false);saveBindingCredentials(b,registered.token);
     const route=this.operation()?.route??await this.connections.prepare(b,mode,mode==='cli');this.connections.save(b,route);
-    await this.connections.assert(b);
+    await this.connections.assert(b);assertProviderSetup(this.store);
     this.store.set(`master-support:${b.id}`,support);
     this.saveOperation({...this.operation(),bindingId:b.id,cwd,stage:'Starting native session'});
     const name=this.operation().name??'WhatsApp master';this.store.set(`name:${b.id}`,name);
@@ -417,7 +426,7 @@ export class Masters {
       b=this.store.binding(b.id)!;saveBindingCredentials(b,registered.token);
     } else if(provider==='codex') {
       const runtime=new CodexSession(codexBin,cwd,(method,params)=>this.approval(b,method,params));
-      this.runtimes.set(b.id,runtime);await runtime.initialize();
+      this.runtimes.set(b.id,runtime);await runtime.initialize();assertProviderSetup(this.store);
       const created=await runtime.request('thread/start',{cwd,approvalPolicy:'on-request',sandbox:'read-only',developerInstructions:instruction,config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
       if(!/^[0-9a-f-]{36}$/i.test(created?.thread?.id??''))throw new Error('Native creation did not return an exact session ID.');
       this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(created.thread.id,b.id);
@@ -436,11 +445,14 @@ export class Masters {
     await this.router.coordinator?.refresh().catch(()=>{});
   }
   async provisionClaude(b:Binding) {
+    return withProviderSetup(this.store,'claude-provision',()=>this.provisionClaudeScoped(b));
+  }
+  private async provisionClaudeScoped(b:Binding) {
     // Keep generated configuration separate from the selected project's instructions.
     // Use Claude's supported headless interface; never edit Claude's trust database.
     const mcp=join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{session_bridge:this.mcpConfig(b)}}),{mode:0o600});
     const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
-    try{await runtime.initialize();await runtime.run('Return exactly READY without using tools. Wait for the owner’s first WhatsApp message.');this.store.set(`managed-claude:${b.id}`,'true');}
+    try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('Return exactly READY without using tools. Wait for the owner’s first WhatsApp message.');this.store.set(`managed-claude:${b.id}`,'true');}
     catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
   }
   async run(b:Binding,message:string,jobId:string) {
@@ -555,24 +567,27 @@ export class Masters {
     },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:roleConfig(this.store,b).instructions,...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
   }
   async provisionWorker(b:Binding) {
+    return withProviderSetup(this.store,'worker-provision',()=>this.provisionWorkerScoped(b));
+  }
+  private async provisionWorkerScoped(b:Binding) {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
-    await this.connections.assert(b);
+    await this.connections.assert(b);assertProviderSetup(this.store);
     if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop') {
       // The owner's Send press in Claude is the direct request; no launcher chat relays it.
       await this.desktop.createDirect(b,'Your role arrives with the first request; use its bridge CLI reply command.',`Set up this folder as my FarFromDesk project session “${this.store.get(`name:${b.id}`)??'FarFromDesk project'}”.`);return;
     }
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
-      try{await runtime.initialize();await runtime.run('This newly created empty project is explicitly approved by the owner. Return exactly READY without using any tools. Wait for the actual task.');}
+      try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('This newly created empty project is explicitly approved by the owner. Return exactly READY without using any tools. Wait for the actual task.');}
       catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
       return;
     }
     const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));
-    this.runtimes.set(b.id,runtime);await runtime.initialize();
+    this.runtimes.set(b.id,runtime);await runtime.initialize();assertProviderSetup(this.store);
     this.store.set(`worker-preflight:${b.id}`,'blocked');
     if(this.store.get(`execution-mode:${b.id}`)!=='desktop')await checkCodexEnvironment(runtime,b.cwd);
     this.store.set(`worker-preflight:${b.id}`,'passed');
-    const r=await runtime.request('thread/start',{cwd:b.cwd,approvalPolicy:'on-request',sandbox:'workspace-write',developerInstructions:roleConfig(this.store,b).instructions,config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
+    assertProviderSetup(this.store);const r=await runtime.request('thread/start',{cwd:b.cwd,approvalPolicy:'on-request',sandbox:'workspace-write',developerInstructions:roleConfig(this.store,b).instructions,config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
     if(!/^[0-9a-f-]{36}$/i.test(r.thread?.id??''))throw new Error('Native worker creation did not return an exact session ID.');
     this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(r.thread.id,b.id);
     if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
@@ -589,16 +604,19 @@ export class Masters {
   }
   stopWorker(id:string){this.runtimeRoles.delete(id);this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
   async recoverWorker(b:Binding) {
+    return withProviderSetup(this.store,'worker-recover-runtime',()=>this.recoverWorkerScoped(b));
+  }
+  private async recoverWorkerScoped(b:Binding) {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
-    this.stopWorker(b.id);
-    await this.connections.assert(b);
+    assertProviderSetup(this.store);this.stopWorker(b.id);
+    await this.connections.assert(b);assertProviderSetup(this.store);
     // A failed configuration read occurs before thread/start. Recovering this
     // exact binding can safely make its first native session; it is not a replay.
     if(b.provider==='codex'&&this.store.get(`worker-preflight:${b.id}`)==='blocked'){await this.provisionWorker(b);return;}
     if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop'){await this.desktop.confirm(b,true);return;}
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
-      try{await runtime.initialize();await runtime.run('Resume this exact project for a connection check only. Return READY without using tools or repeating any prior work.');}
+      try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('Resume this exact project for a connection check only. Return READY without using tools or repeating any prior work.');}
       catch(e){this.stopWorker(b.id);throw e;}return;
     }
     const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));

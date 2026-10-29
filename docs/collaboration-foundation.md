@@ -76,8 +76,8 @@ reconciliation UI yet.
 
 This cannot discover work that was never recorded or correctly linked to the
 item, or prevent external work in a native session. Worker creation, recovery
-and Desktop startup can start provider work outside the inbox dispatch fence;
-they need a durable shared ownership boundary before F5 can be enabled. Also
+and Desktop startup use the experimental setup reservation below, but older
+bridge processes and external native work can still start outside it. Also
 verify all native, managed, channel, option, scheduled, report and delegated
 paths, renew leases during long active turns, and fail closed after restart,
 owner/session/contract changes, or uncertain delivery. The persistent triggers
@@ -95,30 +95,61 @@ confirmation in `src/desktop-start.ts` can submit work separately. These paths
 must not be treated as protected merely because their eventual task uses the
 inbox fence.
 
-Before enabling collaboration, setup needs a durable, cross-connection barrier
-acquired **before** any asynchronous provider boundary. Barrier acquisition and
-collaboration claim/staging must exclude each other atomically, including when
-the setup request cannot be linked to a known item or binding. Every setup,
-recovery and automatic reconciliation path must use that same boundary. A
-restart, timeout, lost response, set-aside, abandonment or Desktop `needs_action`
-must retain an uncertain barrier until a known-unsent result or exact trusted
-provider-end evidence permits reconciliation. A `ready` status, socket receipt,
-session report or Claude READY response is not such evidence. Existing setup
-records without lifecycle proof require the same conservative treatment.
+The prototype reserves setup before asynchronous worker and coordinator setup,
+selection or recovery, and before Desktop creation, confirmation or submission.
+Nested calls share the reservation; detached work retains it. Reservations and
+collaboration workflows exclude each other through SQLite across bridge
+connections. A workflow reservation also holds setup and competing item or
+coordinator dispatches between stages; the exact prior-stage report receives a
+separate, authorization-checked dispatch attempt. Earlier handoffs are
+conservatively migrated, and legacy setup records block F5.
 
-Offline validation must cover setup-first and claim-first races from separate
-SQLite connections, pauses during workspace approval and provider initialization,
-restart on both sides of submission, delayed Desktop Send, automatic recovery,
-and attempts to clear or replace an uncertain barrier. These are requirements
-for a future implementation, not tests the current prototype has passed. Native
-work started outside the bridge still requires a separate exclusive ownership
-boundary; a bridge-local barrier cannot prevent it.
+**There is no release or reconciliation path yet.** Every setup reservation is
+retained, even for a rejected or no-op attempt, and every workflow reservation
+is retained after review. Completed target sessions also hold ordinary dispatch
+across bridge connections, even if completion evidence remains valid. This deliberately blocks later collaboration or setup,
+including on normally configured installations with old setup records. It is
+not suitable for production. A restart, timeout, lost response, set-aside,
+abandonment, Desktop `needs_action`, `ready` status, socket receipt, session
+report or Claude READY response does not establish a trusted provider end.
+Reconciliation must distinguish a proven unsent attempt from an exact ended
+turn and bind any release to the original reservation and owner scope.
+
+Synthetic tests cover separate-process setup/claim races, setup-first and
+workflow-first holds, legacy records, restart, stale nested reservations and
+report gaps. They do not establish a real provider lifecycle or exclusive access
+to native sessions. An older bridge can perform some setup mutations before its
+legacy record is written, and native work started outside the bridge requires a
+separate exclusive ownership boundary.
 
 Remaining work includes a production contract and role adapter, a scoped
 owner-visible timeline and brief integration, session roles from approved
 Collaboration memory, an actual Wonder drift check grounded in the contract,
 and a single run-bound proof check after the final handoff. Test a complete
 plan/build/review flow and concurrent claimants before considering release.
+
+## Provider exclusivity gate
+
+Managed collaboration has no default provider-exclusivity adapter. Staging a
+handoff requires a trusted adapter to attest a non-reused ownership revision
+for the exact source attempt and target session; coordinator reports require a
+separate attestation for their exact dispatch attempt. The revision is checked
+again through readiness, submission and completion. A separate exact-turn
+completion attestation must establish that no continuation or background work
+remains before a source yields, a claim is released or a report turn is
+recorded as ended. Losing either proof keeps submitted work claimed. Legacy rows
+with no attestation fail closed. Test fixtures supply
+synthetic revisions only; they are not evidence of native exclusivity.
+
+A real adapter must establish the source fence before the source was dispatched,
+hold the target fence through its exact turn end, bind owner generation,
+contract, item, sessions and attempts, and enforce exclusivity across all
+provider processes. A one-time process scan or bridge-local lock is not proof.
+The provider must reject stale capabilities, or guarantee a lease cannot expire
+or be reassigned while a turn remains live. If enforcement requires a capability
+on each provider call, that transport is still to be implemented. The current
+root dispatch does not obtain such a fence, and no real provider adapter is
+wired. Do not enable this gate with a permissive callback.
 
 ## Managed Claude CLI correlation
 

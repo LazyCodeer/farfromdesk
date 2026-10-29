@@ -1,6 +1,7 @@
 import {CollaborationHarness,type CollaborationScope} from './collaboration-harness.js';
 import {randomUUID} from 'node:crypto';
 import {installCollaborationDispatchFence} from './collaboration-dispatch-fence.js';
+import {hasUnresolvedProviderSetup} from './provider-setup-barrier.js';
 import {DispatchNotSubmittedError} from './brief-dispatch-guard.js';
 import {bindScheduledChild} from './schedules.js';
 import {hash,type Binding,type Job} from './store.js';
@@ -10,15 +11,32 @@ import type {Router} from './router.js';
 export class CollaborationHold extends DispatchNotSubmittedError {}
 /** Trusted bridge code returns the current approval revision, or refuses the handoff. */
 export type HandoffAuthority={authorize(scope:CollaborationScope,from:Binding,to:Binding,summary:string,role:string,stage:{sourceId:string;jobId:string}):string|undefined};
+/** Trusted provider adapter only: revisions attest provider-enforced ownership
+ * of both exact sessions, including the source since before dispatch. Revisions
+ * are non-secret IDs, never reused after a fence is lost. A local mutex or
+ * process scan is not sufficient. The report needs its own exact attempt fence. */
+export type ProviderExclusivity={
+  authorize(scope:CollaborationScope,from:Binding,to:Binding,sourceAttempt:string,ownerGeneration:string,targetAttempt?:string):string|undefined;
+  authorizeReport(scope:CollaborationScope,binding:Binding,reportId:string,attemptId:string,ownerGeneration:string):string|undefined;
+  /** Must attest this exact turn ended with no continuation or background work. */
+  finished(scope:CollaborationScope,binding:Binding,requestId:string,attemptId:string,ownerGeneration:string,revision:string):boolean;
+};
 type Row={job_id:string;source_id:string;source_attempt:string;source_binding:string;source_identity:string;source_body:string;
   target_binding:string;target_identity:string;item_id:number;root_id:string;owner:string;destination:string;
   contract_id:string;revision:number;approved_hash:string;body_hash:string;summary:string;yielded:number;
   claim_token:string|null;generation:number|null;target_attempt:string|null;submission_started:number;finished:number;state:string;owner_generation:string|null;
-  handoff_role:string|null;authority_revision:string|null;role_order_version:number|null;finished_event_id:number|null};
+  handoff_role:string|null;authority_revision:string|null;role_order_version:number|null;finished_event_id:number|null;exclusive_revision:string|null};
 
 /** Experimental internal adapter. No endpoint or default Router enables this. */
 export class ManagedCollaboration {
-  constructor(private router:Router,private authority:HandoffAuthority) {
+  constructor(private router:Router,private authority:HandoffAuthority,private exclusivity?:ProviderExclusivity) {
+    router.store.db.exec('SAVEPOINT managed_collaboration_init');
+    try {
+    // Acquire a write lock before inspecting legacy handoffs. Setup reservation
+    // and workflow migration must never publish concurrently.
+    router.store.db.exec(`CREATE TABLE IF NOT EXISTS collaboration_init_lock(id INTEGER PRIMARY KEY);
+      INSERT OR IGNORE INTO collaboration_init_lock VALUES(1);
+      UPDATE collaboration_init_lock SET id=id WHERE id=1`);
     router.store.db.exec(`CREATE TABLE IF NOT EXISTS managed_collaboration_handoffs(
       job_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,source_attempt TEXT NOT NULL,source_binding TEXT NOT NULL,
       source_identity TEXT NOT NULL,source_body TEXT NOT NULL,target_binding TEXT NOT NULL,target_identity TEXT NOT NULL,
@@ -27,6 +45,11 @@ export class ManagedCollaboration {
       summary TEXT NOT NULL,yielded INTEGER NOT NULL DEFAULT 0,claim_token TEXT,generation INTEGER,target_attempt TEXT,submission_started INTEGER NOT NULL DEFAULT 0,
       finished INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'waiting',owner_generation TEXT);
       CREATE UNIQUE INDEX IF NOT EXISTS managed_collaboration_active_item ON managed_collaboration_handoffs(item_id) WHERE state IN ('waiting','claimed');
+      CREATE TABLE IF NOT EXISTS collaboration_workflow_reservations(
+      root_id TEXT NOT NULL,item_id INTEGER NOT NULL,approval TEXT NOT NULL,created_at INTEGER NOT NULL,
+      PRIMARY KEY(root_id,item_id,approval));
+      CREATE TABLE IF NOT EXISTS collaboration_report_attempts(
+      job_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,root_id TEXT NOT NULL,item_id INTEGER NOT NULL,approval TEXT NOT NULL,attempt_id TEXT NOT NULL,exclusive_revision TEXT);
       CREATE TABLE IF NOT EXISTS managed_collaboration_turn_ends(
       request_id TEXT NOT NULL,attempt_id TEXT NOT NULL,binding_id TEXT NOT NULL,binding_identity TEXT NOT NULL,
       body_hash TEXT NOT NULL,owner_generation TEXT NOT NULL,root_id TEXT NOT NULL,item_id INTEGER NOT NULL,
@@ -44,11 +67,21 @@ export class ManagedCollaboration {
       router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN role_order_version INTEGER');
     if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_handoffs)').all().some((c:any)=>c.name==='finished_event_id'))
       router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN finished_event_id INTEGER');
+    if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_handoffs)').all().some((c:any)=>c.name==='exclusive_revision'))
+      router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN exclusive_revision TEXT');
+    if(!router.store.db.prepare('PRAGMA table_info(collaboration_report_attempts)').all().some((c:any)=>c.name==='exclusive_revision'))
+      router.store.db.exec('ALTER TABLE collaboration_report_attempts ADD COLUMN exclusive_revision TEXT');
+    if(router.store.db.prepare('SELECT 1 FROM managed_collaboration_handoffs LIMIT 1').get()&&hasUnresolvedProviderSetup(router.store))
+      throw new Error('Existing collaboration and provider setup are both unresolved. Reconciliation is required.');
+    router.store.db.exec(`INSERT OR IGNORE INTO collaboration_workflow_reservations(root_id,item_id,approval,created_at)
+      SELECT root_id,item_id,COALESCE(authority_revision,'legacy:'||job_id),0 FROM managed_collaboration_handoffs`);
     if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_turn_ends)').all().some((c:any)=>c.name==='ended_event_id'))
       router.store.db.exec('ALTER TABLE managed_collaboration_turn_ends ADD COLUMN ended_event_id INTEGER');
     new CollaborationHarness(router.store,{approved:()=>undefined,mayWork:()=>false});
     installCollaborationDispatchFence(router.store);
     this.recoverKnownUnsent();
+    router.store.db.exec('RELEASE managed_collaboration_init');
+    }catch(e){router.store.db.exec('ROLLBACK TO managed_collaboration_init; RELEASE managed_collaboration_init');throw e;}
   }
   private get store(){return this.router.store;}
   private row(id:string){return this.store.db.prepare('SELECT * FROM managed_collaboration_handoffs WHERE job_id=?').get(id) as Row|undefined;}
@@ -61,6 +94,7 @@ export class ManagedCollaboration {
   private identity(b:Binding){return hash(JSON.stringify([b.id,b.native_id,b.cwd,b.mode,b.provider,b.enabled,b.token_hash,this.store.get(`execution-mode:${b.id}`),this.store.get(`session-route:${b.id}`),this.router.coordinator?.registry.entry(b.id)]));}
   private managed(b:Binding){return b.mode!=='channel'&&this.router.native.connections?.route(b)?.transport==='managed-cli';}
   private context(row:Row):CollaborationScope {
+    if(hasUnresolvedProviderSetup(this.store))throw new Error('Provider setup or recovery is unresolved.');
     const source=this.store.job(row.source_id),binding=source&&this.store.binding(source.binding_id),target=this.store.binding(row.target_binding);
     const contract=this.router.contracts.approved(row.source_id);
     if(row.owner_generation===null||row.owner_generation!==(this.store.get('incoming-owner-generation')??'')||
@@ -73,8 +107,9 @@ export class ManagedCollaboration {
     this.router.contracts.assertDispatch(this.router,source.id,binding,source.body,new Set(),true);
     const scope={owner:row.owner,destination:row.destination,rootRequestId:row.root_id,itemId:row.item_id,
       contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash};
-    if(row.handoff_role===null||row.authority_revision===null||row.role_order_version!==1||!this.selected(binding,target)||
+    if(row.handoff_role===null||row.authority_revision===null||row.exclusive_revision===null||row.role_order_version!==1||!this.selected(binding,target)||
       this.authority.authorize(scope,binding,target,row.summary,row.handoff_role,{sourceId:row.source_id,jobId:row.job_id})!==row.authority_revision)throw new Error('The owner-approved handoff is unavailable.');
+    if(this.exclusivity?.authorize(scope,binding,target,row.source_attempt,row.owner_generation,row.target_attempt??undefined)!==row.exclusive_revision)throw new Error('Provider session exclusivity is unavailable.');
     if(!this.ordered(scope,row.authority_revision,row.handoff_role,row.source_id,row.job_id))throw new Error('The collaboration stage order changed.');
     return scope;
   }
@@ -102,7 +137,7 @@ export class ManagedCollaboration {
           const job=this.store.job(step.job_id);
           if(!job||job.status!=='completed'||job.binding_id!==step.target_binding||job.attempt_id!==step.target_attempt||job.outcome==='blocked'||job.outcome==='cancelled'||
             this.store.db.prepare("SELECT 1 FROM request_events WHERE request_id=? AND id>? AND event IN ('queued','dispatched','uncertain','failed','cancelled','completed','reviewed','auto_closed','replaced') LIMIT 1").get(step.job_id,step.finished_event_id))return false;
-          this.context(step);
+          if(!this.knownEnded({id:step.job_id,binding_id:step.target_binding,status:'completed'}))return false;
         }
         if(step&&(step.role_order_version!==1||step.source_id!==expected))return false;
         if(i>0){const report=this.store.db.prepare('SELECT source_id FROM task_contract_report_sources WHERE job_id=?').get(expected) as {source_id:string}|undefined;if(report?.source_id!==previous)return false;}
@@ -124,9 +159,10 @@ export class ManagedCollaboration {
         !(job.status==='submitted'||job.status==='completed'&&id.startsWith('report:'))||!contract?.dispatch_id||!contract.item_id||!contract.approved_hash||this.store.itemOf(id)!==contract.item_id)return false;
       const generation=this.sourceOwner(contract.dispatch_id,contract.owner,contract.destination,contract.channel);
       this.router.contracts.assertDispatch(this.router,id,binding,job.body,new Set(),true);
-      return !!this.store.db.prepare(`SELECT 1 FROM managed_collaboration_turn_ends e WHERE request_id=? AND attempt_id=? AND binding_id=? AND binding_identity=? AND body_hash=? AND owner_generation=? AND root_id=? AND item_id=? AND contract_id=? AND revision=? AND approved_hash=? AND ended_event_id IS NOT NULL
+      const recorded=!!this.store.db.prepare(`SELECT 1 FROM managed_collaboration_turn_ends e WHERE request_id=? AND attempt_id=? AND binding_id=? AND binding_identity=? AND body_hash=? AND owner_generation=? AND root_id=? AND item_id=? AND contract_id=? AND revision=? AND approved_hash=? AND ended_event_id IS NOT NULL
         AND NOT EXISTS(SELECT 1 FROM request_events r WHERE r.request_id=e.request_id AND r.id>e.ended_event_id AND r.event IN ('queued','dispatched','uncertain','failed','cancelled','completed','reviewed','auto_closed','replaced'))`)
         .get(id,job.attempt_id,binding.id,this.identity(binding),hash(job.body),generation,contract.dispatch_id,contract.item_id,contract.id,contract.revision,contract.approved_hash);
+      return recorded&&this.sourceFinished(id,binding,job.attempt_id);
     }catch{return false;}
   }
   /** A report can continue its exact coordinator ancestry after those turns
@@ -161,7 +197,10 @@ export class ManagedCollaboration {
     if(!row||!current||row.state!=='complete'||row.finished!==1||!row.finished_event_id||!row.target_attempt||
       current.attempt_id!==row.target_attempt||current.binding_id!==row.target_binding)return false;
     if(this.store.db.prepare("SELECT 1 FROM request_events WHERE request_id=? AND id>? AND event IN ('queued','dispatched','uncertain','failed','cancelled','completed','reviewed','auto_closed','replaced') LIMIT 1").get(job.id,row.finished_event_id))return false;
-    try{this.context(row);return true;}catch{return false;}
+    try {
+      const binding=this.store.binding(row.target_binding),scope=this.context(row);
+      return !!binding&&!!row.exclusive_revision&&!!row.owner_generation&&this.finishedProvider(scope,binding,row.job_id,row.target_attempt,row.owner_generation,row.exclusive_revision);
+    }catch{return false;}
   }
   /** A claim also fences the exact session, including work on other items. */
   private competingSessionWork(bindingId:string,exceptId:string,sourceId:string) {
@@ -184,16 +223,20 @@ export class ManagedCollaboration {
     const jobId=`master:${sourceId}:f5-${eventId}:${target.id}`;
     const authorityRevision=this.authority.authorize(scope,from,target,body,role,{sourceId,jobId});
     if(!authorityRevision||!/^[A-Za-z0-9._:-]{1,128}$/.test(authorityRevision))throw new Error('The owner did not authorize this handoff. Nothing was sent.');
+    const exclusiveRevision=this.exclusivity?.authorize(scope,from,target,source.attempt_id,ownerGeneration);
+    if(!exclusiveRevision||!/^[A-Za-z0-9._:-]{1,128}$/.test(exclusiveRevision))throw new Error('Provider session exclusivity is unavailable. Nothing was sent.');
     let cursor:string|undefined=sourceId;const visited=new Set<string>();
     while(cursor){if(visited.has(cursor)||visited.size>=4)throw new Error('Collaboration delegation depth exceeded.');visited.add(cursor);if(this.store.job(cursor)?.binding_id===target.id)throw new Error('Collaboration delegation cycle refused.');cursor=this.store.get(`parent:${cursor}`)??this.store.get(`report-parent:${cursor}`);}
     const prior=this.row(jobId);
-    if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body||prior.handoff_role!==role||prior.authority_revision!==authorityRevision)throw new Error('The handoff ID was reused.');this.context(prior);return jobId;}
+    if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body||prior.handoff_role!==role||prior.authority_revision!==authorityRevision||prior.exclusive_revision!==exclusiveRevision)throw new Error('The handoff ID was reused.');this.context(prior);return jobId;}
     this.store.db.exec('SAVEPOINT managed_collaboration_stage');
     try{
+      if(hasUnresolvedProviderSetup(this.store))throw new Error('Provider setup or recovery is unresolved.');
       if(this.competingSessionWork(from.id,sourceId,sourceId)||this.competingSessionWork(target.id,jobId,sourceId))throw new Error('A collaboration session already has active or uncertain work.');
       const live=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE (status IN ('queued','dispatched','submitted','uncertain') OR attempt_id IS NOT NULL) AND id<>?").all(sourceId) as Pick<Job,'id'|'binding_id'|'status'>[];
       if(live.some(j=>this.store.itemsInAncestry(j.id).includes(item)&&!this.parkedAncestor(sourceId,j)&&!this.knownEnded(j)))throw new Error('The item already has active or uncertain work.');
       if(!this.ordered(scope,authorityRevision,role,sourceId,jobId))throw new Error('The collaboration stage order is unavailable. Nothing was sent.');
+      this.store.db.prepare('INSERT OR IGNORE INTO collaboration_workflow_reservations(root_id,item_id,approval,created_at) VALUES(?,?,?,?)').run(root,item,authorityRevision,Date.now());
       // A report to the original coordinator can hand off under the same
       // approved root, while its exact source remains recorded in this row.
       const parent=sourceId.startsWith('report:')&&source.binding_id===rootJob.binding_id?root:sourceId;
@@ -202,28 +245,94 @@ export class ManagedCollaboration {
       bindScheduledChild(this.router,parent,jobId,target,scoped);
       this.store.enqueue(jobId,target,scoped,contract.destination);
       this.store.db.prepare(`INSERT INTO managed_collaboration_handoffs(job_id,source_id,source_attempt,source_binding,source_identity,source_body,
-        target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation,handoff_role,authority_revision,role_order_version)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,1)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,ownerGeneration,role,authorityRevision);
+        target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation,handoff_role,authority_revision,role_order_version,exclusive_revision)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,1,?)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,ownerGeneration,role,authorityRevision,exclusiveRevision);
       this.context(this.row(jobId)!);
       this.store.db.exec('RELEASE managed_collaboration_stage');return jobId;
     }catch(e){this.store.db.exec('ROLLBACK TO managed_collaboration_stage; RELEASE managed_collaboration_stage');throw e;}
   }
   has(id:string){return !!this.row(id);}
+  private workflowReport(id:string,b:Binding,workflow:{root_id:string;item_id:number;approval:string}) {
+    const job=this.store.job(id);
+    if(!job||job.binding_id!==b.id||!(job.status==='queued'&&!job.attempt_id||job.status==='dispatched'&&!!job.attempt_id))return false;
+    const prior=this.store.db.prepare(`SELECT h.* FROM managed_collaboration_handoffs h
+      JOIN task_contract_report_sources r ON r.source_id=h.job_id
+      WHERE r.job_id=? AND ?='report:'||h.job_id AND h.root_id=? AND h.item_id=? AND h.authority_revision=?
+      AND h.source_binding=? AND h.state='complete' AND h.finished=1 AND h.role_order_version=1`).get(id,id,workflow.root_id,workflow.item_id,workflow.approval,b.id) as Row|undefined;
+    if(!prior||!this.knownEnded({id:prior.job_id,binding_id:prior.target_binding,status:'completed'}))return false;
+    if(job.status==='dispatched')return this.validReportFence(id,b,job.attempt_id!);
+    return true;
+  }
+  private validReportFence(id:string,b:Binding,attempt:string) {
+    try {
+      const record=this.store.db.prepare('SELECT * FROM collaboration_report_attempts WHERE job_id=? AND attempt_id=?').get(id,attempt) as {source_id:string;root_id:string;item_id:number;approval:string;exclusive_revision:string|null}|undefined;
+      const prior=record&&this.row(record.source_id);
+      if(!record||!prior||!record.exclusive_revision||prior.root_id!==record.root_id||prior.item_id!==record.item_id||prior.authority_revision!==record.approval||prior.source_binding!==b.id)return false;
+      const scope=this.context(prior);
+      return this.exclusivity?.authorizeReport(scope,b,id,attempt,prior.owner_generation!)===record.exclusive_revision;
+    }catch{return false;}
+  }
+  private finishedProvider(scope:CollaborationScope,b:Binding,id:string,attempt:string,generation:string,revision:string) {
+    try{return this.exclusivity?.finished(scope,b,id,attempt,generation,revision)===true;}catch{return false;}
+  }
+  private sourceFinished(id:string,b:Binding,attempt:string) {
+    try {
+      const report=this.store.db.prepare('SELECT source_id,exclusive_revision FROM collaboration_report_attempts WHERE job_id=? AND attempt_id=?').get(id,attempt) as {source_id:string;exclusive_revision:string|null}|undefined;
+      if(report){
+        const prior=this.row(report.source_id);if(!prior||!report.exclusive_revision||!this.validReportFence(id,b,attempt))return false;
+        return this.finishedProvider(this.context(prior),b,id,attempt,prior.owner_generation!,report.exclusive_revision);
+      }
+      const rows=this.store.db.prepare("SELECT * FROM managed_collaboration_handoffs WHERE source_id=? AND source_attempt=? AND state IN ('waiting','claimed','complete')").all(id,attempt) as Row[];
+      return rows.some(row=>!!row.exclusive_revision&&!!row.owner_generation&&this.finishedProvider(this.context(row),b,id,attempt,row.owner_generation,row.exclusive_revision));
+    }catch{return false;}
+  }
+  /** Reserve the exact coordinator report attempt in the dispatch transaction. */
+  reserveWorkflowReport(id:string,b:Binding):string|undefined {
+    const items=this.store.itemsInAncestry(id),workflows=this.store.db.prepare('SELECT * FROM collaboration_workflow_reservations').all() as {root_id:string;item_id:number;approval:string}[];
+    const relevant=workflows.filter(w=>items.includes(w.item_id)||!!this.store.db.prepare('SELECT 1 FROM managed_collaboration_handoffs WHERE root_id=? AND item_id=? AND authority_revision=? AND source_binding=? LIMIT 1').get(w.root_id,w.item_id,w.approval,b.id));
+    if(!relevant.length)return;
+    if(relevant.length!==1||!this.workflowReport(id,b,relevant[0]))throw new CollaborationHold('The collaboration report is unavailable.');
+    const source=this.store.db.prepare('SELECT source_id FROM task_contract_report_sources WHERE job_id=?').get(id) as {source_id:string}|undefined;
+    if(!source?.source_id||this.store.db.prepare('SELECT 1 FROM collaboration_report_attempts WHERE job_id=?').get(id))throw new CollaborationHold('The collaboration report attempt already exists.');
+    const attempt=randomUUID(),w=relevant[0],prior=this.row(source.source_id);
+    if(!prior)throw new CollaborationHold('The collaboration report source is unavailable.');
+    const scope=this.context(prior),exclusive=this.exclusivity?.authorizeReport(scope,b,id,attempt,prior.owner_generation!);
+    if(!exclusive||!/^[A-Za-z0-9._:-]{1,128}$/.test(exclusive))throw new CollaborationHold('Provider report exclusivity is unavailable.');
+    this.store.db.prepare('INSERT INTO collaboration_report_attempts(job_id,source_id,root_id,item_id,approval,attempt_id,exclusive_revision) VALUES(?,?,?,?,?,?,?)')
+      .run(id,source.source_id,w.root_id,w.item_id,w.approval,attempt,exclusive);
+    return attempt;
+  }
   /** Recheck every ordinary, item-linked delivery, including after readiness.
    * A retained claim blocks work even when its handoff row was invalidated. */
   assertOrdinaryDispatch(id:string,b:Binding) {
     if(this.has(id))return;
+    // A released claim is safe only while the exact target completion remains
+    // valid. Provider evidence may be revoked after the claim was released.
+    for(const row of this.store.db.prepare("SELECT * FROM managed_collaboration_handoffs WHERE target_binding=? AND state='complete'").all(b.id) as Row[]){
+      const completed=this.store.job(row.job_id);
+      if(!completed||!this.knownEnded(completed))throw new CollaborationHold('This session has an uncertain collaboration completion.');
+    }
     if(this.store.db.prepare("SELECT 1 FROM managed_collaboration_handoffs WHERE source_binding=? AND source_id<>? AND state IN ('waiting','claimed')").get(b.id,id))
       throw new CollaborationHold('This session is yielding a collaboration handoff.');
     const claimTable=this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_claims'").get();
     if(claimTable&&this.store.db.prepare('SELECT 1 FROM collaboration_claims WHERE holder_id=? AND token IS NOT NULL').get(b.id))
       throw new CollaborationHold('This session has an active or uncertain collaboration claim.');
-    for(const item of this.store.itemsInAncestry(id)){
+    const items=this.store.itemsInAncestry(id),job=this.store.job(id);
+    const workflows=this.store.db.prepare('SELECT * FROM collaboration_workflow_reservations').all() as {root_id:string;item_id:number;approval:string}[];
+    for(const workflow of workflows){
+      const source=this.store.db.prepare(`SELECT * FROM managed_collaboration_handoffs WHERE root_id=? AND item_id=? AND authority_revision=?
+        AND source_binding=? AND state IN ('waiting','claimed') AND source_id=?`).get(workflow.root_id,workflow.item_id,workflow.approval,b.id,id) as Row|undefined;
+      const relevant=items.includes(workflow.item_id)||!!this.store.db.prepare('SELECT 1 FROM managed_collaboration_handoffs WHERE root_id=? AND item_id=? AND authority_revision=? AND source_binding=? LIMIT 1').get(workflow.root_id,workflow.item_id,workflow.approval,b.id);
+      if(!relevant)continue;
+      if(source?.state==='waiting'&&job?.status==='dispatched'&&job.attempt_id===source.source_attempt&&this.identity(b)===source.source_identity)continue;
+      if(this.workflowReport(id,b,workflow))continue;
+      throw new CollaborationHold('This item or session belongs to an unresolved collaboration workflow.');
+    }
+    for(const item of items){
       if(claimTable&&this.store.db.prepare('SELECT 1 FROM collaboration_claims WHERE item_id=? AND token IS NOT NULL').get(item))
         throw new CollaborationHold('This item has an active or uncertain collaboration claim.');
       const active=this.store.db.prepare("SELECT * FROM managed_collaboration_handoffs WHERE item_id=? AND state IN ('waiting','claimed')").get(item) as Row|undefined;
       if(!active)continue;
-      const job=this.store.job(id);
       if(active.state==='waiting'&&active.source_id===id&&active.source_binding===b.id&&job?.status==='dispatched'&&job.attempt_id===active.source_attempt&&this.identity(b)===active.source_identity)continue;
       throw new CollaborationHold('This item is waiting for its collaboration handoff.');
     }
@@ -357,10 +466,13 @@ export class ManagedCollaboration {
     // per-request turn identity. A result or matching session ID alone cannot
     // prove that this exact turn ended, so do not yield or release its claim.
     if(b.provider!=='codex')return;
+    if(id.startsWith('report:')&&this.store.itemsInAncestry(id).some(item=>!!this.store.db.prepare('SELECT 1 FROM collaboration_workflow_reservations WHERE item_id=?').get(item))&&
+      !this.validReportFence(id,b,attemptId))return;
     // This method is called only by Router after the exact managed run
     // resolves. Legacy or interrupted turns have no such evidence and stay
     // blocking even if a later progress message changes their status.
     if(this.router.coordinator?.isCoordinator(b.id)&&(job.status==='submitted'||job.status==='completed'&&id.startsWith('report:'))){
+      if(!this.sourceFinished(id,b,attemptId))return;
       try{
         const contract=this.router.contracts.approved(id);
         if(contract?.dispatch_id&&contract.item_id&&contract.approved_hash&&this.store.itemOf(id)===contract.item_id){
@@ -373,16 +485,19 @@ export class ManagedCollaboration {
         }
       }catch{/* Without exact completion evidence the ancestor remains blocking. */}
     }
-    if(this.router.coordinator?.isCoordinator(b.id)&&!this.confirmedEnded(id))return;
+    const targetRow=this.row(id),isClaimedTarget=targetRow?.state==='claimed'&&targetRow.target_attempt===attemptId;
+    if(this.router.coordinator?.isCoordinator(b.id)&&!isClaimedTarget&&!this.confirmedEnded(id))return;
     for(const row of this.store.db.prepare("SELECT * FROM managed_collaboration_handoffs WHERE source_id=? AND state='waiting'").all(id) as Row[]){
       try{this.context(row);if(job.attempt_id===row.source_attempt&&(job.status==='submitted'||job.status==='completed'&&job.id.startsWith('report:')))this.store.db.prepare('UPDATE managed_collaboration_handoffs SET yielded=1 WHERE job_id=? AND source_attempt=?').run(row.job_id,row.source_attempt);}catch{}
     }
-    const row=this.row(id);if(!row||row.state!=='claimed'||!row.claim_token||job.status!=='completed'||!job.attempt_id||job.attempt_id!==row.target_attempt)return;
+    const row=targetRow;if(!row||row.state!=='claimed'||!row.claim_token||job.status!=='completed'||!job.attempt_id||job.attempt_id!==row.target_attempt)return;
     // Do not infer test/proof success from a final reply: only the managed turn's
     // liveness ended. Refuse release if other linked work is still active.
     this.store.db.exec('SAVEPOINT managed_collaboration_finish');
     try{
-      this.context(row);this.store.db.prepare('UPDATE managed_collaboration_handoffs SET finished=1 WHERE job_id=?').run(id);
+      const scope=this.context(row);
+      if(!row.exclusive_revision||!row.owner_generation||!this.finishedProvider(scope,b,id,attemptId,row.owner_generation,row.exclusive_revision))throw new Error('Provider completion is unavailable.');
+      this.store.db.prepare('UPDATE managed_collaboration_handoffs SET finished=1 WHERE job_id=?').run(id);
       const finished=this.row(id)!;this.core(finished,true).releaseObserved(finished.root_id,finished.item_id,finished.claim_token!,`f5-release:${hash(id)}`);
       const last=this.store.db.prepare('SELECT MAX(id) AS id FROM request_events WHERE request_id=?').get(id) as {id:number|null};
       if(last.id===null)throw new Error('Completion event is unavailable.');

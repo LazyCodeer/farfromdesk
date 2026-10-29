@@ -424,7 +424,7 @@ export class Router {
       try{
         if(fence&&this.store.job(job.id)?.status!=='queued')throw new CollaborationHold('The request is no longer queued.');
         this.assertDispatchAllowed(job.id,b);
-        const attempt=collaboration?this.collaboration!.reserveDispatchAttempt(job.id):undefined;
+        const attempt=collaboration?this.collaboration!.reserveDispatchAttempt(job.id):this.collaboration?.reserveWorkflowReport(job.id,b);
         this.store.jobState(job.id,'dispatched',null,undefined,attempt);
         if(collaboration)this.collaboration!.captureDispatchAttempt(job.id);
         if(fence)this.store.db.exec('RELEASE collaboration_dispatch');
