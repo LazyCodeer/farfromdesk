@@ -14,6 +14,7 @@ export const TELEGRAM_COMMANDS=[
   {command:'help',description:'Commands and current target'},
   {command:'sessions',description:'Show your sessions'},
   {command:'status',description:'Show current activity'},
+  {command:'proof',description:'Bind an approved check; no task verification yet'},
 ];
 export function telegramCommand(text:string,username:string):string|null {
   const m=/^\s*\/([a-z][a-z0-9_]*)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(text);

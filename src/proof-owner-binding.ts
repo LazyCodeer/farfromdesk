@@ -27,8 +27,16 @@ export class ProofOwnerBindings {
     if(!origin||origin.owner!==origin.destination||s.destination()!==origin.destination||!s.incomingOwnerCurrent()||m.ownerCommand!==true||m.source==='voice'||m.quotedId||!authenticatedOwner(this.router,m))
       throw new Error('Send this as a new typed message in your direct owner chat.');
     const match=m.text.length<=1000?/^\/proof bind (\S+) ([1-3]) ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.exec(m.text.trim()):null;
-    if(!match)throw new Error('Use /proof bind REQUEST_ID CHECK_NUMBER OWNER/REPO.');
-    const root=match[1],current=contractProofScope(this.router,root);
+    if(!match)throw new Error('Use /proof bind #ITEM CHECK_NUMBER OWNER/REPO.');
+    let root=match[1];
+    if(/^#[1-9][0-9]{0,8}$/.test(root)){
+      const candidates=s.db.prepare("SELECT dispatch_id FROM task_contracts WHERE item_id=? AND state='approved' AND dispatch_id IS NOT NULL LIMIT 21").all(Number(root.slice(1))) as {dispatch_id:string}[];
+      if(candidates.length>20)throw new Error('This item has too many task approvals. Use its exact request ID.');
+      const matches=candidates.filter(row=>{const candidate=contractProofScope(this.router,row.dispatch_id);return candidate?.scope.owner===origin.owner&&candidate.scope.destination===origin.destination;});
+      if(matches.length!==1)throw new Error('This item does not identify one completed approved task. Use its exact request ID.');
+      root=matches[0].dispatch_id;
+    }
+    const current=contractProofScope(this.router,root);
     if(!current||current.scope.owner!==origin.owner||current.scope.destination!==origin.destination)throw new Error('The approved task or owner is unavailable.');
     const check=current.checks[Number(match[2])-1],name=check&&/^GitHub check (.+) passed$/.exec(check.text)?.[1];
     if(!check||!name)throw new Error('The approved check must name the exact GitHub check and say it passed.');

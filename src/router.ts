@@ -34,7 +34,7 @@ export const help = `Just tell me what you need.
 
 Reply to a permission message with “Yes, allow it” or “No, deny it”. Reply to a session’s message to continue in that session.
 
-To bind an approved GitHub check, use /proof bind REQUEST_ID CHECK_NUMBER OWNER/REPO. This does not verify the task.`;
+To bind an approved GitHub check, use /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.`;
 export class Router {
   coordinator?:Coordinator;
   brain:MetaBrain;

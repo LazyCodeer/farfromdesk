@@ -61,13 +61,15 @@ approvals are not backfilled. This database fence does not establish the
 history of files outside SQLite, including the Meta key, and is not sufficient
 authorization for independent evidence or a correction.
 
-An owner can send `/proof bind REQUEST_ID CHECK_NUMBER OWNER/REPO` as a new
+An owner can send `/proof bind #ITEM CHECK_NUMBER OWNER/REPO` as a new
 typed message in their direct owner chat to record a public GitHub binding for
 one completed, approved contract scope. The contract criterion must already
 say `GitHub check NAME passed`. The saved binding is rechecked against the
 original scope and owner generation. It is not passed to `ProofChecks` and
 does not establish that a run or commit belongs to the task. Even after this
 approval, every check remains unverified and no correction may be dispatched.
+An item with multiple eligible approvals requires its exact request ID instead
+of an item number, so the bridge cannot silently choose a different task.
 In particular, the scope fence cannot detect external Meta key changes away
 and back. If initialization fails or the scope is unavailable, binding fails
 closed without affecting ordinary task routing.

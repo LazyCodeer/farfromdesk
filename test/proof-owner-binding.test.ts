@@ -54,7 +54,8 @@ test('only an exact approved contract check can receive an owner binding',async(
 test('typed contract approval and proof command use the real router path',async()=>{
   const f=await fixture(false,true);try{
     assert.ok(f.store.recordedIncomingInput(f.id));assert.ok(contractProofScope(f.router,f.id));
-    const result=await f.router.receive({id:'wa:binding-command',text:`/proof bind ${f.id} 1 example/project`,ownerCommand:true});
+    const item=contractProofScope(f.router,f.id)!.scope.itemId;
+    const result=await f.router.receive({id:'wa:binding-command',text:`/proof bind #${item} 1 example/project`,ownerCommand:true});
     assert.equal(result.status,'handled');assert.equal(f.store.job('wa:binding-command'),undefined);
     const row=f.store.db.prepare("SELECT id,body FROM outbox WHERE source='command:wa:binding-command:0'").get() as {id:string;body:string};
     assert.match(row.body,/does not verify the task or any run/);assert.equal(f.store.incomingOwnerDelivery(row.id),true);
