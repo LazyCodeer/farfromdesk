@@ -66,6 +66,8 @@ jobs:
     timeout-minutes: 35
     env:
       WSB_TARGET_ARCH: ${{ matrix.arch }}
+      # Unique to this workflow run: never reuse a release binary across commits or releases.
+      INTEL_APP_CACHE_KEY: intel-app-v1-${{ github.run_id }}-${{ github.sha }}-${{ needs.version.outputs.app }}-${{ needs.version.outputs.build }}-${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: {persist-credentials: false}
@@ -100,8 +102,37 @@ jobs:
           ./install/install.ps1 -DryRun
       - run: flutter pub get
         working-directory: desktop
-      - run: flutter build ${{ matrix.target }} --release --build-name ${{ needs.version.outputs.app }} --build-number ${{ needs.version.outputs.build }} --dart-define=FFD_VERSION=${{ needs.version.outputs.version }}
+      - name: Restore this run's Intel app
+        id: intel-app-cache
+        if: matrix.runner == 'macos-15-intel'
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          key: ${{ env.INTEL_APP_CACHE_KEY }}
+          path: desktop/build/macos/Build/Products/Release/FarFromDesk.app
+      - name: Validate restored Intel app
+        id: intel-app-validation
+        if: matrix.runner == 'macos-15-intel' && steps.intel-app-cache.outputs.cache-hit == 'true'
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app }}
+          APP_BUILD: ${{ needs.version.outputs.build }}
+        run: |
+          if python3 script/validate_intel_app_cache.py desktop/build/macos/Build/Products/Release/FarFromDesk.app "$APP_VERSION" "$APP_BUILD"; then
+            echo 'valid=true' >> "$GITHUB_OUTPUT"
+          else
+            rm -rf desktop/build/macos/Build/Products/Release/FarFromDesk.app
+            echo 'Cached app failed validation; rebuilding.'
+          fi
+      - if: steps.intel-app-validation.outputs.valid != 'true'
+        run: flutter build ${{ matrix.target }} --release --build-name ${{ needs.version.outputs.app }} --build-number ${{ needs.version.outputs.build }} --dart-define=FFD_VERSION=${{ needs.version.outputs.version }}
         working-directory: desktop
+      - name: Cache this run's Intel app for retries
+        if: matrix.runner == 'macos-15-intel' && steps.intel-app-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          key: ${{ env.INTEL_APP_CACHE_KEY }}
+          path: desktop/build/macos/Build/Products/Release/FarFromDesk.app
       - name: Restore pinned speech build cache
         id: speech-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
