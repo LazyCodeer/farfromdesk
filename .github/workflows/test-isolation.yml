@@ -1,0 +1,23 @@
+name: Test isolation on Windows
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['script/run_node_tests.mjs', 'script/run-tests.cmd', 'script/test_fetch_guard.mjs', 'script/tests/fixtures/node_runner_*.test.ts', 'test/test-runner.test.ts', 'test/test-safe-temp.test.ts', 'package*.json', '.github/workflows/test-isolation.yml']
+  push:
+    branches: [main]
+    paths: ['script/run_node_tests.mjs', 'script/run-tests.cmd', 'script/test_fetch_guard.mjs', 'script/tests/fixtures/node_runner_*.test.ts', 'test/test-runner.test.ts', 'test/test-safe-temp.test.ts', 'package*.json', '.github/workflows/test-isolation.yml']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.20.0', cache: npm}
+      - run: npm ci
+      - name: Verify isolated temp and Windows launcher
+        shell: cmd
+        run: script\run-tests.cmd files test\test-safe-temp.test.ts test\test-runner.test.ts
