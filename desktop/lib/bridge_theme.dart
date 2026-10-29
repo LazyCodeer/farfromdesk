@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 // FarFromDesk Studio design (2026-10-28): near-black surfaces, one orange
-// accent, Onest. Cards are #0f0f0f with a 1px #1e1e1e inset line.
+// accent, system typography. Cards are #0f0f0f with a 1px #1e1e1e inset line.
 const windowColor = Color(0xff080808),
     sidebarColor = Color(0xff0b0b0b),
     panelColor = Color(0xff0f0f0f),
@@ -87,11 +87,7 @@ Widget onLightTone(BuildContext context, Widget child) {
 }
 
 final _pill = RoundedRectangleBorder(borderRadius: BorderRadius.circular(9));
-const _label = TextStyle(
-  fontFamily: 'Onest',
-  fontSize: 13,
-  fontWeight: FontWeight.w600,
-);
+const _label = TextStyle(fontSize: 13, fontWeight: FontWeight.w600);
 OutlineInputBorder _field(Color color, [double width = 1]) =>
     OutlineInputBorder(
       borderRadius: BorderRadius.circular(9),
@@ -101,7 +97,6 @@ OutlineInputBorder _field(Color color, [double width = 1]) =>
 ThemeData bridgeTheme() => ThemeData(
   useMaterial3: true,
   visualDensity: VisualDensity.standard,
-  fontFamily: 'Onest',
   brightness: Brightness.dark,
   scaffoldBackgroundColor: windowColor,
   colorScheme: const ColorScheme.dark(

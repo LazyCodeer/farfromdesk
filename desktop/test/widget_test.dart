@@ -137,60 +137,25 @@ void main() {
     },
   );
 
-  testWidgets(
-    'Phone selectors clear removed values when equal-length lists refresh',
-    (tester) async {
-      size(tester);
-      final api = RefreshingRemoteGateway();
-      await tester.pumpWidget(FarFromDeskApp(gateway: api));
-      await tester.pumpAndSettle();
-      await tester.pump(const Duration(seconds: 3));
-      await tester.pumpAndSettle();
-      Finder field(String label) => find.byWidgetPredicate(
-        (w) => w is DropdownButtonFormField && w.decoration.labelText == label,
-      );
-      expect(
-        tester
-            .widget<DropdownButtonFormField<String>>(field('Wi-Fi network'))
-            .initialValue,
-        '192.0.2.1',
-      );
-      await tester.ensureVisible(find.byKey(const Key('wifi-find-apps')));
-      await tester.tap(find.byKey(const Key('wifi-find-apps')));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(field('App'));
-      await tester.tap(field('App'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Editor One').last);
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<DropdownButtonFormField<int>>(field('App')).initialValue,
-        10,
-      );
-      api.replaced = true;
-      await tester.tap(find.byKey(const Key('wifi-find-apps')));
-      await tester.pumpAndSettle();
-      await tester.pump(const Duration(seconds: 3));
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<DropdownButtonFormField<int>>(field('App')).initialValue,
-        isNull,
-      );
-      expect(
-        tester
-            .widget<DropdownButtonFormField<int>>(field('Window'))
-            .initialValue,
-        isNull,
-      );
-      expect(
-        tester
-            .widget<DropdownButtonFormField<String>>(field('Wi-Fi network'))
-            .initialValue,
-        isNull,
-      );
-      expect(tester.takeException(), isNull);
-    },
-  );
+  testWidgets('Local phone setup is absent after network status changes', (
+    tester,
+  ) async {
+    size(tester);
+    final api = RefreshingRemoteGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.text('Same Wi-Fi preview'), findsNothing);
+    expect(find.byKey(const Key('wifi-find-apps')), findsNothing);
+    api.replaced = true;
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.text('Same Wi-Fi preview'), findsNothing);
+    expect(find.byKey(const Key('wifi-find-apps')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('Inbox shows command failures even without native jobs', (
     tester,
@@ -508,6 +473,13 @@ void main() {
       expect(api.loads, 1);
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('whatsapp-destination-settings')),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('whatsapp-destination-settings')),
+      );
+      await tester.pumpAndSettle();
       expect(find.textContaining('Could not load groups.'), findsOneWidget);
       expect(
         find.text('No groups with only you as a member were found.'),
@@ -625,6 +597,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.loads, 1);
     await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('whatsapp-destination-settings')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('whatsapp-destination-settings')),
+    );
     await tester.pumpAndSettle();
     expect(find.text('My notes'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
@@ -751,42 +730,20 @@ void main() {
   );
 
   testWidgets(
-    'Settings disclosures use rounded cards and expand without bright dividers',
+    'Settings removes duplicate sections and retains availability controls',
     (tester) async {
       size(tester);
       await tester.pumpWidget(FarFromDeskApp(gateway: ConnectionGateway()));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
-      for (final title in ['Keep your computer available']) {
-        await tester.scrollUntilVisible(
-          find.text(title),
-          250,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.tap(find.text(title));
-        await tester.pumpAndSettle();
-        final tile = tester.widget<ExpansionTile>(
-          find.ancestor(
-            of: find.text(title),
-            matching: find.byType(ExpansionTile),
-          ),
-        );
-        expect(tile.shape, isA<RoundedRectangleBorder>());
-        expect(tile.shape, tile.collapsedShape);
-        expect(tester.takeException(), isNull);
-      }
-      if (Platform.environment['FFD_CAPTURE_SETTINGS'] == '1') {
-        await Scrollable.ensureVisible(
-          tester.element(find.text('Access & availability')),
-          alignment: 0,
-        );
-        await tester.pumpAndSettle();
-        await expectLater(
-          find.byType(Scaffold),
-          matchesGoldenFile('../../.local/settings-cards.png'),
-        );
-      }
+      expect(find.text('Access & availability'), findsNothing);
+      expect(find.text('Keep your computer available'), findsNothing);
+      expect(find.text('Platforms'), findsNothing);
+      expect(find.text('Request cleanup'), findsNothing);
+      expect(find.text('Run in the background'), findsOneWidget);
+      expect(find.text('Keep awake while locked'), findsOneWidget);
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -1204,6 +1161,7 @@ void main() {
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
       for (final page in ['Overview', 'Inbox', 'Settings']) {
+        await tester.ensureVisible(find.byTooltip(page));
         await tester.tap(find.byTooltip(page));
         await tester.pumpAndSettle();
         expect(find.text('Update available'), findsOneWidget);
@@ -1488,13 +1446,16 @@ void main() {
     },
   );
   testWidgets(
-    'Settings saves Desktop immediately without a launcher or session picker',
+    'Coordinator app preferences save Desktop without a launcher or session picker',
     (tester) async {
       size(tester);
       final api = PreferenceGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Settings'));
+      await tester.ensureVisible(find.text('Manage coordinators'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
       await tester.pumpAndSettle();
       final codex = find.byKey(const ValueKey('platform-runtime-codex'));
       final claude = find.byKey(const ValueKey('platform-runtime-claude'));
@@ -1527,9 +1488,11 @@ void main() {
       expect(api.saved['codex']?['executionMode'], 'cli');
       expect(api.calls, everyElement('/api/platform-preference'));
       expect(api.calls.length, 2);
-      await tester.tap(find.byTooltip('Overview'));
+      await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Settings'));
+      await tester.tap(find.text('Manage coordinators'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
       await tester.pumpAndSettle();
       expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
       expect(tester.widget<DropdownButton<String>>(claude).value, 'desktop');

@@ -102,141 +102,210 @@ extension _RemoteControl on _DeskState {
       Text(remoteError!, style: const TextStyle(color: Color(0xffff9d92))),
       gap(12),
     ],
-    remotePasswordPanel(),
-    gap(14),
-    remoteLinkPanel(),
-    gap(14),
-    wifiPreviewPanel(),
+    remoteControlCard(),
   ];
 
-  Widget remotePasswordPanel() {
-    final editing = !remotePasswordSet || changingRemotePassword;
-    return panel(
-      'Remote password',
-      trailing: remotePasswordSet
-          ? tag('Set', good: true)
-          : tag('Not set', tint: warning),
-      editing
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                small(
-                  'Your phone asks for it on every new connection. Use a separate password, not your Mac login.',
-                ),
-                gap(12),
-                TextField(
-                  key: const Key('remote-password'),
-                  controller: remotePassword,
-                  obscureText: true,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'Password, at least 12 characters',
-                  ),
-                ),
-                gap(8),
-                TextField(
-                  key: const Key('remote-password-confirm'),
-                  controller: remoteConfirm,
-                  obscureText: true,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'Confirm password',
-                  ),
-                  onSubmitted: (_) => saveRemotePassword(),
-                ),
-                gap(12),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    button(
-                      'Save password',
-                      saveRemotePassword,
-                      enabled: !remoteBusy,
-                      primary: true,
-                      compact: true,
-                      key: const Key('remote-password-save'),
-                    ),
-                    if (remotePasswordSet)
-                      button(
-                        'Cancel',
-                        () => changeView(() {
-                          changingRemotePassword = false;
-                          remotePassword.clear();
-                          remoteConfirm.clear();
-                        }),
-                        compact: true,
-                      ),
-                  ],
-                ),
-              ],
-            )
-          : settingRow(
-              'Asked on your phone every time',
-              'Changing it ends any phone session that is open now.',
-              button(
-                'Change',
-                () => changeView(() => changingRemotePassword = true),
-                compact: true,
-              ),
-            ),
-    );
-  }
-
-  Widget remoteLinkPanel() {
+  Widget remoteControlCard() {
     final state = remoteLink['state'] ?? 'idle';
-    final active = ['offered', 'connecting', 'connected'].contains(state);
-    final reason = remoteLink['reason'] as String?;
+    final stateTag = switch (state) {
+      'offered' => tag('Link sent', tint: warning),
+      'connecting' => tag('Connecting', spinning: true),
+      'connected' => tag('Connected', good: true),
+      _ => remotePasswordSet ? tag('Ready', good: true) : tag('Off'),
+    };
     return panel(
-      'From anywhere',
-      trailing: switch (state) {
-        'offered' => tag('Link sent', tint: warning),
-        'connecting' => tag('Connecting', spinning: true),
-        'connected' => tag('Connected', good: true),
-        _ => remotePasswordSet ? tag('Ready', good: true) : tag('Off'),
-      },
+      'Control from anywhere',
+      subtitle: remotePasswordSet
+          ? 'Your phone asks for the remote password on every new connection.'
+          : 'Set a remote password to get started.',
+      trailing: stateTag,
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          remoteStep(
-            1,
-            'Send "control my screen" to FarFromDesk in $channelName.',
+          LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth < 600) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    remotePasswordContents(),
+                    const Divider(height: 32),
+                    remoteLinkContents(),
+                  ],
+                );
+              }
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: remotePasswordContents()),
+                    Container(
+                      width: 1,
+                      margin: const EdgeInsets.symmetric(horizontal: 20),
+                      color: line2,
+                    ),
+                    Expanded(child: remoteLinkContents()),
+                  ],
+                ),
+              );
+            },
           ),
-          remoteStep(2, 'Open the link it sends on your phone.'),
-          remoteStep(3, 'Send back the code the phone page shows.'),
-          remoteStep(4, 'Enter your remote password on the phone.'),
-          if (!remotePasswordSet) ...[
-            gap(8),
-            small('Set a remote password above first.'),
-          ],
-          if (state == 'offered') ...[
-            gap(8),
-            small(
-              'Waiting for the code from your phone. The link expires after 5 minutes.',
-            ),
-          ],
-          if (state == 'ended' && reason != null) ...[
-            gap(8),
-            small('Last session ended. ${remoteMessage(reason)}'),
-          ],
-          if (active) ...[
-            gap(12),
-            button(
-              'Stop phone access',
-              () => remoteRun(
-                () => api.post('/api/remote-control', {}),
-                interrupt: true,
+          if (phoneRemote['running'] == true) ...[
+            const Divider(height: 32),
+            settingRow(
+              'An existing local phone session is active',
+              'Stop this session when you are finished.',
+              button(
+                'Stop phone access',
+                () => remoteRun(
+                  () => phoneCommand({'action': 'stop'}),
+                  interrupt: true,
+                ),
+                ignoreBusy: true,
+                destructive: true,
+                compact: true,
+                icon: Icons.stop_rounded,
+                key: const Key('wifi-stop'),
               ),
-              ignoreBusy: true,
-              destructive: true,
-              compact: true,
-              icon: Icons.stop_rounded,
-              key: const Key('remote-link-stop'),
             ),
           ],
         ],
       ),
+    );
+  }
+
+  Widget remotePasswordContents() {
+    final editing = !remotePasswordSet || changingRemotePassword;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Remote password',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            remotePasswordSet
+                ? tag('Set', good: true)
+                : tag('Not set', tint: warning),
+          ],
+        ),
+        gap(8),
+        if (editing) ...[
+          small(
+            'Use a separate password, not your $computer login. Your phone asks for it on each new connection.',
+          ),
+          gap(12),
+          TextField(
+            key: const Key('remote-password'),
+            controller: remotePassword,
+            obscureText: true,
+            enableSuggestions: false,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: 'Password, at least 12 characters',
+            ),
+          ),
+          gap(8),
+          TextField(
+            key: const Key('remote-password-confirm'),
+            controller: remoteConfirm,
+            obscureText: true,
+            enableSuggestions: false,
+            autocorrect: false,
+            decoration: const InputDecoration(labelText: 'Confirm password'),
+            onSubmitted: (_) => saveRemotePassword(),
+          ),
+          gap(12),
+          Wrap(
+            spacing: 8,
+            children: [
+              button(
+                'Save password',
+                saveRemotePassword,
+                enabled: !remoteBusy,
+                primary: true,
+                compact: true,
+                key: const Key('remote-password-save'),
+              ),
+              if (remotePasswordSet)
+                button(
+                  'Cancel',
+                  () => changeView(() {
+                    changingRemotePassword = false;
+                    remotePassword.clear();
+                    remoteConfirm.clear();
+                  }),
+                  compact: true,
+                ),
+            ],
+          ),
+        ] else ...[
+          small('Changing it ends any phone session that is open now.'),
+          gap(12),
+          button(
+            'Change',
+            () => changeView(() => changingRemotePassword = true),
+            compact: true,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget remoteLinkContents() {
+    final state = remoteLink['state'] ?? 'idle';
+    final active = ['offered', 'connecting', 'connected'].contains(state);
+    final reason = remoteLink['reason'] as String?;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Connect from your phone',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        gap(8),
+        small(
+          remotePasswordSet
+              ? 'Send the request from your connected chat:'
+              : 'Once your password is set:',
+        ),
+        gap(14),
+        remoteStep(
+          1,
+          'Send "control my screen" to FarFromDesk in $channelName.',
+        ),
+        remoteStep(2, 'Open the link it sends on your phone.'),
+        remoteStep(3, 'Send back the code the phone page shows.'),
+        remoteStep(4, 'Enter your remote password on the phone.'),
+        if (state == 'offered') ...[
+          gap(8),
+          small(
+            'Waiting for the code from your phone. The link expires after 5 minutes.',
+          ),
+        ],
+        if (state == 'ended' && reason != null) ...[
+          gap(8),
+          small('Last session ended. ${remoteMessage(reason)}'),
+        ],
+        if (active) ...[
+          gap(12),
+          button(
+            'Stop phone access',
+            () => remoteRun(
+              () => api.post('/api/remote-control', {}),
+              interrupt: true,
+            ),
+            ignoreBusy: true,
+            destructive: true,
+            compact: true,
+            icon: Icons.stop_rounded,
+            key: const Key('remote-link-stop'),
+          ),
+        ],
+      ],
     );
   }
 
@@ -260,208 +329,4 @@ extension _RemoteControl on _DeskState {
       ],
     ),
   );
-
-  Widget wifiPreviewPanel() {
-    final running = phoneRemote['running'] == true;
-    final phoneConnected = phoneRemote['connected'] == true;
-    final addresses = phoneRemote['addresses'] as List? ?? [];
-    final url = phoneRemote['url']?.toString() ?? '';
-    final selectedPid = phoneApps.any((a) => a['pid'] == phonePid)
-        ? phonePid
-        : null;
-    final selectedWindow = phoneWindows.any((w) => w['id'] == phoneWindowId)
-        ? phoneWindowId
-        : null;
-    final selectedAddress = addresses.any((a) => a['address'] == phoneAddress)
-        ? phoneAddress
-        : null;
-    final allowed =
-        status['macControl']?['trusted'] == true &&
-        status['macControl']?['capture']?['trusted'] == true;
-    DropdownMenuItem<T> item<T>(T value, String label) => DropdownMenuItem<T>(
-      value: value,
-      child: Text(label, overflow: TextOverflow.ellipsis),
-    );
-    return panel(
-      'Same Wi-Fi preview',
-      subtitle: 'Faster to try. Shares one window you pick.',
-      trailing: running
-          ? phoneConnected
-                ? tag('Phone connected', good: true)
-                : tag('Waiting for phone', spinning: true)
-          : tag('Off'),
-      running
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                small(
-                  'Open this address on your phone, then enter your remote password.',
-                ),
-                gap(8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SelectableText(
-                        url,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Copy address',
-                      iconSize: 18,
-                      color: muted,
-                      onPressed: () =>
-                          Clipboard.setData(ClipboardData(text: url)),
-                      icon: const Icon(Icons.copy_rounded),
-                    ),
-                  ],
-                ),
-                gap(8),
-                small(
-                  'Your phone may warn about the certificate. Allow it only if the fingerprint matches:',
-                ),
-                SelectableText(
-                  phoneRemote['fingerprint']?.toString() ?? '',
-                  style: const TextStyle(fontSize: 11, color: muted),
-                ),
-                gap(12),
-                button(
-                  'Stop phone access',
-                  () => remoteRun(
-                    () => phoneCommand({'action': 'stop'}),
-                    interrupt: true,
-                  ),
-                  ignoreBusy: true,
-                  destructive: true,
-                  compact: true,
-                  icon: Icons.stop_rounded,
-                  key: const Key('wifi-stop'),
-                ),
-              ],
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (!allowed) ...[
-                  small(
-                    'Needs Accessibility and Screen Recording. Turn on Mac control above and allow both.',
-                  ),
-                  gap(12),
-                ],
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<int>(
-                        key: ValueKey(
-                          'app-$selectedPid-${phoneApps.map((a) => a['pid']).join(',')}',
-                        ),
-                        initialValue: selectedPid,
-                        isExpanded: true,
-                        decoration: const InputDecoration(labelText: 'App'),
-                        items: [
-                          for (final a in phoneApps)
-                            item<int>(a['pid'] as int, '${a['name']}'),
-                        ],
-                        onChanged: remoteBusy
-                            ? null
-                            : (pid) => remoteRun(() async {
-                                phonePid = pid;
-                                phoneWindowId = null;
-                                phoneWindows = [];
-                                final r = await phoneCommand({
-                                  'action': 'windows',
-                                  'pid': pid,
-                                });
-                                phoneWindows = r['windows'] ?? [];
-                              }),
-                      ),
-                    ),
-                    IconButton(
-                      key: const Key('wifi-find-apps'),
-                      tooltip: 'Find open apps',
-                      iconSize: 18,
-                      color: muted,
-                      onPressed: remoteBusy || !allowed
-                          ? null
-                          : () => remoteRun(() async {
-                              final r = await phoneCommand({'action': 'apps'});
-                              phoneApps = r['apps'] ?? [];
-                              phonePid = null;
-                              phoneWindowId = null;
-                              phoneWindows = [];
-                            }),
-                      icon: const Icon(Icons.refresh_rounded),
-                    ),
-                  ],
-                ),
-                gap(10),
-                DropdownButtonFormField<int>(
-                  key: ValueKey(
-                    'window-$phonePid-$selectedWindow-${phoneWindows.map((w) => w['id']).join(',')}',
-                  ),
-                  initialValue: selectedWindow,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Window'),
-                  items: [
-                    for (final w in phoneWindows)
-                      item<int>(w['id'] as int, '${w['title']}'),
-                  ],
-                  onChanged: remoteBusy
-                      ? null
-                      : (id) => changeView(() => phoneWindowId = id),
-                ),
-                gap(10),
-                DropdownButtonFormField<String>(
-                  key: ValueKey(
-                    'net-$selectedAddress-${addresses.map((a) => a['address']).join(',')}',
-                  ),
-                  initialValue: selectedAddress,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Wi-Fi network'),
-                  items: [
-                    for (final a in addresses)
-                      item<String>(
-                        a['address'] as String,
-                        '${a['name']}  ${a['address']}',
-                      ),
-                  ],
-                  onChanged: remoteBusy
-                      ? null
-                      : (v) => changeView(() => phoneAddress = v),
-                ),
-                if (phoneRemote['error'] != null) ...[
-                  gap(10),
-                  small(
-                    "Couldn't start. ${remoteMessage('${phoneRemote['error']}')}",
-                  ),
-                ],
-                gap(14),
-                button(
-                  'Start preview',
-                  () => remoteRun(
-                    () => phoneCommand({
-                      'action': 'start',
-                      'pid': selectedPid,
-                      'windowId': selectedWindow,
-                      'address': selectedAddress,
-                    }),
-                  ),
-                  enabled:
-                      !remoteBusy &&
-                      allowed &&
-                      remotePasswordSet &&
-                      selectedPid != null &&
-                      selectedWindow != null &&
-                      selectedAddress != null,
-                  primary: true,
-                  compact: true,
-                  key: const Key('wifi-start'),
-                ),
-              ],
-            ),
-    );
-  }
 }

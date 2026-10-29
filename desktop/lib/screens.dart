@@ -415,7 +415,7 @@ extension _BridgeScreens on _DeskState {
 
   Widget sidebar(List<String> titles, int count) => Container(
     key: const ValueKey('navigation-rail'),
-    width: 140,
+    width: 168,
     decoration: const BoxDecoration(
       color: sidebarColor,
       border: Border(right: BorderSide(color: hairline)),
@@ -655,57 +655,91 @@ extension _BridgeScreens on _DeskState {
             style: TextStyle(fontSize: 12, color: muted),
           ),
         ),
-        DropdownButton<String>(
-          key: ValueKey(status['previewFlow']),
-          value: (status['previewFlow'] ?? 'empty') as String,
-          items: const [
-            DropdownMenuItem(
-              value: 'empty',
-              child: Text('Empty · choose an app'),
-            ),
-            DropdownMenuItem(
-              value: 'whatsapp-setup',
-              child: Text('WhatsApp · not connected'),
-            ),
-            DropdownMenuItem(
-              value: 'whatsapp-qr',
-              child: Text('WhatsApp · scan QR'),
-            ),
-            DropdownMenuItem(
-              value: 'whatsapp-connected',
-              child: Text('WhatsApp · connected'),
-            ),
-            DropdownMenuItem(
-              value: 'telegram',
-              child: Text('Telegram · bot setup'),
-            ),
-            DropdownMenuItem(
-              value: 'telegram-pairing',
-              child: Text('Telegram · waiting for Start'),
-            ),
-            DropdownMenuItem(
-              value: 'telegram-confirm',
-              child: Text('Telegram · confirm account'),
-            ),
-            DropdownMenuItem(
-              value: 'telegram-connected',
-              child: Text('Telegram · connected'),
-            ),
-            DropdownMenuItem(
-              value: 'telegram-expired',
-              child: Text('Telegram · link expired'),
-            ),
-            DropdownMenuItem(
-              value: 'telegram-error',
-              child: Text('Telegram · connection error'),
-            ),
-          ],
-          onChanged: (value) async {
-            if (value != null) {
-              await api.previewFlow(value);
-              await refresh();
-            }
-          },
+        Expanded(
+          flex: 2,
+          child: DropdownButton<String>(
+            isExpanded: true,
+            key: ValueKey(status['previewFlow']),
+            value: (status['previewFlow'] ?? 'empty') as String,
+            items: const [
+              DropdownMenuItem(
+                value: 'empty',
+                child: Text(
+                  'Empty · choose an app',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'whatsapp-setup',
+                child: Text(
+                  'WhatsApp · not connected',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'whatsapp-qr',
+                child: Text(
+                  'WhatsApp · scan QR',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'whatsapp-connected',
+                child: Text(
+                  'WhatsApp · connected',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'telegram',
+                child: Text(
+                  'Telegram · bot setup',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'telegram-pairing',
+                child: Text(
+                  'Telegram · waiting for Start',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'telegram-confirm',
+                child: Text(
+                  'Telegram · confirm account',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'telegram-connected',
+                child: Text(
+                  'Telegram · connected',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'telegram-expired',
+                child: Text(
+                  'Telegram · link expired',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              DropdownMenuItem(
+                value: 'telegram-error',
+                child: Text(
+                  'Telegram · connection error',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+            onChanged: (value) async {
+              if (value != null) {
+                await api.previewFlow(value);
+                await refresh();
+              }
+            },
+          ),
         ),
       ],
     ),
@@ -734,65 +768,148 @@ extension _BridgeScreens on _DeskState {
     });
   }
 
-  Widget messagingAppSettings() => panel(
-    'Messaging app',
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        small(
-          'Choose where you send requests and receive replies. Changing apps disconnects the current one first.',
+  Widget messagingAppSettings() {
+    Widget option(String id, String name) {
+      final selected =
+          hasChannelChoice && (usingTelegram ? 'telegram' : 'whatsapp') == id;
+      final tg = Map<String, dynamic>.from(status['telegram'] ?? {});
+      final wa = Map<String, dynamic>.from(status['whatsapp'] ?? {});
+      return Container(
+        key: ValueKey('messaging-option-$id'),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: raised,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected && connected
+                ? success.withValues(alpha: .3)
+                : line2,
+          ),
         ),
-        gap(12),
-        for (final entry in [
-          ('whatsapp', 'WhatsApp'),
-          ('telegram', 'Telegram'),
-        ])
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                logoTile(entry.$1, size: 36),
+                logoTile(id, size: 36),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        entry.$2,
+                        name,
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                       small(
-                        hasChannelChoice &&
-                                (usingTelegram ? 'telegram' : 'whatsapp') ==
-                                    entry.$1
-                            ? connected
+                        selected
+                            ? (connected
                                   ? 'Connected · receiving your requests'
-                                  : 'Selected · not connected'
+                                  : 'Selected · not connected')
                             : 'Not connected',
                       ),
                     ],
                   ),
                 ),
-                if (hasChannelChoice &&
-                    (usingTelegram ? 'telegram' : 'whatsapp') == entry.$1)
-                  connected
-                      ? tag('Current', good: true)
-                      : button('Connect', () => go(0), compact: true)
-                else
-                  button('Use ${entry.$2}', () async {
-                    if (!hasChannelChoice) {
-                      await chooseMessagingApp(entry.$1);
-                      if (mounted && actionError == null) go(0);
-                    } else {
-                      await switchMessagingApp();
-                    }
-                  }, compact: true),
+                if (selected && connected) tag('Current', good: true),
               ],
             ),
+            gap(14),
+            if (selected && connected && id == 'telegram') ...[
+              Text(
+                '@${tg['username'] ?? ''}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              gap(4),
+              small(
+                'Linked to ${tg['ownerName'] ?? 'your account'} · ID ${tg['ownerId'] ?? ''}',
+              ),
+              gap(8),
+              small(
+                'Private bot · only your confirmed account can control it.',
+              ),
+              gap(8),
+              small(
+                'Replies return to the chat that requested the work. Telegram bots use cloud chats, not end-to-end encrypted Secret Chats.',
+              ),
+            ] else if (selected && connected && id == 'whatsapp') ...[
+              Text(
+                '${wa['phoneNumber'] ?? 'Your WhatsApp account'}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              gap(4),
+              small('Only this account can control FarFromDesk.'),
+            ] else
+              small(
+                'Connect $name to send requests and receive replies from your phone.',
+              ),
+            gap(14),
+            if (selected && connected)
+              button('Disconnect', disconnectMessagingApp, compact: true)
+            else if (selected)
+              button('Connect', () => go(0), compact: true)
+            else
+              button('Use $name', () async {
+                if (!hasChannelChoice) {
+                  await chooseMessagingApp(id);
+                  if (mounted && actionError == null) go(0);
+                } else {
+                  await switchMessagingApp();
+                }
+              }, compact: true),
+            if (selected && connected && id == 'whatsapp') ...[
+              gap(12),
+              ExpansionTile(
+                key: const ValueKey('whatsapp-destination-settings'),
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Reply destination',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                subtitle: small(
+                  status['destination']?['kind'] == 'group'
+                      ? 'Private group'
+                      : 'Message yourself',
+                ),
+                children: [destinationCard()],
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return panel(
+      'Messaging app',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          small(
+            'Choose where you send requests and receive replies. Changing apps disconnects the current one first.',
           ),
-      ],
-    ),
-  );
+          gap(16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final telegram = option('telegram', 'Telegram');
+              final whatsapp = option('whatsapp', 'WhatsApp');
+              if (constraints.maxWidth < 560) {
+                return Column(children: [telegram, gap(12), whatsapp]);
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: telegram),
+                  const SizedBox(width: 12),
+                  Expanded(child: whatsapp),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> switchMessagingApp() async {
     final current = usingTelegram ? 'telegram' : 'whatsapp';
@@ -931,14 +1048,15 @@ extension _BridgeScreens on _DeskState {
               'Open it in Telegram and tap Start. Come back here to confirm your account. The link expires after 10 minutes; keep it private.',
             ),
             gap(14),
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
                 button(
                   'Open Telegram',
                   () => act(() => api.openTelegram(Uri.parse(link))),
                   primary: true,
                 ),
-                const SizedBox(width: 8),
                 button('Copy link', () async {
                   await Clipboard.setData(ClipboardData(text: link));
                 }),
@@ -949,9 +1067,11 @@ extension _BridgeScreens on _DeskState {
               children: [
                 SizedBox(width: 14, height: 14, child: spinner(ink)),
                 const SizedBox(width: 10),
-                const Text(
-                  'Waiting for you in Telegram',
-                  style: TextStyle(fontSize: 12, color: muted),
+                const Expanded(
+                  child: Text(
+                    'Waiting for you in Telegram',
+                    style: TextStyle(fontSize: 12, color: muted),
+                  ),
                 ),
               ],
             ),
@@ -1017,44 +1137,6 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
-  Widget whatsappCard(Map wa) => card(
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            logoTile('whatsapp'),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    wa['phoneNumber'] ?? 'Your WhatsApp account',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Text(
-                    'Linked WhatsApp account',
-                    style: TextStyle(color: muted),
-                  ),
-                ],
-              ),
-            ),
-            button('Disconnect', disconnectMessagingApp, compact: true),
-          ],
-        ),
-        gap(16),
-        const Text(
-          'Only this account can control FarFromDesk.',
-          style: TextStyle(color: muted),
-        ),
-      ],
-    ),
-  );
-
   Widget pairingCard(Map wa) => card(
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1111,7 +1193,7 @@ extension _BridgeScreens on _DeskState {
                 )
               : Container(
                   width: 220,
-                  height: 220,
+                  constraints: const BoxConstraints(minHeight: 220),
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: .2),
@@ -2466,6 +2548,17 @@ extension _BridgeScreens on _DeskState {
                     ),
                     gap(16),
                     body,
+                    if (!addingCoordinator && !setupActive) ...[
+                      gap(16),
+                      ExpansionTile(
+                        key: const ValueKey('coordinator-coding-apps'),
+                        title: const Text('Coding app preferences'),
+                        subtitle: small(
+                          'Check apps and choose CLI or Desktop.',
+                        ),
+                        children: [codingPlatformsCard()],
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -3267,21 +3360,12 @@ extension _BridgeScreens on _DeskState {
   /// Settings groups: (title, subtitle, icon, cards). The pane shows them
   /// under a sub-nav that scrolls to each group.
   List<(String, String, IconData, List<Widget>)> settingsSections() {
-    final cleanup =
-        status['requestCleanup'] ?? {'enabled': false, 'afterHours': 24};
     return [
       (
         'Messaging',
         'Where your tasks come from and replies go.',
         Icons.chat_bubble_outline_rounded,
-        [
-          messagingAppSettings(),
-          if (connected && usingTelegram) telegramCard(),
-          if (connected && !usingTelegram) ...[
-            whatsappCard(status['whatsapp'] ?? {}),
-            destinationCard(),
-          ],
-        ],
+        [messagingAppSettings()],
       ),
       (
         'This $computer',
@@ -3370,39 +3454,6 @@ extension _BridgeScreens on _DeskState {
               good: error == null,
             ),
           ),
-          panel(
-            'Access & availability',
-            Column(
-              children: [
-                settingsDisclosure(
-                  icon: Icons.laptop_mac,
-                  title: 'Keep your $computer available',
-                  subtitle: 'Lock screen, sleep and closed-lid behaviour',
-                  children: [
-                    settingRow(
-                      'Lock screen',
-                      'Work keeps running while the screen is locked.',
-                      tag('Works', good: true),
-                    ),
-                    settingRow(
-                      'Sleep',
-                      preferences['keepAwake'] == true
-                          ? 'This $computer stays awake while work is running.'
-                          : 'Turn on Keep awake while locked to stop idle sleep.',
-                      preferences['keepAwake'] == true
-                          ? tag('Covered', good: true)
-                          : tag('Off'),
-                    ),
-                    settingRow(
-                      'Closed lid',
-                      'Keep an operating laptop ventilated, never in a bag. Sleep prevention does not override manual sleep, lid-close sleep or low-battery protection. If this $computer sleeps or loses internet, your messages cannot reach it.',
-                      tag('Pauses'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
         ],
       ),
       if (status['macControl']?['supported'] == true)
@@ -3419,88 +3470,6 @@ extension _BridgeScreens on _DeskState {
           Icons.phone_iphone_rounded,
           remoteControlPanels(),
         ),
-      (
-        'Platforms',
-        'The apps that run your coding sessions.',
-        Icons.terminal_rounded,
-        [codingPlatformsCard()],
-      ),
-      (
-        'Brain',
-        'Reads each message first and keeps your item list.',
-        Icons.psychology_outlined,
-        [brainLinkCard()],
-      ),
-      (
-        'Requests',
-        'How long requests stay tracked.',
-        Icons.inbox_outlined,
-        [
-          panel(
-            'Request cleanup',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                settingRow(
-                  'Auto-close stale requests',
-                  'Close tracking after no recorded updates for the chosen period. Keeps history; never stops native work or marks a task successful.',
-                  Switch(
-                    value: cleanup['enabled'] == true,
-                    onChanged: busy
-                        ? null
-                        : (v) async {
-                            if (!v ||
-                                await confirm(
-                                  'Enable automatic request cleanup?',
-                                  'Eligible requests with no recorded updates for ${cleanup['afterHours']} hours will be marked Auto-closed, including existing old requests. History is kept and native work continues.',
-                                )) {
-                              await post('/api/request-cleanup', {
-                                'enabled': v,
-                                'afterHours': cleanup['afterHours'],
-                              });
-                            }
-                          },
-                  ),
-                ),
-                gap(14),
-                Row(
-                  children: [
-                    const Text('Close after no updates for'),
-                    const Spacer(),
-                    dropdown<int>(
-                      width: 180,
-                      value: [24, 72, 168].contains(cleanup['afterHours'])
-                          ? cleanup['afterHours']
-                          : 24,
-                      items: const [
-                        DropdownMenuItem(value: 24, child: Text('24 hours')),
-                        DropdownMenuItem(value: 72, child: Text('3 days')),
-                        DropdownMenuItem(value: 168, child: Text('7 days')),
-                      ],
-                      onChanged: (hours) {
-                        if (hours != null) {
-                          post('/api/request-cleanup', {
-                            'enabled': cleanup['enabled'] == true,
-                            'afterHours': hours,
-                          });
-                        }
-                      },
-                    ),
-                  ],
-                ),
-                gap(10),
-                small(
-                  'Queued requests, known active deliveries, pending bridge permissions and unfinished delegated work are excluded. A submitted session may still be working without sending updates; auto-close only ends tracking. Late replies are still accepted.',
-                ),
-                TextButton(
-                  onPressed: () => go(1),
-                  child: const Text('Review or bulk-close in Inbox'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
       (
         'Updates',
         'Keep FarFromDesk current.',
@@ -3572,38 +3541,71 @@ extension _BridgeScreens on _DeskState {
     ];
   }
 
-  Widget settingsDisclosure({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required List<Widget> children,
-  }) {
-    final border = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(14),
-      side: const BorderSide(color: hairline),
-    );
-    return ExpansionTile(
-      tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      childrenPadding: const EdgeInsets.fromLTRB(62, 0, 16, 6),
-      backgroundColor: const Color(0x08f4f1ea),
-      collapsedBackgroundColor: const Color(0x08f4f1ea),
-      shape: border,
-      collapsedShape: border,
-      leading: Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          color: surface,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(icon, size: 18, color: accent),
+  /// Request retention belongs with Inbox. Confirmation and server policy
+  /// remain unchanged when this control is shown in the Inbox dialog.
+  Widget requestCleanupCard({VoidCallback? onChanged}) {
+    final cleanup =
+        status['requestCleanup'] ?? {'enabled': false, 'afterHours': 24};
+    return panel(
+      'Request cleanup',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          settingRow(
+            'Auto-close stale requests',
+            'Close tracking after no recorded updates for the chosen period. Keeps history; never stops native work or marks a task successful.',
+            Switch(
+              key: const ValueKey('request-cleanup-enabled'),
+              value: cleanup['enabled'] == true,
+              onChanged: busy
+                  ? null
+                  : (v) async {
+                      if (!v ||
+                          await confirm(
+                            'Enable automatic request cleanup?',
+                            'Eligible requests with no recorded updates for ${cleanup['afterHours']} hours will be marked Auto-closed, including existing old requests. History is kept and native work continues.',
+                          )) {
+                        await post('/api/request-cleanup', {
+                          'enabled': v,
+                          'afterHours': cleanup['afterHours'],
+                        });
+                        if (mounted) onChanged?.call();
+                      }
+                    },
+            ),
+          ),
+          gap(14),
+          Row(
+            children: [
+              const Expanded(child: Text('Close after no updates for')),
+              dropdown<int>(
+                width: 140,
+                value: [24, 72, 168].contains(cleanup['afterHours'])
+                    ? cleanup['afterHours']
+                    : 24,
+                items: const [
+                  DropdownMenuItem(value: 24, child: Text('24 hours')),
+                  DropdownMenuItem(value: 72, child: Text('3 days')),
+                  DropdownMenuItem(value: 168, child: Text('7 days')),
+                ],
+                onChanged: (hours) async {
+                  if (hours != null) {
+                    await post('/api/request-cleanup', {
+                      'enabled': cleanup['enabled'] == true,
+                      'afterHours': hours,
+                    });
+                    if (mounted) onChanged?.call();
+                  }
+                },
+              ),
+            ],
+          ),
+          gap(10),
+          small(
+            'Queued requests, known active deliveries, pending bridge permissions and unfinished delegated work are excluded. A submitted session may still be working without sending updates; auto-close only ends tracking. Late replies are still accepted.',
+          ),
+        ],
       ),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-      ),
-      subtitle: small(subtitle),
-      children: children,
     );
   }
 }
@@ -3634,55 +3636,6 @@ extension _BrainAndItems on _DeskState {
     onSaved: refresh,
     openItems: () => go(2),
   );
-
-  Widget brainLinkCard() {
-    final b = status['metaBrain'] ?? {};
-    final summary = b['enabled'] != true
-        ? 'Off. Your proxy gets every message as it is.'
-        : b['configured'] == true
-        ? 'On with Meta ${b['model'] ?? defaultMetaBrainModel}.'
-        : 'On, but it needs a key. Messages use normal routing until then.';
-    return card(
-      Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: accentWash,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(Icons.psychology_outlined, color: accent),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      'Brain',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    infoTip(
-                      'The brain reads each phone message first, keeps your item list and picks which session should answer. It never runs commands or approves anything itself.',
-                      label: 'About the brain',
-                    ),
-                  ],
-                ),
-                gap(2),
-                small(
-                  '$summary Model, instructions, permissions and memory are on the Brain page.',
-                ),
-              ],
-            ),
-          ),
-          button('Manage brain', () => go(3), compact: true),
-        ],
-      ),
-    );
-  }
 }
 
 /// Overview, ported from the FarFromDesk Studio design. Only real data is

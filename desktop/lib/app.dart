@@ -528,25 +528,21 @@ class _DeskState extends State<Desk> {
               EdgeInsets.symmetric(horizontal: 13),
             ),
             textStyle: WidgetStatePropertyAll(
-              TextStyle(
-                fontFamily: 'Onest',
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
-              ),
+              TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
             ),
           )
         : null;
     final onPressed = (busy && !ignoreBusy) || !enabled ? null : action;
-    final label = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (icon != null) ...[
-          Icon(icon, size: compact ? 15 : 17),
-          const SizedBox(width: 8),
-        ],
-        Text(title),
-      ],
-    );
+    final label = icon == null
+        ? Text(title, textAlign: TextAlign.center)
+        : Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: compact ? 15 : 17),
+              const SizedBox(width: 8),
+              Flexible(child: Text(title, textAlign: TextAlign.center)),
+            ],
+          );
     if (primary) {
       return FilledButton(
         key: key,
@@ -949,7 +945,6 @@ class _DeskState extends State<Desk> {
         dropdownColor: raised,
         borderRadius: BorderRadius.circular(10),
         style: const TextStyle(
-          fontFamily: 'Onest',
           fontSize: 13,
           fontWeight: FontWeight.w500,
           color: ink,
