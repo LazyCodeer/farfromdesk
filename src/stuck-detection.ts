@@ -9,8 +9,8 @@ import type {Incoming,Router} from './router.js';
 import type {Store} from './store.js';
 
 type Kind='idle'|'approval'|'question'|'choice'|'authentication'|'repeated-error';
-type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string;choiceText?:string};
-type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null;choice_id:string|null};
+type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string;choiceText?:string;permissionCode?:string;permissionText?:string;permissionHash?:string};
+type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null;choice_id:string|null;permission_code:string|null;permission_hash:string|null};
 type Writer=(kinds:Kind[],key:string,observe?:MetaObserver)=>Promise<string>;
 const LIMIT=100,MAX_NOTICES_PER_TICK=3,IDLE_MS=10*60_000,OFFER_MS=10*60_000;
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -52,6 +52,8 @@ export class StuckDetection {
       CREATE TABLE IF NOT EXISTS stuck_contract_controls(response_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'accepted',expires_at INTEGER NOT NULL DEFAULT 0);`);
     if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='owner_generation'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN owner_generation TEXT');
     if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='choice_id'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN choice_id TEXT');
+    if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='permission_code'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN permission_code TEXT');
+    if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='permission_hash'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN permission_hash TEXT');
     for(const table of ['stuck_quoted_replies','stuck_ambiguous_choices','stuck_contract_controls'])if(!store.db.prepare(`PRAGMA table_info(${table})`).all().some((column:any)=>column.name==='state'))store.db.exec(`ALTER TABLE ${table} ADD COLUMN state TEXT NOT NULL DEFAULT 'accepted'`);
     if(!store.db.prepare('PRAGMA table_info(stuck_contract_controls)').all().some((column:any)=>column.name==='expires_at'))store.db.exec('ALTER TABLE stuck_contract_controls ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0');
     if(!store.db.prepare('PRAGMA table_info(stuck_quoted_replies)').all().some((column:any)=>column.name==='numbered'))store.db.exec('ALTER TABLE stuck_quoted_replies ADD COLUMN numbered INTEGER NOT NULL DEFAULT 0');
@@ -150,7 +152,11 @@ export class StuckDetection {
       const job=this.store.job(p.requestId),origin=this.store.requestOwnerOrigin(p.requestId),identity=this.identity(p.binding.id);
       if(!job||job.binding_id!==p.binding.id||job.destination!==destination||!['dispatched','submitted'].includes(job.status)||!origin||origin.owner!==owner||origin.destination!==destination||!identity||p.targetIdentity!==identity)continue;
       const kind:Kind=p.kind==='approval'?'approval':'question';
-      return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind,incident:digest([kind,job.id,code,p.expires,identity])};
+      const original=this.store.db.prepare('SELECT body,status,destination,binding_id FROM outbox WHERE source=?').get(`permission:${code}:0`) as {body:string;status:string;destination:string|null;binding_id:string|null}|undefined;
+      const single=this.store.db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE source LIKE ?').get(`permission:${code}:%`) as {n:number};
+      const actionable=kind==='approval'&&original?.status==='sent'&&original.destination===destination&&original.binding_id===job.binding_id&&single.n===1&&!!original.body;
+      return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind,incident:digest([kind,job.id,code,p.expires,identity]),
+        ...(actionable?{permissionCode:code,permissionText:p.question,permissionHash:digest([code,p.question,original!.body])}:{})};
     }
     // Agent message choices remain actionable until selected or expired, but
     // they do not prove that a native session is blocked. Report only the
@@ -216,13 +222,18 @@ export class StuckDetection {
     return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind:'idle',incident:digest(['idle',job.id,job.attempt_id,progress,identity])};
   }
   private message(signal:Signal,token:string,opening:string) {
+    if(signal.kind==='approval'&&signal.permissionCode&&signal.permissionText&&!/[\x00-\x09\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(signal.permissionText)){
+      const quoted=signal.permissionText.split('\n').map(line=>`> ${line}`).join('\n');
+      const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nA permission is waiting. Review the recorded request below.\n\n${quoted}\n\nReply to this notice with 1 to deny or 2 to allow this exact request. This responds to the request without operating the Mac UI. The notice expires in 10 minutes. Dismiss with /stuck dismiss ${token}.`;
+      if(text.length<=3000)return {text,choiceId:undefined,permissionCode:signal.permissionCode};
+    }
     if(signal.kind==='choice'&&signal.choiceId&&signal.choiceText&&!/[\u202a-\u202e\u2066-\u2069]/.test(signal.choiceText)){
       const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nAn unanswered session choice is waiting. Reply to this notice with the number of your choice. This is not a native permission approval.\n\n${signal.choiceText}\n\nThis notice expires in 10 minutes. To view your Mac, send control my screen. Dismiss with /stuck dismiss ${token}.`;
       // A notice must display the whole original question in a single message.
-      if(text.length<=3000)return {text,choiceId:signal.choiceId};
+      if(text.length<=3000)return {text,choiceId:signal.choiceId,permissionCode:undefined};
     }
     const reason:Record<Kind,string>={idle:'No recorded progress for the configured idle period.',approval:'A permission request is waiting for your decision.',question:'The session asked a question and is waiting for your answer.',choice:'An unanswered choice is still available from the session.',authentication:'The bridge recorded an authentication error for this task. Check the session sign-in on your Mac.','repeated-error':'Two consecutive failures have the same recorded error category.'};
-    return {text:`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.`,choiceId:undefined};
+    return {text:`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.`,choiceId:undefined,permissionCode:undefined};
   }
   /** A never-sent expired notice may be replaced; a sending, sent or uncertain one never is. */
   private rearmExpiredUnsent(owner:string,destination:string,signal:Signal,now:number) {
@@ -272,7 +283,7 @@ export class StuckDetection {
           const queued=this.store.output(undefined,notice.text,source,destination,{kind:'system',origin:'system',plain:true});
           const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as {id:string}|undefined;
           if(!queued||!out)throw new Error('Stuck alert could not be queued.');
-          this.store.db.prepare('INSERT INTO stuck_alerts(id,owner,destination,item_id,request_id,binding_id,identity,kind,incident,expires_at,state,outbox_id,owner_generation,choice_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,owner,destination,fresh.itemId,fresh.requestId,fresh.bindingId,fresh.identity,fresh.kind,fresh.incident,expires,'open',out.id,generation,notice.choiceId??null);
+          this.store.db.prepare('INSERT INTO stuck_alerts(id,owner,destination,item_id,request_id,binding_id,identity,kind,incident,expires_at,state,outbox_id,owner_generation,choice_id,permission_code,permission_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,owner,destination,fresh.itemId,fresh.requestId,fresh.bindingId,fresh.identity,fresh.kind,fresh.incident,expires,'open',out.id,generation,notice.choiceId??null,notice.permissionCode??null,notice.permissionCode?fresh.permissionHash??null:null);
           this.store.db.exec('RELEASE stuck_enqueue');
         }catch(e){this.store.db.exec('ROLLBACK TO stuck_enqueue; RELEASE stuck_enqueue');throw e;}
       }
@@ -287,17 +298,26 @@ export class StuckDetection {
     if(alert.kind==='choice'&&this.unsettledAlert(alert,this.clock()))return 'hold';
     const fresh=this.signal(alert.item_id,alert.owner,alert.destination,this.clock());
     if(fresh?.choiceId&&this.unsettled(alert.owner,alert.destination,fresh.choiceId,this.clock()))return 'hold';
+    if(alert.permission_code&&(!alert.permission_hash||fresh?.permissionCode!==alert.permission_code||fresh.permissionHash!==alert.permission_hash))return 'invalid';
     return fresh&&fresh.kind===alert.kind&&fresh.incident===alert.incident&&fresh.identity===alert.identity?'ready':'invalid';
   }
-  /** Reuse the original choice claim and contract path, only for a quoted, delivered notice. */
-  quotedChoice(m:Incoming):{kind:'mapped';quotedId:string}|{kind:'unavailable'}|undefined {
+  /** Reuse the original permission or choice path, only for a quoted, delivered notice. */
+  quotedChoice(m:Incoming):{kind:'mapped';quotedId:string;text?:string}|{kind:'unavailable'}|undefined {
     if(!m.quotedId||m.optionToken||!/^\d+$/.test(m.text.trim()))return;
     const out=this.store.db.prepare('SELECT id,source,destination,status FROM outbox WHERE wa_id=?').get(m.quotedId) as {id:string;source:string;destination:string|null;status:string}|undefined;
     if(!out||!out.source.startsWith('stuck-alert:'))return;
     const alert=this.store.db.prepare('SELECT * FROM stuck_alerts WHERE outbox_id=?').get(out.id) as Alert|undefined;
-    if(!alert||alert.kind!=='choice'||!alert.choice_id||out.status!=='sent'||m.source==='voice'||m.ownerChoice!==true||!authenticatedOwner(this.router,m)||!this.store.incomingOwnerCurrent()||this.deliveryState(out,alert.owner)!=='ready')return {kind:'unavailable'};
+    if(!alert||out.status!=='sent'||m.source==='voice'||m.ownerChoice!==true||!authenticatedOwner(this.router,m)||!this.store.incomingOwnerCurrent()||this.deliveryState(out,alert.owner)!=='ready')return {kind:'unavailable'};
     const fresh=this.signal(alert.item_id,alert.owner,alert.destination,this.clock());
-    if(!fresh||fresh.choiceId!==alert.choice_id||fresh.incident!==alert.incident)return {kind:'unavailable'};
+    if(!fresh||fresh.incident!==alert.incident)return {kind:'unavailable'};
+    if(alert.kind==='approval'&&alert.permission_code&&alert.permission_hash&&fresh.permissionCode===alert.permission_code&&fresh.permissionHash===alert.permission_hash){
+      const number=m.text.trim();if(number!=='1'&&number!=='2')return {kind:'unavailable'};
+      const pending=this.router.approvals.pending.get(alert.permission_code);
+      const original=this.store.db.prepare("SELECT wa_id FROM outbox WHERE source=? AND status='sent' AND destination=? AND binding_id=?").get(`permission:${alert.permission_code}:0`,alert.destination,alert.binding_id) as {wa_id:string}|undefined;
+      if(!pending||pending.kind!=='approval'||!original?.wa_id)return {kind:'unavailable'};
+      return {kind:'mapped',quotedId:original.wa_id,text:number==='2'?'Yes, allow it':'No, deny it'};
+    }
+    if(alert.kind!=='choice'||!alert.choice_id||fresh.choiceId!==alert.choice_id)return {kind:'unavailable'};
     const original=this.store.db.prepare(`SELECT o.wa_id FROM message_options c JOIN outbox o ON o.id=c.outbox_id
       WHERE c.id=? AND c.owner=? AND c.destination=? AND c.request_id=? AND c.binding_id=? AND c.selected_id IS NULL AND c.response_id IS NULL AND c.expires_at>? AND o.status='sent' AND o.destination=?`).get(alert.choice_id,alert.owner,alert.destination,alert.request_id,alert.binding_id,this.clock(),alert.destination) as {wa_id:string}|undefined;
     return original?.wa_id?{kind:'mapped',quotedId:original.wa_id}:{kind:'unavailable'};

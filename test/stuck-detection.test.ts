@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -110,6 +110,74 @@ test('only an exact request-bound pending approval becomes an approval alert',as
     assert.equal(alerts(f.store)[0].item_id,item.id);assert.doesNotMatch(JSON.stringify(f.inputs),/secret|prompt/);
     assert.doesNotMatch(alertOut(f.store)[0].body,/Synthetic secret/);
     f.approvals.cancel();assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'invalid');
+  }finally{f.close();}
+});
+
+test('a delivered permission notice lets the owner decide the exact displayed request once',async()=>{
+  for(const [number,expected] of [['1','deny'],['2','approve']] as const){const f=fixture();try{
+    f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
+    const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Run the synthetic build command?','approval','wa:permission'));
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
+    const notice=alertOut(f.store)[0];assert.match(notice.body,/Run the synthetic build command\?/);assert.match(notice.body,/1 to deny or 2 to allow this exact request/);f.store.sent(notice.id);
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:decision-${number}`,text:number,quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
+    assert.equal(result.status,'handled');assert.equal(await answer,expected);assert.equal(f.approvals.pending.size,0);assert.equal(f.store.job(`wa:decision-${number}`),undefined);
+    const repeat=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:repeat-${number}`,text:number,quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
+    assert.equal(repeat.status,'blocked');assert.equal(f.approvals.pending.size,0);
+    assert.doesNotMatch(JSON.stringify(f.inputs),/synthetic build command/);
+  }finally{f.close();}}
+});
+
+test('the existing approval incident identity stays stable across the new notice format',async()=>{
+  const f=fixture();try{
+    f.add('wa:permission','Synthetic task');void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Existing request','approval','wa:permission'));
+    const [code,pending]=[...f.approvals.pending.entries()][0];const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
+    const alert=alerts(f.store)[0],expected=createHash('sha256').update(JSON.stringify(['approval','wa:permission',code,pending.expires,alert.identity])).digest('hex');
+    assert.equal(alert.incident,expected);f.store.db.prepare('UPDATE stuck_alerts SET permission_code=NULL,permission_hash=NULL').run();
+    f.store.sent(alert.outbox_id);await f.detector.tick();assert.equal(alerts(f.store).length,1);
+  }finally{f.close();}
+});
+
+test('permission notice decisions fail closed for stale, untrusted or altered requests',async()=>{
+  for(const change of ['original-unsent','notice-unsent','expired','owner','session','prompt','original-body','forwarded','voice','invalid-number','legacy','dismissed','long','unsafe-format'] as const){const f=fixture();try{
+    f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
+    const question=change==='long'?'x'.repeat(4000):change==='unsafe-format'?'Synthetic \u202epermission':'Synthetic permission question';
+    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,question,'approval','wa:permission'));
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;if(change!=='original-unsent')f.store.sent(original.id);await f.detector.tick();
+    const notice=alertOut(f.store)[0];if(change!=='notice-unsent')f.store.sent(notice.id);
+    if(change==='expired')f.advance(10*60_000+1);
+    if(change==='owner'){f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);}
+    if(change==='session')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+    if(change==='prompt')[...f.approvals.pending.values()][0].question='A different request';
+    if(change==='original-body')f.store.db.prepare('UPDATE outbox SET body=? WHERE id=?').run('A different displayed request',original.id);
+    if(change==='legacy')f.store.db.prepare('UPDATE stuck_alerts SET permission_code=NULL').run();
+    if(change==='dismissed')f.store.db.prepare("UPDATE stuck_alerts SET state='dismissed'").run();
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:reject-${change}`,text:change==='invalid-number'?'3':'2',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:change!=='forwarded',source:change==='voice'?'voice':'text'}));
+    assert.equal(result.status,'blocked',change);assert.equal(f.approvals.pending.size,1,change);assert.equal(f.store.job(`wa:reject-${change}`),undefined,change);
+  }finally{f.close();}}
+});
+
+test('a permission notice never approves a different pending request',async()=>{
+  const f=fixture();try{
+    f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
+    const first=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'First request','approval','wa:permission'));
+    const second=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Second request','approval','wa:permission'));
+    for(const out of f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").all() as any[])f.store.sent(out.id);
+    await f.detector.tick();const notice=alertOut(f.store)[0];assert.match(notice.body,/First request/);f.store.sent(notice.id);
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:first-decision',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
+    assert.equal(await first,'approve');assert.equal(f.approvals.pending.size,1);assert.equal([...f.approvals.pending.values()][0].question,'Second request');
+    const again=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:second-decision',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
+    assert.equal(again.status,'blocked');assert.equal(f.approvals.pending.size,1);f.approvals.cancel();assert.equal(await second,'deny');
+  }finally{f.close();}
+});
+
+test('WhatsApp self-chat can decide a permission by quoting its delivered notice',async()=>{
+  const f=fixture();try{
+    f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
+    const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Synthetic permission','approval','wa:permission'));
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();const notice=alertOut(f.store)[0];f.store.sent(notice.id);
+    const wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+    const message={key:{id:'permission-decision',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:'2',contextInfo:{stanzaId:notice.wa_id}}}};
+    await wa.receiveMessage(message);await wa.receiveMessage(message);assert.equal(await answer,'approve');assert.equal(f.approvals.pending.size,0);wa.close();
   }finally{f.close();}
 });
 

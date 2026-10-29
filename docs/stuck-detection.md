@@ -6,7 +6,12 @@ It can report:
 
 - A dispatched or submitted task with no recorded progress for 10 minutes.
 - An open native permission or question that is bound to the exact task
-  request and still awaits an answer.
+  request and still awaits an answer. If the original permission was delivered
+  and its recorded request fits in one notice, the notice repeats it and offers
+  a direct quoted reply: `1` denies and `2` allows that exact pending request.
+  Review the request before deciding. This sends a decision through the existing
+  permission handler; it does not operate macOS dialogs. Long or unavailable
+  requests must be answered on the original permission message.
 - A delivered, unexpired session choice that has not been selected, when its
   original session and request can be verified. This does not establish that
   the session itself is blocked. If an owner follow-up may have answered a
@@ -37,7 +42,7 @@ Meta is unavailable the notice uses a fixed introduction.
 
 This initial version does not scan group chats or Telegram, inspect screens,
 detect popups or sign-in pages, click buttons, approve native
-permissions, merge changes, or start unrelated follow-up work. Existing native prompts
+  permissions without the owner's explicit decision, merge changes, or start unrelated follow-up work. Existing native prompts
 that lack an exact request identity cannot be attributed and are not included.
 The message includes no screenshot. These limitations mean this is not yet the
 complete proactive unblock workflow described in the hackathon plan.
