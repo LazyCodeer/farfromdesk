@@ -291,7 +291,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/update-shutdown'&&req.method==='POST') {
         await body(req);
-        if(router.busy.size||router.hasPendingIngress()||wa.hasPendingIngress?.()||services?.telegram?.hasPendingIngress?.()||router.approvals.pending.size||services?.masters.creating||services?.workers?.operations().some(o=>['checking','creating','awaiting_approval'].includes(o.status)))throw new Error('Finish the active request or session setup before restarting for an update. The downloaded update can be retried afterward.');
+        if(router.busy.size||router.hasPendingIngress()||wa.hasPendingIngress?.()||services?.telegram?.hasPendingIngress?.()||router.errands.hasActiveSearch()||router.approvals.pending.size||services?.masters.creating||services?.workers?.operations().some(o=>['checking','creating','awaiting_approval'].includes(o.status)))throw new Error('Finish the active request or session setup before restarting for an update. The downloaded update can be retried afterward.');
         router.stopped=true;
         json(res,200,{ok:true});setImmediate(()=>server.emit('ffd-shutdown'));return;
       }

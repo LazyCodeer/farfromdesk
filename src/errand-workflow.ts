@@ -28,6 +28,7 @@ export class ErrandWorkflow {
   private rankScope=new AsyncLocalStorage<{scope:ErrandScope;mission:string}>();
   private activeSearch=new Map<string,{scope:ErrandScope;controller:AbortController}>();
   isActive(id:string){return this.activeSearch.has(id);}
+  hasActiveSearch(){return this.activeSearch.size>0;}
   pause(){for(const entry of this.activeSearch.values())entry.controller.abort();}
   /** Explicit transport disconnection revokes existing work, including after reconnect. */
   invalidateAuthority(){this.router.store.set('errand-authority-generation',randomUUID());this.pause();}

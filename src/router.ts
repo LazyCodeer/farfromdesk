@@ -19,7 +19,6 @@ import { namedItem, directSession, startDirect, endDirect, backToProxy } from '.
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
-import {randomUUID} from 'node:crypto';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -51,10 +50,7 @@ export class Router {
   channelClients=new Map<string,{id:string;seen:number}>();
   private paused=false;
   get stopped(){return this.paused;}
-  set stopped(value:boolean){
-    if(value&&!this.paused){this.store.set('errand-authority-generation',randomUUID());this.errands?.pause();}
-    this.paused=value;
-  }
+  set stopped(value:boolean){if(value&&!this.paused)this.errands?.pause();this.paused=value;}
   // How long a session gets to answer before an uncertain hand-off is reported to the owner.
   uncertainNoticeMs=120_000;
   attachments:Attachments;

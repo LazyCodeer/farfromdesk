@@ -16,11 +16,12 @@ import {errandBindingIdentity} from '../src/errand-missions.js';
 import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts} from '../src/task-contracts.js';
+import {PowerPolicy} from '../src/power.js';
 import type {Listing} from '../src/errand-missions.js';
 
 const owner='123@s.whatsapp.net';
-function fixture(){
-  const store=new Store(':memory:'),approvals=new Approvals(store),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
+function fixture(path=':memory:'){
+  const store=new Store(path),approvals=new Approvals(store),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
   router.pump=()=>{};store.set('whatsapp-owner',owner);
   const binding=store.register('jobs-test','codex',randomUUID(),'/tmp').binding;store.set('active',binding.id);
   const calls:unknown[]=[];
@@ -255,6 +256,29 @@ test('restart settles an interrupted search and sends one scoped notice without 
     assert.equal((f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-restart:%'").get() as {n:number}).n,1);
   }finally{f.close();}
 });
+test('ordinary shutdown preserves queued shortlists and interrupted-search notices across a real database restart',async()=>{
+  for(const mode of ['shortlist','searching'] as const){
+    const dir=mkdtempSync(join(tmpdir(),'ffd-errand-restart-')),path=join(dir,'bridge.sqlite'),f=fixture(path);let store:Store|undefined,approvals:Approvals|undefined,wa:WhatsApp|undefined;
+    try{
+      f.store.set('background-enabled','true');
+      if(mode==='shortlist')await f.wa.receiveMessage(f.msg('root',request));
+      else{
+        f.store.recordOwnerOrigin('wa:root',owner,owner);f.store.enqueue('wa:root',f.binding,request,owner);f.store.jobState('wa:root','submitted');
+        const scope={requestId:'wa:root',owner,destination:owner,bindingId:f.binding.id,bindingIdentity:errandBindingIdentity(f.store,f.binding)};
+        f.router.errands.ledger.begin(scope,{role:'Flutter',location:'Bangalore'});
+        f.store.db.prepare('INSERT INTO errand_search_guards VALUES(?,?)').run('wa:root',f.store.get('errand-authority-generation')??'');
+      }
+      f.router.stopped=true;f.close();
+      store=new Store(path);approvals=new Approvals(store);const router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);router.pump=()=>{};
+      const sent:string[]=[];wa=new WhatsApp(store,router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+      wa.sock=new GuardedSocket({sendMessage:async(_jid:string,content:any)=>{sent.push(content.text);return {message:{conversation:content.text}};},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
+      const power=new PowerPolicy(store,router,wa);store.recover();router.errands.recover();await wa.flush();power.close();
+      assert.equal(sent.length,1,mode);
+      if(mode==='shortlist'){assert.match(sent[0],/Flutter Engineer/);assert.equal(store.job('wa:root')?.status,'completed');}
+      else{assert.match(sent[0],/interrupted.*restarted/);assert.equal(store.job('wa:root')?.status,'failed');}
+    }finally{wa?.close();approvals?.cancel();store?.close();rmSync(dir,{recursive:true,force:true});}
+  }
+});
 test('restart settles an interrupted search even if its optional notice cannot be guarded',()=>{
   const f=fixture();try{
     f.store.recordOwnerOrigin('wa:root',owner,owner);f.store.enqueue('wa:root',f.binding,request,owner);f.store.jobState('wa:root','submitted');
@@ -324,13 +348,24 @@ test('a pause and resume during source search invalidates its old authority',asy
 });
 test('a bridge pause aborts a search and it cannot resume after the bridge is re-enabled',async()=>{
   const f=fixture();try{
+    const power=new PowerPolicy(f.store,f.router,f.wa);f.wa.connect=async()=>{f.wa.status='connected';};
     let release!:()=>void;const waiting=new Promise<void>(resolve=>{release=resolve;});
     const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
     f.router.errands=new ErrandWorkflow(f.router,async()=>{await waiting;return [listing];},async rows=>rows.map(x=>x.id));
     const pending=f.wa.receiveMessage(f.msg('root',request));await new Promise(resolve=>setImmediate(resolve));
-    f.router.stopped=true;f.router.stopped=false;release();await pending;await f.wa.flush();
+    await power.update(false,false);await power.update(true,false);release();await pending;await f.wa.flush();power.close();
     assert.equal((f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {n:number}).n,0);
     assert.equal(f.store.job('wa:root')?.status,'failed');assert.equal(f.sent.length,0);
+  }finally{f.close();}
+});
+test('shutdown aborts an in-flight search without revoking the durable owner generation',async()=>{
+  const f=fixture();try{
+    let started!:()=>void;const entered=new Promise<void>(resolve=>{started=resolve;});
+    f.router.errands=new ErrandWorkflow(f.router,async()=>{started();return await new Promise<never>(()=>{});},async rows=>rows.map(x=>x.id));
+    const pending=f.wa.receiveMessage(f.msg('root',request));await entered;
+    const generation=f.store.get('errand-authority-generation');f.router.stopped=true;await pending;
+    assert.equal(f.store.get('errand-authority-generation'),generation);assert.equal(f.store.job('wa:root')?.status,'failed');
+    assert.equal((f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {n:number}).n,0);
   }finally{f.close();}
 });
 

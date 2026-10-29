@@ -25,6 +25,9 @@ export class PowerPolicy {
   get enabled(){return this.store.get('background-enabled')==='true';}
   view(){return {backgroundEnabled:this.enabled,keepAwake:this.store.get('keep-awake')==='true',assertionActive:!!this.child,error:this.error};}
   async update(backgroundEnabled:boolean,keepAwake:boolean) {
+    // Explicit pause revokes in-flight errands; ordinary service shutdown is
+    // different and retains safely queued messages for restart recovery.
+    if(!backgroundEnabled&&!this.router.stopped)this.router.errands.invalidateAuthority();
     this.store.set('background-enabled',String(backgroundEnabled));
     this.store.set('keep-awake',String(backgroundEnabled&&keepAwake));
     this.router.stopped=!backgroundEnabled;
