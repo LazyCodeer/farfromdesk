@@ -18,6 +18,7 @@ import { namedItem, directSession, startDirect, endDirect, backToProxy } from '.
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
+import type {ProofOwnerBindings} from './proof-owner-binding.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -31,7 +32,9 @@ export const help = `Just tell me what you need.
 • Use Checkout fix and tell me its progress.
 • Claude, create a session for this task.
 
-Reply to a permission message with “Yes, allow it” or “No, deny it”. Reply to a session’s message to continue in that session. You don’t need commands or session IDs.`;
+Reply to a permission message with “Yes, allow it” or “No, deny it”. Reply to a session’s message to continue in that session.
+
+In WhatsApp, bind an approved GitHub check with /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.`;
 export class Router {
   coordinator?:Coordinator;
   brain:MetaBrain;
@@ -40,6 +43,7 @@ export class Router {
   contracts:TaskContracts;
   /** Optional internal prototype; no production route enables it. */
   collaboration?:ManagedCollaboration;
+  proofBindings?:ProofOwnerBindings;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
@@ -198,6 +202,15 @@ export class Router {
         const match=/^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)!;
         const cmd=match[1].toLowerCase(),args=match[2]?.trim()??'';
         if(cmd==='help')this.store.output(undefined,help,`command:${m.id}`);
+        else if(cmd==='proof'){
+          if(!this.proofBindings)throw new Error('Proof binding is unavailable.');
+          this.store.db.exec('SAVEPOINT proof_bind_command');
+          try{
+            const binding=this.proofBindings.approve(m);
+            this.store.output(undefined,`Saved your binding for ${binding.checkName} in ${binding.repository}. This does not verify the task or any run.`, `command:${m.id}`,undefined,{plain:true});
+            this.store.remember(m.id);this.store.db.exec('RELEASE proof_bind_command');return {status:'handled',requestId:m.id};
+          }catch(e){this.store.db.exec('ROLLBACK TO proof_bind_command; RELEASE proof_bind_command');throw e;}
+        }
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
         else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
         else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}

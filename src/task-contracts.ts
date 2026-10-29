@@ -138,6 +138,8 @@ export class TaskContracts {
         if(schedule&&hash(schedule.payload)!==schedule.payload_hash)throw new Error('The scheduled task changed. Nothing was sent.');
         if(brief&&hash(brief.payload)!==brief.payload_hash)throw new Error('The brief item changed. Nothing was sent.');
         const approvedHash=hash(JSON.stringify([pending.id,pending.origin_id,pending.owner,pending.destination,pending.revision,pending.original,pending.review_text,pending.incoming,pending.edits,pending.draft,schedule?.payload_hash??null,brief?.payload_hash??null]));
+        // Missing provenance must not block the task; it only leaves proof unavailable.
+        if(r.proofBindings&&this.store.incomingOwnerContext.getStore()?.channel==='whatsapp')try{this.store.recordIncomingInput(m.id);}catch{}
         const changed=this.store.db.prepare("UPDATE task_contracts SET state='approved',dispatch_id=?,approved_hash=?,approved_at=? WHERE id=? AND state='pending' AND revision=? AND expires_at>?").run(m.id,approvedHash,this.now(),pending.id,pending.revision,this.now());
         if(!changed.changes)throw new Error('This task contract is no longer available.');
         return {kind:'replay',incoming:{...original,id:m.id}};

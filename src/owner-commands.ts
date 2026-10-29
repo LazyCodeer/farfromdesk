@@ -91,7 +91,7 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   const match=/^\/(claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
-  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
+  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.${r.store.controlChannel()==='whatsapp'?'\n\nTo bind an approved GitHub check, use /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.':''}`;
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Remote Desktop settings in FarFromDesk.':'Screen viewing is unavailable in this build. Open Remote Desktop settings in FarFromDesk on your Mac.';
