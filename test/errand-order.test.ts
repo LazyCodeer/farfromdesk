@@ -35,8 +35,10 @@ test('real WhatsApp ingress ordering precedes async group checks and delayed rou
     store.sent(outbox.id);
     resume();await early;
     const scope={requestId:'wa:early',owner,destination:group,bindingId:binding.id,bindingIdentity:errandBindingIdentity(store,binding)};
-    assert.ok(store.job(scope.requestId));assert.equal(wa.errandOrder.after(scope,outbox.id),false);
+    assert.equal(store.seen(scope.requestId),true);store.enqueue(scope.requestId,binding,'draft 1',group);
+    assert.equal(wa.errandOrder.after(scope,outbox.id),false);
     wa.verifyGroup=async()=>{};await wa.receiveMessage(message('late'));
+    assert.equal(store.seen('wa:late'),true);store.enqueue('wa:late',binding,'draft 1',group);
     assert.equal(wa.errandOrder.after({...scope,requestId:'wa:late'},outbox.id),true);
     store.set('whatsapp-owner','other@s.whatsapp.net');assert.equal(wa.errandOrder.after({...scope,requestId:'wa:late'},outbox.id),false);
   }finally{wa.close();approvals.cancel();store.close();}

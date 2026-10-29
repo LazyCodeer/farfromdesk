@@ -22,6 +22,7 @@ test('returns published evidence without claiming applications are open',async()
   const rows=await reader(scope,input,new AbortController().signal);
   assert.equal(rows.length,1);assert.equal(rows[0].url,'https://job-boards.greenhouse.io/example/jobs/12345');
   assert.equal(rows[0].verification,'public-listing-published');assert.equal(rows[0].workplace,'unknown');assert.ok(rows[0].applicationDeadline!>1234);
+  assert.equal(rows[0].excerpt,'Flutter Engineer — Bangalore');
   assert.match(rows[0].sourceHash,/^[a-f0-9]{64}$/);
   assert.deepEqual(fake.calls,[{host:'boards-api.greenhouse.io',path:'/v1/boards/example/jobs/12345',address:'8.8.8.8'},{host:'job-boards.greenhouse.io',path:'/example/jobs/12345',address:'8.8.8.8'}]);
 });
@@ -67,8 +68,14 @@ test('rejects mismatched IDs, unsafe links, generic pages and malformed input',a
   for(const invalid of [{jobs:[{board:'../private',id:'123'}]},{jobs:[{board:'sk-'+ 'a'.repeat(20),id:'123'}]},{jobs:[{board:'example',id:'1?token=private'}]},{jobs:Array(11).fill(input.jobs[0])}])await assert.rejects(reader(scope,invalid,new AbortController().signal));
   assert.equal(fake.calls.length,0);
 });
-test('requires an explicit valid future deadline and rechecks it after fetching the page',async()=>{
-  for(const value of [null,'','bad','2000-02-30','2000-01-01T00:00:00','2020-01-01T00:00:00+99:99','2000-01-01']){
+test('allows an absent deadline as distinct unverified evidence but rejects invalid or expired deadlines',async()=>{
+  for(const value of [undefined,null]){
+    const fake=transport({api:JSON.stringify({...JSON.parse(api()),application_deadline:value})});
+    const [row]=await greenhouseListingReader(()=>true,()=>Date.parse('2026-01-01Z'),fake)(scope,input,new AbortController().signal);
+    assert.equal(row.verification,'public-listing-published-no-deadline');assert.equal(row.applicationDeadline,undefined);
+    assert.equal(fake.calls.length,2);
+  }
+  for(const value of ['','bad','2000-02-30','2000-01-01T00:00:00','2020-01-01T00:00:00+99:99','2000-01-01']){
     const fake=transport({api:JSON.stringify({...JSON.parse(api()),application_deadline:value})});
     await assert.rejects(greenhouseListingReader(()=>true,()=>Date.parse('2026-01-01Z'),fake)(scope,input,new AbortController().signal),/deadline/);
     assert.equal(fake.calls.length,1);

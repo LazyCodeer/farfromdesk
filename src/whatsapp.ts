@@ -1,5 +1,6 @@
 import { WhatsAppPolls } from './whatsapp-polls.js';
 import { ErrandOrder } from './errand-order.js';
+import {parseErrandChoice} from './errand-choice.js';
 import { canDeliverBrief } from './morning-brief.js';
 import { scheduleDeliveryState } from './schedules.js';
 import { contractDeliveryState } from './task-contracts.js';
@@ -237,7 +238,7 @@ export class WhatsApp {
       const context=msg?.extendedTextMessage?.contextInfo;
       const orderOwner=owner.owner;
       const draftIngress=!audio&&!media&&!msg?.pollUpdateMessage&&typeof text==='string'&&
-        !context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore&&/^\s*(?:please\s+)?draft\s+[1-5]\s*[.!?]*\s*$/i.test(text);
+        !context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore&&!!parseErrandChoice(text);
       if(draftIngress)this.errandOrder.capture(id,orderOwner,origin,text!);
       if(group)await this.verifyGroup(destination!);
       if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;

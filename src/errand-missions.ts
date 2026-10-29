@@ -2,6 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {isIP} from 'node:net';
 import {hash,type Binding,type Store} from './store.js';
 import {toWhatsApp} from './whatsapp-format.js';
+import {parseErrandChoice,shortlistReference} from './errand-choice.js';
 
 /**
  * Internal F6 foundation. This module is not connected to a route, browser,
@@ -13,7 +14,7 @@ export type ErrandContract={role:string;location:string;salary?:string;avoid?:st
 export type ErrandScope={requestId:string;owner:string;destination:string;bindingId:string;bindingIdentity:string};
 /** The marker and workplace attestation are meaningful only from a trusted bridge-owned verifier. */
 export type Workplace='remote-only'|'onsite'|'hybrid'|'unknown';
-export type Listing={sourceUrl:string;url:string;title:string;excerpt:string;observedAt:number;sourceHash:string;workplace:Workplace;verification:'public-listing-verified'|'public-listing-published';applicationDeadline?:number};
+export type Listing={sourceUrl:string;url:string;title:string;excerpt:string;observedAt:number;sourceHash:string;workplace:Workplace;verification:'public-listing-verified'|'public-listing-published'|'public-listing-published-no-deadline';applicationDeadline?:number};
 export type VerifiedListingReader=(scope:ErrandScope,request:unknown,signal:AbortSignal)=>Promise<Listing[]>;
 export type RankInput={id:string;title:string;excerpt:string;workplace:Workplace;role:string;location:string;salary?:string;avoid?:string};
 export type ErrandRanker=(input:RankInput[],signal:AbortSignal)=>Promise<string[]>;
@@ -22,7 +23,7 @@ export type ContractAuthority=(scope:ErrandScope,contract:ErrandContract,rootReq
 export type ShortlistOrderProof=(scope:ErrandScope,outboxId:string)=>boolean;
 type Mission={id:string;root_request:string;owner:string;destination:string;binding_id:string;binding_identity:string;contract_json:string;contract_hash:string;state:string;version:number;created_at:number};
 type Candidate={id:string;mission_id:string;source_url:string;url:string;title:string;excerpt:string;observed_at:number;source_hash:string;workplace:Workplace;verification:string;application_deadline:number|null;position:number|null};
-const MAX_CANDIDATES=40,MAX_TITLE=160,MAX_EXCERPT=600,MAX_AGE=24*60*60*1000;
+const MAX_CANDIDATES=40,MAX_TITLE=160,MAX_EXCERPT=600,MAX_AGE=24*60*60*1000,NO_DEADLINE_MAX_AGE=60*60*1000;
 // Defense in depth only; a trusted source must still exclude private content.
 const SENSITIVE=/\b(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9_]{16,}|xox[baprs]-[a-z0-9-]{12,}|AKIA[A-Z0-9]{16}|bearer\s+[^\s]{8,}|(?:api[ _-]?key|password)\s*[:=]\s*[^\s]{8,})/i;
 const clean=(s:string,n:number)=>s.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,n);
@@ -43,7 +44,7 @@ export function publicListingUrl(value:string):string {
   return u.href;
 }
 
-export function errandBindingIdentity(store:Store,b:Binding) {return hash(JSON.stringify([b.id,b.native_id,b.cwd,b.mode,b.provider,b.token_hash,store.get(`execution-mode:${b.id}`),store.get(`session-route:${b.id}`),store.get(`binding-disable-generation:${b.id}`),store.get('errand-authority-generation')]));}
+export function errandBindingIdentity(store:Store,b:Binding) {return hash(JSON.stringify([b.id,b.native_id,b.cwd,b.mode,b.provider,b.token_hash,store.get(`execution-mode:${b.id}`),store.get(`session-route:${b.id}`),store.get(`binding-disable-generation:${b.id}`),store.get(`errand-binding-generation:${b.id}`),store.get('incoming-owner-generation'),store.get('errand-authority-generation')]));}
 async function bounded<T>(signal:AbortSignal,work:(signal:AbortSignal)=>Promise<T>):Promise<T> {
   const combined=AbortSignal.any([signal,AbortSignal.timeout(30000)]);
   if(combined.aborted)throw new Error('Errand operation cancelled or timed out.');
@@ -87,6 +88,18 @@ function eligible(row:Candidate,contract:ErrandContract):boolean {
 /** Internal ledger only. No search, browser navigation, message or submission is performed here. */
 export class ErrandMissions {
   constructor(private store:Store,private approved:ContractAuthority,private readListings:VerifiedListingReader,private rank:ErrandRanker,private now=()=>Date.now(),private orderedAfter:ShortlistOrderProof=()=>false) {
+    // Record every identity transition, including direct SQL changes and
+    // change-away-and-back. Value snapshots alone cannot detect those races.
+    for(const operation of ['INSERT','UPDATE','DELETE'] as const){
+      const row=operation==='DELETE'?'OLD':'NEW';
+      const changed=operation==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+      store.db.exec(`CREATE TRIGGER IF NOT EXISTS errand_route_${operation.toLowerCase()}_v1 AFTER ${operation} ON settings
+        WHEN (${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'execution-mode:%')${changed}
+        BEGIN INSERT INTO settings(key,value) VALUES('errand-binding-generation:'||substr(${row}.key,instr(${row}.key,':')+1),lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
+      const bindingChanged=operation==='UPDATE'?" WHEN OLD.id IS NOT NEW.id OR OLD.provider IS NOT NEW.provider OR OLD.native_id IS NOT NEW.native_id OR OLD.cwd IS NOT NEW.cwd OR OLD.mode IS NOT NEW.mode OR OLD.token_hash IS NOT NEW.token_hash OR OLD.enabled IS NOT NEW.enabled":'';
+      store.db.exec(`CREATE TRIGGER IF NOT EXISTS errand_binding_${operation.toLowerCase()}_v1 AFTER ${operation} ON bindings${bindingChanged}
+        BEGIN INSERT INTO settings(key,value) VALUES('errand-binding-generation:'||${row}.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
+    }
     store.db.exec(`CREATE TABLE IF NOT EXISTS errand_missions(
       id TEXT PRIMARY KEY,root_request TEXT UNIQUE NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,
       binding_id TEXT NOT NULL,binding_identity TEXT NOT NULL,contract_json TEXT NOT NULL,contract_hash TEXT NOT NULL,
@@ -125,7 +138,8 @@ export class ErrandMissions {
   }
   private fresh(row:Candidate) {
     const time=this.now();return row.observed_at>=time-MAX_AGE&&row.observed_at<=time+5000&&
-      (row.verification==='public-listing-verified'||(row.verification==='public-listing-published'&&Number.isSafeInteger(row.application_deadline)&&row.application_deadline!>time));
+      (row.verification==='public-listing-verified'||(row.verification==='public-listing-published'&&Number.isSafeInteger(row.application_deadline)&&row.application_deadline!>time)||
+        (row.verification==='public-listing-published-no-deadline'&&row.application_deadline===null&&row.observed_at>=time-NO_DEADLINE_MAX_AGE));
   }
   begin(scope:ErrandScope,input:ErrandContract) {
     const contract=canonicalContract(input),json=JSON.stringify(contract);
@@ -143,7 +157,7 @@ export class ErrandMissions {
     if(!Array.isArray(result)||result.length>MAX_CANDIDATES)throw new Error('Invalid listing evidence.');
     const unique=new Map<string,Listing>();
     for(const raw of result){
-      if(!raw||!['public-listing-verified','public-listing-published'].includes(raw.verification)||(raw.verification==='public-listing-published'&&(!Number.isSafeInteger(raw.applicationDeadline)||raw.applicationDeadline!<=this.now()))||!['remote-only','onsite','hybrid','unknown'].includes(raw.workplace)||typeof raw.title!=='string'||typeof raw.excerpt!=='string'||!Number.isSafeInteger(raw.observedAt)||raw.observedAt>this.now()+5000||raw.observedAt<this.now()-MAX_AGE||!/^[a-f0-9]{64}$/.test(raw.sourceHash))throw new Error('Invalid or stale listing evidence.');
+      if(!raw||!['public-listing-verified','public-listing-published','public-listing-published-no-deadline'].includes(raw.verification)||(raw.verification==='public-listing-published'&&(!Number.isSafeInteger(raw.applicationDeadline)||raw.applicationDeadline!<=this.now()))||(raw.verification==='public-listing-published-no-deadline'&&(raw.applicationDeadline!==undefined||raw.observedAt<this.now()-NO_DEADLINE_MAX_AGE))||!['remote-only','onsite','hybrid','unknown'].includes(raw.workplace)||typeof raw.title!=='string'||typeof raw.excerpt!=='string'||!Number.isSafeInteger(raw.observedAt)||raw.observedAt>this.now()+5000||raw.observedAt<this.now()-MAX_AGE||!/^[a-f0-9]{64}$/.test(raw.sourceHash))throw new Error('Invalid or stale listing evidence.');
       const title=clean(raw.title,MAX_TITLE+1),excerpt=clean(raw.excerpt,MAX_EXCERPT+1),url=publicListingUrl(raw.url),sourceUrl=publicListingUrl(raw.sourceUrl);
       if(!title||title.length>MAX_TITLE||!excerpt||excerpt.length>MAX_EXCERPT||unique.has(url)||SENSITIVE.test(title+' '+excerpt))throw new Error('Listing evidence is empty, oversized, private or duplicated.');
       unique.set(url,{...raw,title,excerpt,url,sourceUrl});
@@ -192,6 +206,7 @@ export class ErrandMissions {
     if(data.includes(contract.role.toLocaleLowerCase()))reasons.push(`Mentions ${contract.role}`);
     if(data.includes(contract.location.toLocaleLowerCase()))reasons.push(`Mentions ${contract.location}`);
     const skills=mentionedSkills(row,contract);if(skills.length)reasons.push(`Title includes your stated skill terms: ${skills.join(', ')}`);
+    if(row.verification==='public-listing-published-no-deadline')reasons.push('Deadline not provided');
     return reasons.length?reasons.join('; '):'Review the listing against your criteria';
   }
   /** A fresh owner request can reopen only its own unexpired immutable snapshot. */
@@ -205,7 +220,7 @@ export class ErrandMissions {
   /** Build exactly one bounded message. This returns text; it never enqueues or sends. */
   shortlistText(id:string,scope:ErrandScope) {
     const rows=this.viewShortlist(id,scope);
-    const text=['Job shortlist. Page identity, application availability, salary and eligibility are unverified.',...rows.map(r=>`${r.number}. ${r.title}\n${r.url}\n${r.reason}`),'Reply draft NUMBER to prepare a draft.'].join('\n');
+    const text=['Job shortlist. Page identity, application availability, salary and eligibility are unverified.',...rows.map(r=>`${r.number}. ${r.title}\n${r.url}\n${r.reason}`),`Reply draft NUMBER ${shortlistReference(id)} to prepare a draft.`].join('\n');
     if(toWhatsApp(text).length>3500)throw new Error('The shortlist is too long to deliver as one message.');
     return text;
   }
@@ -225,14 +240,22 @@ export class ErrandMissions {
   /** Select only from the stored exact snapshot, using a new authenticated owner request. */
   draft(id:string,scope:ErrandScope,number:number) {
     const mission=this.mission(id,scope);if(mission.state!=='shortlisted'||!Number.isInteger(number)||number<1||number>5)throw new Error('Choose a number from the current shortlist.');
-    const request=this.store.job(scope.requestId),body=request?.body??'',match=/^\s*(?:please\s+)?draft\s+([1-5])\s*[.!?]*\s*$/i.exec(body);
-    if(!scope.requestId.startsWith('wa:')||scope.requestId===mission.root_request||this.store.get(`parent:${scope.requestId}`)||this.store.get(`report-parent:${scope.requestId}`)||!match||Number(match[1])!==number)throw new Error('Send a new owner message such as draft 1 to choose this listing.');
+    const request=this.store.job(scope.requestId),choice=parseErrandChoice(request?.body??'');
+    if(!scope.requestId.startsWith('wa:')||scope.requestId===mission.root_request||this.store.get(`parent:${scope.requestId}`)||this.store.get(`report-parent:${scope.requestId}`)||!choice||choice.number!==number)throw new Error('Send a new owner message such as draft 1 to choose this listing.');
     const delivered=this.store.db.prepare(`SELECT o.id,m.mission_id,m.body_hash,o.body,o.delivered_at,o.sent_at,o.source,o.request_id,o.binding_id,o.reply_kind,o.destination
       FROM errand_shortlist_messages m JOIN outbox o ON o.id=m.outbox_id
       WHERE m.owner=? AND m.destination=? AND o.status='sent' AND o.delivered_at IS NOT NULL AND o.sent_at IS NOT NULL
       ORDER BY o.delivered_at DESC LIMIT 2`).all(scope.owner,scope.destination) as {id:string;mission_id:string;body_hash:string;body:string;delivered_at:number;sent_at:number;source:string;request_id:string|null;binding_id:string|null;reply_kind:string|null;destination:string|null}[];
     const latest=delivered[0];
     if(!latest||latest.mission_id!==id||delivered[1]?.delivered_at===latest.delivered_at||latest.source!==`errand-shortlist:${id}:0`||latest.request_id!==mission.root_request||latest.binding_id!==scope.bindingId||latest.reply_kind!=='system'||latest.destination!==scope.destination||latest.body_hash!==digest(latest.body)||latest.body!==toWhatsApp(this.shortlistText(id,scope)))throw new Error('That shortlist was not confirmed delivered or is no longer the latest.');
+    // Callback order cannot establish when a message was composed on another
+    // device. Once multiple shortlists have been delivered, require the code
+    // printed on the latest one so a delayed bare reply cannot select it.
+    if(!choice.reference&&delivered[1])throw new Error('More than one shortlist has arrived. Reply with the code shown on the latest shortlist.');
+    if(choice.reference){
+      const collisions=this.store.db.prepare(`SELECT COUNT(DISTINCT mission_id) n FROM errand_shortlist_messages WHERE owner=? AND destination=? AND lower(substr(replace(mission_id,'-',''),1,8))=?`).get(scope.owner,scope.destination,choice.reference) as {n:number};
+      if(choice.reference!==shortlistReference(id)||collisions.n!==1)throw new Error('That shortlist code is unavailable. Use the code on the latest shortlist.');
+    }
     // inbox.received_at is assigned after routing, so it is not ingress proof.
     // Without a bridge-owned ordering adapter, every draft fails closed.
     if(!this.orderedAfter(scope,latest.id))throw new Error('Cannot verify that this request followed the delivered shortlist.');
@@ -241,7 +264,8 @@ export class ErrandMissions {
     const contract=JSON.parse(mission.contract_json) as ErrandContract;
     // Persist the result with the claim, so a crash after commit can recover
     // the same result without creating another draft or repeating an effect.
-    const result={title:row.title,url:row.url,text:`Hello,\n\nI am interested in the ${row.title} opportunity. I am looking for a ${contract.role} role in ${contract.location}.\n\nI would welcome the opportunity to discuss the position and how my experience fits your needs.\n\nThank you.`};
+    const skills=contract.skills?.length?`\n- Consider your stated terms (${contract.skills.join(', ')}) only where relevant and supported by a real example.`:'';
+    const result={title:row.title,url:row.url,text:`Cover letter starter — complete the brackets before using:\n\nHello,\n\nI am interested in the ${row.title} opportunity.\n\n[Describe one relevant project or contribution and its result, using facts you can verify.]\n\n[Explain why this particular role interests you.]\n\nI would welcome the opportunity to discuss the position.\n\nThank you.\n\nResume prompts:\n- Describe your contribution to a relevant project and a result you can verify.${skills}\n- Check the listing for requirements and include only experience you actually have.`};
     this.store.db.exec('SAVEPOINT errand_draft');
     try{
       this.mission(id,scope);const existing=this.store.db.prepare('SELECT mission_id,candidate_id,owner,destination,draft_json FROM errand_draft_claims WHERE request_id=?').get(scope.requestId) as {mission_id:string;candidate_id:string;owner:string;destination:string;draft_json:string|null}|undefined;

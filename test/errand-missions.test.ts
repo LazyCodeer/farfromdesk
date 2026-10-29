@@ -8,6 +8,7 @@ import {Store} from '../src/store.js';
 import {ErrandMissions,errandBindingIdentity,publicListingUrl,type ErrandScope,type Listing} from '../src/errand-missions.js';
 import {wonderErrandRanker} from '../src/errand-ranker.js';
 import {existingTabListingReader} from '../src/errand-browser-source.js';
+import {shortlistReference} from '../src/errand-choice.js';
 
 const now=Date.parse('2026-10-29T10:00:00Z');
 const approved={role:'Flutter developer',location:'Bangalore',salary:'80k',avoid:'onsite'};
@@ -127,7 +128,10 @@ test('a later delivered shortlist supersedes earlier missions and a draft reques
     f.sources[0].url='https://jobs.example.com/openings/other';f.sources[0].title='Other role';
     await ledger.gather(other,second,{},new AbortController().signal);await ledger.shortlist(other,second,new AbortController().signal);deliver(f.store,queueShortlist(f.store,ledger,other,second),4);
     const choice=f.request('wa:choice','draft 1');assert.throws(()=>ledger.draft(f.id,choice,1),/no longer the latest/);
-    const saved=ledger.draft(other,choice,1);assert.equal(saved.title,'Other role');assert.deepEqual(ledger.draft(other,choice,1),saved);
+    assert.throws(()=>ledger.draft(other,choice,1),/More than one shortlist/);
+    assert.throws(()=>ledger.draft(other,f.request('wa:old-code',`draft 1 ${shortlistReference(f.id)}`),1),/code is unavailable/);
+    const bound=f.request('wa:bound',`draft 1 ${shortlistReference(other)}`);
+    const saved=ledger.draft(other,bound,1);assert.equal(saved.title,'Other role');assert.deepEqual(ledger.draft(other,bound,1),saved);
   }finally{f.close();}
 });
 test('simultaneous delivered shortlist receipts are ambiguous and cannot select a mission',async()=>{
@@ -137,6 +141,18 @@ test('simultaneous delivered shortlist receipts are ambiguous and cannot select 
     const second=f.request('wa:second','find another job'),other=ledger.begin(second,approved);
     await ledger.gather(other,second,{},new AbortController().signal);await ledger.shortlist(other,second,new AbortController().signal);deliver(f.store,queueShortlist(f.store,ledger,other,second),2);
     assert.throws(()=>ledger.draft(other,f.request('wa:choice','draft 1'),1),/no longer the latest/);
+  }finally{f.close();}
+});
+test('a colliding shortlist code fails closed',async()=>{
+  const f=fixture();try{
+    await f.ledger.gather(f.id,f.scope,{},new AbortController().signal);await f.ledger.shortlist(f.id,f.scope,new AbortController().signal);
+    deliver(f.store,queueShortlist(f.store,f.ledger,f.id,f.scope));
+    const collision=`${shortlistReference(f.id)}-0000-4000-8000-000000000000`;
+    f.store.db.prepare(`INSERT INTO errand_missions SELECT ?,root_request||':collision',owner,destination,binding_id,binding_identity,contract_json,contract_hash,state,version,created_at FROM errand_missions WHERE id=?`).run(collision,f.id);
+    f.store.db.prepare('INSERT INTO errand_shortlist_messages VALUES(?,?,?,?,?,?)').run('synthetic-collision',collision,f.owner,f.owner,'wa:collision','a'.repeat(64));
+    const choice=f.request('wa:collision-choice',`draft 1 ${shortlistReference(f.id)}`);
+    assert.throws(()=>f.ledger.draft(f.id,choice,1),/code is unavailable/);
+    assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get() as {n:number}).n,0);
   }finally{f.close();}
 });
 test('known credential patterns are refused before criteria or listing text reach ranking',async()=>{
@@ -231,6 +247,24 @@ test('published listing deadline and unknown application availability survive sn
     deliver(f.store,queueShortlist(f.store,ledger,f.id,f.scope));const choice=f.request('wa:choice-expired','draft 1');
     time=now+5000;assert.throws(()=>ledger.viewShortlist(f.id,choice),/stale/);assert.throws(()=>ledger.draft(f.id,choice,1),/stale/);
     assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get() as {n:number}).n,0);
+  }finally{f.close();}
+});
+test('published evidence with no deadline is labelled and expires after one hour',async()=>{
+  const f=fixture();try{
+    let time=now;const published:Listing={...f.sources[0],verification:'public-listing-published-no-deadline'};
+    const ledger=new ErrandMissions(f.store,()=>true,async()=>[published],async input=>input.map(x=>x.id),()=>time,syntheticOrdered);
+    await ledger.gather(f.id,f.scope,{},new AbortController().signal);const rows=await ledger.shortlist(f.id,f.scope,new AbortController().signal);
+    assert.equal(rows[0].applicationAvailability,'unverified');assert.match(ledger.shortlistText(f.id,f.scope),/Deadline not provided/);
+    deliver(f.store,queueShortlist(f.store,ledger,f.id,f.scope));const choice=f.request('wa:no-deadline','draft 1');
+    assert.ok(ledger.draft(f.id,choice,1));time=now+3600001;
+    assert.throws(()=>ledger.viewShortlist(f.id,choice),/stale/);assert.throws(()=>ledger.draft(f.id,choice,1),/stale/);
+  }finally{f.close();}
+});
+test('legacy published evidence without its required deadline is not reinterpreted',async()=>{
+  const f=fixture();try{
+    const published:Listing={...f.sources[0],verification:'public-listing-published'};
+    const ledger=new ErrandMissions(f.store,()=>true,async()=>[published],async input=>input.map(x=>x.id),()=>now);
+    await assert.rejects(ledger.gather(f.id,f.scope,{},new AbortController().signal),/Invalid or stale/);
   }finally{f.close();}
 });
 test('an expired delivered shortlist cannot be selected and requires a new errand',async()=>{

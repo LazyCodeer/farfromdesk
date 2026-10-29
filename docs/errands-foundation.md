@@ -1,13 +1,16 @@
 # Errand mission foundation
 
 This is an experimental WhatsApp-only Greenhouse workflow, not a general job
-search. A typed owner request can use `greenhouse jobs; board=example;
+search. In a direct WhatsApp owner chat, a typed request can use `greenhouse jobs; board=example;
 role=Engineer; location=Bangalore`, with optional `salary=`, `avoid=` or
 `skills=Dart, Flutter` fields. Only skills explicitly supplied in that request
-are used, to annotate literal title mentions without changing the ranking.
+are used, to annotate literal title mentions and prompt the owner to consider
+relevant examples, without changing the ranking.
 Those mentions do not establish a requirement, qualification or fit.
 It searches only that public board, preserves F3 review when applicable, and
-prepares an owner-only text draft after a delivered shortlist and `draft N`.
+prepares an owner-only text draft after a delivered shortlist and a reply with
+the displayed code, for example `draft 2 1a2b3c4d`. A bare `draft 2` works only
+while exactly one shortlist has been delivered in that owner chat.
 There is no general web search, automatic About-you or resume integration, document sender,
 automatic browser navigation, application opener or submit action. A selected
 page is not by itself proof of a current job listing or a working query-stripped URL.
@@ -15,8 +18,10 @@ page is not by itself proof of a current job listing or a working query-stripped
 The ledger supports a scoped approved mission, a bounded source-verifier seam,
 an immutable numbered shortlist and a local draft. It does not submit forms,
 sign in, enter a password or personal ID, contact anyone, make purchases, or
-send a message. The draft is an intentionally generic starting point and is not
-yet the tailored document required by the approved plan.
+send a message. The draft names the selected listing and includes cover-letter
+and resume prompts with blank spaces for the owner to fill with verified facts.
+Explicit skill terms are suggestions to consider, not claims. This is not yet
+the profile-grounded document required by the approved plan.
 
 ## Trust boundaries
 
@@ -39,7 +44,7 @@ yet the tailored document required by the approved plan.
   board and job IDs, plus a board-local search. It independently checks the fixed
   Greenhouse API and the matching public listing URL, and returns a distinct
   published-listing evidence type with application availability unverified.
-  It requires an explicit future deadline, and rejects recognizable closed
+  It accepts a valid future deadline or an absent deadline, and rejects recognizable closed
   or removed notices. It also parses a narrow observed layout requiring a
   matching og:url, title, heading and form metadata, ignoring script, comment
   and inert SVG, template and textarea content. One saved public sample matched
@@ -101,19 +106,26 @@ yet the tailored document required by the approved plan.
   the profile adapter must send only the owner's intentionally shared criteria.
 - Every async transition rechecks the owner, destination, exact binding and
   native identity, contract authority, mission version and state. Results are
-  discarded on cancellation or changed scope. Shortlist entries expire after
-  24 hours or at their explicit deadline, including after ranking completes.
+  discarded on cancellation or changed scope. Durable generation markers also
+  invalidate in-flight work when the owner, session or route changes and then
+  changes back. Shortlist entries expire after 24 hours or at their explicit
+  deadline, including after ranking completes. Listings without a deadline
+  are labelled and expire after one hour; their availability is unverified.
   Shortlists state that page identity and application availability are
   unverified. A later `draft N` requires the
   exact text of a new top-level authenticated owner request in the same
   owner/chat and a trusted check of the original approved contract.
+  Search, shortlist and draft output are limited to the direct owner chat;
+  owned-group membership is not treated as proof of private delivery. A group
+  gets only a fixed instruction to use the direct chat.
 - Draft selection also requires a bridge-owned ingress ordering proof for the
   authenticated owner message and the exact delivered shortlist. An initial
   WhatsApp adapter captures a typed draft choice before async group checks,
   confirms the owner afterward, and records a participant-specific shortlist
   receipt in the same database sequence. Callback order does not prove when
-  the owner authored or saw a message on another device; delayed or reordered
-  inbound messages can be interpreted against a later shortlist. Group
+  the owner authored or saw a message on another device. A later shortlist
+  requires its displayed code, and an ambiguous code collision fails closed,
+  so delayed bare replies cannot select a newer shortlist. Group
   aggregate ACK is not treated as an owner receipt. `inbox.received_at`
   is set after asynchronous routing and must never be used as ingress time.
   The future adapter must durably capture order before any async work, and

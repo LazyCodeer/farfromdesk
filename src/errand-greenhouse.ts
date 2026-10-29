@@ -85,7 +85,10 @@ function parseInput(input:unknown):Input {
 
 // Date-only deadlines are treated conservatively as the start of that UTC
 // day. An omitted or ambiguous timezone never extends the stated deadline.
-function deadline(value:unknown,time:number):number {
+function deadline(value:unknown,time:number):number|undefined {
+  // Missing information is not proof that applications are open. Keep it
+  // distinct from an invalid or expired deadline and use a shorter lifetime.
+  if(value===undefined||value===null)return undefined;
   if(typeof value!=='string')throw new Error('The published listing has no verifiable deadline.');
   const m=/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2}))?$/.exec(value);
   if(!m)throw new Error('The published listing has no verifiable deadline.');
@@ -136,11 +139,12 @@ export function greenhouseListingReader(current:(scope:ErrandScope)=>boolean,now
       // that applications are open or that this layout is an API contract.
       if(!/^text\/html\b/i.test(page.contentType)||!greenhousePageIdentity(page.body,link.hostname,job.board,job.id,data.title.trim()))throw new Error('The public listing page is unavailable or does not match.');
       if(explicitlyClosed(page.body))throw new Error('The public listing page says applications are closed.');
-      const observedAt=now();if(applicationDeadline<=observedAt)throw new Error('The published listing deadline has passed.');
+      const observedAt=now();if(applicationDeadline!==undefined&&applicationDeadline<=observedAt)throw new Error('The published listing deadline has passed.');
       // The API establishes publication, not that applications are open. The
       // ledger preserves that distinction and displays availability as unknown.
-      result.push({sourceUrl:`https://boards-api.greenhouse.io${apiPath}`,url:link.href,title:data.title.trim(),excerpt:data.title.trim(),observedAt,applicationDeadline,
-        sourceHash:createHash('sha256').update(api.body).update('\0').update(page.body).digest('hex'),workplace:'unknown',verification:'public-listing-published'});
+      const location=typeof data.location?.name==='string'?data.location.name.replace(/[\u0000-\u001f\u007f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,160):'';
+      result.push({sourceUrl:`https://boards-api.greenhouse.io${apiPath}`,url:link.href,title:data.title.trim(),excerpt:[data.title.trim(),location].filter(Boolean).join(' — '),observedAt,applicationDeadline,
+        sourceHash:createHash('sha256').update(api.body).update('\0').update(page.body).digest('hex'),workplace:'unknown',verification:applicationDeadline===undefined?'public-listing-published-no-deadline':'public-listing-published'});
     }
     return result;
   };

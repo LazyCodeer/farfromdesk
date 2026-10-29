@@ -5,6 +5,7 @@ import {ErrandMissions,canonicalSkills,errandBindingIdentity,type ErrandContract
 import {greenhouseBoardReader} from './errand-greenhouse.js';
 import {wonderErrandRanker} from './errand-ranker.js';
 import {ErrandOrder} from './errand-order.js';
+import {parseErrandChoice} from './errand-choice.js';
 import {hash,type Binding} from './store.js';
 import {toWhatsApp} from './whatsapp-format.js';
 import type {Incoming,Router} from './router.js';
@@ -73,7 +74,7 @@ export class ErrandWorkflow {
   }
   private authorized(scope:ErrandScope,contract:ErrandContract,root:string) {
     const r=this.router,s=r.store,b=s.binding(scope.bindingId),rootJob=s.job(root);
-    if(r.stopped||s.controlChannel()!=='whatsapp'||s.destination()!==scope.destination||s.ownerFor(scope.destination)!==scope.owner||!b?.enabled||!rootJob||!['submitted','completed'].includes(rootJob.status)||rootJob.binding_id!==b.id||rootJob.destination!==scope.destination||errandBindingIdentity(s,b)!==scope.bindingIdentity||s.get(`parent:${root}`)||s.get(`report-parent:${root}`))return false;
+    if(r.stopped||s.controlChannel()!=='whatsapp'||scope.destination!==scope.owner||s.destination()!==scope.destination||s.ownerFor(scope.destination)!==scope.owner||!b?.enabled||!rootJob||!['submitted','completed'].includes(rootJob.status)||rootJob.binding_id!==b.id||rootJob.destination!==scope.destination||errandBindingIdentity(s,b)!==scope.bindingIdentity||s.get(`parent:${root}`)||s.get(`report-parent:${root}`))return false;
     const origin=s.requestOwnerOrigin(root),caller=s.requestOwnerOrigin(scope.requestId);
     if(!origin||!caller||origin.owner!==scope.owner||origin.destination!==scope.destination||caller.owner!==scope.owner||caller.destination!==scope.destination)return false;
     const request=this.request(root);if(!request||JSON.stringify(request.contract)!==JSON.stringify(contract))return false;
@@ -96,6 +97,7 @@ export class ErrandWorkflow {
     return {requestId,owner,destination:d,bindingId:b.id,bindingIdentity:errandBindingIdentity(s,b)};
   }
   private queueGuarded(mission:string,root:string,scope:ErrandScope,kind:'shortlist'|'draft',text:string) {
+    if(scope.destination!==scope.owner)throw new Error('Use a direct owner chat.');
     const s=this.router.store,source=kind==='shortlist'?`errand-shortlist:${mission}`:`errand-draft:${scope.requestId}`;
     const b=s.binding(scope.bindingId);if(!b?.enabled)throw new Error('The errand session is unavailable.');
     s.output(b,text,source,scope.destination,{requestId:scope.requestId,kind:'system',origin:'system',plain:true});
@@ -118,7 +120,8 @@ export class ErrandWorkflow {
     }catch(e){s.db.exec('ROLLBACK TO errand_notice; RELEASE errand_notice');throw e;}
   }
   unsupportedInput(m:Incoming){
-    return /^greenhouse jobs\s*;/i.test(m.text.trim())&&(this.router.store.controlChannel()!=='whatsapp'||m.ownerCommand!==true||!!m.quotedId);
+    const s=this.router.store,d=s.destination();
+    return /^greenhouse jobs\s*;/i.test(m.text.trim())&&(s.controlChannel()!=='whatsapp'||m.ownerCommand!==true||!!m.quotedId||d!==s.ownerFor(d));
   }
   async start(m:Incoming) {
     if(!/^greenhouse jobs\s*;/i.test(m.text.trim()))return false;
@@ -130,6 +133,10 @@ export class ErrandWorkflow {
       // This fixed, non-sensitive notice uses Telegram's paired-owner
       // destination check in its existing outbound delivery path.
       s.output(undefined,'Job search is available in WhatsApp. Send it there as a new text message.',`errand-channel:${m.id}`,d,{plain:true});
+      s.remember(m.id);return true;
+    }
+    if(d!==owner){
+      try{this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-input:${m.id}`,'Send job searches in your direct WhatsApp owner chat.');}catch{}
       s.remember(m.id);return true;
     }
     if(m.ownerCommand!==true||m.quotedId){
@@ -163,7 +170,7 @@ export class ErrandWorkflow {
       const state=s.db.prepare('SELECT state FROM errand_missions WHERE id=?').get(mission) as {state:string}|undefined;
       if(state?.state==='cancelled')return true;
       try{if(s.job(m.id)?.status==='submitted')s.jobState(m.id,'failed','Could not prepare the shortlist.');}catch{}
-      try{this.notice(scope.owner,scope.destination,generation,`errand-search-error:${m.id}`,'Could not prepare a verified shortlist for this board.');}catch{}
+      try{this.notice(scope.owner,scope.destination,generation,`errand-search-error:${m.id}`,'Could not prepare a shortlist for this board. Check the board and criteria.');}catch{}
       return true;
     }finally{this.activeSearch.delete(m.id);}
     return true;
@@ -198,16 +205,20 @@ export class ErrandWorkflow {
   /** Return false only when no errand shortlist exists; otherwise fail closed. */
   draft(m:Incoming) {
     const s=this.router.store,d=s.destination(),owner=s.ownerFor(d);
-    if(!/^\s*(?:please\s+)?draft\s+([1-5])\s*[.!?]*\s*$/i.test(m.text)||!d||!owner||!authenticatedOwner(this.router,m)||m.ownerCommand!==true||m.quotedId||s.controlChannel()!=='whatsapp')return false;
+    if(!parseErrandChoice(m.text)||!d||!owner||!authenticatedOwner(this.router,m)||m.ownerCommand!==true||m.quotedId||s.controlChannel()!=='whatsapp')return false;
     const generation=s.get('errand-authority-generation')??'';
+    if(d!==owner){
+      try{this.notice(owner,d,generation,`errand-draft-error:${m.id}`,'Send draft choices in your direct WhatsApp owner chat.');}catch{}
+      s.remember(m.id);return true;
+    }
     try{return this.draftExact(m);}catch(e){
-      const error=e instanceof Error?e.message:'',text=/^(Wait for the shortlist to arrive before choosing a draft\.|That shortlist is no longer available\. Start a new errand\.)$/.test(error)?error:'Could not prepare that draft. Start a new errand to try again.';
+      const error=e instanceof Error?e.message:'',text=/^(Wait for the shortlist to arrive before choosing a draft\.|That shortlist is no longer available\. Start a new errand\.|More than one shortlist has arrived\. Reply with the code shown on the latest shortlist\.|That shortlist code is unavailable\. Use the code on the latest shortlist\.)$/.test(error)?error:'Could not prepare that draft. Start a new errand to try again.';
       try{this.notice(owner,d,generation,`errand-draft-error:${m.id}`,text);}catch{}
       s.remember(m.id);return true;
     }
   }
   private draftExact(m:Incoming) {
-    const match=/^\s*(?:please\s+)?draft\s+([1-5])\s*[.!?]*\s*$/i.exec(m.text);if(!match)return false;
+    const choice=parseErrandChoice(m.text);if(!choice)return false;
     const r=this.router,s=r.store,d=s.destination(),owner=s.ownerFor(d);if(!d||!owner||!authenticatedOwner(r,m)||m.ownerCommand!==true||m.quotedId||s.controlChannel()!=='whatsapp')return false;
     const rows=s.db.prepare(`SELECT g.* FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id
       WHERE g.kind='shortlist' AND g.owner=? AND g.destination=? AND o.status='sent' AND o.delivered_at IS NOT NULL ORDER BY o.delivered_at DESC LIMIT 1`).all(owner,d) as Guard[];
@@ -217,15 +228,17 @@ export class ErrandWorkflow {
       if(s.db.prepare(`SELECT 1 FROM errand_outbox_guards g WHERE g.kind='shortlist' AND g.owner=? AND g.destination=? LIMIT 1`).get(owner,d))throw new Error('That shortlist is no longer available. Start a new errand.');
       return false;
     }
+    const now=Date.now();
     const fresh=s.db.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN observed_at<? OR observed_at>? OR
-      (verification!='public-listing-verified' AND (verification!='public-listing-published' OR application_deadline IS NULL OR application_deadline<=?)) THEN 1 ELSE 0 END) stale
-      FROM errand_candidates WHERE mission_id=? AND position IS NOT NULL`).get(Date.now()-86400000,Date.now()+5000,Date.now(),latest.mission_id) as {total:number;stale:number|null};
+      (verification!='public-listing-verified' AND NOT (verification='public-listing-published' AND application_deadline IS NOT NULL AND application_deadline>?)
+        AND NOT (verification='public-listing-published-no-deadline' AND application_deadline IS NULL AND observed_at>=?)) THEN 1 ELSE 0 END) stale
+      FROM errand_candidates WHERE mission_id=? AND position IS NOT NULL`).get(now-86400000,now+5000,now,now-3600000,latest.mission_id) as {total:number;stale:number|null};
     if(!fresh.total||fresh.stale)throw new Error('That shortlist is no longer available. Start a new errand.');
     const b=r.need(latest.binding_id),scope=this.scope(m.id,b);
     s.db.exec('SAVEPOINT queue_errand_draft');
     try{
       s.enqueue(m.id,b,m.text,d);s.jobState(m.id,'submitted');
-      const draft=this.ledger.draft(latest.mission_id,scope,Number(match[1]));
+      const draft=this.ledger.draft(latest.mission_id,scope,choice.number);
       const text=`Draft for ${draft.title}\n${draft.url}\n\n${draft.text}\n\nReview the listing and draft yourself. Application availability is unverified.`;
       this.queueGuarded(latest.mission_id,latest.root_request,scope,'draft',text);s.remember(m.id);s.db.exec('RELEASE queue_errand_draft');return true;
     }catch(e){s.db.exec('ROLLBACK TO queue_errand_draft; RELEASE queue_errand_draft');throw e;}

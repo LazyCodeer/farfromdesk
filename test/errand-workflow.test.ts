@@ -12,6 +12,7 @@ import {Approvals} from '../src/approvals.js';
 import {WhatsApp} from '../src/whatsapp.js';
 import {GuardedSocket} from '../src/wa-guard.js';
 import {ErrandWorkflow,parseGreenhouseRequest} from '../src/errand-workflow.js';
+import {greenhouseBoardReader} from '../src/errand-greenhouse.js';
 import {errandBindingIdentity} from '../src/errand-missions.js';
 import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,saveBrainConfig} from '../src/meta-brain-config.js';
@@ -35,7 +36,7 @@ function fixture(path=':memory:'){
 const request='greenhouse jobs; board=example; role=Flutter; location=Bangalore';
 test('owner request searches exact board and queues a labelled shortlist and owner-only draft',async()=>{
   const f=fixture();try{
-    await f.wa.receiveMessage(f.msg('root',request));assert.equal(f.calls.length,1);
+    await f.wa.receiveMessage(f.msg('root',request+'; skills=Flutter, Dart'));assert.equal(f.calls.length,1);
     const query=(f.calls[0] as any).request;assert.deepEqual(query,{board:'example',role:'Flutter',location:'Bangalore'});
     await f.wa.flush();assert.equal(f.sent.length,1);assert.match(f.sent[0].content.text,/page identity, application availability, salary and eligibility are unverified/i);
     assert.equal(f.store.job('wa:root')?.status,'completed');
@@ -45,8 +46,69 @@ test('owner request searches exact board and queues a labelled shortlist and own
     assert.equal(f.wa.receiveMessageUpdate({id:o.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK),true);
     await f.wa.receiveMessage(f.msg('choice','draft 1'));await f.wa.flush();
     assert.equal(f.sent.length,2);assert.match(f.sent[1].content.text,/Draft for Flutter Engineer/);assert.match(f.sent[1].content.text,/Review the listing and draft yourself/);
+    assert.match(f.sent[1].content.text,/complete the brackets before using/i);
+    assert.match(f.sent[1].content.text,/Resume prompts:/);
+    assert.match(f.sent[1].content.text,/stated terms \(Flutter, Dart\).*real example/);
+    assert.doesNotMatch(f.sent[1].content.text,/I (?:have|built|developed|worked)|years of experience|degree/i);
     assert.equal(f.store.job('wa:choice')?.status,'completed');assert.equal(f.store.pendingJobs().some(x=>x.id==='wa:root'||x.id==='wa:choice'),false);
     assert.ok(f.sent.every(x=>x.jid===owner));assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,1);
+  }finally{f.close();}
+});
+test('a synthetic published listing without a deadline flows through search, delivery and draft',async()=>{
+  const f=fixture();try{
+    const page='<!DOCTYPE html><html><head><title>Job Application for Flutter Engineer at Example</title><meta property="og:url" content="https://job-boards.greenhouse.io/example/jobs/12345?gh_jid=12345"/></head><body><h1 class="section-header">Flutter Engineer</h1><form id="application-form"></form></body></html>';
+    const job={id:12345,title:'Flutter Engineer',location:{name:'Bangalore'},absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345'};
+    const transport={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>({status:200,contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html',body:host==='boards-api.greenhouse.io'?JSON.stringify(path.endsWith('/jobs')?{jobs:[job]}:job):page})};
+    f.router.errands=new ErrandWorkflow(f.router,greenhouseBoardReader(()=>true,()=>Date.now(),transport),async rows=>rows.map(x=>x.id));
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    assert.equal(f.sent.length,1);assert.match(f.sent[0].content.text,/Deadline not provided/);assert.match(f.sent[0].content.text,/application availability.*unverified/i);assert.match(f.sent[0].content.text,/Mentions Bangalore/);
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 1'));await f.wa.flush();
+    assert.match(f.sent[1].content.text,/Draft for Flutter Engineer/);
+    f.store.db.prepare('UPDATE errand_candidates SET observed_at=?').run(Date.now()-3600001);
+    await f.wa.receiveMessage(f.msg('expired','draft 1'));await f.wa.flush();
+    assert.ok(f.sent.some(x=>/That shortlist is no longer available/.test(x.content.text)));
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,1);
+  }finally{f.close();}
+});
+test('group searches and draft choices are stopped before review or search',async()=>{
+  const f=fixture(),group='owner-group@g.us';try{
+    f.store.set('destination-jid',group);f.store.set(`owned-group:${group}`,'Owner group');
+    f.wa.verifyGroup=async()=>{};
+    let reviews=0;
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>{reviews++;return {kind:'pass',goal:'',exclusions:[],checks:[],question:''};});
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,taskContracts:true}));
+    const message=(id:string,text:string)=>({key:{id,fromMe:true,remoteJid:group},message:{conversation:text}});
+    await f.wa.receiveMessage(message('group-search',request+'; skills=Flutter'));
+    await f.wa.receiveMessage(message('group-draft','draft 1'));
+    assert.equal(reviews,0);assert.equal(f.calls.length,0);assert.equal(f.store.jobs().length,0);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_missions').get()?.n,0);
+    const notices=f.store.db.prepare("SELECT body FROM outbox WHERE source LIKE 'errand-%'").all() as {body:string}[];
+    assert.equal(notices.length,2);assert.ok(notices.every(x=>/direct WhatsApp owner chat/.test(x.body)));
+    assert.ok(notices.every(x=>!x.body.includes('Flutter')));
+  }finally{f.close();}
+});
+test('delayed or misaddressed draft choices cannot select a newer shortlist',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('first',request));await f.wa.flush();
+    const first=f.store.db.prepare("SELECT id,wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%' ORDER BY rowid DESC LIMIT 1").get() as {id:string;wa_id:string};
+    const firstCode=/Reply draft NUMBER ([0-9a-f]{8})/.exec(f.sent[0].content.text)![1];
+    f.wa.receiveMessageUpdate({id:first.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    f.store.db.prepare('UPDATE outbox SET delivered_at=? WHERE id=?').run(Date.now()-1000,first.id);
+    await f.wa.receiveMessage(f.msg('second',request));await f.wa.flush();
+    const second=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%' ORDER BY rowid DESC LIMIT 1").get() as {wa_id:string};
+    const secondCode=/Reply draft NUMBER ([0-9a-f]{8})/.exec(f.sent[1].content.text)![1];
+    assert.notEqual(firstCode,secondCode);
+    f.wa.receiveMessageUpdate({id:second.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('delayed','draft 1'));
+    await f.wa.receiveMessage(f.msg('old-code',`draft 1 ${firstCode}`));
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,0);
+    await f.wa.receiveMessage(f.msg('correct',`draft 1 ${secondCode}`));await f.wa.flush();
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,1);
+    assert.ok(f.sent.some(x=>/More than one shortlist has arrived/.test(x.content.text)));
+    assert.ok(f.sent.some(x=>/That shortlist code is unavailable/.test(x.content.text)));
+    assert.ok(f.sent.some(x=>/Draft for Flutter Engineer/.test(x.content.text)));
   }finally{f.close();}
 });
 test('an errand request accepts only exact owner-supplied criteria',()=>{
@@ -81,6 +143,28 @@ test('a profile-aware shortlist is not delivered after owner authority changes',
     assert.equal(f.sent.length,0);
     assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
   }finally{f.close();}
+});
+test('session and route changes away and back invalidate queued owner output',async()=>{
+  for(const change of ['route','mode','native','binding-mode'] as const){
+    const f=fixture();try{
+      f.store.set(`session-route:${f.binding.id}`,'route-a');
+      f.store.set(`execution-mode:${f.binding.id}`,'cli');
+      await f.wa.receiveMessage(f.msg('root',request+'; skills=Flutter'));
+      if(change==='route'){
+        f.store.set(`session-route:${f.binding.id}`,'route-b');f.store.set(`session-route:${f.binding.id}`,'route-a');
+      }else if(change==='mode'){
+        f.store.db.prepare('UPDATE settings SET value=? WHERE key=?').run('desktop',`execution-mode:${f.binding.id}`);
+        f.store.db.prepare('UPDATE settings SET value=? WHERE key=?').run('cli',`execution-mode:${f.binding.id}`);
+      }else{
+        const column=change==='native'?'native_id':'mode',original=change==='native'?f.binding.native_id:f.binding.mode;
+        f.store.db.prepare(`UPDATE bindings SET ${column}=? WHERE id=?`).run('temporary',f.binding.id);
+        f.store.db.prepare(`UPDATE bindings SET ${column}=? WHERE id=?`).run(original,f.binding.id);
+      }
+      await f.wa.flush();
+      assert.ok(f.sent.every(x=>!String(x.content.text).includes('Job shortlist')));
+      assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
+    }finally{f.close();}
+  }
 });
 test('quoted, forwarded and voice job searches receive guarded instructions instead of disappearing',async()=>{
   for(const kind of ['quoted','forwarded','voice'] as const){
