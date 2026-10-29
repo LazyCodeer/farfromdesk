@@ -5,7 +5,7 @@ import {spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-for(const scenario of ['owner','binding','composition','brief','delegated','no-schema'])test(`combined F1/F2 guard: ${scenario}`,()=>{
+for(const scenario of ['owner','binding','channel-hold','composition','brief','delegated','no-schema'])test(`combined F1/F2 guard: ${scenario}`,()=>{
   const root=mkdtempSync(join(tmpdir(),'ffd-schedule-native-isolated-'));
   try{
     assert.deepEqual(readdirSync(root),[]);if(process.platform!=='win32')assert.equal(statSync(root).mode&0o077,0);

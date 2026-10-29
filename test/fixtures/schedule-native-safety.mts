@@ -9,6 +9,7 @@ import {NativeAgents} from '../../src/native.js';
 import {recordBriefDispatch} from '../../src/brief-dispatch-guard.js';
 import {MorningBrief} from '../../src/morning-brief.js';
 
+globalThis.fetch=async()=>{throw new Error('Unexpected network request in isolated test');};
 const root=process.env.WSB_STATE_DIR;if(!root)throw Error('An isolated WSB_STATE_DIR is required.');
 const store=new Store(':memory:'),owner='owner@s.whatsapp.net';store.set('whatsapp-owner',owner);
 if(process.argv[2]==='no-schema'){assert.equal(store.requestOwnerOrigin('schedule:missing'),undefined);store.close();console.log('ok');process.exit(0);}
@@ -61,10 +62,19 @@ if(scenario==='composition'){
 }else{
   await router.schedules.tick(router);await startedWait;
   const job=store.db.prepare("SELECT id,status FROM inbox WHERE id LIKE 'schedule:%'").get() as {id:string;status:string};assert.equal(job.status,'dispatched');
-  if(scenario==='owner')store.set('whatsapp-owner','other@s.whatsapp.net');
+  if(scenario==='channel-hold'){store.set('telegram-owner','tg:1:2');store.set('control-channel','telegram');}
+  else if(scenario==='owner')store.set('whatsapp-owner','other@s.whatsapp.net');
   else if(scenario==='binding')store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run('99999999-9999-4999-8999-999999999999',binding.id);
   else throw Error('Unknown scenario');
   release();await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(sends,0);assert.equal(store.job(job.id)?.status,'failed');assert.match(store.job(job.id)?.error??'',/not sent/);
+  assert.equal(sends,0);
+  if(scenario==='channel-hold'){
+    assert.equal(store.job(job.id)?.status,'queued');
+    router.pump();await new Promise(resolve=>setImmediate(resolve));assert.equal(sends,0);
+    store.set('control-channel','whatsapp');router.pump();
+    await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(sends,1);assert.equal(store.job(job.id)?.status,'submitted');
+    router.pump();await new Promise(resolve=>setImmediate(resolve));assert.equal(sends,1);
+  }else {assert.equal(store.job(job.id)?.status,'failed');assert.match(store.job(job.id)?.error??'',/not sent/);}
 }
 router.stopped=true;approvals.cancel();store.close();console.log('ok');

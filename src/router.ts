@@ -16,6 +16,9 @@ import { namedItem, directSession, startDirect, endDirect, backToProxy } from '.
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 
+/** A scheduled request was held before any native submission. */
+class ScheduledChannelHold extends DispatchNotSubmittedError {}
+
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
 export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean};
 export const help = `Just tell me what you need.
@@ -322,7 +325,11 @@ export class Router {
     const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id);
     if(!scheduled&&!guard)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
-    if(scheduled&&(job.binding_id!==b.id||scheduleJobState(this,id)!=='ready')){const reason='The scheduled request was not sent because its owner, session or channel changed.';this.failBeforeSubmission(id,reason);throw new DispatchNotSubmittedError(reason);}
+    if(scheduled){
+      const state=job.binding_id===b.id?scheduleJobState(this,id):'invalid';
+      if(state==='hold')throw new ScheduledChannelHold('Scheduled request held until its original channel is active.');
+      if(state==='invalid'){const reason='The scheduled request was not sent because its owner or session changed.';this.failBeforeSubmission(id,reason);throw new DispatchNotSubmittedError(reason);}
+    }
     if(guard&&!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
     return true;
   }
@@ -345,11 +352,12 @@ export class Router {
     for(const b of this.store.bindings()) {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.routableJob(b);if(!job)continue;
-      try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;}
+      try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold)continue;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;}
       this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
       const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
       void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
+        if(e instanceof ScheduledChannelHold){if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
         if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return;}
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
         this.store.jobState(job.id,'uncertain',(e as Error).message);
@@ -371,7 +379,7 @@ export class Router {
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.routableJob(b);if(!job)return null;
-    try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
+    try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold)return null;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
   }
