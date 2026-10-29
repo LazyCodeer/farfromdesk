@@ -2,6 +2,7 @@ import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {EventEmitter} from 'node:events';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -11,14 +12,16 @@ import {Approvals} from '../src/approvals.js';
 import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts,contractDeliveryState} from '../src/task-contracts.js';
+import {Masters} from '../src/masters.js';
+import {roleConfig} from '../src/roles.js';
 
-async function fixture(){
+async function fixture(provider:'codex'|'claude'='codex'){
   const dir=mkdtempSync(join(tmpdir(),'ffd-proof-report-')),store=new Store(':memory:'),approvals=new Approvals(store);
   const router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);router.pump=()=>{};
-  store.set('whatsapp-owner','owner@s.whatsapp.net');const binding=store.register('codex-one','codex',randomUUID(),dir).binding;store.set('active',binding.id);
+  store.set('whatsapp-owner','owner@s.whatsapp.net');const binding=store.register(`${provider}-one`,provider,randomUUID(),dir).binding;store.set('active',binding.id);
   const secret=new MetaSecret(dir);secret.save('synthetic-key-not-a-real-secret');
   router.brain=new MetaBrain(store,secret,{interpret:async()=>{throw new Error('unused');}} as any);
-  saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'block'}});
+  saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:[provider],failure:'block'}});
   router.contracts=new TaskContracts(store,secret,async()=>({kind:'contract',goal:'Add a dark mode',exclusions:[],checks:['Dark mode can be enabled','Existing mode still works'],question:''}));
   await router.receive({id:'wa:request',text:'Add a dark mode',ownerIntent:true,ownerCommand:true});
   store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
@@ -102,6 +105,42 @@ test('normal final without an outcome requests confirmation without asserting su
     assert.match(f.reports()[0].body,/Checks needing confirmation/);
     assert.doesNotMatch(f.reports()[0].body,/verified pass|check passed/i);
   }finally{f.close();}
+});
+
+test('a managed Codex final reports the approved checks without asserting verification',async()=>{
+  const f=await fixture();const masters=new Masters(f.store,f.router);
+  try{
+    const runtime=new EventEmitter() as EventEmitter&{alive:boolean;request:(method:string)=>Promise<void>;close:()=>void};
+    runtime.alive=true;runtime.close=()=>{};
+    runtime.request=async(method)=>{assert.equal(method,'turn/start');queueMicrotask(()=>{
+      runtime.emit('notification','item/completed',{threadId:f.binding.native_id,item:{type:'agentMessage',phase:'final_answer',text:'Implemented; tests reported passing.'}});
+      runtime.emit('notification','turn/completed',{threadId:f.binding.native_id,turn:{id:'turn-managed',status:'completed'}});
+    });};
+    masters.connections.assert=async()=>{};
+    masters.runtimes.set(f.binding.id,runtime as any);
+    masters.runtimeRoles.set(f.binding.id,roleConfig(f.store,f.binding).version);
+    f.store.jobState(f.id,'dispatched');
+    await masters.run(f.binding,f.store.job(f.id)!.body,f.id);
+    assert.equal(f.store.job(f.id)?.status,'completed');assert.equal(f.reports().length,1);
+    assert.match(f.reports()[0].body,/Session reported \(unverified\): Implemented; tests reported passing/);
+    assert.match(f.reports()[0].body,/No test, PR or screenshot has been independently verified/);
+  }finally{masters.close();f.close();}
+});
+
+test('a managed Claude final reports the approved checks without asserting verification',async()=>{
+  const f=await fixture('claude');const masters=new Masters(f.store,f.router);
+  try{
+    const runtime={alive:true,lastUsage:undefined,run:async()=> 'Implemented; tests reported passing.',close:()=>{}};
+    masters.connections.assert=async()=>{};
+    masters.claudeRuntimes.set(f.binding.id,runtime as any);
+    masters.runtimeRoles.set(f.binding.id,roleConfig(f.store,f.binding).version);
+    f.store.set(`managed-claude:${f.binding.id}`,'true');
+    f.store.jobState(f.id,'dispatched');
+    await masters.run(f.binding,f.store.job(f.id)!.body,f.id);
+    assert.equal(f.store.job(f.id)?.status,'completed');assert.equal(f.reports().length,1);
+    assert.match(f.reports()[0].body,/Session reported \(unverified\): Implemented; tests reported passing/);
+    assert.match(f.reports()[0].body,/No test, PR or screenshot has been independently verified/);
+  }finally{masters.close();f.close();}
 });
 
 test('a hook-first final still produces one report, without resending the agent final',async()=>{
