@@ -25,7 +25,7 @@ export function voiceTranscriber(store:Store):Transcriber{
   async transcribe(audio,mime,signal){
    const dir=mkdtempSync(join(tmpdir(),'ffd-voice-')),path=join(dir,'voice');writeFileSync(path,audio,{mode:0o600});
    const media={path,filename:'voice',bytes:audio.length,sha256:createHash('sha256').update(audio).digest('hex'),mime,dispose:()=>rmSync(dir,{recursive:true,force:true})};
-   try{return await transcribeAudio(store,{mimetype:mime,fileLength:audio.length},signal,undefined,async()=>media);}finally{media.dispose();}
+   try{return await transcribeAudio(store,{mimetype:mime,fileLength:audio.length},signal,undefined,async()=>media,{kind:'remote'});}finally{media.dispose();}
   },
  };
 }

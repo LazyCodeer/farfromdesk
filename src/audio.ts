@@ -102,10 +102,13 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
     },observe);
   }finally{await rm(dir,{recursive:true,force:true});}
 }
-export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver,download:typeof downloadAudio=downloadAudio) {
+export type VoiceOrigin={kind:'chat';destination:string;owner:string}|{kind:'remote'};
+export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver,download:typeof downloadAudio=downloadAudio,origin?:VoiceOrigin) {
   store.assertIncomingOwner();
   const format=audioFormat(audio),engine=voiceEngine(store);
-  const observeMeta=engine==='meta'?metaObserver(store,'heard'):undefined;
+  // A remote connection can inherit an async chat context. Only a caller
+  // explicitly identifying a chat may associate its transcription with one.
+  const observeMeta=engine==='meta'&&origin?.kind==='chat'?metaObserver(store,'heard',origin.destination,origin.owner):undefined;
   if(engine!=='local') {
     const k=readVoiceKey()!,mime=String(audio.mimetype).split(';')[0].trim().toLowerCase();
     const data=await measureVoiceStage('download',()=>download(audio,signal),observe);

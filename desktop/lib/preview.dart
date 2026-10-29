@@ -141,8 +141,9 @@ class PreviewGateway extends Gateway {
   Future<Map<String, dynamic>> get(String path) async => path == '/api/memory'
       ? memory
       : path == '/api/meta-timeline'
-      ? {'events': <Object>[]}
+      ? {'scope': 'preview', 'events': <Object>[]}
       : {
+          'metaTimelineScope': 'preview',
           'channelChosen': chosen,
           'channelSwitch': {
             'channel': controlChannel,

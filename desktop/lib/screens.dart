@@ -3633,6 +3633,7 @@ extension _BrainAndItems on _DeskState {
     key: ValueKey('brain-${status['metaBrain']?['configured']}'),
     gateway: api,
     saved: Map<String, dynamic>.from(status['metaBrain'] ?? {}),
+    activityScope: status['metaTimelineScope'] as String?,
     onSaved: refresh,
     openItems: () => go(2),
   );

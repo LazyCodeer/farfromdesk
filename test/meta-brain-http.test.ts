@@ -19,12 +19,12 @@ test('Meta settings and verification are owner-admin only, reject browser input 
     for(const path of ['/api/meta-brain','/api/meta-brain/verify'])assert.equal((await post(path,{}, {authorization:`Bearer ${worker.token}`,'x-binding-id':worker.binding.id})).status,403);
     assert.equal((await fetch(url+'/api/meta-brain/tasks',{headers:{authorization:`Bearer ${worker.token}`,'x-binding-id':worker.binding.id}})).status,403);
     assert.equal((await fetch(url+'/api/meta-timeline',{headers:{authorization:`Bearer ${worker.token}`,'x-binding-id':worker.binding.id}})).status,403);
-    const timeline=await fetch(url+'/api/meta-timeline',{headers:{authorization:'Bearer synthetic-admin'}});assert.equal(timeline.status,200);assert.deepEqual(await timeline.json(),{events:[]});
+    const timeline=await fetch(url+'/api/meta-timeline',{headers:{authorization:'Bearer synthetic-admin'}});assert.equal(timeline.status,200);assert.deepEqual(await timeline.json(),{scope:null,events:[]});
     const {metaObserver}=await import('../src/meta-timeline.js');store.set('whatsapp-owner','old-owner@s.whatsapp.net');
-    await metaObserver(store,'sorted')(async()=>true);
-    const oldTimeline=await fetch(url+'/api/meta-timeline',{headers:{authorization:'Bearer synthetic-admin'}});assert.equal((await oldTimeline.json() as any).events.length,1);
+    await metaObserver(store,'sorted','old-owner@s.whatsapp.net')(async()=>true);
+    const oldTimeline=await fetch(url+'/api/meta-timeline',{headers:{authorization:'Bearer synthetic-admin'}});const oldView=await oldTimeline.json() as any;assert.equal(oldView.events.length,1);assert.ok(oldView.scope);
     store.set('whatsapp-owner','new-owner@s.whatsapp.net');
-    const newTimeline=await fetch(url+'/api/meta-timeline',{headers:{authorization:'Bearer synthetic-admin'}});assert.deepEqual(await newTimeline.json(),{events:[]});
+    const newTimeline=await fetch(url+'/api/meta-timeline',{headers:{authorization:'Bearer synthetic-admin'}});const newView=await newTimeline.json() as any;assert.deepEqual(newView.events,[]);assert.ok(newView.scope);assert.notEqual(newView.scope,oldView.scope);
     assert.equal((await post('/api/meta-brain',{policy:DEFAULT_BRAIN,key},{origin:url})).status,400);
     assert.equal(router.brain.secret.present(),false);
     let refreshed=0;(router.brain as any).refresh=async()=>{refreshed++;};

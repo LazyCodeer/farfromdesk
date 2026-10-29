@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:farfromdesk/meta_brain_panel.dart';
@@ -7,6 +8,7 @@ class MetaGateway extends PreviewGateway {
   Map<String, dynamic>? submitted;
   bool fail = false;
   bool activityFail = false;
+  Future<Map<String, dynamic>> Function()? activityRequest;
   List<Map<String, dynamic>> activity = [];
   final posts = <String>[];
   Map<String, dynamic> saved = {};
@@ -43,7 +45,8 @@ class MetaGateway extends PreviewGateway {
     lastGet = path;
     if (path == '/api/meta-timeline') {
       if (activityFail) throw Exception('raw provider error');
-      return {'events': activity};
+      if (activityRequest != null) return activityRequest!();
+      return {'scope': 'test-scope', 'events': activity};
     }
     if (path == '/api/memory') return files;
     return {
@@ -128,6 +131,7 @@ void main() {
           body: SingleChildScrollView(
             child: MetaBrainPanel(
               gateway: api,
+              activityScope: 'test-scope',
               saved: const {'enabled': false},
               onSaved: () async {},
             ),
@@ -156,6 +160,25 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('raw provider error'), findsNothing);
+  });
+  testWidgets('activity from an earlier chat or mismatched response is discarded', (tester) async {
+    final oldResponse = Completer<Map<String, dynamic>>();
+    final newResponse = Completer<Map<String, dynamic>>();
+    var calls = 0;
+    final api = MetaGateway()..activityRequest = () => (++calls == 1 ? oldResponse : newResponse).future;
+    Widget panel(String scope) => MaterialApp(home: Scaffold(body: SingleChildScrollView(
+      child: MetaBrainPanel(gateway: api, activityScope: scope, saved: const {'enabled': false}, onSaved: () async {}),
+    )));
+    final oldEvent = {'stage': 'sorted', 'status': 'completed', 'durationMs': 10, 'at': DateTime.now().millisecondsSinceEpoch};
+    await tester.pumpWidget(panel('old'));
+    await tester.pumpWidget(panel('new'));
+    newResponse.complete({'scope': 'wrong', 'events': [oldEvent]});
+    await tester.pump();
+    expect(find.text('Could not load Meta activity. Try refresh.'), findsOneWidget);
+    oldResponse.complete({'scope': 'old', 'events': [oldEvent]});
+    await tester.pump();
+    expect(find.text('Message interpretation'), findsNothing);
+    expect(find.text('Could not load Meta activity. Try refresh.'), findsOneWidget);
   });
   for (final savedModel in [null, 'muse-spark-1.2']) {
     testWidgets(

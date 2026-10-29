@@ -160,7 +160,7 @@ export class Telegram {
       if(this.closed||!this.bot||this.router.stopped||this.store.controlChannel()!=='telegram'||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(cb.from?.id)||cb.from.is_bot||cb.from.id!==m.chat.id||m.from?.id!==this.bot.id||!validId(m.message_id)||telegramDestination(this.bot.id,m.chat.id)!==this.store.get('telegram-owner')||typeof cb.id!=='string'||!/^[A-Za-z0-9_-]{1,200}$/.test(cb.id)||typeof cb.data!=='string')return;
       const destination=telegramDestination(this.bot.id,m.chat.id);
       const owner=this.store.captureIncomingOwner(destination,'telegram');if(!owner)return;
-      const result=await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,()=>this.router.receive({id:`tg-choice:${this.bot!.id}:${cb.id}`,text:'Selected message option',quotedId:telegramMessageId(this.bot!.id,m.chat.id,m.message_id),optionToken:cb.data})));
+      const result=await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,()=>this.router.receive({id:`tg-choice:${this.bot!.id}:${cb.id}`,text:'Selected message option',quotedId:telegramMessageId(this.bot!.id,m.chat.id,m.message_id),optionToken:cb.data,activityScope:{destination,owner:destination}})));
       if(!this.store.incomingOwnerContext.run(owner,()=>this.store.incomingOwnerCurrent()))return;
       await this.call('answerCallbackQuery',{callback_query_id:cb.id,text:result.status==='blocked'?'Choice unavailable. Check the reply.':'Answer recorded.'}).catch(()=>{});
       return;
@@ -192,7 +192,7 @@ export class Telegram {
     const owner=this.store.captureIncomingOwner(destination,'telegram');if(!owner)return;
     const quotedId=m.reply_to_message?.from?.id===this.bot.id&&validId(m.reply_to_message?.message_id)?telegramMessageId(this.bot.id,m.chat.id,m.reply_to_message.message_id):undefined;
     if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
-    const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice&&!m.document&&!m.photo};
+    const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice&&!m.document&&!m.photo,activityScope:{destination,owner:destination}};
     await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,async()=>{
       const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
@@ -226,7 +226,7 @@ export class Telegram {
     try {
       if(voice){
         this.store.output(undefined,voiceEngine(this.store)==='local'?'Voice note received. I’m transcribing it locally on your computer.':'Voice note received. I’m transcribing it with your configured speech provider.',`audio-progress:${incoming.id}`,destination);
-        const text=await this.transcribe(this.store,{mimetype:file.mime_type??'audio/ogg',seconds:file.duration,fileLength:file.file_size},signal,e=>this.store.voiceEvent(incoming.id,e),async()=>this.download(file,'voice.bin',signal));
+        const text=await this.transcribe(this.store,{mimetype:file.mime_type??'audio/ogg',seconds:file.duration,fileLength:file.file_size},signal,e=>this.store.voiceEvent(incoming.id,e),async()=>this.download(file,'voice.bin',signal),{kind:'chat',destination,owner:destination});
         if(routing()!==original)throw new Error('The selected session changed. Resend to the intended session.');
         if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions.');
         incoming={...incoming,text,source:'voice',ownerCommand:false};

@@ -182,7 +182,8 @@ export class Schedules {
     if(cancel){this.cancel(m,destination,owner,Number(cancel[1]));return true;}
     if(!brainPolicy(this.store).enabled||!this.secret.present()){this.answer(m,'Turn on Meta Brain and add your key before creating a reminder.');return true;}
     const zone=this.store.get('schedule-timezone')??'Asia/Kolkata';if(!validZone(zone))throw new Error('Choose a valid reminder time zone in settings.');
-    const decision=await this.interpret(text,this.now(),zone,this.secret.read()!,metaObserver(this.store,'scheduled',destination,owner));
+    const origin=m.activityScope;
+    const decision=await this.interpret(text,this.now(),zone,this.secret.read()!,origin?metaObserver(this.store,'scheduled',origin.destination,origin.owner):undefined);
     // Changes during the model call cannot create a schedule under another owner, group or channel.
     if(router.stopped||!this.store.incomingOwnerCurrent()||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
     // An explicit time-shaped request must never fall through into immediate work.

@@ -44,12 +44,14 @@ class MetaBrainPanel extends StatefulWidget {
   final Map<String, dynamic> saved;
   final Future<void> Function() onSaved;
   final VoidCallback? openItems;
+  final String? activityScope;
   const MetaBrainPanel({
     super.key,
     required this.gateway,
     required this.saved,
     required this.onSaved,
     this.openItems,
+    this.activityScope,
   });
   @override
   State<MetaBrainPanel> createState() => _MetaBrainPanelState();
@@ -65,7 +67,8 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   List<Map<String, dynamic>>? tasks;
   List<Map<String, dynamic>> workItems = [];
   List<Map<String, dynamic>> metaActivity = [];
-  bool activityLoading = true, activityBusy = false, activityError = false;
+  bool activityLoading = false, activityBusy = false, activityError = false;
+  int activityGeneration = 0;
   Timer? activityTimer;
   @override
   void initState() {
@@ -80,11 +83,25 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
     taskContracts = s['taskContracts'] != false;
-    loadActivity();
+    activityLoading = widget.activityScope != null;
+    if (activityLoading) unawaited(loadActivity());
     activityTimer = Timer.periodic(
       const Duration(seconds: 15),
       (_) => loadActivity(),
     );
+  }
+
+  @override
+  void didUpdateWidget(covariant MetaBrainPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activityScope != widget.activityScope || oldWidget.gateway != widget.gateway) {
+      activityGeneration++;
+      metaActivity = [];
+      activityBusy = false;
+      activityError = false;
+      activityLoading = widget.activityScope != null;
+      if (activityLoading) unawaited(loadActivity());
+    }
   }
 
   @override
@@ -96,10 +113,14 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   }
 
   Future<void> loadActivity() async {
-    if (activityBusy) return;
+    final requestScope = widget.activityScope;
+    if (activityBusy || requestScope == null) return;
+    final generation = activityGeneration;
     activityBusy = true;
     try {
       final data = await widget.gateway.get('/api/meta-timeline');
+      if (!mounted || generation != activityGeneration) return;
+      if (data['scope'] != requestScope) throw const FormatException('Activity scope changed');
       final rows = data['events'];
       if (rows is! List) throw const FormatException('Invalid activity');
       final parsed = rows
@@ -126,7 +147,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           })
           .take(30)
           .toList();
-      if (mounted) {
+      if (mounted && generation == activityGeneration) {
         setState(() {
           metaActivity = parsed;
           activityLoading = false;
@@ -135,7 +156,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       }
     } catch (_) {
       // Never show stale activity as belonging to the currently selected chat.
-      if (mounted) {
+      if (mounted && generation == activityGeneration) {
         setState(() {
           metaActivity = [];
           activityLoading = false;
@@ -143,7 +164,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
         });
       }
     } finally {
-      activityBusy = false;
+      if (generation == activityGeneration) activityBusy = false;
     }
   }
 
@@ -182,7 +203,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                 ),
               ),
               TextButton(
-                onPressed: activityBusy ? null : loadActivity,
+                onPressed: activityBusy || widget.activityScope == null ? null : loadActivity,
                 child: const Text('Refresh'),
               ),
             ],
@@ -203,6 +224,11 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                 'Could not load Meta activity. Try refresh.',
                 style: TextStyle(color: muted),
               ),
+            )
+          else if (widget.activityScope == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('Connect a chat to view Meta activity.', style: TextStyle(color: muted)),
             )
           else if (metaActivity.isEmpty)
             const Padding(
@@ -1070,7 +1096,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           ),
           saveRow('Save changes'),
         ],
-        activityTab(),
+        KeyedSubtree(key: ValueKey('meta-activity-${widget.activityScope}'), child: activityTab()),
         const SizedBox(height: 24),
         pageHeading(
           'Memory',

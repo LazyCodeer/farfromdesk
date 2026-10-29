@@ -282,7 +282,8 @@ export class MetaBrain {
     if(!policy.enabled)return false;
     // IDs from internal delegation/reports cannot masquerade as owner input.
     if(!/^(wa|tg|local):/.test(m.id)||this.store.get(`parent:${m.id}`)||this.store.get(`report-parent:${m.id}`))return false;
-    const observeMeta=metaObserver(this.store,'sorted');
+    const origin=m.activityScope;
+    const observeMeta=origin?metaObserver(this.store,'sorted',origin.destination,origin.owner):undefined;
     const prior=this.get(m.id);
     if(prior){if(prior.original!==m.text||prior.destination!==this.store.destination())throw new Error('Owner event identity was reused.');if(prior.state==='interpreting')this.stop(m.id,'Interpretation was interrupted. No automatic retry was made; send a new message when ready.');return true;}
     this.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run(m.id,m.text,m.source??'text',this.store.destination(),Date.now());
