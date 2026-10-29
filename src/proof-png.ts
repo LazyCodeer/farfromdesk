@@ -58,12 +58,16 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
   try {
     if(!(input instanceof Uint8Array)||input.byteLength<45||input.byteLength>maxBytes)return;
     const data=Buffer.from(input);if(!data.subarray(0,8).equals(signature))return;
-    let offset=8,count=0,width=0,height=0,color=-1,palette=0,seenData=false,dataEnded=false,seenEnd=false,gamma:number|undefined,chroma:number[]|undefined;
+    let offset=8,count=0,width=0,height=0,color=-1,palette=0,paletteChunk=-1,transparencyChunk=-1,backgroundIndex:number|undefined,seenData=false,dataEnded=false,seenEnd=false,gamma:number|undefined,chroma:number[]|undefined;
     const seen=new Set<string>(),image:Buffer[]=[],compressed:Buffer[]=[ ];
     while(offset+12<=data.length&&count++<1024){
       const length=data.readUInt32BE(offset),end=offset+length+12;if(end>data.length)return;
-      const type=data.toString('ascii',offset+4,offset+8),body=data.subarray(offset+8,offset+8+length);
-      if(!/^[A-Za-z]{4}$/.test(type)||type[2]!==type[2].toUpperCase()||crc32(data.subarray(offset+4,offset+8+length))!==data.readUInt32BE(offset+8+length))return;
+      const typeBytes=data.subarray(offset+4,offset+8),body=data.subarray(offset+8,offset+8+length);
+      // Node's 'ascii' decoder masks the high bit, so validate raw bytes
+      // before decoding rather than accepting an invalid disguised chunk.
+      if([...typeBytes].some(byte=>(byte<65||byte>90)&&(byte<97||byte>122)))return;
+      const type=typeBytes.toString('latin1');
+      if(type[2]!==type[2].toUpperCase()||crc32(data.subarray(offset+4,offset+8+length))!==data.readUInt32BE(offset+8+length))return;
       if(seenEnd)return;
       if(offset===8){
         if(type!=='IHDR'||length!==13)return;
@@ -74,8 +78,10 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
       if(type==='IHDR'||type==='iCCP'||type==='acTL'||type==='fcTL'||type==='fdAT')return;
       if(type!=='IDAT'&&seenData)dataEnded=true;
       if(type==='PLTE'){
-        if(seen.has(type)||seenData||[0,4].includes(color)||length<3||length>768||length%3)return;
-        palette=length/3;seen.add(type);image.push(data.subarray(offset,end));
+        // A suggested palette is not needed for true-color rendering and may
+        // contain unused data; reject it rather than changing its semantics.
+        if(seen.has(type)||seenData||color!==3||length<3||length>768||length%3)return;
+        palette=length/3;paletteChunk=image.length;seen.add(type);image.push(data.subarray(offset,end));
       } else if(type==='IDAT'){
         if(dataEnded||color===3&&!palette)return;
         seenData=true;compressed.push(body);image.push(data.subarray(offset,end));
@@ -102,10 +108,12 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
         if(type==='tRNS'){
           if(color===0&&length!==2||color===2&&length!==6||color===3&&(!palette||length<1||length>palette)||[4,6].includes(color))return;
           if(color===0&&body.readUInt16BE(0)>255||color===2&&(body.readUInt16BE(0)>255||body.readUInt16BE(2)>255||body.readUInt16BE(4)>255))return;
+          if(color===3)transparencyChunk=image.length;
         }
         if(type==='bKGD'){
           if([0,4].includes(color)&&length!==2||[2,6].includes(color)&&length!==6||color===3&&(!palette||length!==1||body[0]>=palette))return;
           if([0,4].includes(color)&&body.readUInt16BE(0)>255||[2,6].includes(color)&&(body.readUInt16BE(0)>255||body.readUInt16BE(2)>255||body.readUInt16BE(4)>255))return;
+          if(color===3)backgroundIndex=body[0];
         }
         seen.add(type);image.push(data.subarray(offset,end));
       } else if(metadata.has(type)){
@@ -125,6 +133,8 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
     const decoded=inflateSync(encoded,{info:true,maxOutputLength:expected+1}) as unknown as {buffer:Buffer;engine:{bytesWritten:number}};
     if(decoded.buffer.length!==expected||decoded.engine.bytesWritten!==encoded.length)return;
     let previous=Buffer.alloc(width),current=Buffer.alloc(width);
+    const used=color===3?new Uint8Array(palette):undefined;
+    if(used&&backgroundIndex!==undefined)used[backgroundIndex]=1;
     for(let row=0;row<height;row++){
       const start=row*(rowBytes+1),filter=decoded.buffer[start];if(filter>4)return;
       if(color===3){
@@ -139,9 +149,21 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
             predictor=da<=db&&da<=dc?left:db<=dc?above:upperLeft;
           }
           current[x]=(decoded.buffer[start+1+x]+predictor)&255;if(current[x]>=palette)return;
+          used![current[x]]=1;
         }
         [previous,current]=[current,previous];
       }
+    }
+    if(used){
+      // Preserve every visible/background color and alpha. Unused entries can
+      // carry arbitrary hidden bytes, so replace only those entries and update
+      // the corresponding chunk CRCs without changing the image's indexes.
+      const rewrite=(index:number,edit:(body:Buffer)=>void)=>{
+        const source=image[index],updated=Buffer.from(source),size=updated.readUInt32BE(0),body=updated.subarray(8,8+size);
+        edit(body);updated.writeUInt32BE(crc32(updated.subarray(4,8+size)),8+size);image[index]=updated;
+      };
+      rewrite(paletteChunk,body=>{for(let i=0;i<used.length;i++)if(!used[i])body.fill(0,i*3,i*3+3);});
+      if(transparencyChunk>=0)rewrite(transparencyChunk,body=>{for(let i=0;i<body.length;i++)if(!used[i])body[i]=255;});
     }
     return Buffer.concat([signature,...image]);
   }catch{return;}

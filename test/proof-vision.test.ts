@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {crc32} from 'node:zlib';
+import {crc32,deflateSync} from 'node:zlib';
 import {assessProofVision,type AuthorizedVisionCapture,type VisionDependencies} from '../src/proof-vision.js';
 import {proofScopeHash,type ProofCheck,type ProofScope} from '../src/proof-check.js';
 import {META_ENDPOINT} from '../src/meta-brain-config.js';
@@ -19,6 +19,10 @@ function chunk(type:string,payload:Buffer){
   return Buffer.concat([length,name,payload,checksum]);
 }
 const withBeforeData=(...chunks:Buffer[])=>Buffer.concat([png.subarray(0,33),...chunks,png.subarray(33)]);
+function indexedPng(colors:Buffer,alpha:Buffer){
+  const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(1,0);ihdr.writeUInt32BE(1,4);ihdr[8]=8;ihdr[9]=3;
+  return Buffer.concat([png.subarray(0,8),chunk('IHDR',ihdr),chunk('PLTE',colors),chunk('tRNS',alpha),chunk('IDAT',deflateSync(Buffer.from([0,0]))),chunk('IEND',Buffer.alloc(0))]);
+}
 function capture(changes:Partial<AuthorizedVisionCapture>={}):AuthorizedVisionCapture {
   return {reference:'artifact:sample',scopeHash:proofScopeHash(scope,checks),checkId:checks[0].id,checkBindingHash:'e'.repeat(64),
     artifactHash:sha(png),capturedAt:now-1000,selectedWindow:true,nonsensitive:true,consentedForMeta:true,png,...changes};
@@ -138,6 +142,27 @@ test('refusing the sanitized image hash prevents network upload',async()=>{
   const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
     readCapture:async()=>capture({png:source,artifactHash:sha(source)}),authorizeUse:auth=>auth.sanitizedArtifactHash===auth.artifactHash,
     fetcher:async()=>{calls++;return response('consistent');},
+  }));
+  assert.equal(result,undefined);assert.equal(calls,0);
+});
+
+test('unused palette data is removed before upload and hash authorization',async()=>{
+  const colors=Buffer.concat([Buffer.from([1,2,3]),Buffer.from('hidden123')]),alpha=Buffer.from([255,11,22,33]);
+  const source=indexedPng(colors,alpha),expected=indexedPng(Buffer.from([1,2,3,0,0,0,0,0,0,0,0,0]),Buffer.from([255,255,255,255]));
+  let calls=0;
+  const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
+    readCapture:async()=>capture({png:source,artifactHash:sha(source)}),
+    authorizeUse:auth=>auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(expected),
+    fetcher:async(_url,init)=>{calls++;const body=JSON.parse(String(init!.body));const encoded=body.messages.find((m:any)=>m.role==='user').content[1].image_url.url.split(',')[1];const uploaded=Buffer.from(encoded,'base64');assert.deepEqual(uploaded,expected);assert.equal(uploaded.includes(Buffer.from('hidden123')),false);return response('consistent');},
+  }));
+  assert.equal(calls,1);assert.equal(result?.sanitizedArtifactHash,sha(expected));
+});
+
+test('a PNG with a non-ASCII chunk type is never uploaded even if its CRC is valid',async()=>{
+  const source=Buffer.from(png),idat=33,size=source.readUInt32BE(idat);
+  source[idat+4]|=0x80;source.writeUInt32BE(crc32(source.subarray(idat+4,idat+8+size)),idat+8+size);
+  let calls=0;const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
+    readCapture:async()=>capture({png:source,artifactHash:sha(source)}),fetcher:async()=>{calls++;return response('consistent');},
   }));
   assert.equal(result,undefined);assert.equal(calls,0);
 });

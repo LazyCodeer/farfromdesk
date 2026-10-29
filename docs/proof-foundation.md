@@ -37,9 +37,10 @@ checks. It never copies other check text; unsupported checks remain unverified
 without asking the owner to approve a new excerpt.
 
 Before upload, the helper strips PNG text, EXIF, timestamp and resolution
-metadata, retains supported rendering chunks and image pixels, and fails closed
-on malformed data, custom color profiles, animation, interlacing and unsupported
-formats. It binds authorization to both the original and sanitized image hashes
+metadata, clears unused indexed-palette and transparency entries while retaining
+visible and background colors, and preserves supported image pixels. It fails
+closed on malformed data, custom color profiles, animation, interlacing,
+suggested true-color palettes and unsupported formats. It binds authorization to both the original and sanitized image hashes
 and the sanitization policy. Sanitizing metadata does not remove sensitive
 content visible in pixels. Production must not wire this until trusted capture
 provenance, nonsensitive-window selection and consent are available.
