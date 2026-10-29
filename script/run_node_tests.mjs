@@ -30,6 +30,9 @@ function defaultAppState() {
   if(process.platform==='win32')return join(process.env.LOCALAPPDATA||join(home,'AppData','Local'),'FarFromDesk');
   return join(process.env.XDG_DATA_HOME||join(home,'.local','share'),'farfromdesk');
 }
+export function coordinatorRoots(env=process.env,home=homedir()) {
+  return [join(home,'.farfromdesk'),...(env.FARFROMDESK_HOME===undefined?[]:[env.FARFROMDESK_HOME])];
+}
 
 // Resolve aliases in every existing path component, even when the final state
 // directory has not been created. An inaccessible component is not assumed to
@@ -72,7 +75,9 @@ export function selectedTests(mode,args) {
 
 export async function startTests(mode,args) {
   const {files,options}=selectedTests(mode,args);
-  const roots=[...(process.env.WSB_STATE_DIR===undefined?[]:[process.env.WSB_STATE_DIR]),defaultAppState()];
+  // The coordinator workspace can contain the owner's projects even when it
+  // is separate from app state. Check it before creating any test directory.
+  const roots=[...(process.env.WSB_STATE_DIR===undefined?[]:[process.env.WSB_STATE_DIR]),defaultAppState(),...coordinatorRoots()];
   const base=safeTestTempBase(tmpdir(),roots);
   const root=mkdtempSync(join(base,'farfromdesk-tests-'));
   let guardPort;
