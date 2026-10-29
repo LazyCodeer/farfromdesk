@@ -4,20 +4,21 @@ import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
 import {brainPolicy,META_ENDPOINT} from './meta-brain-config.js';
 import {authenticatedOwner} from './owner-commands.js';
 import {briefTargetIdentity} from './brief-dispatch-guard.js';
+import {metaObserver,type MetaObserver} from './meta-timeline.js';
 import type {Incoming,Router} from './router.js';
 import type {Store} from './store.js';
 
 type Kind='idle'|'approval'|'question'|'choice'|'repeated-error';
 type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string};
 type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null};
-type Writer=(kinds:Kind[],key:string)=>Promise<string>;
+type Writer=(kinds:Kind[],key:string,observe?:MetaObserver)=>Promise<string>;
 const LIMIT=100,MAX_NOTICES_PER_TICK=3,IDLE_MS=10*60_000,OFFER_MS=10*60_000;
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const safeTitle=(v:string)=>v.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[—–]/g,',').replace(/\s+/g,' ').trim().slice(0,100);
 const openings=['A task needs your attention.','There is a task waiting for you.','One task may need your help.'];
 
 /** Meta receives only fixed signal categories, never task text, identifiers or permission prompts. */
-async function wonderOpening(kinds:Kind[],key:string):Promise<string> {
+async function wonderOpening(kinds:Kind[],key:string,observe?:MetaObserver):Promise<string> {
   const guarded:typeof fetch=async(url,init)=>{
     const response=await fetch(url,{...init,redirect:'error'});
     if(!response.ok||!response.body)throw new Error('Meta response unavailable.');
@@ -26,7 +27,7 @@ async function wonderOpening(kinds:Kind[],key:string):Promise<string> {
     return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
   };
   const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,
-    fetch:guarded});
+    fetch:(url,init)=>observe?observe(()=>guarded(url,init)):guarded(url,init)});
   const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
   try {
     const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error('Meta timeout'));},8000);});
@@ -247,7 +248,7 @@ export class StuckDetection {
       this.store.set(cursorKey,String(end?0:rows[examined-1]?.id??0));
       if(!candidates.length)return;
       const key=this.router.brain.secret.read();let opening=openings[0];
-      if(key)try{const result=await this.writer(candidates.map(s=>s.kind),key);if(openings.includes(result))opening=result;}catch{}
+      if(key)try{const result=await this.writer(candidates.map(s=>s.kind),key,metaObserver(this.store,'stuck',destination,owner));if(openings.includes(result))opening=result;}catch{}
       if(!this.context(owner,destination)||(this.store.get('incoming-owner-generation')??'')!==generation||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus||key&&this.router.brain.secret.read()!==key)return;
       for(const candidate of candidates){
         const fresh=this.signal(candidate.itemId,owner,destination,this.clock());

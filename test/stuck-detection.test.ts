@@ -16,6 +16,7 @@ const {StuckDetection}=await import('../src/stuck-detection.js');
 const {WhatsApp}=await import('../src/whatsapp.js');
 const {selectOption}=await import('../src/message-options.js');
 const {TaskContracts}=await import('../src/task-contracts.js');
+const {metaTimeline}=await import('../src/meta-timeline.js');
 
 const owner='owner@s.whatsapp.net';
 function fixture(path=':memory:'){
@@ -48,6 +49,57 @@ test('idle alert is owner scoped, grounded, deduplicated and sends only categori
     assert.deepEqual(f.inputs,[['idle']]);assert.doesNotMatch(JSON.stringify(f.inputs),/Synthetic confidential|wa:one|owner@/);
     f.store.set('whatsapp-owner','different@s.whatsapp.net');await f.detector.tick();assert.equal(alerts(f.store).length,1);
   }finally{f.close();}
+});
+
+test('only actual stuck-notice Meta requests appear in the scoped timeline',async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;try{
+    f.add('wa:one','Synthetic private task');f.advance(11*60_000);
+    let calls=0,requestBody='';
+    globalThis.fetch=async(_url,init)=>{calls++;requestBody=String(init?.body??'');return new Response(JSON.stringify({id:'r',created:0,model:'muse-wonder-1.0',choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'1'}}]}),{headers:{'content-type':'application/json'}});};
+    const detector=new StuckDetection(f.store,f.router,undefined,f.now);await detector.tick();
+    assert.equal(calls,1);assert.equal(alerts(f.store).length,1);
+    assert.deepEqual((metaTimeline(f.store) as any[]).map(row=>[row.stage,row.status]),[['stuck','completed']]);
+    assert.doesNotMatch(requestBody,/Synthetic private task|wa:one/);
+    assert.doesNotMatch(JSON.stringify(f.store.db.prepare('SELECT * FROM meta_timeline').all()),/Synthetic private task|wa:one|synthetic-stuck-test-key-only/);
+    await detector.tick();assert.equal(calls,1);assert.equal(metaTimeline(f.store).length,1);
+  }finally{globalThis.fetch=originalFetch;f.close();}
+});
+
+test('stuck Meta activity is discarded if the owner changes away and back mid-call',async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;try{
+    f.add('wa:one','Synthetic task');f.advance(11*60_000);
+    let started!:()=>void,release!:()=>void;const entered=new Promise<void>(r=>started=r),wait=new Promise<void>(r=>release=r);
+    globalThis.fetch=async()=>{started();await wait;return new Response(JSON.stringify({id:'r',created:0,model:'muse-wonder-1.0',choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'1'}}]}),{headers:{'content-type':'application/json'}});};
+    const detector=new StuckDetection(f.store,f.router,undefined,f.now),call=detector.tick();await entered;
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);release();await call;
+    assert.equal(metaTimeline(f.store).length,0);assert.equal(alerts(f.store).length,0);
+  }finally{globalThis.fetch=originalFetch;f.close();}
+});
+
+test('stuck Meta failure and timeline write failure cannot prevent an alert',async()=>{
+  for(const mode of ['provider','timeline'] as const){const f=fixture(),originalFetch=globalThis.fetch;try{
+    f.add('wa:one','Synthetic task');f.advance(11*60_000);
+    globalThis.fetch=async()=>mode==='provider'?new Response('Synthetic private error',{status:503}):new Response(JSON.stringify({id:'r',created:0,model:'muse-wonder-1.0',choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'1'}}]}),{headers:{'content-type':'application/json'}});
+    if(mode==='timeline')f.store.db.exec("CREATE TEMP TRIGGER fail_stuck_timeline BEFORE INSERT ON meta_timeline BEGIN SELECT RAISE(ABORT,'synthetic failure'); END");
+    const detector=new StuckDetection(f.store,f.router,undefined,f.now);await detector.tick();
+    assert.equal(alerts(f.store).length,1);
+    const rows=metaTimeline(f.store) as any[];
+    assert.deepEqual(rows.map(row=>[row.stage,row.status]),mode==='provider'?[['stuck','failed']]:[]);
+    assert.doesNotMatch(JSON.stringify(rows),/Synthetic private error/);
+  }finally{globalThis.fetch=originalFetch;f.close();}}
+});
+
+test('a synthetic stuck writer does not create a Meta timeline entry',async()=>{
+  const f=fixture();try{f.add('wa:one','Synthetic task');f.advance(11*60_000);await f.detector.tick();assert.equal(alerts(f.store).length,1);assert.equal(metaTimeline(f.store).length,0);}finally{f.close();}
+});
+
+test('a stuck notice without a Meta key uses its local opening without recording a call',async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;try{
+    f.add('wa:one','Synthetic task');f.advance(11*60_000);f.router.brain.secret.read=()=>undefined;
+    globalThis.fetch=async()=>{throw new Error('No Meta call expected');};
+    await new StuckDetection(f.store,f.router,undefined,f.now).tick();
+    assert.equal(alerts(f.store).length,1);assert.equal(metaTimeline(f.store).length,0);
+  }finally{globalThis.fetch=originalFetch;f.close();}
 });
 
 test('only an exact request-bound pending approval becomes an approval alert',async()=>{
