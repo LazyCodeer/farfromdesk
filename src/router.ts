@@ -209,6 +209,9 @@ export class Router {
           const request=parsePublicCheck(args);
           if(this.publicCheckActive>=2)throw new Error('Two public check requests are running. Please try again shortly.');
           const current=()=>!this.stopped&&this.store.incomingOwnerCurrent()&&this.store.controlChannel()===owner.channel&&this.store.ownerFor(owner.destination)===owner.owner;
+          // Do not replay an interrupted request under a later owner generation.
+          if(!current())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+          this.store.remember(m.id);
           this.publicCheckActive++;
           try {
             const observation=await publicCheckObservation(request,current,this.publicCheckFetch);

@@ -95,6 +95,7 @@ test('owner change away and back during fetch discards the response and queues n
     f.router.publicCheckFetch=async()=>{enter();await gate;return response(record());};
     const pending=f.router.receive(message('wa:changed'));await begun;f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);release();
     assert.equal((await pending).status,'blocked');assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source LIKE 'command%:wa:changed:%'").get(),undefined);
+    assert.equal((await f.router.receive(message('wa:changed'))).status,'ignored');
   }finally{f.close();}
 });
 
