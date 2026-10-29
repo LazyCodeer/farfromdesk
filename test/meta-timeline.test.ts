@@ -217,3 +217,13 @@ test('an owner scope lookup failure does not change the Meta call outcome',async
     });
   }finally{s.close();}
 });
+
+
+test('background calls do not record after the owner changes away and back',async()=>{
+  const s=fixture();try{
+    const owner='owner@s.whatsapp.net';let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});
+    const call=metaObserver(s,'briefed',owner,owner)(()=>wait);
+    s.set('whatsapp-owner','other@s.whatsapp.net');s.set('whatsapp-owner',owner);release();await call;
+    assert.deepEqual(metaTimeline(s),[]);
+  }finally{s.close();}
+});
