@@ -16,6 +16,7 @@ const {MetaBrain}=await import('../src/meta-brain.js');
 const {DEFAULT_BRAIN,MetaSecret,saveBrainConfig}=await import('../src/meta-brain-config.js');
 const {TaskContracts}=await import('../src/task-contracts.js');
 const {ManagedCollaboration}=await import('../src/managed-collaboration.js');
+const {CollaborationRoles}=await import('../src/collaboration-roles.js');
 const {NativeAgents}=await import('../src/native.js');
 const {DispatchNotSubmittedError}=await import('../src/brief-dispatch-guard.js');
 
@@ -42,10 +43,132 @@ async function fixture(delaySource=false,beforePump?:(store:InstanceType<typeof 
   const originalPump=r.pump;if(delaySource)r.pump=()=>{};
   const approved=await send('approve','ok');assert.equal(approved.status,'queued',JSON.stringify(store.db.prepare('SELECT body FROM outbox ORDER BY rowid').all()));
   if(delaySource){beforePump?.(store,owner);r.pump=originalPump;r.pump();}await until(()=>starts.some(x=>x.id==='wa:approve'));
-  const collab=new ManagedCollaboration(r,{allows:()=>true});r.collaboration=collab;
+  const collab=new ManagedCollaboration(r,{authorize:()=> 'test-approval'});r.collaboration=collab;
   return {dir,store,r,c,native,proxy,worker,owner,starts,routes,sourceEnd,targetEnd,collab,
     async close(){r.stopped=true;sourceEnd.resolve();targetEnd.resolve();await turn();await until(()=>r.busy.size===0);await turn();approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
+
+function roleScope(f:Awaited<ReturnType<typeof fixture>>) {
+  const c=f.r.contracts.approved('wa:approve')!;
+  return {owner:c.owner,destination:c.destination,rootRequestId:c.dispatch_id!,itemId:c.item_id!,contractId:c.id,revision:c.revision,approvedHash:c.approved_hash!};
+}
+
+test('role policy requires an exact owner-approved proposal and current memory, scope and sessions',async()=>{
+  const f=await fixture();try {
+    let memory='# Collaboration\n- Planning: selected Codex session\n',memoryRevision='1';
+    const roles=new CollaborationRoles(f.store,()=>({text:memory,revision:memoryRevision}),(_scope,digest,receipt)=>receipt===`approved:${digest}`),scope=roleScope(f);
+    const rules=[{role:'plan',fromBindingId:f.proxy.id,toBindingId:f.worker.id}];
+    const proposal=roles.propose(scope,rules);
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);
+    assert.throws(()=>roles.activate(proposal,'model says yes'),/approval/);
+    memory+='- Review: another session\n';
+    assert.throws(()=>roles.activate(proposal,`approved:${proposal.digest}`),/changed/);
+    memory='# Collaboration\n- Planning: selected Codex session\n';
+    const revision=roles.activate(proposal,`approved:${proposal.digest}`);
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),revision);
+    assert.throws(()=>roles.activate(proposal,`approved:${proposal.digest}`));
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),revision);
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','build'),undefined);
+    assert.equal(roles.authorize({...scope,approvedHash:'0'.repeat(64)},f.proxy,f.worker,'task','plan'),undefined);
+    memory+='Changed';assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);memory=memory.slice(0,-7);
+    memoryRevision='2';assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);
+    roles.revoke(scope.rootRequestId);
+    assert.throws(()=>roles.activate(proposal,`approved:${proposal.digest}`));
+    const fresh=roles.propose(scope,rules);roles.activate(fresh,`approved:${fresh.digest}`);
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.worker.id);
+    assert.equal(roles.authorize(scope,f.proxy,f.store.binding(f.worker.id)!,'task','plan'),undefined);
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(f.worker.native_id,f.worker.id);
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);
+    const afterSession=roles.propose(scope,rules);roles.activate(afterSession,`approved:${afterSession.digest}`);
+    f.store.set(`execution-mode:${f.worker.id}`,'desktop');f.store.set(`execution-mode:${f.worker.id}`,'cli');
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);
+    const afterRoute=roles.propose(scope,rules);roles.activate(afterRoute,`approved:${afterRoute.digest}`);
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);
+    roles.revoke(scope.rootRequestId);
+  }finally{await f.close();}
+});
+
+test('replacing an approved role policy during readiness cannot submit a staged handoff',async()=>{
+  const f=await fixture();try {
+    const roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Planning: Codex',revision:'fake-1'}),(_scope,digest,receipt)=>receipt===digest),scope=roleScope(f);
+    const rules=[{role:'plan',fromBindingId:f.proxy.id,toBindingId:f.worker.id}],proposal=roles.propose(scope,rules);
+    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','wrong-role','build'),/authorize/);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','policy-roundtrip','plan');
+    assert.equal(f.collab.history(scope.rootRequestId,scope.itemId)[0].role,'plan');
+    const waiting=deferred(),started=deferred();let sent=0;const prior=f.native.run;f.native.store=f.store;
+    f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id){started.resolve();await waiting.promise;}};
+    f.native.managedRun=async()=>{sent++;};
+    f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
+    f.sourceEnd.resolve();await started.promise;
+    roles.revoke(scope.rootRequestId);const replacement=roles.propose(scope,rules);roles.activate(replacement,replacement.digest);
+    waiting.resolve();await until(()=>f.store.job(id)?.status==='failed');
+    assert.equal(sent,0);assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state,'invalid');
+  }finally{await f.close();}
+});
+
+test('approval must still match after the trusted verifier returns',async()=>{
+  const f=await fixture();try {
+    let revision='before';
+    const roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Planning: Codex',revision}),()=>{revision='after';return true;}),scope=roleScope(f);
+    const proposal=roles.propose(scope,[{role:'plan',fromBindingId:f.proxy.id,toBindingId:f.worker.id}]);
+    assert.throws(()=>roles.activate(proposal,'receipt'),/changed/);
+    assert.equal(roles.authorize(scope,f.proxy,f.worker,'task','plan'),undefined);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_role_approvals').get()?.n,0);
+  }finally{await f.close();}
+});
+
+test('a changed role approval during staging rolls back the queued task and item link',async()=>{
+  const f=await fixture();try {
+    let checks=0;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>++checks===1?'old-revision':'new-revision'});
+    const id=`master:wa:approve:f5-race:${f.worker.id}`;
+    assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Plan','race','plan'),/unavailable/);
+    assert.equal(f.store.job(id),undefined);assert.equal(f.store.itemOf(id),undefined);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM managed_collaboration_handoffs').get()?.n,0);
+  }finally{await f.close();}
+});
+
+test('revoking role approval after submission keeps the claim until the outcome is reconciled',async()=>{
+  const f=await fixture();try {
+    const roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Planning: Codex',revision:'fake-1'}),(_scope,digest,receipt)=>receipt===digest),scope=roleScope(f);
+    const proposal=roles.propose(scope,[{role:'plan',fromBindingId:f.proxy.id,toBindingId:f.worker.id}]);
+    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','revoke-after-submit','plan');
+    f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    roles.revoke(scope.rootRequestId);f.r.channelReply(f.worker,'Plan reported.','final',id);
+    f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state,'claimed');
+    assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(scope.itemId)?.token);
+  }finally{await f.close();}
+});
+
+test('legacy handoffs without a policy revision never dispatch',async()=>{
+  const f=await fixture();try {
+    const id=f.collab.stage('wa:approve',f.worker.id,'Plan','legacy-policy');
+    f.store.db.prepare('UPDATE managed_collaboration_handoffs SET authority_revision=NULL WHERE job_id=?').run(id);
+    f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id===id),false);
+    assert.notEqual(f.store.job(id)?.status,'submitted');
+  }finally{await f.close();}
+});
+
+test('role approval and session revision survive database reopen',async()=>{
+  const f=await fixture();let reopened:InstanceType<typeof Store>|undefined;try {
+    const memory=()=>({text:'# Collaboration\n- Planning: Codex',revision:'fake-1'}),verify=(_scope:any,digest:string,receipt:unknown)=>digest===receipt;
+    const scope=roleScope(f),rules=[{role:'plan',fromBindingId:f.proxy.id,toBindingId:f.worker.id}];
+    f.store.set(`session-route:${f.worker.id}`,'original-route');
+    const roles=new CollaborationRoles(f.store,memory,verify),proposal=roles.propose(scope,rules),revision=roles.activate(proposal,proposal.digest);
+    reopened=new Store(join(f.dir,'test.sqlite'));const afterRestart=new CollaborationRoles(reopened,memory,verify);
+    const from=reopened.binding(f.proxy.id)!,to=reopened.binding(f.worker.id)!;
+    assert.equal(afterRestart.authorize(scope,from,to,'task','plan'),revision);
+    reopened.set(`session-route:${to.id}`,'changed');reopened.set(`session-route:${to.id}`,'original-route');
+    assert.equal(afterRestart.authorize(scope,from,to,'task','plan'),undefined);
+    reopened.close();reopened=new Store(join(f.dir,'test.sqlite'));
+    const again=new CollaborationRoles(reopened,memory,verify);
+    assert.equal(again.authorize(scope,reopened.binding(from.id)!,reopened.binding(to.id)!,'task','plan'),undefined);
+  }finally{reopened?.close();await f.close();}
+});
 
 test('managed-only handoff waits for the source turn, claims once, and carries the approved contract',async()=>{
   const f=await fixture();try{
@@ -67,35 +190,42 @@ test('synthetic managed sessions plan, build and review in sequence under one co
     const builder=f.store.register('builder','codex',randomUUID(),'/tmp').binding;
     f.routes.set(builder.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${builder.id}`,'cli');
     f.store.set('selected',JSON.stringify([f.worker.id,builder.id]));
-    const item=f.store.itemOf('wa:approve')!,allowed=new Map([['Plan the approved change.',f.worker.id],['Build the approved plan.',builder.id],['Review the approved change.',f.worker.id]]);
-    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{allows:(scope,from,to,summary)=>scope.rootRequestId==='wa:approve'&&scope.itemId===item&&from.id===f.proxy.id&&allowed.get(summary)===to.id});
-    assert.throws(()=>f.collab.stage('wa:approve',builder.id,'Unapproved task.','unauthorized'),/did not authorize/);
+    const item=f.store.itemOf('wa:approve')!,scope=roleScope(f);
+    const roles=new CollaborationRoles(f.store,()=>({text:'# Collaboration\n- Codex plans, builds and reviews.',revision:'fake-1'}),(_scope,digest,receipt)=>digest===receipt);
+    const proposal=roles.propose(scope,[
+      {role:'plan',fromBindingId:f.proxy.id,toBindingId:f.worker.id},
+      {role:'build',fromBindingId:f.proxy.id,toBindingId:builder.id},
+      {role:'review',fromBindingId:f.proxy.id,toBindingId:f.worker.id},
+    ]);
+    roles.activate(proposal,proposal.digest);f.r.collaboration=f.collab=new ManagedCollaboration(f.r,roles);
+    assert.throws(()=>f.collab.stage('wa:approve',builder.id,'Unapproved task.','unauthorized','plan'),/did not authorize/);
     f.native.run=async(b:any,body:string,id:string)=>{
       f.native.beforeDispatch?.(b,id);f.native.beforeManagedSubmission?.(b,id);f.starts.push({id,body});
       const gate=deferred();gates.set(id,gate);await gate.promise;
     };
-    const plan=f.collab.stage('wa:approve',f.worker.id,'Plan the approved change.','plan');
+    const plan=f.collab.stage('wa:approve',f.worker.id,'Plan the approved change.','plan','plan');
     f.sourceEnd.resolve();await until(()=>gates.has(plan));
     assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
     assert.match(f.starts.find(x=>x.id===plan)!.body,/Owner-approved task contract/);
     f.r.channelReply(f.worker,'Plan recorded: implement the theme and preserve existing settings.','final',plan);gates.get(plan)!.resolve();
     const planReport=`report:${plan}`;await until(()=>gates.has(planReport));
     f.store.enqueue('wa:unrelated-item-work',f.worker,'Other work on this item',f.owner);f.store.linkItem('wa:unrelated-item-work',item);f.store.jobState('wa:unrelated-item-work','submitted');
-    assert.throws(()=>f.collab.stage(planReport,builder.id,'Build the approved plan.','conflict'),/active or uncertain/);
+    assert.throws(()=>f.collab.stage(planReport,builder.id,'Build the approved plan.','conflict','build'),/active or uncertain/);
     f.store.jobState('wa:unrelated-item-work','failed');
-    const build=f.collab.stage(planReport,builder.id,'Build the approved plan.','build');
+    const build=f.collab.stage(planReport,builder.id,'Build the approved plan.','build','build');
     f.r.channelReply(f.proxy,'Plan report acknowledged.','final',planReport);
     gates.get(planReport)!.resolve();await until(()=>gates.has(build));
     assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
     f.r.channelReply(builder,'Build reported: theme implementation prepared.','final',build);gates.get(build)!.resolve();
     const buildReport=`report:${build}`;await until(()=>gates.has(buildReport));
-    const review=f.collab.stage(buildReport,f.worker.id,'Review the approved change.','review');
+    const review=f.collab.stage(buildReport,f.worker.id,'Review the approved change.','review','review');
     f.r.channelReply(f.proxy,'Build report acknowledged.','final',buildReport);
     gates.get(buildReport)!.resolve();await until(()=>gates.has(review));
     assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
     f.r.channelReply(f.worker,'Review reported: checks still require independent proof.','final',review);gates.get(review)!.resolve();
     await until(()=>f.collab.history('wa:approve',item).filter(h=>h.state==='complete').length===3);
     assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.summary),['Plan the approved change.','Build the approved plan.','Review the approved change.']);
+    assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.role),['plan','build','review']);
     assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.result),['Plan recorded: implement the theme and preserve existing settings.','Build reported: theme implementation prepared.','Review reported: checks still require independent proof.'].map(text=>({kind:'session_report',verification:'unverified',text})));
     assert.ok(f.collab.history('wa:approve',item).every(h=>h.drift==='not_checked'));
     for(const id of [plan,build,review]){assert.equal(f.store.itemOf(id),item);assert.match(f.starts.find(x=>x.id===id)!.body,/Do NOT publish/);}
@@ -134,35 +264,30 @@ test('a stale managed completion cannot mark a different dispatch attempt finish
   }finally{await f.close();}
 });
 
-test('Claude results cannot yield a source handoff without exact turn correlation',async()=>{
+test('Claude sources cannot stage handoffs without exact turn correlation',async()=>{
   // Both current Claude transports lack a bridge-verified per-request turn ID.
   for(const transport of ['stdio','sdk'] as const){const f=await fixture(false,undefined,'claude');try{
     f.store.set(`synthetic-claude-transport:${f.proxy.id}`,transport);
     const target=f.store.register('claude-target','claude',randomUUID(),'/tmp').binding;
     f.routes.set(target.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${target.id}`,'cli');f.store.set('selected',JSON.stringify([target.id]));
-    const id=f.collab.stage('wa:approve',target.id,'Implement the approved theme.',`claude-${transport}`);
+    assert.throws(()=>f.collab.stage('wa:approve',target.id,'Implement the approved theme.',`claude-${transport}`),/managed Codex/);
     f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));f.r.pump();await turn();
-    assert.equal(f.starts.some(x=>x.id===id),false);
+    assert.equal(f.starts.some(x=>x.id.includes(':f5-')),false);
     assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=?').get('wa:approve'),undefined);
-    assert.equal((f.store.db.prepare('SELECT yielded FROM managed_collaboration_handoffs WHERE job_id=?').get(id) as any).yielded,0);
-    // A legacy yielded marker from an older version is not sufficient.
-    f.store.db.prepare('UPDATE managed_collaboration_handoffs SET yielded=1 WHERE job_id=?').run(id);f.r.pump();await turn();
-    assert.equal(f.starts.some(x=>x.id===id),false);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM managed_collaboration_handoffs').get()?.n,0);
   }finally{await f.close();}}
 });
 
-test('a Claude target result cannot release its fenced claim without exact turn correlation',async()=>{
+test('Claude targets cannot receive a staged handoff without exact turn correlation',async()=>{
   const f=await fixture();try{
     const target=f.store.register('claude-worker','claude',randomUUID(),'/tmp').binding;
     f.routes.set(target.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${target.id}`,'cli');f.store.set('selected',JSON.stringify([target.id]));
     // Exercise this boundary even if platform selection later allows mixed providers.
     f.c.registry.matches=()=>true;
-    const id=f.collab.stage('wa:approve',target.id,'Implement the approved theme.','claude-target');
-    f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
-    f.r.channelReply(target,'Synthetic Claude result.','final',id);f.targetEnd.resolve();await until(()=>!f.r.busy.has(target.id));
-    const row=f.store.db.prepare('SELECT state,finished FROM managed_collaboration_handoffs WHERE job_id=?').get(id) as any;
-    assert.equal(row.state,'claimed');assert.equal(row.finished,0);
-    assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token);
+    assert.throws(()=>f.collab.stage('wa:approve',target.id,'Implement the approved theme.','claude-target'),/managed Codex/);
+    f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id.includes(':f5-')),false);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM managed_collaboration_handoffs').get()?.n,0);
   }finally{await f.close();}
 });
 
@@ -195,7 +320,7 @@ test('a parked ancestor requires exact recorded attempt, identity, owner and con
     const reopened=new Store(join(f.dir,'test.sqlite')),a=new Approvals(reopened),n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{}};
     try{
       reopened.recover();const router=new Router(reopened,n,a),c=new Coordinator(reopened,n,router,()=>{});router.coordinator=c;
-      router.contracts=new TaskContracts(reopened,new MetaSecret(f.dir));const collab=new ManagedCollaboration(router,{allows:()=>true});
+      router.contracts=new TaskContracts(reopened,new MetaSecret(f.dir));const collab=new ManagedCollaboration(router,{authorize:()=> 'test-approval'});
       assert.equal((collab as any).parkedAncestor(report,reopened.job('wa:approve')),false);
     }finally{a.cancel();reopened.close();}
   }finally{reportGate.resolve();await f.close();}
@@ -219,7 +344,7 @@ test('desktop or unapproved handoffs fail before queueing',async()=>{
 test('changed owner or target before source turn end fails closed without sending',async()=>{
   for(const mode of ['owner','target','authority']){
     const f=await fixture();try{
-      if(mode==='authority')f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{allows:()=>false});
+      if(mode==='authority')f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>undefined});
       if(mode==='authority'){assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement','unauthorized'),/authorize/);continue;}
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`changed-${mode}`);
       if(mode==='owner')f.store.set('whatsapp-owner','new-owner@s.whatsapp.net');
@@ -394,7 +519,7 @@ test('a dispatch failure rolls back both the claim and the attempt',async()=>{
 test('identity or authorization changes during asynchronous readiness never submit',async()=>{
   for(const mode of ['source','owner','target-route','contract','authority','item-status','other-active']){
     const f=await fixture();try{
-      let allowed=true;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{allows:()=>allowed});
+      let allowed=true;f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{authorize:()=>allowed?'test-approval':undefined});
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`async-${mode}`),waiting=deferred(),started=deferred();let sent=0;
       const prior=f.native.run;f.native.store=f.store;
       f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id){started.resolve();await waiting.promise;}};
@@ -427,7 +552,7 @@ test('a real database reopen does not replay an interrupted managed handoff',asy
       let deliveries=0;const n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{deliveries++;}};
       const a=new Approvals(reopened),r=new Router(reopened,n,a),c=new Coordinator(reopened,n,r,()=>{});r.coordinator=c;
       const secret=new MetaSecret(f.dir);r.contracts=new TaskContracts(reopened,secret);
-      r.collaboration=new ManagedCollaboration(r,{allows:()=>true});r.pump();await turn();
+      r.collaboration=new ManagedCollaboration(r,{authorize:()=> 'test-approval'});r.pump();await turn();
       assert.equal(deliveries,0,phase);
       if(phase==='target')assert.equal(reopened.job(id)?.status,'uncertain');
       else assert.notEqual(reopened.job(id)?.status,'submitted');
@@ -514,7 +639,7 @@ test('restart releases only a proven unsent exact attempt and never replays a ha
       let replayed=0;const n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{replayed++;}};
       const a=new Approvals(reopened),r=new Router(reopened,n,a),c=new Coordinator(reopened,n,r,()=>{});r.coordinator=c;
       const secret=new MetaSecret(f.dir);r.contracts=new TaskContracts(reopened,secret);
-      r.collaboration=new ManagedCollaboration(r,{allows:()=>true});r.pump();await turn();
+      r.collaboration=new ManagedCollaboration(r,{authorize:()=> 'test-approval'});r.pump();await turn();
       const claim=reopened.db.prepare('SELECT holder_id,token FROM collaboration_claims WHERE item_id=?').get(item);
       if(phase==='before'){
         assert.equal(reopened.job(id)?.status,'failed');assert.equal(claim?.holder_id,null);assert.equal(claim?.token,null);

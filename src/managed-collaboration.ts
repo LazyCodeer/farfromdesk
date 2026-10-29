@@ -6,12 +6,13 @@ import type {Router} from './router.js';
 
 /** A managed handoff remains queued until a verified source turn has ended. */
 export class CollaborationHold extends DispatchNotSubmittedError {}
-/** Must be implemented by trusted bridge code from owner-approved role rules. */
-export type HandoffAuthority={allows(scope:CollaborationScope,from:Binding,to:Binding,summary:string):boolean};
+/** Trusted bridge code returns the current approval revision, or refuses the handoff. */
+export type HandoffAuthority={authorize(scope:CollaborationScope,from:Binding,to:Binding,summary:string,role:string):string|undefined};
 type Row={job_id:string;source_id:string;source_attempt:string;source_binding:string;source_identity:string;source_body:string;
   target_binding:string;target_identity:string;item_id:number;root_id:string;owner:string;destination:string;
   contract_id:string;revision:number;approved_hash:string;body_hash:string;summary:string;yielded:number;
-  claim_token:string|null;generation:number|null;target_attempt:string|null;submission_started:number;finished:number;state:string;owner_generation:string|null};
+  claim_token:string|null;generation:number|null;target_attempt:string|null;submission_started:number;finished:number;state:string;owner_generation:string|null;
+  handoff_role:string|null;authority_revision:string|null};
 
 /** Experimental internal adapter. No endpoint or default Router enables this. */
 export class ManagedCollaboration {
@@ -33,6 +34,10 @@ export class ManagedCollaboration {
       router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN submission_started INTEGER NOT NULL DEFAULT 1');
     if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_handoffs)').all().some((c:any)=>c.name==='owner_generation'))
       router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN owner_generation TEXT');
+    // Old rows have no role approval revision and cannot acquire one retroactively.
+    for(const column of ['handoff_role','authority_revision'])
+      if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_handoffs)').all().some((c:any)=>c.name===column))
+        router.store.db.exec(`ALTER TABLE managed_collaboration_handoffs ADD COLUMN ${column} TEXT`);
     if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_turn_ends)').all().some((c:any)=>c.name==='ended_event_id'))
       router.store.db.exec('ALTER TABLE managed_collaboration_turn_ends ADD COLUMN ended_event_id INTEGER');
     this.recoverKnownUnsent();
@@ -52,15 +57,16 @@ export class ManagedCollaboration {
     const contract=this.router.contracts.approved(row.source_id);
     if(row.owner_generation===null||row.owner_generation!==(this.store.get('incoming-owner-generation')??'')||
       !source||!binding||!target||source.binding_id!==row.source_binding||source.attempt_id!==row.source_attempt||
-      this.identity(binding)!==row.source_identity||hash(source.body)!==row.source_body||!this.managed(binding)||
-      this.identity(target)!==row.target_identity||!this.managed(target)||!contract||contract.id!==row.contract_id||
+      this.identity(binding)!==row.source_identity||hash(source.body)!==row.source_body||binding.provider!=='codex'||!this.managed(binding)||
+      this.identity(target)!==row.target_identity||target.provider!=='codex'||!this.managed(target)||!contract||contract.id!==row.contract_id||
       contract.revision!==row.revision||contract.approved_hash!==row.approved_hash||contract.dispatch_id!==row.root_id||
       contract.item_id!==row.item_id||contract.owner!==row.owner||contract.destination!==row.destination)throw new Error('The source, target or approved contract changed.');
     if(this.sourceOwner(row.root_id,row.owner,row.destination,contract.channel)!==row.owner_generation)throw new Error('The source owner connection changed.');
     this.router.contracts.assertDispatch(this.router,source.id,binding,source.body,new Set(),true);
     const scope={owner:row.owner,destination:row.destination,rootRequestId:row.root_id,itemId:row.item_id,
       contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash};
-    if(!this.selected(binding,target)||!this.authority.allows(scope,binding,target,row.summary))throw new Error('The owner-approved handoff is unavailable.');
+    if(row.handoff_role===null||row.authority_revision===null||!this.selected(binding,target)||
+      this.authority.authorize(scope,binding,target,row.summary,row.handoff_role)!==row.authority_revision)throw new Error('The owner-approved handoff is unavailable.');
     return scope;
   }
   private selected(source:Binding,target:Binding) {
@@ -103,23 +109,24 @@ export class ManagedCollaboration {
     return false;
   }
   /** Internal prototype only: called by trusted bridge code during the exact managed source turn. */
-  stage(sourceId:string,targetId:string,body:string,eventId:string) {
+  stage(sourceId:string,targetId:string,body:string,eventId:string,role='') {
     this.store.assertIncomingOwner();
     const source=this.store.job(sourceId),from=source&&this.store.binding(source.binding_id),target=this.store.binding(targetId),c=this.router.coordinator;
-    if(!source||!from||!target||target.id!==targetId||!c||!c.isCoordinator(from.id)||!target.enabled||from.id===target.id||
+    if(!source||!from||!target||from.provider!=='codex'||target.provider!=='codex'||target.id!==targetId||!c||!c.isCoordinator(from.id)||!target.enabled||from.id===target.id||
       !this.selected(from,target)||!this.managed(from)||!this.managed(target)||!this.router.busy.has(from.id)||source.status!=='dispatched'||!source.attempt_id)
-      throw new Error('A running managed coordinator and exact managed target are required. Nothing was sent.');
-    if(!/^[A-Za-z0-9._:-]{1,100}$/.test(eventId)||!body.trim()||body.length>24000)throw new Error('A bounded task and stable event ID are required.');
+      throw new Error('A running managed Codex coordinator and exact managed Codex target are required. Nothing was sent.');
+    if(!/^[A-Za-z0-9._:-]{1,100}$/.test(eventId)||!body.trim()||body.length>24000||!/^(?:[a-z][a-z0-9-]{0,31})?$/.test(role))throw new Error('A bounded task, role and stable event ID are required.');
     const contract=this.router.contracts.approved(sourceId),item=this.store.itemOf(sourceId),root=contract?.dispatch_id,rootJob=root&&this.store.job(root);
     if(!contract||!item||contract.item_id!==item||!root||!contract.approved_hash||!rootJob)throw new Error('An exact approved owner contract and item are required.');
     const ownerGeneration=this.sourceOwner(root,contract.owner,contract.destination,contract.channel);
     this.router.contracts.assertDispatch(this.router,sourceId,from,source.body);
     const scope={owner:contract.owner,destination:contract.destination,rootRequestId:root,itemId:item,contractId:contract.id,revision:contract.revision,approvedHash:contract.approved_hash};
-    if(!this.authority.allows(scope,from,target,body))throw new Error('The owner did not authorize this handoff. Nothing was sent.');
+    const authorityRevision=this.authority.authorize(scope,from,target,body,role);
+    if(!authorityRevision||!/^[A-Za-z0-9._:-]{1,128}$/.test(authorityRevision))throw new Error('The owner did not authorize this handoff. Nothing was sent.');
     let cursor:string|undefined=sourceId;const visited=new Set<string>();
     while(cursor){if(visited.has(cursor)||visited.size>=4)throw new Error('Collaboration delegation depth exceeded.');visited.add(cursor);if(this.store.job(cursor)?.binding_id===target.id)throw new Error('Collaboration delegation cycle refused.');cursor=this.store.get(`parent:${cursor}`)??this.store.get(`report-parent:${cursor}`);}
     const jobId=`master:${sourceId}:f5-${eventId}:${target.id}`,prior=this.row(jobId);
-    if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body)throw new Error('The handoff ID was reused.');this.context(prior);return jobId;}
+    if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body||prior.handoff_role!==role||prior.authority_revision!==authorityRevision)throw new Error('The handoff ID was reused.');this.context(prior);return jobId;}
     this.store.db.exec('SAVEPOINT managed_collaboration_stage');
     try{
       const live=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain') AND id<>?").all(sourceId) as Pick<Job,'id'|'binding_id'|'status'>[];
@@ -132,8 +139,9 @@ export class ManagedCollaboration {
       bindScheduledChild(this.router,parent,jobId,target,scoped);
       this.store.enqueue(jobId,target,scoped,contract.destination);
       this.store.db.prepare(`INSERT INTO managed_collaboration_handoffs(job_id,source_id,source_attempt,source_binding,source_identity,source_body,
-        target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,ownerGeneration);
+        target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation,handoff_role,authority_revision)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,ownerGeneration,role,authorityRevision);
+      this.context(this.row(jobId)!);
       this.store.db.exec('RELEASE managed_collaboration_stage');return jobId;
     }catch(e){this.store.db.exec('ROLLBACK TO managed_collaboration_stage; RELEASE managed_collaboration_stage');throw e;}
   }
@@ -292,7 +300,7 @@ export class ManagedCollaboration {
     const rows=this.store.db.prepare('SELECT * FROM managed_collaboration_handoffs WHERE root_id=? AND item_id=? ORDER BY rowid').all(root,itemId) as Row[];
     return rows.filter(row=>{try{this.context(row);return true;}catch{return false;}}).map(row=>{
       const text=row.state==='complete'?this.store.get(`final-reply:${row.job_id}`):undefined;
-      return {sourceId:row.source_id,targetBindingId:row.target_binding,itemId:row.item_id,contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash,summary:row.summary,
+      return {sourceId:row.source_id,targetBindingId:row.target_binding,itemId:row.item_id,contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash,role:row.handoff_role,summary:row.summary,
         result:text===undefined?null:{kind:'session_report' as const,verification:'unverified' as const,text},state:row.state,drift:'not_checked' as const};
     });
   }

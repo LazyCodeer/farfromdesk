@@ -2,8 +2,8 @@
 
 This is an internal, **opt-in prototype**, not the finished collaboration
 feature. No production path enables the adapter or exposes a handoff endpoint.
-The prototype stages handoffs only between verified managed CLI connections;
-Desktop and channel sessions are not supported. It does not renew claims
+The prototype stages handoffs only between managed Codex CLI connections;
+Claude, Desktop and channel sessions are not supported. It does not renew claims
 automatically, inspect Collaboration memory, call Meta, validate drift or run
 a proof check. Do not present it as enforcing one-session execution until
 every dispatch and handoff path uses the same guard.
@@ -39,6 +39,29 @@ the same SQLite connection. The ledger additionally checks current owner,
 destination, item provenance and exact session identity. F3's approved-contract
 interface is still changing; no production role adapter exists.
 
+`CollaborationRoles` provides an internal, contract-scoped role policy for the
+managed prototype. A proposal binds exact session identities, role routes,
+contract scope and a Collaboration-memory snapshot. It is inert until a
+trusted adapter verifies an explicit owner approval of its exact digest. Each
+approval is single-use, and replacing or revoking the policy invalidates its
+staged handoffs even if the same rules are approved again. Role and approval
+revision are checked again at the provider boundary. Durable session revisions
+also invalidate an approval if a binding or route changes away and back while
+the bridge is stopped. Legacy handoffs without
+this revision fail closed. The role is recorded with the handoff, and the
+contract remains attached; the session's report is still unverified.
+
+The memory and approval adapters are deliberately **not implemented or wired**.
+The future memory adapter must provide a durable revision that changes on
+every edit, including external edits and change-away-and-back across restarts;
+the present Markdown memory API cannot establish that guarantee. The future
+approval adapter must authenticate the owner and bind their explicit approval
+to the exact displayed proposal digest. A model suggestion, a memory line or a
+session report is not approval. Role rules constrain which session may receive
+which role, but do not enforce stage order, prove the summary stays within the
+contract, or authorize activity outside that contract. The synthetic tests use
+fake revisions and approvals; they do not establish those real adapters.
+
 The active-work check follows the bridge's bounded request/item ancestry; it
 cannot discover work that was never recorded or correctly linked to the item.
 Before enabling F5, ensure all native, managed, channel, option, scheduled,
@@ -55,8 +78,9 @@ plan/build/review flow and concurrent claimants before considering release.
 
 ## Managed Claude CLI correlation
 
-Claude SDK and stdio results do not yet authorize an F5 source yield or target
-claim release. Both adapters serialize calls within one runtime instance, but
+Claude SDK and stdio sessions cannot be staged as an F5 source or target, and
+their results do not authorize an F5 source yield or target claim release.
+Both adapters serialize calls within one runtime instance, but
 the current stdio adapter accepts a result for whichever turn is pending, and
 the SDK adapter accepts results without a session ID or without a matching
 request identifier. Synthetic protocol fixtures reproduced both cases; they
