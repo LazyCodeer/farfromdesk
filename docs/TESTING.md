@@ -11,6 +11,30 @@ npm test
 
 The backend suite covers routing, exact session binding, catalog pagination, discovery bounds, lifecycle/recovery, approvals, prepared artifacts, media errors, native adapter contracts and bounded file reads. Native tests cover status decoding, group caching, stale response cancellation, setup state and the app picker.
 
+`npm test` and `npm run test:portable` start Node with a new private temporary
+state directory and separate user, coordinator, Codex and Claude homes. They remove
+that directory when the test runner exits. An existing `WSB_STATE_DIR`, bridge
+port, helper paths, common credential-named variables or `NODE_OPTIONS` is not inherited by
+the test runner. On POSIX cancellation the runner also stops its own test
+process group; detached descendants and forcible termination cannot be cleaned
+up reliably. On Windows cancellation stops the direct runner process only.
+Unmocked Node `fetch` calls
+to non-loopback destinations are blocked, and unmocked loopback redirects are
+not followed. Tests can inject fakes and use a loopback server. This is not an
+OS sandbox: raw sockets, other HTTP clients and
+subprocesses that replace their environment can still access the network.
+
+For focused tests, use the same isolation instead of invoking Node or tsx
+directly:
+
+```sh
+npm run test:file -- test/meta-brain.test.ts
+```
+
+Direct `node --test` and `tsx --test` commands bypass this runner. Set a fresh
+private `WSB_STATE_DIR` before Node starts and block external networking when
+using them. Do not point test processes at an installed application state.
+
 ## Opt-in local speech
 
 Build the speech runtime first. These tests use the checked-in synthetic audio fixture, silence and corrupt bytes; they do not record a microphone or message a chat.

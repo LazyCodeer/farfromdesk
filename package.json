@@ -11,9 +11,10 @@
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "bridge": "node dist/cli.js",
-    "test": "tsx --test test/*.test.ts",
+    "test": "node script/run_node_tests.mjs all",
     "check": "tsc --noEmit",
-    "test:portable": "tsx --test test/portable.test.ts test/coordinator.test.ts test/speech-bundle.test.ts",
+    "test:portable": "node script/run_node_tests.mjs portable",
+    "test:file": "node script/run_node_tests.mjs files",
     "desktop:backend": "npm run build && node script/prepare_desktop_backend.mjs",
     "desktop:preview": "cd desktop && flutter run -d chrome -t lib/preview.dart"
   },
