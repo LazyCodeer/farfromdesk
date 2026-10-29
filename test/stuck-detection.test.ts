@@ -131,12 +131,85 @@ test('a delivered, unanswered agent choice creates one scoped notice and selecti
     await f.detector.tick();assert.equal(alerts(f.store).length,0,'queued is not delivered');
     f.store.sent(row.id);await f.detector.tick();await f.detector.tick();
     assert.equal(alerts(f.store).length,1);assert.equal(alerts(f.store)[0].kind,'choice');assert.equal(alerts(f.store)[0].item_id,item.id);
-    assert.match(alertOut(f.store)[0].body,/unanswered choice/);assert.doesNotMatch(alertOut(f.store)[0].body,/Confidential choice text|First|Second/);
+    assert.match(alertOut(f.store)[0].body,/unanswered session choice/);assert.match(alertOut(f.store)[0].body,/Confidential choice text/);assert.match(alertOut(f.store)[0].body,/1\. First/);assert.match(alertOut(f.store)[0].body,/2\. Second/);
     assert.deepEqual(f.inputs,[['choice']]);
     assert.equal(selectOption(f.store,{responseId:'wa:answer',destination:owner,messageId:row.wa_id,number:1},(bindingId,text)=>f.store.enqueue('wa:answer',f.store.binding(bindingId)!,text,owner)),true);
     assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'invalid');
     await f.detector.tick();assert.equal(alerts(f.store).length,1);
   }finally{f.close();}
+});
+
+test('replying to a delivered choice notice claims the exact original option once',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};
+    f.store.output(f.binding,'Which approach?','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:600}});
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
+    const notice=alertOut(f.store)[0];assert.match(notice.body,/Which approach\?/);assert.match(notice.body,/not a native permission approval/);f.store.sent(notice.id);
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:choice-answer',text:'2',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
+    assert.equal(result.status,'queued');assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options').get() as {selected_id:string}).selected_id,'b');
+    assert.equal(f.store.job('wa:choice-answer')?.binding_id,f.binding.id);assert.equal(f.store.itemOf('wa:choice-answer'),f.store.itemOf('wa:choice'));
+    const replay=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:choice-repeat',text:'1',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
+    assert.equal(replay.status,'blocked');assert.equal(f.store.job('wa:choice-repeat'),undefined);assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options').get() as {selected_id:string}).selected_id,'b');
+    assert.doesNotMatch(JSON.stringify(f.inputs),/Which approach|First|Second/);
+  }finally{f.close();}
+});
+
+test('choice notice answers fail closed when ownership, identity, expiry or input trust changes',async()=>{
+  for(const change of ['expired','owner','session','attempt','forwarded','voice','unsent','dismissed','legacy'] as const){
+    const f=fixture();try{
+      f.add('wa:choice','Synthetic task');f.router.pump=()=>{};
+      f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:600}});
+      const original=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
+      const notice=alertOut(f.store)[0];if(change!=='unsent')f.store.sent(notice.id);
+      if(change==='expired')f.advance(601_000);
+      if(change==='owner'){f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);}
+      if(change==='session')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+      if(change==='attempt')f.store.jobState('wa:choice','dispatched');
+      if(change==='dismissed')f.store.db.prepare("UPDATE stuck_alerts SET state='dismissed'").run();
+      if(change==='legacy')f.store.db.prepare('UPDATE stuck_alerts SET choice_id=NULL').run();
+      const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:rejected-${change}`,text:'1',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:change!=='forwarded',source:change==='voice'?'voice':'text'}));
+      assert.equal(result.status,'blocked',change);assert.equal(f.store.job(`wa:rejected-${change}`),undefined,change);
+      assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options').get() as {selected_id:null}).selected_id,null,change);
+    }finally{f.close();}
+  }
+});
+
+test('a choice made from a notice uses the existing task-contract review rather than bypassing it',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:600}});
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(original.id);await f.detector.tick();const notice=alertOut(f.store)[0];f.store.sent(notice.id);
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:notice-review',text:'1',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
+    assert.equal(result.status,'handled');assert.equal(f.store.job('wa:notice-review'),undefined);
+    assert.ok(f.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get('wa:notice-review'));
+    assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options').get() as {selected_id:null}).selected_id,null);
+  }finally{f.close();}
+});
+
+test('a direct WhatsApp quoted number answers only the original delivered session choice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:600}});
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(original.id);await f.detector.tick();const notice=alertOut(f.store)[0];f.store.sent(notice.id);
+    const wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+    const message={key:{id:'quoted-choice',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:'2',contextInfo:{stanzaId:notice.wa_id}}}};
+    await wa.receiveMessage(message);await wa.receiveMessage(message);
+    assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options').get() as {selected_id:string}).selected_id,'b');
+    assert.equal(f.store.job('wa:quoted-choice')?.binding_id,f.binding.id);wa.close();
+  }finally{f.close();}
+});
+
+test('a long or direction-overridden original choice is never advertised as actionable',async()=>{
+  for(const text of ['x'.repeat(3100),'Unclear \u202equestion']){const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:600}});
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.db.prepare('UPDATE outbox SET body=? WHERE id=?').run(text,original.id);f.store.sent(original.id);await f.detector.tick();
+    const notice=alertOut(f.store)[0];f.store.sent(notice.id);assert.equal(alerts(f.store)[0].choice_id,null);
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:unsafe',text:'1',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
+    assert.equal(result.status,'blocked');assert.equal(f.store.job('wa:unsafe'),undefined);
+  }finally{f.close();}}
 });
 
 test('a choice captured before dispatch has no verified attempt and cannot alert later',async()=>{

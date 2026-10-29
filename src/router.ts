@@ -116,6 +116,17 @@ export class Router {
     if(this.stopped||!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
+    // A number quoted to a choice notice must resolve to that exact original
+    // delivered choice; never let an unavailable notice fall into routing.
+    if(m.quotedId&&this.stuckDetection){
+      let choice:ReturnType<StuckDetection['quotedChoice']>;
+      try{choice=this.stuckDetection.quotedChoice(m);}catch{choice={kind:'unavailable'};}
+      if(choice?.kind==='unavailable'){
+        if(this.store.incomingOwnerCurrent()){this.store.output(undefined,'That choice notice is unavailable or expired. Nothing was sent.',`stuck-choice-error:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}
+        return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+      }
+      if(choice?.kind==='mapped')m={...m,quotedId:choice.quotedId};
+    }
     if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
       const destination=this.store.destination(),owner=this.store.ownerFor(destination);
       try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}

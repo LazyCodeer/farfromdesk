@@ -10,7 +10,10 @@ It can report:
 - A delivered, unexpired session choice that has not been selected, when its
   original session and request can be verified. This does not establish that
   the session itself is blocked. If an owner follow-up may have answered a
-  choice but cannot be matched to one message, the detector stays quiet.
+  choice but cannot be matched to one message, the detector stays quiet. When
+  the complete original question fits in one notice, reply to that notice with
+  an offered number. It uses the original choice and task-contract checks; it
+  does not grant a native permission.
 - Two consecutive recorded task failures with the same known error category.
 
 Change the idle limit with `/stuck interval 20`, using 1 to 1440 minutes.
@@ -30,28 +33,25 @@ permission prompts, identifiers or credentials are sent as prompt data. If
 Meta is unavailable the notice uses a fixed introduction.
 
 This initial version does not scan group chats or Telegram, inspect screens,
-detect popups or sign-in pages, query CI or PRs, click buttons, approve native
-permissions, merge changes, or start follow-up work. Existing native prompts
+detect popups or sign-in pages, click buttons, approve native
+permissions, merge changes, or start unrelated follow-up work. Existing native prompts
 that lack an exact request identity cannot be attributed and are not included.
 The message includes no screenshot. These limitations mean this is not yet the
 complete proactive unblock workflow described in the hackathon plan.
 
-## CI experiment
+## Public CI watches
 
-The unwired `stuck-ci-observer` prototype can compare one explicitly
-owner-approved public PR, exact head and exact check-run ID against fixed
-GitHub API responses. It re-reads both the run and the PR head and returns a
-timestamped historical observation of that particular run only. It does not
-establish current aggregate CI, required checks, review state or merge
-readiness. Either source can change again after a read; any eventual sender
-must revalidate both the exact run and PR head at delivery and describe the
-observation as historical. The prototype cannot fetch or notify by itself,
-and has no authority adapter or production caller.
+In the owner's WhatsApp self-chat, send
+`/stuck ci #ITEM https://github.com/OWNER/REPO/pull/NUMBER` to watch a public
+PR for an open owner-linked item. A session's reported link does not authorize
+the watch. The bridge reads the public GitHub API without credentials, and
+can report one exact check it observed failing on the PR's head. It rechecks
+that head and run before delivery; the notice identifies the observation time.
+This is historical evidence about one check, not overall CI or merge readiness.
+It does not merge the PR or grant permission to do so.
 
-The existing product does not store the owner's approval of a particular PR,
-repository, revision and check run for an item. A PR link in a session's
-report is an unverified claim, not that approval. Before wiring this feature,
-add a delivered owner approval and durable owner/chat generation-bound record,
-a bridge-owned fixed-origin transport, and tests for revocation, changed PR
-head and uncertain delivery. Do not silently infer merge readiness, merge a PR,
-or treat an old failed run as the current CI state.
+Each watch expires after 24 hours. Remove one with `/stuck ci remove #ITEM`.
+Owner, item, policy or session changes can invalidate the watch. Checks are
+rate-limited and only the first 100 returned runs are considered, so delivery
+is not guaranteed within one minute. A never-attempted notice is re-observed
+after a restart; an uncertain send is not replayed.

@@ -9,8 +9,8 @@ import type {Incoming,Router} from './router.js';
 import type {Store} from './store.js';
 
 type Kind='idle'|'approval'|'question'|'choice'|'repeated-error';
-type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string};
-type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null};
+type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string;choiceText?:string};
+type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null;choice_id:string|null};
 type Writer=(kinds:Kind[],key:string,observe?:MetaObserver)=>Promise<string>;
 const LIMIT=100,MAX_NOTICES_PER_TICK=3,IDLE_MS=10*60_000,OFFER_MS=10*60_000;
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -51,6 +51,7 @@ export class StuckDetection {
       CREATE TABLE IF NOT EXISTS stuck_ambiguous_choices(response_id TEXT NOT NULL,option_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'accepted',PRIMARY KEY(response_id,option_id));
       CREATE TABLE IF NOT EXISTS stuck_contract_controls(response_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'accepted',expires_at INTEGER NOT NULL DEFAULT 0);`);
     if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='owner_generation'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN owner_generation TEXT');
+    if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='choice_id'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN choice_id TEXT');
     for(const table of ['stuck_quoted_replies','stuck_ambiguous_choices','stuck_contract_controls'])if(!store.db.prepare(`PRAGMA table_info(${table})`).all().some((column:any)=>column.name==='state'))store.db.exec(`ALTER TABLE ${table} ADD COLUMN state TEXT NOT NULL DEFAULT 'accepted'`);
     if(!store.db.prepare('PRAGMA table_info(stuck_contract_controls)').all().some((column:any)=>column.name==='expires_at'))store.db.exec('ALTER TABLE stuck_contract_controls ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0');
     if(!store.db.prepare('PRAGMA table_info(stuck_quoted_replies)').all().some((column:any)=>column.name==='numbered'))store.db.exec('ALTER TABLE stuck_quoted_replies ADD COLUMN numbered INTEGER NOT NULL DEFAULT 0');
@@ -182,7 +183,7 @@ export class StuckDetection {
     for(const choice of choices){
       const origin=this.store.requestOwnerOrigin(choice.request_id),identity=this.identity(choice.binding_id);
       if(!origin||origin.owner!==owner||origin.destination!==destination||!identity||identity!==choice.stuck_identity||this.store.itemOf(choice.request_id)!==itemId)continue;
-      return {itemId,title:item.title,requestId:choice.request_id,bindingId:choice.binding_id,identity,kind:'choice',choiceId:choice.id,incident:digest(['choice',choice.id,choice.request_id,choice.expires_at,choice.stuck_attempt,choice.choices,choice.body,identity])};
+      return {itemId,title:item.title,requestId:choice.request_id,bindingId:choice.binding_id,identity,kind:'choice',choiceId:choice.id,choiceText:choice.body,incident:digest(['choice',choice.id,choice.request_id,choice.expires_at,choice.stuck_attempt,choice.choices,choice.body,identity])};
     }
     // A newer completed child must not hide an older request still running.
     // Once no request is active, only the latest attempt may supply failures.
@@ -210,8 +211,13 @@ export class StuckDetection {
     return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind:'idle',incident:digest(['idle',job.id,job.attempt_id,progress,identity])};
   }
   private message(signal:Signal,token:string,opening:string) {
+    if(signal.kind==='choice'&&signal.choiceId&&signal.choiceText&&!/[\u202a-\u202e\u2066-\u2069]/.test(signal.choiceText)){
+      const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nAn unanswered session choice is waiting. Reply to this notice with the number of your choice. This is not a native permission approval.\n\n${signal.choiceText}\n\nThis notice expires in 10 minutes. To view your Mac, send control my screen. Dismiss with /stuck dismiss ${token}.`;
+      // A notice must display the whole original question in a single message.
+      if(text.length<=3000)return {text,choiceId:signal.choiceId};
+    }
     const reason:Record<Kind,string>={idle:'No recorded progress for the configured idle period.',approval:'A permission request is waiting for your decision.',question:'The session asked a question and is waiting for your answer.',choice:'An unanswered choice is still available from the session.','repeated-error':'Two consecutive failures have the same recorded error category.'};
-    return `${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.`;
+    return {text:`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.`,choiceId:undefined};
   }
   /** A never-sent expired notice may be replaced; a sending, sent or uncertain one never is. */
   private rearmExpiredUnsent(owner:string,destination:string,signal:Signal,now:number) {
@@ -257,10 +263,11 @@ export class StuckDetection {
         this.store.db.exec('SAVEPOINT stuck_enqueue');
         try {
           if(!this.context(owner,destination)||(this.store.get('incoming-owner-generation')??'')!==generation){this.store.db.exec('RELEASE stuck_enqueue');break;}
-          const queued=this.store.output(undefined,this.message(fresh,id,opening),source,destination,{kind:'system',origin:'system',plain:true});
+          const notice=this.message(fresh,id,opening);
+          const queued=this.store.output(undefined,notice.text,source,destination,{kind:'system',origin:'system',plain:true});
           const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as {id:string}|undefined;
           if(!queued||!out)throw new Error('Stuck alert could not be queued.');
-          this.store.db.prepare('INSERT INTO stuck_alerts(id,owner,destination,item_id,request_id,binding_id,identity,kind,incident,expires_at,state,outbox_id,owner_generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,owner,destination,fresh.itemId,fresh.requestId,fresh.bindingId,fresh.identity,fresh.kind,fresh.incident,expires,'open',out.id,generation);
+          this.store.db.prepare('INSERT INTO stuck_alerts(id,owner,destination,item_id,request_id,binding_id,identity,kind,incident,expires_at,state,outbox_id,owner_generation,choice_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,owner,destination,fresh.itemId,fresh.requestId,fresh.bindingId,fresh.identity,fresh.kind,fresh.incident,expires,'open',out.id,generation,notice.choiceId??null);
           this.store.db.exec('RELEASE stuck_enqueue');
         }catch(e){this.store.db.exec('ROLLBACK TO stuck_enqueue; RELEASE stuck_enqueue');throw e;}
       }
@@ -276,6 +283,19 @@ export class StuckDetection {
     const fresh=this.signal(alert.item_id,alert.owner,alert.destination,this.clock());
     if(fresh?.choiceId&&this.unsettled(alert.owner,alert.destination,fresh.choiceId,this.clock()))return 'hold';
     return fresh&&fresh.kind===alert.kind&&fresh.incident===alert.incident&&fresh.identity===alert.identity?'ready':'invalid';
+  }
+  /** Reuse the original choice claim and contract path, only for a quoted, delivered notice. */
+  quotedChoice(m:Incoming):{kind:'mapped';quotedId:string}|{kind:'unavailable'}|undefined {
+    if(!m.quotedId||m.optionToken||!/^\d+$/.test(m.text.trim()))return;
+    const out=this.store.db.prepare('SELECT id,source,destination,status FROM outbox WHERE wa_id=?').get(m.quotedId) as {id:string;source:string;destination:string|null;status:string}|undefined;
+    if(!out||!out.source.startsWith('stuck-alert:'))return;
+    const alert=this.store.db.prepare('SELECT * FROM stuck_alerts WHERE outbox_id=?').get(out.id) as Alert|undefined;
+    if(!alert||alert.kind!=='choice'||!alert.choice_id||out.status!=='sent'||m.source==='voice'||m.ownerChoice!==true||!authenticatedOwner(this.router,m)||!this.store.incomingOwnerCurrent()||this.deliveryState(out,alert.owner)!=='ready')return {kind:'unavailable'};
+    const fresh=this.signal(alert.item_id,alert.owner,alert.destination,this.clock());
+    if(!fresh||fresh.choiceId!==alert.choice_id||fresh.incident!==alert.incident)return {kind:'unavailable'};
+    const original=this.store.db.prepare(`SELECT o.wa_id FROM message_options c JOIN outbox o ON o.id=c.outbox_id
+      WHERE c.id=? AND c.owner=? AND c.destination=? AND c.request_id=? AND c.binding_id=? AND c.selected_id IS NULL AND c.response_id IS NULL AND c.expires_at>? AND o.status='sent' AND o.destination=?`).get(alert.choice_id,alert.owner,alert.destination,alert.request_id,alert.binding_id,this.clock(),alert.destination) as {wa_id:string}|undefined;
+    return original?.wa_id?{kind:'mapped',quotedId:original.wa_id}:{kind:'unavailable'};
   }
   /** Dismissals and idle-limit settings never approve or dispatch work. */
   dismiss(m:Incoming):string|undefined {
