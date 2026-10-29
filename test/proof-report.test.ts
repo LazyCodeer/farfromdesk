@@ -93,3 +93,50 @@ test('ambiguous PR claims are not presented as a single selected PR',async()=>{
     assert.match(f.reports()[0].body,/Session reported \(unverified\)/);
   }finally{f.close();}
 });
+
+test('normal final without an outcome requests confirmation without asserting success',async()=>{
+  const f=await fixture();try{
+    f.store.jobState(f.id,'dispatched');f.router.channelReply(f.binding,'I could not run the tests.','final',f.id);
+    assert.equal(f.store.job(f.id)?.outcome,null);assert.equal(f.reports().length,1);
+    assert.match(f.reports()[0].body,/Session reported \(unverified\): I could not run the tests/);
+    assert.match(f.reports()[0].body,/Checks needing confirmation/);
+    assert.doesNotMatch(f.reports()[0].body,/verified pass|check passed/i);
+  }finally{f.close();}
+});
+
+test('a hook-first final still produces one report, without resending the agent final',async()=>{
+  const f=await fixture();try{
+    f.store.jobState(f.id,'dispatched');
+    f.store.output(f.binding,'Tests reported passing','synthetic-hook','owner@s.whatsapp.net',{requestId:f.id,kind:'hook',origin:'hook',turnId:'turn-1'});
+    const result=f.router.channelReply(f.binding,'Unsent agent details','final',f.id,undefined,{turnId:'turn-1',outcome:'done'});
+    assert.equal(result.newlyQueued,false);assert.equal(f.store.job(f.id)?.outcome,'done');assert.equal(f.reports().length,1);
+    assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE source LIKE 'reply:final:%'").get()?.n,0);
+    assert.doesNotMatch(f.reports()[0].body,/Unsent agent details/);
+    f.router.channelReply(f.binding,'Unsent agent details','final',f.id,undefined,{turnId:'turn-1',outcome:'done'});
+    assert.equal(f.reports().length,1);assert.equal(contractDeliveryState(f.router,f.reports()[0].id),'ready');
+  }finally{f.close();}
+});
+
+test('coordinator resolution queues one report without inventing a session reply',async()=>{
+  const f=await fixture();try{
+    f.store.jobState(f.id,'dispatched');
+    f.router.coordinator={requestMaster:()=>f.binding,registry:{entry:()=>undefined},scope:{getStore:()=>undefined}} as any;
+    f.router.resolveOwner(f.id,'done');f.router.resolveOwner(f.id,'done');
+    assert.equal(f.reports().length,1);assert.match(f.reports()[0].body,/completion outcome was reported/);
+    assert.doesNotMatch(f.reports()[0].body,/Session reported \(unverified\):/);
+    assert.equal(contractDeliveryState(f.router,f.reports()[0].id),'ready');
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');assert.equal(contractDeliveryState(f.router,f.reports()[0].id),'invalid');
+  }finally{f.close();}
+});
+
+test('only a whole PR URL is selected, never a numeric prefix of a longer path',async()=>{
+  for(const [token,accepted] of [
+    ['https://github.com/example/project/pull/12garbage',false],
+    ['https://github.com/example/project/pull/12/path',false],
+    ['https://github.com/example/project/pull/12?x=1',false],
+    ['(https://github.com/example/project/pull/12).',true],
+  ] as const){const f=await fixture();try{
+    f.store.jobState(f.id,'dispatched');f.router.channelReply(f.binding,`PR: ${token}`,'final',f.id,undefined,{outcome:'done'});
+    assert.equal(/PR mentioned \(unverified\):/.test(f.reports()[0].body),accepted,token);
+  }finally{f.close();}}
+});

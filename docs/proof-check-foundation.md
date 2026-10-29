@@ -2,8 +2,9 @@
 
 This is an internal foundation, not a finished proof check. The independent
 evidence engine is not wired to Meta, screenshots, test runners or PR APIs.
-An F3 root task completion can queue a user-facing report of the session's
-unverified claims and checks needing confirmation; it does not evaluate evidence.
+An F3 root task final reply or explicit completion can queue a user-facing
+report of unverified claims and checks needing confirmation; a final reply
+without an outcome does not establish completion. It does not evaluate evidence.
 With no independently verified evidence source, results are `unverified`. A
 session's completion report, claimed test output, screenshot URL or PR link
 alone cannot produce a pass or fail.
