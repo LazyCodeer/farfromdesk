@@ -18,6 +18,8 @@ import { namedItem, directSession, startDirect, endDirect, backToProxy } from '.
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
+import {agentReach} from './agent-reach.js';
+import {captureResearchRequest} from './agent-reach-request.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -44,6 +46,7 @@ export class Router {
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
   morningBrief?:MorningBrief;
+  reach=agentReach;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
@@ -112,6 +115,7 @@ export class Router {
       try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    captureResearchRequest(this.store,this,m);
     this.morningBrief?.firstMessage(m);
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);

@@ -142,6 +142,11 @@ async function main() {
       const r=await fetch(baseUrl+(operation==='desktop'?'/api/master/desktop-control':operation==='mac'?'/api/master/mac-control':'/api/master/browser'),{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({...input,requestId:args[0]}),signal:AbortSignal.timeout(65000)});
       const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));return;
     }
+    if(operation==='reach') {
+      if(args.length!==1)throw new Error('Use master reach REQUEST-ID. The query comes only from the original owner message.');
+      const r=await fetch(baseUrl+'/api/master/reach',{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({requestId:args[0]}),signal:AbortSignal.timeout(25000)});
+      const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));return;
+    }
     if(['agents','define-agent','assign-agent'].includes(operation??'')) {
       const d=operation==='agents'?undefined:operation==='define-agent'?{...JSON.parse(readFileSync(0,'utf8')),requestId:args[0]}:{requestId:args[0],bindingId:args[1],name:args[2]};
       const result=await fetch(baseUrl+'/api/master/'+operation,{method:d?'POST':'GET',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:d?JSON.stringify(d):undefined});

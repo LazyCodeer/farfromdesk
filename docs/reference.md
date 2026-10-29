@@ -71,6 +71,11 @@ The optional Claude **channel** mode runs an MCP server inside a chosen Claude s
 - `/answer CODE text`: answer a channel question.
 - `/pause NAME` and `/resume NAME`: disable/enable forwarding for that session.
 - `/stop NAME`: deny bridge-held permission requests. It does **not** kill or interrupt a native session. Use the native app's stop control to interrupt work.
+- `/reach github search WORDS`, `/reach github read OWNER/REPOSITORY`, or `/reach web search WORDS`: retrieve public research for this one owner request.
+
+Public research requires a separately installed [Agent-Reach](https://github.com/Panniantong/Agent-Reach) on macOS or Linux. It is unavailable on Windows in this build. FarFromDesk does not install it or run its setup. GitHub requests use the anonymous GitHub API; web searches send the search words to Exa. The bridge gives the tool a fresh temporary home and does not pass account credentials or browser profiles. The installed executable still runs with the user's normal OS permissions; this is not an OS sandbox, so install a trusted version. Results include source links and short excerpts; source text is untrusted and may be incomplete. These commands do not post or publish, and other Agent-Reach channels are not enabled by this integration.
+
+To let the coordinator use one result in a draft, send a new typed owner message whose first line is `Research: /reach web search YOUR WORDS` (or a supported GitHub command). Put any draft instructions on later lines. The coordinator can call `master_reach` or `master reach REQUEST-ID`; the bridge takes the exact query from that original message, not from the agent. Each request permits one attempt; if it fails or is interrupted, send a new request to try again. Requests that were forwarded, quoted, transcribed, changed during review, closed, or sent under a different owner are refused. An unavailable Agent-Reach installation is reported as such.
 
 Claude and Codex keep their normal tools, model choice, instructions, skills, MCP configuration and approval policies. A normal WhatsApp request does not override native permissions.
 

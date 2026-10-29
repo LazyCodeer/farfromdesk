@@ -14,6 +14,7 @@ export const TELEGRAM_COMMANDS=[
   {command:'help',description:'Commands and current target'},
   {command:'sessions',description:'Show your sessions'},
   {command:'status',description:'Show current activity'},
+  {command:'reach',description:'Search public GitHub or web sources'},
 ];
 export function telegramCommand(text:string,username:string):string|null {
   const m=/^\s*\/([a-z][a-z0-9_]*)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(text);
@@ -88,8 +89,14 @@ export function currentTarget(r:Router) {
 }
 export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined> {
   if(!authenticatedOwner(r,m)||!m.ownerCommand||m.quotedId||m.source==='voice')return;
-  const match=/^\/(claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
+  const match=/^\/(claude|codex|brain|screen|back|help|reach)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
+  if(cmd==='reach'){
+    const claimed=r.store.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(`reach-direct-claim:${m.id}`,'started');
+    if(!claimed.changes)return 'This research request was already used or interrupted. Send a new request to try again.';
+    try{return await r.reach(m.text,()=>!r.stopped&&r.store.incomingOwnerCurrent()&&authenticatedOwner(r,m));}
+    finally{try{r.store.set(`reach-direct-claim:${m.id}`,'finished');}catch{}}
+  }
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
   if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
@@ -191,4 +198,4 @@ export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
   return session(r,target);
 }
 
-export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|screen|back|help)(?:\s|$)/i.test(text.trim());
+export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|screen|back|help|reach)(?:\s|$)/i.test(text.trim());
