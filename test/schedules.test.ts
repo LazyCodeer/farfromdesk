@@ -11,18 +11,20 @@ import type {ScheduleDecision,ScheduleInterpreter} from '../src/schedule-model.j
 import {Router} from '../src/router.js';
 import {Coordinator} from '../src/coordinator.js';
 import {Approvals} from '../src/approvals.js';
+import {TaskContracts} from '../src/task-contracts.js';
 
 function fixture(file=':memory:') {
   const dir=mkdtempSync(join(tmpdir(),'ffd-schedule-test-'));
   const store=new Store(file==='disk'?join(dir,'state.sqlite'):file);
   store.set('whatsapp-owner','owner@s.whatsapp.net');
-  store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex']}));
+  store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],taskContracts:false}));
   const secret=new MetaSecret(dir);secret.save('synthetic-secret-not-real-123');
   let now=Date.parse('2026-10-29T12:29:00Z');
   let decision:ScheduleDecision={kind:'create',action:'message',date:'2026-10-29',time:'18:00',zone:'Asia/Kolkata',repeat:'once',text:'call the bank',target:'',question:''};
   const interpret:ScheduleInterpreter=async()=>decision;
   const schedules=new Schedules(store,secret,interpret,()=>now);
-  const router={store,stopped:false,coordinator:{enabled:()=>['codex'],registry:{entry:()=>undefined,identity:()=>({key:'test'})}},queue:(id:string,b:any,text:string)=>store.enqueue(id,b,text),pump:()=>{}} as unknown as Router;
+  const contracts=new TaskContracts(store,secret,async()=>{throw Error('unused');});
+  const router={store,contracts,stopped:false,coordinator:{enabled:()=>['codex'],registry:{entry:()=>undefined,identity:()=>({key:'test'})}},queue:(id:string,b:any,text:string)=>store.enqueue(id,b,text),pump:()=>{}} as unknown as Router;
   const send=(id:string,text:string)=>schedules.handle(router,{id:`wa:${id}`,text,ownerCommand:true},true);
   return {store,secret,schedules,router,send,dir,setNow:(n:number)=>now=n,setDecision:(d:Partial<ScheduleDecision>)=>decision={...decision,...d},close:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -188,7 +190,7 @@ test('a held scheduled desktop job does not block a later ordinary job to the sa
     const scheduled=f.store.db.prepare('SELECT id FROM inbox').get() as {id:string};
     f.store.set('control-channel','telegram');f.store.set('telegram-owner','tg:1:2');
     f.store.enqueue('tg:1:2:88',binding,'normal owner request','tg:1:2');
-    const calls:string[]=[];const r=Object.assign(Object.create(Router.prototype),{store:f.store,stopped:false,busy:new Set(),brain:{tick:()=>{}},native:{run:async(_b:any,_body:string,id:string)=>{calls.push(id);}},coordinator:undefined});
+    const calls:string[]=[];const r=Object.assign(Object.create(Router.prototype),{store:f.store,contracts:f.router.contracts,stopped:false,busy:new Set(),brain:{tick:()=>{}},native:{run:async(_b:any,_body:string,id:string)=>{calls.push(id);}},coordinator:undefined});
     r.pump();await new Promise(resolve=>setImmediate(resolve));
     assert.deepEqual(calls,['tg:1:2:88']);assert.equal(f.store.job(scheduled.id)?.status,'queued');
   }finally{f.close();}
@@ -202,7 +204,7 @@ test('channel polling skips held work and refuses changed-owner scheduled jobs',
     f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
     const scheduled=f.store.db.prepare('SELECT id FROM inbox').get() as {id:string};
     f.store.set('control-channel','telegram');f.store.set('telegram-owner','tg:1:2');f.store.enqueue('tg:1:2:88',binding,'normal request','tg:1:2');
-    const r=Object.assign(Object.create(Router.prototype),{store:f.store,channelClients:new Map(),attachments:{references:()=>[]},coordinator:f.router.coordinator});
+    const r=Object.assign(Object.create(Router.prototype),{store:f.store,contracts:f.router.contracts,channelClients:new Map(),attachments:{references:()=>[]},coordinator:f.router.coordinator});
     const result=r.channelPoll(binding,'client');assert.equal(result?.id,'tg:1:2:88');
     f.store.jobState('tg:1:2:88','completed');f.store.set('control-channel','whatsapp');f.store.set('whatsapp-owner','other@s.whatsapp.net');
     assert.equal(r.channelPoll(binding,'client'),null);assert.equal(f.store.job(scheduled.id)?.status,'failed');

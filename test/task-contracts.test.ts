@@ -97,6 +97,15 @@ test('a quoted reply to another message cannot approve a pending contract',async
   }finally{f.close();}
 });
 
+test('a quoted reply to the contract itself cannot approve it',async()=>{
+  const f=fixture();try{
+    await f.send('1','Add dark theme');f.markSent();
+    f.store.db.prepare("UPDATE outbox SET wa_id='contract-message' WHERE source LIKE 'task-contract:%'").run();
+    await f.r.receive({id:'wa:2',text:'ok',quotedId:'contract-message',ownerIntent:true,ownerCommand:false,ownerChoice:true});
+    assert.equal(f.store.jobs().length,0);assert.match(f.out().at(-1).body,/new message/i);
+  }finally{f.close();}
+});
+
 test('forwarded text cannot approve a contract and a changed native identity cannot receive it',async()=>{
   const f=fixture();try{
     await f.send('1','Add dark theme');f.markSent();
@@ -144,5 +153,31 @@ test('a brief go action needing a contract cannot queue until owner approves the
     assert.equal((await f.send('approve','ok')).status,'queued');
     const job=f.store.job('wa:approve')!;assert.equal(job.binding_id,worker.id);assert.equal(f.store.itemOf(job.id),item.id);
     assert.match(job.body,/Owner-approved task contract/);assert.equal(f.r.assertDispatchAllowed(job.id,worker),true);
+  }finally{f.close();}
+});
+
+test('an approved brief contract cannot fall through if its source brief disappears',async()=>{
+  const f=fixture();try{
+    const coordinator=new Coordinator(f.store,f.r.native,f.r,()=>{});f.r.coordinator=coordinator;
+    const owner='owner@s.whatsapp.net',when=Date.parse('2026-10-29T03:00:00Z');
+    f.store.recordOwnerOrigin('wa:original',owner,owner);
+    const item=f.store.destinationContext.run(owner,()=>f.r.brain.memory.add('wa:original','Build the invoice page'));
+    f.r.brain.memory.items.setSession(item.id,f.binding.id);
+    const brief=new MorningBrief(f.store,f.r,async()=>({opening:'Hello.',priorities:[]}),()=>when);f.r.morningBrief=brief;
+    await brief.request(owner,'first-message');const out=f.out().find(x=>x.source.startsWith('morning-brief:'));f.store.sent(out.id);
+    await f.send('go','go 1');f.markSent();f.store.db.prepare('DELETE FROM morning_briefs').run();
+    assert.equal((await f.send('approve','ok')).status,'blocked');assert.equal(f.store.jobs().length,0);
+    assert.match(f.out().at(-1).body,/unavailable|nothing was sent/i);
+  }finally{f.close();}
+});
+
+test('an approval saved before interruption resumes the original request, not the word ok',async()=>{
+  const f=fixture();try{
+    await f.send('one','Add dark theme. Do NOT publish.');f.markSent();
+    const incoming={id:'wa:approve',text:'ok',source:'text' as const,ownerIntent:true,ownerCommand:true};
+    assert.equal((await f.r.contracts.preflight(f.r,incoming)).kind,'replay');assert.equal(f.store.jobs().length,0);
+    assert.equal((await f.r.receive(incoming)).status,'queued');
+    assert.match(f.store.job(incoming.id)!.body,/Do NOT publish/);assert.doesNotMatch(f.store.job(incoming.id)!.body,/^ok$/);
+    await f.r.receive(incoming);assert.equal(f.store.jobs().length,1);
   }finally{f.close();}
 });

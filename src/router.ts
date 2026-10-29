@@ -110,6 +110,7 @@ export class Router {
     // Exact typed decisions are resolved before ordinary model routing.
     let ownerReply=false;
     try {
+      if(!contractApproved){const recovered=this.contracts.recoverApproved(this,m);if(recovered)return await this.receiveOnce(recovered,true);}
       // Replies to owner commands and session picks, errors included, go out without the session header and footer.
       ownerReply=true;const targetReply=pickOwnerTarget(this,m);ownerReply=false;
       if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
@@ -122,8 +123,9 @@ export class Router {
       const briefAction=this.morningBrief?.action(m);
       if(briefAction?.reply){this.store.output(undefined,briefAction.reply,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(briefAction?.text&&briefAction.target&&briefAction.itemId){
+        if(contractApproved)this.contracts.verifyBrief(this,m.id,briefAction.itemId,briefAction.target,briefAction.text);
         if(!contractApproved&&this.contracts.shouldHandle(this,m)){
-          const contract=await this.contracts.preflight(this,m,briefAction.text);
+          const contract=await this.contracts.preflight(this,m,briefAction.text,undefined,this.contracts.briefIntent(this,briefAction.itemId,briefAction.target,briefAction.text));
           if(contract.kind==='handled')return {status:'handled',requestId:m.id};
           if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
         }
@@ -133,13 +135,14 @@ export class Router {
         catch(e){this.store.db.exec('ROLLBACK TO brief_action; RELEASE brief_action');throw e;}
         this.pump();return {status:'queued',requestId:m.id};
       }
+      if(contractApproved&&this.contracts.approvedBrief(m.id))throw new Error('The approved brief item is unavailable. Nothing was sent.');
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
+      if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent,contractApproved))return {status:'handled',requestId:m.id};
       if(!contractApproved&&this.contracts.shouldHandle(this,m)){
         const contract=await this.contracts.preflight(this,m);
         if(contract.kind==='handled')return {status:'handled',requestId:m.id};
         if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
       }
-      if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent))return {status:'handled',requestId:m.id};
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
@@ -343,7 +346,7 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.approved(id);
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id);
     if(!scheduled&&!guard&&!contract)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
     if(scheduled){

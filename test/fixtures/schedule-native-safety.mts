@@ -13,7 +13,7 @@ globalThis.fetch=async()=>{throw new Error('Unexpected network request in isolat
 const root=process.env.WSB_STATE_DIR;if(!root)throw Error('An isolated WSB_STATE_DIR is required.');
 const store=new Store(':memory:'),owner='owner@s.whatsapp.net';store.set('whatsapp-owner',owner);
 if(process.argv[2]==='no-schema'){assert.equal(store.requestOwnerOrigin('schedule:missing'),undefined);store.close();console.log('ok');process.exit(0);}
-store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex']}));
+store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],taskContracts:false}));
 const secret=new MetaSecret(root);secret.save('synthetic-secret-not-real-123');
 let now=Date.parse('2026-10-29T12:29:00Z');
 const scenario=process.argv[2];

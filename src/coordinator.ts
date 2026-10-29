@@ -166,9 +166,9 @@ export class Coordinator {
     while(cursor){const ancestor=this.store.job(cursor);if(ancestor?.binding_id===target.id)throw new Error('Coordinator delegation cycle refused.');if(++depth>=4)throw new Error('Coordinator delegation depth exceeded.');cursor=this.store.get(`parent:${cursor}`);}
     const id=`master:${requestId}:delegate-${eventId}:${target.id}`;
     if(!this.store.job(id)&&Number((this.store.db.prepare("SELECT COUNT(*) n FROM settings WHERE key LIKE 'parent:%' AND value=?").get(requestId) as {n:number}).n)>=16)throw new Error('This request already has the maximum delegated operations. Finish or review its existing work.');
-    if(this.store.job(id)&&this.store.job(id)!.body!==text)throw new Error('Delegation event cannot change its task.');
+    if(this.store.job(id)&&this.store.job(id)!.body!==text&&!this.router.contracts.childMatches(id,text))throw new Error('Delegation event cannot change its task.');
     this.store.db.exec('SAVEPOINT coordinator_delegate');
-    try {this.store.set(`parent:${id}`,requestId);bindScheduledChild(this.router,requestId,id,target,text);const item=itemId??this.store.itemOf(requestId);if(item){this.items().get(item);this.store.linkItem(requestId,item);this.store.linkItem(id,item);}this.store.enqueue(id,target,text,parent.destination??null);this.store.db.exec('RELEASE coordinator_delegate');}
+    try {this.store.set(`parent:${id}`,requestId);const item=itemId??this.store.itemOf(requestId);if(item){this.items().get(item);this.store.linkItem(requestId,item);this.store.linkItem(id,item);}const delegated=this.router.contracts.bindChild(this.router,requestId,id,target,text,item);bindScheduledChild(this.router,requestId,id,target,delegated);this.store.enqueue(id,target,delegated,parent.destination??null);this.store.db.exec('RELEASE coordinator_delegate');}
     catch(e){this.store.db.exec('ROLLBACK TO coordinator_delegate; RELEASE coordinator_delegate');throw e;}
     this.router.pump();return {requestId:id,coordinatorId:target.id};
   }
@@ -260,8 +260,9 @@ export class Coordinator {
       if(this.store.job(id)&&this.store.get(`attachment-dispatch:${id}`)!==signature)throw new Error('A dispatch ID cannot be reused with different attachments.');
       const exists=!!this.store.job(id);
       this.store.set(`parent:${id}`,parentRequest);this.store.linkItem(id,item);
-      bindScheduledChild(this.router,parentRequest,id,b,text);
-      this.store.enqueue(id,b,text,parent.destination??this.store.get('whatsapp-owner')??null);ids.push(id);
+      const delegated=this.router.contracts.bindChild(this.router,parentRequest,id,b,text,item);
+      bindScheduledChild(this.router,parentRequest,id,b,delegated);
+      this.store.enqueue(id,b,delegated,parent.destination??this.store.get('whatsapp-owner')??null);ids.push(id);
       if(!exists&&attachmentIds.length)this.router.attachments.forward(this.store.binding(parent.binding_id)!,parentRequest,b,id,attachmentIds);
       this.store.set(`attachment-dispatch:${id}`,signature);
     }
