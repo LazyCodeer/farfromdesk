@@ -15,12 +15,13 @@ const {DEFAULT_BRAIN}=await import('../src/meta-brain-config.js');
 const {StuckDetection}=await import('../src/stuck-detection.js');
 const {WhatsApp}=await import('../src/whatsapp.js');
 const {selectOption}=await import('../src/message-options.js');
+const {TaskContracts}=await import('../src/task-contracts.js');
 
 const owner='owner@s.whatsapp.net';
 function fixture(path=':memory:'){
   const store=new Store(path),approvals=new Approvals(store),native={run:async()=>{},stop:()=>{}};
   store.set('whatsapp-owner',owner);store.set('control-channel','whatsapp');
-  store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true}));
+  store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:false}));
   const router=new Router(store,native as any,approvals);router.brain.secret.save('synthetic-stuck-test-key-only');
   let now=Date.now(),inputs:unknown[]=[];
   const detector=new StuckDetection(store,router,async(kinds)=>{inputs.push(kinds);return 'A task needs your attention.';},()=>now);
@@ -224,6 +225,42 @@ test('a quoted free-text follow-up suppresses only the exact choice it quotes',a
   }finally{f.close();}
 });
 
+test('a quoted free-text answer intercepted by a pending task contract invalidates its choice notice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    f.store.output(f.binding,'Choose','synthetic-choice',owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source='synthetic-choice:0'").get() as any;f.store.sent(row.id);await f.detector.tick();
+    assert.equal(alerts(f.store)[0]?.kind,'choice');
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    const pending=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:pending',text:'Build a synthetic project',ownerCommand:true}));
+    assert.equal(pending.status,'handled');assert.ok(f.store.db.prepare("SELECT 1 FROM task_contracts WHERE state='pending'").get());
+    const answer=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:'Friday works for me',quotedId:row.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(answer.status,'handled');assert.equal(f.store.job('wa:answer'),undefined,'F3 intercepted the reply before task dispatch');
+    assert.equal((f.store.db.prepare('SELECT outbox_id FROM stuck_quoted_replies WHERE response_id=?').get('wa:answer') as {outbox_id:string}).outbox_id,row.id);
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'invalid');
+    await f.detector.tick();assert.equal(alerts(f.store).length,1,'the stale alert is not recreated');
+  }finally{f.close();}
+});
+
+test('an F3-intercepted quoted reply does not suppress a different choice',async()=>{
+  const f=fixture();try{
+    f.add('wa:choice','Synthetic task');f.router.pump=()=>{};f.store.set('active',f.binding.id);
+    for(const name of ['first','second']){
+      f.store.output(f.binding,`Question ${name}`,`choice-${name}`,owner,{requestId:'wa:choice',kind:'progress',origin:'agent',options:{choices:[{id:'a',label:'First'},{id:'b',label:'Second'}],expiresInSeconds:60}});
+      const out=f.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`choice-${name}:0`) as {id:string};f.store.sent(out.id);
+    }
+    const first=f.store.db.prepare("SELECT * FROM outbox WHERE source='choice-first:0'").get() as any;
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true,taskContracts:true}));
+    f.router.contracts=new TaskContracts(f.store,f.router.brain.secret,async()=>({kind:'contract',goal:'Synthetic project',exclusions:[],checks:['One','Two'],question:''}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:pending',text:'Build a synthetic project',ownerCommand:true}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:answer',text:'Friday works',quotedId:first.wa_id,ownerCommand:false,ownerChoice:true}));
+    assert.equal(f.store.job('wa:answer'),undefined);await f.detector.tick();assert.equal(alerts(f.store)[0]?.kind,'choice');
+    f.store.db.prepare('UPDATE message_options SET selected_id=? WHERE outbox_id=(SELECT id FROM outbox WHERE source=?)').run('a','choice-second:0');
+    assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'invalid');
+  }finally{f.close();}
+});
+
 test('an ambiguous same-task or unlinked follow-up fails closed, but another item or binding does not suppress a choice',async()=>{
   for(const which of ['same','unlinked','other-item','other-binding'] as const){
     const f=fixture();try{
@@ -291,13 +328,14 @@ test('a completed child does not hide a still-running parent or its exact approv
 });
 
 test('owner or evidence changes during model inference prevent alert creation',async()=>{
-  for(const change of ['owner','progress','policy','key']){
+  for(const change of ['owner','owner-returned','progress','policy','key']){
     const f=fixture();try{
       f.add('wa:one','Task');f.advance(10*60_000+10_000);let release!:()=>void,started!:()=>void;
       const pending=new Promise<void>(r=>release=r),entered=new Promise<void>(r=>started=r);
       const detector=new StuckDetection(f.store,f.router,async()=>{started();await pending;return 'A task needs your attention.';},f.now);
       const ticking=detector.tick();await entered;
       if(change==='owner')f.store.set('whatsapp-owner','new@s.whatsapp.net');
+      if(change==='owner-returned'){f.store.set('whatsapp-owner','new@s.whatsapp.net');f.store.set('whatsapp-owner',owner);}
       if(change==='policy')f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:false}));
       if(change==='key')f.router.brain.secret.save('different-synthetic-stuck-key');
       if(change==='progress')f.store.db.prepare('UPDATE inbox SET updated_at=? WHERE id=?').run(f.now(),'wa:one');
@@ -366,24 +404,25 @@ test('repeated known errors are distinguished from unrelated or unknown failures
 });
 
 test('WhatsApp cancels stale notices before send and never retries an uncertain send',async()=>{
-  for(const mode of ['owner','destination','progress','network','restart']){
+  for(const mode of ['owner','owner-returned','destination','progress','network','restart']){
     const f=fixture();try{
       f.add('wa:one','Task');f.advance(10*60_000+10_000);await f.detector.tick();
       const row=alertOut(f.store)[0],wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];let calls=0;
       wa.sock={sendMessage:async()=>{calls++;if(mode==='network')throw Error('synthetic lost response');return {};},end:()=>{}} as any;
       if(mode==='owner')f.store.set('whatsapp-owner','new@s.whatsapp.net');
+      if(mode==='owner-returned'){f.store.set('whatsapp-owner','new@s.whatsapp.net');f.store.set('whatsapp-owner',owner);}
       if(mode==='destination')f.store.db.prepare('UPDATE outbox SET destination=? WHERE id=?').run('other@g.us',row.id);
       if(mode==='progress')f.store.db.prepare('UPDATE inbox SET updated_at=? WHERE id=?').run(f.now(),'wa:one');
       if(mode==='restart'){f.store.db.prepare("UPDATE outbox SET status='sending',attempts=1 WHERE id=?").run(row.id);f.store.recover();}
       await wa.flush();const state=(f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(row.id) as any).status;
-      if(mode==='owner'||mode==='destination'||mode==='progress'){assert.equal(calls,0);assert.equal(state,'cancelled');}
+      if(mode==='owner'||mode==='owner-returned'||mode==='destination'||mode==='progress'){assert.equal(calls,0);assert.equal(state,'cancelled');}
       else {assert.equal(state,'uncertain');await wa.flush();assert.equal(calls,mode==='network'?1:0);}
       wa.close();
     }finally{f.close();}
   }
 });
 
-test('over a hundred held alerts and channel-held schedules do not block replies and resume safely',async()=>{
+test('over a hundred revoked alerts do not block replies or channel-held schedules',async()=>{
   const f=fixture();try{
     for(let i=0;i<105;i++)f.add(`wa:held-${i}`,`Task ${i}`);
     f.advance(10*60_000+10_000);for(let i=0;i<35;i++)await f.detector.tick();
@@ -401,14 +440,14 @@ test('over a hundred held alerts and channel-held schedules do not block replies
     const wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
     const sent:string[]=[];wa.verifyGroup=async()=>{};wa.sock={sendMessage:async(destination:string)=>{sent.push(destination);return {};},end:()=>{}} as any;
     await wa.flush();assert.deepEqual(sent,[group]);
-    assert.equal(alertOut(f.store).filter(row=>row.status==='queued').length,105);
+    assert.equal(alertOut(f.store).filter(row=>row.status==='cancelled').length,105);
     for(const id of schedules)assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(id) as any).status,'queued');
     f.store.set('control-channel','whatsapp');await wa.flush();
     for(const id of schedules)assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(id) as any).status,'sent');
-    assert.equal(alertOut(f.store).filter(row=>row.status==='queued').length,105);
+    assert.equal(alertOut(f.store).filter(row=>row.status==='cancelled').length,105);
     f.store.set('destination-jid',owner);for(let i=0;i<21;i++)await wa.flush();
-    assert.equal(sent.filter(destination=>destination===owner).length,108);
-    assert.equal(alertOut(f.store).filter(row=>row.status==='sent').length,105);
+    assert.equal(sent.filter(destination=>destination===owner).length,3);
+    assert.equal(alertOut(f.store).filter(row=>row.status==='sent').length,0);
     wa.close();
   }finally{f.close();}
 });

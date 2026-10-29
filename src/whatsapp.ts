@@ -317,7 +317,7 @@ export class WhatsApp {
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           const stuckState=m.source.startsWith('stuck-alert:')?(this.router.stuckDetection?.deliveryState(m,this.selfJid)??'invalid'):'ready';
           if(stuckState==='hold'){processed--;continue;}
-          if(stuckState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Stuck notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);continue;}
+          if(stuckState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Stuck notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);processed--;continue;}
           if(destination!==this.selfJid)await this.verifyGroup(destination);
           if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
           if(!this.store.incomingOwnerDelivery(m.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
@@ -330,7 +330,7 @@ export class WhatsApp {
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           const rechecked=m.source.startsWith('stuck-alert:')?(this.router.stuckDetection?.deliveryState(m,this.selfJid)??'invalid'):'ready';
           if(rechecked==='hold'){processed--;continue;}
-          if(rechecked==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Stuck notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);continue;}
+          if(rechecked==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Stuck notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);processed--;continue;}
           const poll=this.polls.message(m.id);
           if(poll){
             this.store.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(m.id);

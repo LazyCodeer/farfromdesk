@@ -112,6 +112,9 @@ export class Router {
     if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
       const destination=this.store.destination(),owner=this.store.ownerFor(destination);
       try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
+      // Capture a reply to the exact message before task-review or other
+      // routing can intercept it; no answer text is retained here.
+      if(m.quotedId)try{this.stuckDetection?.recordQuotedReply(m);}catch{}
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
     this.morningBrief?.firstMessage(m);
@@ -223,9 +226,6 @@ export class Router {
           if(!b)throw new Error('That reply does not identify a connected session. Tell me the session name and what you need.');
           this.checkQuotedPlatform(text,b);
           const item=this.store.itemOf(this.store.quotedRequest(m.quotedId));if(item)this.store.linkItem(m.id,item);
-          // Optional evidence only: if the owner replies to this exact message,
-          // do not later assume the associated choice is still unanswered.
-          try{this.stuckDetection?.recordQuotedReply(m);}catch{}
         } else if(known&&this.coordinator) {
           // A follow-up on a numbered item goes to the session that owns it; the proxy only routes items without one.
           const items=this.coordinator.items(),item=items.get(known.id),owner=item.binding_id?this.store.binding(item.binding_id):undefined;

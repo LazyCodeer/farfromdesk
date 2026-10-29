@@ -9,7 +9,7 @@ import type {Store} from './store.js';
 
 type Kind='idle'|'approval'|'question'|'choice'|'repeated-error';
 type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string};
-type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string};
+type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null};
 type Writer=(kinds:Kind[],key:string)=>Promise<string>;
 const LIMIT=100,MAX_NOTICES_PER_TICK=3,IDLE_MS=10*60_000,OFFER_MS=10*60_000;
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -47,6 +47,7 @@ export class StuckDetection {
       binding_id TEXT NOT NULL,identity TEXT NOT NULL,kind TEXT NOT NULL,incident TEXT NOT NULL,expires_at INTEGER NOT NULL,
       state TEXT NOT NULL,outbox_id TEXT NOT NULL UNIQUE,UNIQUE(owner,destination,item_id,kind,incident));
       CREATE TABLE IF NOT EXISTS stuck_quoted_replies(response_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL);`);
+    if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='owner_generation'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN owner_generation TEXT');
   }
   /** Capture the exact quoted message before routing the owner's reply. */
   recordQuotedReply(m:Incoming){
@@ -89,6 +90,7 @@ export class StuckDetection {
       AND j.attempt_id IS NOT NULL AND j.attempt_id=m.stuck_attempt AND j.status IN ('dispatched','submitted','completed')
       AND COALESCE(j.outcome,'') NOT IN ('cancelled','reviewed','done')
       AND o.status='sent' AND o.sent_at IS NOT NULL AND o.destination=m.destination AND o.request_id=m.request_id AND o.binding_id=m.binding_id
+      AND NOT EXISTS(SELECT 1 FROM stuck_quoted_replies exact WHERE exact.outbox_id=m.outbox_id AND exact.owner=m.owner AND exact.destination=m.destination)
       AND NOT EXISTS(SELECT 1 FROM inbox f LEFT JOIN item_requests fi ON fi.request_id=f.id
         JOIN owner_request_origins fo ON fo.request_id=f.id AND fo.owner=m.owner AND fo.destination=m.destination
         LEFT JOIN stuck_quoted_replies q ON q.response_id=f.id AND q.owner=m.owner AND q.destination=m.destination
@@ -148,6 +150,7 @@ export class StuckDetection {
     if(this.ticking||this.router.stopped)return;
     const owner=this.store.get('whatsapp-owner'),destination=this.store.destination(),policy=brainPolicy(this.store);
     if(!owner||!destination||!this.context(owner,destination)||!policy.enabled||!policy.allowStatus)return;
+    const generation=this.store.get('incoming-owner-generation')??'';
     this.ticking=true;
     try {
       const cursorKey=`stuck-scan:${digest([owner,destination])}`,raw=Number(this.store.get(cursorKey)??0),cursor=Number.isSafeInteger(raw)&&raw>=0?raw:0;
@@ -166,18 +169,18 @@ export class StuckDetection {
       if(!candidates.length)return;
       const key=this.router.brain.secret.read();let opening=openings[0];
       if(key)try{const result=await this.writer(candidates.map(s=>s.kind),key);if(openings.includes(result))opening=result;}catch{}
-      if(!this.context(owner,destination)||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus||key&&this.router.brain.secret.read()!==key)return;
+      if(!this.context(owner,destination)||(this.store.get('incoming-owner-generation')??'')!==generation||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus||key&&this.router.brain.secret.read()!==key)return;
       for(const candidate of candidates){
         const fresh=this.signal(candidate.itemId,owner,destination,this.clock());
         if(!fresh||fresh.kind!==candidate.kind||fresh.incident!==candidate.incident)continue;
         const id=randomBytes(18).toString('base64url'),source=`stuck-alert:${digest([owner,destination,fresh.itemId,fresh.kind,fresh.incident])}`,expires=this.clock()+OFFER_MS;
         this.store.db.exec('SAVEPOINT stuck_enqueue');
         try {
-          if(!this.context(owner,destination)){this.store.db.exec('RELEASE stuck_enqueue');break;}
+          if(!this.context(owner,destination)||(this.store.get('incoming-owner-generation')??'')!==generation){this.store.db.exec('RELEASE stuck_enqueue');break;}
           const queued=this.store.output(undefined,this.message(fresh,id,opening),source,destination,{kind:'system',origin:'system',plain:true});
           const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as {id:string}|undefined;
           if(!queued||!out)throw new Error('Stuck alert could not be queued.');
-          this.store.db.prepare('INSERT INTO stuck_alerts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,owner,destination,fresh.itemId,fresh.requestId,fresh.bindingId,fresh.identity,fresh.kind,fresh.incident,expires,'open',out.id);
+          this.store.db.prepare('INSERT INTO stuck_alerts(id,owner,destination,item_id,request_id,binding_id,identity,kind,incident,expires_at,state,outbox_id,owner_generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,owner,destination,fresh.itemId,fresh.requestId,fresh.bindingId,fresh.identity,fresh.kind,fresh.incident,expires,'open',out.id,generation);
           this.store.db.exec('RELEASE stuck_enqueue');
         }catch(e){this.store.db.exec('ROLLBACK TO stuck_enqueue; RELEASE stuck_enqueue');throw e;}
       }
@@ -187,7 +190,7 @@ export class StuckDetection {
   deliveryState(row:{id:string;source:string;destination?:string|null},selfJid?:string):'ready'|'hold'|'invalid' {
     if(!row.source.startsWith('stuck-alert:'))return 'ready';
     const alert=this.store.db.prepare('SELECT * FROM stuck_alerts WHERE outbox_id=?').get(row.id) as Alert|undefined;
-    if(!alert||row.destination!==alert.destination||row.source!==`stuck-alert:${digest([alert.owner,alert.destination,alert.item_id,alert.kind,alert.incident])}:0`||alert.state!=='open'||alert.expires_at<=this.clock()||!selfJid||selfJid!==alert.owner||this.store.get('whatsapp-owner')!==alert.owner)return 'invalid';
+    if(!alert||alert.owner_generation===null||alert.owner_generation!==(this.store.get('incoming-owner-generation')??'')||row.destination!==alert.destination||row.source!==`stuck-alert:${digest([alert.owner,alert.destination,alert.item_id,alert.kind,alert.incident])}:0`||alert.state!=='open'||alert.expires_at<=this.clock()||!selfJid||selfJid!==alert.owner||this.store.get('whatsapp-owner')!==alert.owner)return 'invalid';
     if(this.store.controlChannel()!=='whatsapp'||this.store.destination()!==alert.destination||this.router.stopped||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus)return 'hold';
     const fresh=this.signal(alert.item_id,alert.owner,alert.destination,this.clock());
     return fresh&&fresh.kind===alert.kind&&fresh.incident===alert.incident&&fresh.identity===alert.identity?'ready':'invalid';
