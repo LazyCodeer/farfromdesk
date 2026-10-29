@@ -18,6 +18,7 @@ import { namedItem, directSession, startDirect, endDirect, backToProxy } from '.
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
+import {parsePublicCheck,publicCheckObservation} from './proof-public-check.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -40,6 +41,9 @@ export class Router {
   contracts:TaskContracts;
   /** Optional internal prototype; no production route enables it. */
   collaboration?:ManagedCollaboration;
+  /** Injectable only by bridge-owned tests; the default uses public HTTPS. */
+  publicCheckFetch:typeof fetch=fetch;
+  private publicCheckActive=0;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
@@ -198,6 +202,23 @@ export class Router {
         const match=/^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)!;
         const cmd=match[1].toLowerCase(),args=match[2]?.trim()??'';
         if(cmd==='help')this.store.output(undefined,help,`command:${m.id}`);
+        else if(cmd==='checkrun') {
+          const owner=this.store.incomingOwnerContext.getStore();
+          if(!authenticatedOwner(this,m)||m.ownerCommand!==true||m.quotedId||m.source==='voice'||!owner||owner.owner!==owner.destination)
+            throw new Error('Send /checkrun as a new typed message in your owner chat.');
+          const request=parsePublicCheck(args);
+          if(this.publicCheckActive>=2)throw new Error('Two public check requests are running. Please try again shortly.');
+          const current=()=>!this.stopped&&this.store.incomingOwnerCurrent()&&this.store.controlChannel()===owner.channel&&this.store.ownerFor(owner.destination)===owner.owner;
+          this.publicCheckActive++;
+          try {
+            const observation=await publicCheckObservation(request,current,this.publicCheckFetch);
+            if(!current())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+            this.store.db.exec('SAVEPOINT public_check_output');
+            try{this.store.output(undefined,observation,`command:${m.id}`,owner.destination,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE public_check_output');}
+            catch(e){this.store.db.exec('ROLLBACK TO public_check_output; RELEASE public_check_output');throw e;}
+            return {status:'handled',requestId:m.id};
+          } finally {this.publicCheckActive--;}
+        }
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
         else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
         else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);this.store.output(b,'Selected. Your next messages go to this exact session.',`command:${m.id}`);}
