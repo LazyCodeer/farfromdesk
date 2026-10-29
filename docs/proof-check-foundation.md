@@ -44,6 +44,17 @@ are not replayed automatically; an explicit new evaluation ID is required.
 
 ## Integration still required
 
+The unwired `contractProofScope` adapter now derives a limited scope from the
+bridge's recorded F3 approval, owner connection generation, owner-scoped item,
+session identity, and exactly one recorded dispatch for the current attempt.
+It revalidates the F3 contract on the same database connection. It supplies no
+evidence binding or target project revision, so the proof engine can only
+return unverified checks and cannot claim a correction. A recorded dispatch
+does not show that the provider completed work, and a session final remains
+an unverified claim. Missing approval-generation records fail closed; the
+plain-text approval path on this base does not yet capture them. This adapter
+is an internal prototype, not connected to a production route or report.
+
 1. Map the approved, immutable F3 contract and check IDs to a verified task
    attempt and current target project revision. Do not infer the latter from a
    session reply or from FarFromDesk's own source commit.
