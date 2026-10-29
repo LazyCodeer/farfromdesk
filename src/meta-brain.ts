@@ -401,8 +401,11 @@ export class MetaBrain {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
       // Queue original verbatim. Normalized wording is advisory ledger data, never an authorization source.
+      // A pre-existing topic must be linked before a contract binds the request to an item.
+      if(topic){const linked=this.store.itemOf(id);if(linked&&linked!==topic.id)throw new Error('Request belongs to another item.');this.memory.link(id,topic.id);}
       router.queue(id,target,text);
-      const item=topic??this.memory.add(id,text);
+      const existing=this.store.itemOf(id);
+      const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,text));
       this.memory.link(id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
       // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.

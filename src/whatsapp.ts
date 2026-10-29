@@ -1,6 +1,7 @@
 import { WhatsAppPolls } from './whatsapp-polls.js';
 import { canDeliverBrief } from './morning-brief.js';
 import { scheduleDeliveryState } from './schedules.js';
+import { contractDeliveryState } from './task-contracts.js';
 import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,normalizeMessageContent,Browsers,proto,type WASocket} from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { join } from 'node:path';
@@ -292,6 +293,8 @@ export class WhatsApp {
         const m=this.store.routableOutbound('whatsapp');if(!m)break;
         const scheduleState=scheduleDeliveryState(this.store,m.id);if(scheduleState==='hold')return;
         if(scheduleState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=?").run(m.id);continue;}
+        const contractState=contractDeliveryState(this.router,m.id);if(contractState==='hold')return;
+        if(contractState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Task contract expired or its owner changed.' WHERE id=?").run(m.id);continue;}
         if(m.binding_id&&!this.store.binding(m.binding_id)?.enabled)continue;
         const destination:string=m.destination??this.selfJid;
         let briefSending=false;
@@ -299,7 +302,7 @@ export class WhatsApp {
           const sock:GuardedSocket=this.sock;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           if(destination!==this.selfJid)await this.verifyGroup(destination);
-          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock||scheduleDeliveryState(this.store,m.id)!=='ready')return;
+          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock||scheduleDeliveryState(this.store,m.id)!=='ready'||contractDeliveryState(this.router,m.id)!=='ready')return;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           const poll=this.polls.message(m.id);
           if(poll){

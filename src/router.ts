@@ -3,6 +3,7 @@ import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, o
 import { selectOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
+import { TaskContracts } from './task-contracts.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
@@ -34,6 +35,7 @@ export class Router {
   brain:MetaBrain;
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
+  contracts:TaskContracts;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
@@ -45,7 +47,7 @@ export class Router {
   uncertainNoticeMs=120_000;
   attachments:Attachments;
   private ownerReplyPolicy:OwnerReplyPolicy;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.contracts=new TaskContracts(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -65,6 +67,8 @@ export class Router {
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
     if(this.stopped||this.store.seen(m.id))return;
+    // Attachment captions use a separate synchronous path; do not let them bypass task review.
+    if(this.contracts.enabled()&&m.text.trim())throw new Error('Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.');
     if(this.attachmentTarget(m).identity!==target.identity)throw new Error('The intended session changed during download. Please resend to the intended session.');
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
@@ -89,7 +93,7 @@ export class Router {
       return result;
     }finally{this.receiving.delete(m.id);}
   }
-  private async receiveOnce(m:Incoming):Promise<RouteResult> {
+  private async receiveOnce(m:Incoming,contractApproved=false):Promise<RouteResult> {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
@@ -118,6 +122,11 @@ export class Router {
       const briefAction=this.morningBrief?.action(m);
       if(briefAction?.reply){this.store.output(undefined,briefAction.reply,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(briefAction?.text&&briefAction.target&&briefAction.itemId){
+        if(!contractApproved&&this.contracts.shouldHandle(this,m)){
+          const contract=await this.contracts.preflight(this,m,briefAction.text);
+          if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+          if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
+        }
         this.store.db.exec('SAVEPOINT brief_action');
         try{
           this.store.linkItem(m.id,briefAction.itemId);if(this.store.itemOf(m.id)!==briefAction.itemId)throw new Error('This reply is already associated with a different item.');this.queue(m.id,this.need(briefAction.target),briefAction.text);recordBriefDispatch(this,this.store.job(m.id)!,briefAction.itemId,briefAction.target);if(briefAction.ack)this.store.output(undefined,briefAction.ack,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE brief_action');}
@@ -125,6 +134,11 @@ export class Router {
         this.pump();return {status:'queued',requestId:m.id};
       }
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
+      if(!contractApproved&&this.contracts.shouldHandle(this,m)){
+        const contract=await this.contracts.preflight(this,m);
+        if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+        if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
+      }
       if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent))return {status:'handled',requestId:m.id};
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
@@ -301,7 +315,14 @@ export class Router {
     this.store.db.exec('SAVEPOINT queue_owner');
     try {
       const exists=!!this.store.job(id);
+      text=this.contracts.augment(this,id,b,text);
       this.store.enqueue(id,b,text);
+      const approved=this.contracts.approved(id);
+      if(approved){
+        let item=this.store.itemOf(id);
+        if(!item){const title=approved.original.replace(/\s+/g,' ').slice(0,200);item=this.brain.memory.items.add(title,'Owner',undefined,`contract:${approved.id}`,id).id;this.store.linkItem(id,item);}
+        this.contracts.bindItem(id,item);
+      }
       const item=this.store.itemOf(id),destination=this.store.destination();
       if(item&&destination)this.store.set(`brain-topic:${destination}`,`item:${item}`);
       if(!exists&&this.coordinator?.isCoordinator(b.id))queueOwnerReceipt(this.store,id,b);
@@ -322,18 +343,19 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id);
-    if(!scheduled&&!guard)return false;
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.approved(id);
+    if(!scheduled&&!guard&&!contract)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
     if(scheduled){
       const state=job.binding_id===b.id?scheduleJobState(this,id):'invalid';
       if(state==='hold')throw new ScheduledChannelHold('Scheduled request held until its original channel is active.');
       if(state==='invalid'){const reason='The scheduled request was not sent because its owner or session changed.';this.failBeforeSubmission(id,reason);throw new DispatchNotSubmittedError(reason);}
     }
+    if(contract){try{this.contracts.assertDispatch(this,id,b,job.body);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}}
     if(guard&&!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
     return true;
   }
-  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);}
+  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);this.contracts.rejectDispatch(id,reason);}
   private routableJob(b:Binding) {
     for(;;){
       const job=this.store.routableQueued(b.id,this.store.controlChannel());if(!job)return;

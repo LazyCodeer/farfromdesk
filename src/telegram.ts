@@ -1,6 +1,7 @@
 import { TELEGRAM_COMMANDS, telegramCommand } from './owner-commands.js';
 import { optionsMarkup } from './message-options.js';
 import { scheduleDeliveryState } from './schedules.js';
+import { contractDeliveryState } from './task-contracts.js';
 import { randomBytes, createHash } from 'node:crypto';
 import { constants, existsSync, openSync, closeSync, fstatSync, readFileSync, writeFileSync, fchmodSync, ftruncateSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -237,6 +238,8 @@ export class Telegram {
       const row=this.store.routableOutbound('telegram');if(!row)return;
       const scheduleState=scheduleDeliveryState(this.store,row.id);if(scheduleState==='hold')return;
       if(scheduleState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=?").run(row.id);return;}
+      const contractState=contractDeliveryState(this.router,row.id);if(contractState==='hold')return;
+      if(contractState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Task contract expired or its owner changed.' WHERE id=?").run(row.id);return;}
       const destination=this.store.get('telegram-owner')!;
       if(row.destination!==destination){this.store.db.prepare("UPDATE outbox SET status='failed',error='Original Telegram account is not connected' WHERE id=?").run(row.id);return;}
       let body:Record<string,unknown>|FormData={chat_id:Number(this.store.get('telegram-user-id')),text:telegramHTML(row.body),parse_mode:'HTML',link_preview_options:{is_disabled:true}},method='sendMessage';
@@ -253,7 +256,7 @@ export class Telegram {
           const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set('document',new Blob([new Uint8Array(bytes)],{type:a.mime}),a.filename);form.set('caption',row.body);body=form;method='sendDocument';
         }catch{this.store.db.prepare("UPDATE outbox SET status='failed',error='Document failed ownership, integrity or Telegram size checks (50 MB file, 1024 character caption)' WHERE id=?").run(row.id);return;}
       }
-      if(this.closed||this.router.stopped||destination!==this.store.get('telegram-owner')||scheduleDeliveryState(this.store,row.id)!=='ready'||row.binding_id&&!this.store.binding(row.binding_id)?.enabled)return;
+      if(this.closed||this.router.stopped||destination!==this.store.get('telegram-owner')||scheduleDeliveryState(this.store,row.id)!=='ready'||contractDeliveryState(this.router,row.id)!=='ready'||row.binding_id&&!this.store.binding(row.binding_id)?.enabled)return;
       this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(row.id);
       try {
         const sent=await this.call(method,body,this.controller?.signal);

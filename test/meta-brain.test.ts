@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +13,7 @@ import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
 import { BrainMemory } from '../src/brain-memory.js';
+import { TaskContracts } from '../src/task-contracts.js';
 
 const decision=(provider:Interpretation['provider']='unspecified',normalized='Corrected wording'):Interpretation=>({intent:'task',provider,normalized,taskIds:[]});
 const call=(name:string,args:unknown,id='call_1')=>new Response(JSON.stringify({id:'r',created:0,model:'muse-spark-1.3',choices:[{index:0,finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]}}]}),{headers:{'content-type':'application/json'}});
@@ -23,7 +25,8 @@ function fixture(answer:Interpretation=decision(),disk=false) {
   const codex=store.register('codex-proxy','codex',randomUUID(),'/tmp').binding,claude=store.register('claude-proxy','claude',randomUUID(),'/tmp').binding;
   c.registry.register(codex);c.registry.register(claude);
   const secret=new MetaSecret(dir);secret.save('synthetic-test-key-never-a-real-key');
-  const policy={...DEFAULT_BRAIN,enabled:true,allowRouting:true,failure:'block' as const,providers:['codex','claude'] as ('codex'|'claude')[]};
+  router.contracts=new TaskContracts(store,secret,async()=>({kind:'pass',goal:'',exclusions:[],checks:[],question:''}));
+  const policy={...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowRouting:true,failure:'block' as const,providers:['codex','claude'] as ('codex'|'claude')[]};
   saveBrainConfig(store,secret,{policy});
   let calls=0,respond:()=>Promise<Interpretation>=async()=>answer;
   const model={interpret:async()=>{calls++;return respond();}};
@@ -253,7 +256,7 @@ test('a rejected key tells the owner to replace it',async()=>{
 });
 test('missing key and failed API use legacy routing with the new default policy',async()=>{
   for(const mode of ['missing','timeout']) {const f=fixture();try{
-    saveBrainConfig(f.store,f.secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex','claude']}});
+    saveBrainConfig(f.store,f.secret,{policy:{...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowRouting:true,providers:['codex','claude']}});
     if(mode==='missing')f.secret.remove();else f.respond(async()=>{throw new Error('timeout');});
     await f.router.receive({id:'wa:fallback-default',text:'Fix invoice export'});assert.equal(f.store.job('wa:fallback-default')?.binding_id,f.codex.id);
     assert.equal(f.router.brain.get('wa:fallback-default')?.state,'legacy');

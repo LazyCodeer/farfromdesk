@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
@@ -12,6 +13,7 @@ import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig } from '../src/meta-brain-config.js';
 import { OwnerMemory } from '../src/owner-memory.js';
 import type { Interpretation } from '../src/meta-model.js';
+import { TaskContracts } from '../src/task-contracts.js';
 
 const fresh=()=>{const root=mkdtempSync(join(tmpdir(),'ffd-memory-')),store=new Store(':memory:');return {root,store,memory:new OwnerMemory(store,root,'ATC means the air-traffic repo')};};
 
@@ -72,7 +74,8 @@ function brain(script:(tool:(i:any)=>string,input:any)=>Partial<Interpretation>)
   const router=new Router(store,native as any,approvals),c=new Coordinator(store,native as any,router,()=>{});router.coordinator=c;router.pump=()=>{};
   c.registry.register(store.register('codex-proxy','codex',randomUUID(),'/tmp').binding);
   const secret=new MetaSecret(dir);secret.save('synthetic-test-key-never-a-real-key');
-  const policy={...DEFAULT_BRAIN,enabled:true,allowRouting:true,failure:'block' as const,providers:['codex'] as 'codex'[]};
+  router.contracts=new TaskContracts(store,secret,async()=>({kind:'pass',goal:'',exclusions:[],checks:[],question:''}));
+  const policy={...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowRouting:true,failure:'block' as const,providers:['codex'] as 'codex'[]};
   saveBrainConfig(store,secret,{policy});
   const inputs:any[]=[];
   router.brain=new MetaBrain(store,secret,{interpret:async(_k,_p,i,tool)=>{inputs.push(i);return {intent:'chat',normalized:'x',provider:'unspecified',taskIds:[],...script(tool!,i)} as Interpretation;}});
