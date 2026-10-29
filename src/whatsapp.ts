@@ -299,22 +299,46 @@ export class WhatsApp {
     if(this.loggingOut||this.flushing||this.status!=='connected'||!this.sock||!this.selfJid)return;
     this.flushing=true;
     try {
-      for(let i=0;i<5;i++) {
-        const m=this.store.routableOutbound('whatsapp');if(!m)break;
-        if(!this.store.incomingOwnerDelivery(m.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
-        const scheduleState=scheduleDeliveryState(this.store,m.id);if(scheduleState==='hold')return;
+      let processed=0,after:{createdAt:number;rowid:number}|undefined;
+      while(processed<5) {
+        const m=this.store.routableOutbound('whatsapp',after);if(!m)break;
+        after={createdAt:m.created_at,rowid:m.outbox_rowid};
+        if(!this.store.incomingOwnerDelivery(m.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);processed++;continue;}
+        const scheduleState=scheduleDeliveryState(this.store,m.id);if(scheduleState==='hold')continue;
+        processed++;
         if(scheduleState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=?").run(m.id);continue;}
-        const contractState=contractDeliveryState(this.router,m.id);if(contractState==='hold')return;
+        const contractState=contractDeliveryState(this.router,m.id);if(contractState==='hold'){processed--;continue;}
         if(contractState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Task contract expired or its owner changed.' WHERE id=?").run(m.id);continue;}
         if(m.binding_id&&!this.store.binding(m.binding_id)?.enabled)continue;
         const destination:string=m.destination??this.selfJid;
-        let briefSending=false;
+        let briefSending=false,stuckSending=false;
         try {
           const sock:GuardedSocket=this.sock;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
+          const stuckState=m.source.startsWith('stuck-alert:')?(this.router.stuckDetection?.deliveryState(m,this.selfJid)??'invalid'):'ready';
+          if(stuckState==='hold'){processed--;continue;}
+          if(stuckState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Stuck notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);processed--;continue;}
           if(destination!==this.selfJid)await this.verifyGroup(destination);
-          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock||!this.store.incomingOwnerDelivery(m.id)||scheduleDeliveryState(this.store,m.id)!=='ready'||contractDeliveryState(this.router,m.id)!=='ready')return;
+          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
+          if(!this.store.incomingOwnerDelivery(m.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
+          const scheduleRechecked=scheduleDeliveryState(this.store,m.id);
+          if(scheduleRechecked==='hold'){processed--;continue;}
+          if(scheduleRechecked==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=? AND status='queued'").run(m.id);continue;}
+          const contractRechecked=contractDeliveryState(this.router,m.id);
+          if(contractRechecked==='hold'){processed--;continue;}
+          if(contractRechecked==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Task contract expired or its owner changed.' WHERE id=?").run(m.id);continue;}
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
+          const rechecked=m.source.startsWith('stuck-alert:')?(this.router.stuckDetection?.deliveryState(m,this.selfJid)??'invalid'):'ready';
+          if(rechecked==='hold'){processed--;continue;}
+          if(rechecked==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Stuck notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);processed--;continue;}
+          if(m.source.startsWith('stuck-ci-alert:')){
+            const ci=await (this.router.stuckCiWatch?.revalidate(m,this.selfJid)??Promise.resolve('invalid' as const));
+            if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
+            if(ci==='hold'){processed--;continue;}
+            if(ci==='invalid'||this.router.stuckCiWatch?.deliveryState(m,this.selfJid)!=='ready'||!this.store.incomingOwnerDelivery(m.id)){
+              this.store.db.prepare("UPDATE outbox SET status='cancelled',error='CI notice expired or its owner or task changed' WHERE id=? AND status='queued'").run(m.id);processed--;continue;
+            }
+          }
           const poll=this.polls.message(m.id);
           if(poll){
             this.store.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(m.id);
@@ -334,13 +358,13 @@ export class WhatsApp {
             }else content={document:Buffer.from(a.data),fileName:a.filename,mimetype:a.mime,caption:m.body};
           }
           if(!sent){
-            if(m.source.startsWith('morning-brief:')){const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claimed.changes)continue;briefSending=true;}
+            if(m.source.startsWith('morning-brief:')||m.source.startsWith('stuck-alert:')||m.source.startsWith('stuck-ci-alert:')){const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claimed.changes)continue;briefSending=m.source.startsWith('morning-brief:');stuckSending=m.source.startsWith('stuck-alert:')||m.source.startsWith('stuck-ci-alert:');}
             sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
           }
           if(sent?.message)this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(sent.message,BufferJSON.replacer),m.id);
           this.store.sent(m.id);this.polls.queue(m.id);
         }
-        catch(e){this.error=briefSending?'Morning brief delivery could not be confirmed.':(e as Error).message;if(briefSending)this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery could not be confirmed; check your chat before retrying' WHERE id=? AND status='sending'").run(m.id);else if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
+        catch(e){this.error=briefSending?'Morning brief delivery could not be confirmed.':stuckSending?'Stuck notice delivery could not be confirmed.':(e as Error).message;if(briefSending||stuckSending)this.store.db.prepare("UPDATE outbox SET status='uncertain',error=? WHERE id=? AND status='sending'").run(briefSending?'Morning brief delivery could not be confirmed; check your chat before retrying':'Stuck notice delivery could not be confirmed; check your chat before retrying',m.id);else if(this.polls.isPoll(m.id))this.store.db.prepare("UPDATE outbox SET status='uncertain',error='Poll delivery unavailable; use the original numbered reply' WHERE id=?").run(m.id);else if(e instanceof MediaHostLimitError)this.store.db.prepare("UPDATE outbox SET status='failed',error=? WHERE id=?").run(e.message,m.id);else this.store.sendFailed(m.id,m.attempts+1,'WhatsApp delivery held; check connection and group membership');break;}
       }
     } finally {this.flushing=false;}
   }

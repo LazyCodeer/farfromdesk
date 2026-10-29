@@ -1,11 +1,36 @@
 import { randomBytes } from 'node:crypto';
 import type { Binding } from './store.js';
 import { Store } from './store.js';
+import { briefTargetIdentity } from './brief-dispatch-guard.js';
 
 export class Approvals {
-  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; destination:string|null; owner:string|undefined; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
-  constructor(private store:Store) {}
-  ask(binding:Binding, question:string, kind:'approval'|'question'='approval',requestId?:string):Promise<string> {
+  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; source:'session'|'other'; expires:number; destination:string|null; owner:string|undefined; requestId?:string; targetIdentity?:string; attemptId?:string; identityEpoch?:number; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
+  private identityFenceReady=false;
+  constructor(private store:Store) {
+    // The optional stuck notice cannot revive a prompt when identity changes
+    // away and back. Failure to install this fence must not block the original
+    // native permission message or its existing handler.
+    try{
+      store.db.exec('SAVEPOINT permission_epoch_install');
+      try{
+        store.db.exec('CREATE TABLE IF NOT EXISTS permission_identity_epoch(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL); INSERT OR IGNORE INTO permission_identity_epoch VALUES(1,0)');
+        const schema=store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='permission_identity_epoch'").get() as {sql:string}|undefined;
+        if(schema?.sql.replace(/\s+/g,'').toLowerCase()!=='createtablepermission_identity_epoch(idintegerprimarykeycheck(id=1),epochintegernotnull)')throw new Error('Invalid permission epoch schema');
+        for(const op of ['INSERT','UPDATE','DELETE'] as const){
+          const row=op==='DELETE'?'OLD':'NEW',changed=op==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+          store.db.exec(`DROP TRIGGER IF EXISTS permission_epoch_settings_${op.toLowerCase()}; DROP TRIGGER IF EXISTS permission_epoch_binding_${op.toLowerCase()};
+            CREATE TRIGGER permission_epoch_settings_${op.toLowerCase()} AFTER ${op} ON settings
+            WHEN (${row}.key='coordinator-registry' OR ${row}.key LIKE 'execution-mode:%' OR ${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'role-kind:%' OR ${row}.key LIKE 'coordinator-retired:%')${changed}
+            BEGIN UPDATE permission_identity_epoch SET epoch=epoch+1 WHERE id=1; END;
+            CREATE TRIGGER permission_epoch_binding_${op.toLowerCase()} AFTER ${op} ON bindings
+            BEGIN UPDATE permission_identity_epoch SET epoch=epoch+1 WHERE id=1; END`);
+        }
+        store.db.exec('RELEASE permission_epoch_install');this.identityFenceReady=true;
+      }catch(e){store.db.exec('ROLLBACK TO permission_epoch_install; RELEASE permission_epoch_install');throw e;}
+    }catch{/* Optional alert authorization stays unavailable. */}
+  }
+  identityEpoch(){if(!this.identityFenceReady)return;try{const row=this.store.db.prepare('SELECT epoch FROM permission_identity_epoch WHERE id=1').get() as {epoch:number}|undefined;return Number.isSafeInteger(row?.epoch)?row!.epoch:undefined;}catch{return undefined;}}
+  ask(binding:Binding, question:string, kind:'approval'|'question'='approval',requestId?:string,source:'session'|'other'='other'):Promise<string> {
     const code=randomBytes(4).toString('hex'), expires=Date.now()+15*60_000;
     return new Promise(resolve=>{
       const settle=(answer:string)=>{const p=this.pending.get(code);if(!p)return;clearTimeout(p.timer);this.pending.delete(code);this.store.audit('permission-answer',binding.id,`${code}:${kind==='approval'?answer:'answered'}`);resolve(answer);};
@@ -13,7 +38,12 @@ export class Approvals {
       const destination=this.store.destination(),origin=requestId?this.store.requestOwnerOrigin(requestId):undefined;
       // A group JID survives account changes, so a current owner alone cannot prove the prompt's origin.
       const owner=destination&&destination===this.store.ownerFor(destination)?destination:origin?.destination===destination?origin.owner:undefined;
-      this.pending.set(code,{binding,question,kind,expires,destination,owner,settle,timer});
+      let targetIdentity:string|undefined,attemptId:string|undefined,identityEpoch:number|undefined;
+      if(requestId)try{const current=this.store.binding(binding.id),same=current&&current.native_id===binding.native_id&&current.cwd===binding.cwd&&current.token_hash===binding.token_hash&&current.mode===binding.mode&&current.provider===binding.provider&&current.created_at===binding.created_at;
+        const job=this.store.job(requestId);
+        if(same){targetIdentity=briefTargetIdentity(this.store,binding.id);identityEpoch=this.identityEpoch();if(job?.binding_id===binding.id&&job.destination===destination&&job.attempt_id)attemptId=job.attempt_id;}
+      }catch{} // Missing identity only suppresses the optional stuck notice, never the native prompt.
+      this.pending.set(code,{binding,question,kind,source,expires,destination,owner,requestId,targetIdentity,attemptId,identityEpoch,settle,timer});
       this.store.output(binding,`${kind==='approval'?'Permission needed':'Answer needed'}\n${question}\n\n${kind==='approval'?'Reply to this message with “Yes, allow it” or “No, deny it”.':'Reply to this message with your answer.'}\nExpires in 15 minutes.`, `permission:${code}`);
     });
   }

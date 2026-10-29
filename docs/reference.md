@@ -71,6 +71,7 @@ The optional Claude **channel** mode runs an MCP server inside a chosen Claude s
 - `/answer CODE text`: answer a channel question.
 - `/pause NAME` and `/resume NAME`: disable/enable forwarding for that session.
 - `/stop NAME`: deny bridge-held permission requests. It does **not** kill or interrupt a native session. Use the native app's stop control to interrupt work.
+- `/stuck ci #ITEM https://github.com/OWNER/REPO/pull/NUMBER`: watch one public pull request for a failed check for an open, owner-linked item. Send this as a new text in your own WhatsApp chat with Brain status enabled. The watch expires after 24 hours; `/stuck ci remove #ITEM` removes it. The bridge checks at a bounded rate, and a notice describes one check observed failing at a particular time, not overall CI or merge readiness. Changes to the owner, item, or session can invalidate the watch; an unsent notice is rechecked after restart.
 
 Claude and Codex keep their normal tools, model choice, instructions, skills, MCP configuration and approval policies. A normal WhatsApp request does not override native permissions.
 

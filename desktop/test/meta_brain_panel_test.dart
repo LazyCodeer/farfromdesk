@@ -119,6 +119,12 @@ void main() {
         'at': DateTime.now().millisecondsSinceEpoch,
       },
       {
+        'stage': 'stuck',
+        'status': 'completed',
+        'durationMs': 120,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+      {
         'stage': 'sorted',
         'status': 'completed',
         'durationMs': 2400,
@@ -149,6 +155,7 @@ void main() {
     expect(find.text('Meta activity'), findsOneWidget);
     expect(find.text('Message interpretation'), findsOneWidget);
     expect(find.text('Task contract'), findsOneWidget);
+    expect(find.text('Stuck notice'), findsOneWidget);
     expect(find.text('2.4 s'), findsOneWidget);
     expect(find.text('Voice transcription'), findsOneWidget);
     expect(find.text('Request failed'), findsOneWidget);

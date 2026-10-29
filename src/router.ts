@@ -16,6 +16,8 @@ import { errorCode, type ReplyContext, type RequestOutcome } from './request-eve
 import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 import type { MorningBrief } from './morning-brief.js';
+import type { StuckDetection } from './stuck-detection.js';
+import type { StuckCiWatch } from './stuck-ci-watch.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
 
@@ -44,6 +46,8 @@ export class Router {
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
   morningBrief?:MorningBrief;
+  stuckDetection?:StuckDetection;
+  stuckCiWatch?:StuckCiWatch;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
@@ -94,25 +98,56 @@ export class Router {
     if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
+    let evidenceFinalized=false;
     try{
       // History is best effort: a failure to label or record it must not fail a turn that already ran, or Telegram re-polls it.
       const failed=(e:unknown)=>{try{this.store.event(m.id,'owner_history_failed',{code:errorCode(e)});}catch{}};
       let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch(e){failed(e);}
       const result=await this.receiveOnce(m);
+      // Evidence captured before F3 yields is provisional. Rejected/ignored
+      // turns must not make a still-unanswered choice disappear.
+      try{this.stuckDetection?.finishInput(m.id,(result.status==='handled'||result.status==='queued')&&this.store.incomingOwnerCurrent());}catch{}
+      evidenceFinalized=true;
       try{if(this.store.incomingOwnerCurrent()&&label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
       return result;
-    }finally{this.receiving.delete(m.id);}
+    }finally{if(!evidenceFinalized)try{this.stuckDetection?.finishInput(m.id,false);}catch{}this.receiving.delete(m.id);}
   }
   private async receiveOnce(m:Incoming,contractApproved=false):Promise<RouteResult> {
     if(this.stopped||!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
+    // A number quoted to a notice must resolve to its exact original
+    // delivered request; never let an unavailable notice fall into routing.
+    if(m.quotedId&&this.stuckDetection){
+      let choice:ReturnType<StuckDetection['quotedChoice']>;
+      try{choice=this.stuckDetection.quotedChoice(m);}catch{choice={kind:'unavailable'};}
+      if(choice?.kind==='unavailable'){
+        if(this.store.incomingOwnerCurrent()){this.store.output(undefined,'That choice notice is unavailable or expired. Nothing was sent.',`stuck-choice-error:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}
+        return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+      }
+      if(choice?.kind==='mapped')m={...m,quotedId:choice.quotedId,text:choice.text??m.text};
+    }
     if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
       const destination=this.store.destination(),owner=this.store.ownerFor(destination);
       try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
+      // Capture a reply to the exact message before task-review or other
+      // routing can intercept it; no answer text is retained here.
+      if(m.quotedId&&m.text.trim())try{this.stuckDetection?.recordQuotedReply(m);}catch{
+        // Do not let F3 consume a reply while its exact association could not
+        // be recorded: a later notice could incorrectly say it is unanswered.
+        try{this.store.output(undefined,'Could not process this reply. Please resend it.',`stuck-reply-error:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}catch{}
+        return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+      }
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
     this.morningBrief?.firstMessage(m);
+    let ciReply:string|undefined;
+    try{ciReply=this.stuckCiWatch?.command(m);}catch{
+      if(this.store.incomingOwnerCurrent()){this.store.output(undefined,'The CI watch could not be saved. Please try again.',`stuck-ci-error:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}
+      return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+    }
+    const stuckReply=ciReply??this.stuckDetection?.dismiss(m);
+    if(stuckReply!==undefined){this.store.output(undefined,stuckReply,`stuck-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
@@ -137,7 +172,13 @@ export class Router {
             if(!m.optionToken&&(!authenticatedOwner(this,m)||m.ownerChoice!==true))throw new Error('Choose with your own direct reply. Nothing was sent.');
             if(!this.contracts.enabled())throw new Error('Send your answer as a new message so it can be reviewed. Nothing was sent.');
             const contract=await this.contracts.preflight(this,m,reviewBody,undefined,undefined,true,true);
-            if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+            if(contract.kind==='handled'){
+              // An existing F3 review can reject a choice rather than hold it.
+              // Only a newly created review for this input retains evidence.
+              const held=this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(m.id);
+              if(!held)try{this.stuckDetection?.finishInput(m.id,false);}catch{}
+              return {status:'handled',requestId:m.id};
+            }
             if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
           }
           const selected=selectOption(this.store,input,(bindingId,body)=>{if(bindingId!==preview.row.binding_id||body!==preview.body)throw new Error('These choices changed. Nothing was sent.');const b=this.need(bindingId);if(guarded&&!contractApproved){const item=this.store.itemOf(preview.row.request_id);const guardedBody=this.contracts.bindChild(this,preview.row.request_id,m.id,b,body,item);this.store.enqueue(m.id,b,guardedBody);}else this.queue(m.id,b,contractApproved?reviewBody:body);this.contracts.bindChoice(this,preview.row.request_id,m.id,preview.row.id);});
@@ -165,8 +206,15 @@ export class Router {
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent,contractApproved))return {status:'handled',requestId:m.id};
       if(!contractApproved&&this.contracts.shouldHandle(this,m)){
+        // F3 may consume an unquoted owner turn without queueing a job. Record
+        // which currently delivered choices might have been answered before
+        // yielding to the contract classifier; no answer text is retained.
+        if(!m.quotedId)try{this.stuckDetection?.recordUnquotedReview(m);}catch{throw new Error('Could not process this reply. Please resend it.');}
         const contract=await this.contracts.preflight(this,m);
-        if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+        if(contract.kind==='handled'){
+          if(/^\/to\s/i.test(m.text)&&!this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(m.id))try{this.stuckDetection?.finishInput(m.id,false);}catch{}
+          return {status:'handled',requestId:m.id};
+        }
         if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
       }
       // A quoted native answer is data even when it starts with a slash.
