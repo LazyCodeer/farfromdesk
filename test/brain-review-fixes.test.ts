@@ -25,9 +25,10 @@ test('switching learning off while Meta is thinking stops its memory writes',asy
     const brain=new t.MetaBrain(t.store,t.secret,model as any);
     const job=brain.handle(router(),{id:'local:review-memory',text:'Remember my preferred editor is Vim'} as any);
     await ready;t.saveBrainConfig(t.store,t.secret,{policy:{...t.policy,learn:false}});
-    tool({command:'create',path:'preferences.md',file_text:'# Preferences\n- Editor: Vim\n'});
-    release();await job;
+    try{assert.throws(()=>tool({command:'create',path:'preferences.md',file_text:'# Preferences\n- Editor: Vim\n'}),/Brain authority changed/);}
+    finally{release();await job;}
     assert.doesNotMatch(brain.owner.read('preferences.md')??'',/Vim/);
+    assert.equal(brain.get('local:review-memory')?.state,'blocked');
   }finally{t.done();}
 });
 

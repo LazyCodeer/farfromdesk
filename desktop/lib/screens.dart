@@ -2135,7 +2135,7 @@ extension _BridgeScreens on _DeskState {
                     '$name ${option['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}${option['available'] != true
                         ? ' · not detected'
                         : option['canCreate'] == false
-                        ? ' · sign in first'
+                        ? ' · ${platformConnectionStatus(option)}'
                         : ''}',
                   ),
                 ),
@@ -2656,6 +2656,7 @@ extension _BridgeScreens on _DeskState {
   }
 
   Widget masterForm() {
+    final detected = platforms.where((p) => p['available'] == true).toList();
     final entries = (selectedPlatform?['sessions'] ?? [])
         .cast<Map>()
         .where(
@@ -2667,14 +2668,32 @@ extension _BridgeScreens on _DeskState {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Row(
+          children: [
+            const Expanded(child: Text('Detected apps')),
+            spinButton('Check apps', 'Checking…', checkCodingApps),
+          ],
+        ),
+        gap(10),
+        if (detected.isEmpty)
+          small(
+            'No coding apps detected. Install Claude Code or Codex, then click Check apps.',
+          ),
         LayoutBuilder(
           builder: (context, box) {
-            final columns = box.maxWidth < 640 ? 2 : 4;
+            final capacity = box.maxWidth < 340
+                ? 1
+                : box.maxWidth < 640
+                ? 2
+                : 4;
+            final columns = detected.isEmpty
+                ? 1
+                : detected.length.clamp(1, capacity);
             return Wrap(
               spacing: 10,
               runSpacing: 10,
               children: [
-                for (final p in platforms)
+                for (final p in detected)
                   SizedBox(
                     width: (box.maxWidth - 10 * (columns - 1)) / columns,
                     child: appTile(p),
@@ -2683,7 +2702,8 @@ extension _BridgeScreens on _DeskState {
             );
           },
         ),
-        if (selectedPlatform?['connection'] != null) ...[
+        if (selectedPlatform?['available'] == true &&
+            selectedPlatform?['connection'] != null) ...[
           gap(10),
           Row(
             children: [
@@ -2936,6 +2956,9 @@ extension _BridgeScreens on _DeskState {
   }
 
   Widget masterActions() {
+    if (!platforms.any((p) => p['available'] == true)) {
+      return const SizedBox.shrink();
+    }
     final existing = (selectedPlatform?['sessions'] ?? [])
         .cast<Map>()
         .where((s) => s['id'] == selectedNativeId && s['available'] == true)
@@ -3030,11 +3053,7 @@ extension _BridgeScreens on _DeskState {
                 ),
               ),
               Text(
-                p['available'] != true
-                    ? 'Not detected'
-                    : p['canCreate'] == false
-                    ? 'Sign in first'
-                    : '${desktop ? 'App' : 'Terminal'} · Ready',
+                platformConnectionStatus(p),
                 style: TextStyle(fontSize: 11.5, color: ok ? muted : warning),
               ),
             ],
@@ -3699,7 +3718,12 @@ extension _Overview on _DeskState {
               child: Icon(icon, size: 14, color: ink2),
             ),
             const SizedBox(width: 8),
-            Text(label, style: const TextStyle(fontSize: 13, color: muted)),
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(fontSize: 13, color: muted),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 12),
@@ -4280,21 +4304,35 @@ extension _Overview on _DeskState {
           ? 'Nothing needs you.'
           : '$needs need${needs == 1 ? 's' : ''} you.',
     ].join(' ');
-    Widget twoUp(Widget a, Widget b, {int fa = 155, int fb = 100}) =>
-        LayoutBuilder(
-          builder: (context, box) => box.maxWidth >= 900
-              ? IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+    Widget twoUp(
+      Widget a,
+      Widget b, {
+      int fa = 155,
+      int fb = 100,
+      bool stretch = true,
+    }) => LayoutBuilder(
+      builder: (context, box) => box.maxWidth >= 900
+          ? !stretch
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(flex: fa, child: a),
                       const SizedBox(width: 12),
                       Expanded(flex: fb, child: b),
                     ],
-                  ),
-                )
-              : Column(children: [a, gap(12), b]),
-        );
+                  )
+                : IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(flex: fa, child: a),
+                        const SizedBox(width: 12),
+                        Expanded(flex: fb, child: b),
+                      ],
+                    ),
+                  )
+          : Column(children: [a, gap(12), b]),
+    );
     return [
       Text(hello, style: Theme.of(context).textTheme.headlineLarge),
       gap(4),
@@ -4389,7 +4427,14 @@ extension _Overview on _DeskState {
       gap(12),
       twoUp(livePipeline(), needsYouCard(approvals, reviews)),
       gap(12),
-      twoUp(recentRequests(jobs), studioCard(coordinatorSummary())),
+      twoUp(
+        recentRequests(jobs),
+        studioCard(
+          coordinatorSummary(),
+          key: const ValueKey('overview-coordinator-card'),
+        ),
+        stretch: false,
+      ),
       gap(12),
       voiceCard(),
     ];
