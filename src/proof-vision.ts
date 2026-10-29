@@ -55,7 +55,10 @@ function validPng(data:Buffer) {
   return false;
 }
 function containsSecret(text:string) {
-  return /-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+|\b(?:api[_ -]?key|secret|token|password|authorization)\s*[:=]\s*\S+|\b(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/i.test(text);
+  // Defense in depth only: pattern matching cannot prove that text is safe.
+  // The trusted authorization callback must still verify this exact separately
+  // owner-reviewed excerpt and the consent for the matching screenshot.
+  return /-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+|\b(?:api[_ -]?key|secret|token|password|authorization)\s*[:=]\s*\S+|\b(?:ghp_|github_pat_|glpat-|sk-)[A-Za-z0-9_-]{12,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:xox[baprs]-|xapp-|xoxe[.-])[A-Za-z0-9-]{8,}|\b[A-Za-z0-9_+/=-]{32,}\b/i.test(text);
 }
 
 /**

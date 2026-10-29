@@ -112,7 +112,10 @@ test('an unlabelled credential in the raw contract is never sent when the review
 });
 
 test('credential-bearing or tampered excerpts are rejected despite an alleged review',async()=>{
-  for(const reviewed of ['AKIAIOSFODNN7EXAMPLE','Bearer synthetic-secret','token: synthetic-secret']){
+  for(const reviewed of ['AKIAIOSFODNN7EXAMPLE','Bearer synthetic-secret','token: synthetic-secret',
+    'Confirm '+['xox','b','1234567890','1234567890','syntheticvaluethatisnotreal'].join('-').replace('xox-b-','xoxb-')+' is hidden',
+    'Check '+['xapp','1','A123456','B123456','syntheticvalue'].join('-')+' is hidden',
+    'Confirm abcdefghijklmnopqrstuvwxyz0123456789 is hidden']){
     let calls=0;
     const record=capture({reviewedExcerpt:reviewed,excerptHash:createHash('sha256').update(reviewed).digest('hex')});
     assert.equal(await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({

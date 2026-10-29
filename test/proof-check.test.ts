@@ -175,7 +175,7 @@ test('an old failure cannot trigger a correction after a later check passes',asy
       current,observe:async()=>observation(checks[0].id,'fail'),
     });
     const success=await f.proof.evaluate(scope,checks,{[checks[0].id]:['independent']},'eval-2',{
-      current,judge:confirm,observe:async()=>observation(checks[0].id,'pass'),
+      current,judge:confirm,observe:async()=>observation(checks[0].id,'pass',{observedAt:now-999}),
     });
     assert.equal(success.checks[0].verdict,'pass');
     assert.equal(f.proof.claimCorrection(failure.id,scope,checks,current),false);
@@ -195,6 +195,9 @@ test('an earlier slow failed evaluation cannot supersede a later passing evaluat
     });
     release();await assert.rejects(slow,/superseded/);
     assert.equal(fresh.checks[0].verdict,'pass');assert.equal(f.proof.claimCorrection(fresh.id,scope,checks,current),false);
+    // The superseded observer returned a conflicting same-time result after
+    // completion; previously returned evidence is no longer current.
+    assert.equal(f.proof.get(fresh.id,scope,checks,current)?.checks[0].verdict,'unverified');
     assert.equal((f.store.db.prepare('SELECT count(*) AS n FROM proof_runs').get() as {n:number}).n,1);
   }finally{f.store.close();}
 });
@@ -207,12 +210,74 @@ test('starting a newer evaluation makes an earlier failure non-actionable immedi
     let release!:()=>void,started!:()=>void;
     const blocked=new Promise<void>(done=>{release=done;}),begun=new Promise<void>(done=>{started=done;});
     const newer=f.proof.evaluate(scope,checks,{[checks[0].id]:['pass-ref']},'eval-new',{
-      current,judge:confirm,observe:async()=>{started();await blocked;return observation(checks[0].id,'pass');},
+      current,judge:confirm,observe:async()=>{started();await blocked;return observation(checks[0].id,'pass',{observedAt:now-999});},
     });
     await begun;
     assert.equal(f.proof.get(old.id,scope,checks,current)?.checks[0].verdict,'unverified');
     assert.equal(f.proof.claimCorrection(old.id,scope,checks,current),false);
     release();assert.equal((await newer).checks[0].verdict,'pass');
+  }finally{f.store.close();}
+});
+
+test('later evaluation cannot reuse older failing evidence after a newer pass',async()=>{
+  const f=fixture();try{
+    const pass=await f.proof.evaluate(scope,checks,{[checks[0].id]:['new-pass']},'eval-pass',{
+      current,judge:confirm,observe:async()=>observation(checks[0].id,'pass',{observedAt:now-1000}),
+    });
+    assert.equal(pass.checks[0].verdict,'pass');
+    const old=await f.proof.evaluate(scope,checks,{[checks[0].id]:['old-fail']},'eval-later',{
+      current,observe:async()=>observation(checks[0].id,'fail',{observedAt:now-4000}),
+    });
+    assert.equal(old.checks[0].verdict,'unverified');assert.equal(f.proof.claimCorrection(old.id,scope,checks,current),false);
+  }finally{f.store.close();}
+});
+
+test('newer trusted observation invalidates an earlier result even before its own evaluation completes',async()=>{
+  const f=fixture();try{
+    let release!:()=>void,started!:()=>void;
+    const blocked=new Promise<void>(done=>{release=done;}),begun=new Promise<void>(done=>{started=done;});
+    const newer=f.proof.evaluate(scope,checks,{[checks[0].id]:['new-pass']},'eval-first',{
+      current,observe:async()=>observation(checks[0].id,'pass',{observedAt:now-1000}),
+      judge:async(input)=>{started();await blocked;return confirm(input);},
+    });
+    await begun;
+    const old=await f.proof.evaluate(scope,checks,{[checks[0].id]:['old-fail']},'eval-second',{
+      current,observe:async()=>observation(checks[0].id,'fail',{observedAt:now-4000}),
+    });
+    assert.equal(old.checks[0].verdict,'unverified');assert.equal(f.proof.claimCorrection(old.id,scope,checks,current),false);
+    release();await assert.rejects(newer,/superseded/);
+  }finally{f.store.close();}
+});
+
+test('same-time conflicting evidence remains unverified until a newer observation',async()=>{
+  const f=fixture();try{
+    const first=await f.proof.evaluate(scope,checks,{[checks[0].id]:['fail']},'eval-1',{
+      current,observe:async()=>observation(checks[0].id,'fail',{observedAt:now-1000}),
+    });
+    assert.equal(first.checks[0].verdict,'fail');
+    const conflict=await f.proof.evaluate(scope,checks,{[checks[0].id]:['pass']},'eval-2',{
+      current,judge:confirm,observe:async()=>observation(checks[0].id,'pass',{observedAt:now-1000}),
+    });
+    assert.equal(conflict.checks[0].verdict,'unverified');assert.equal(f.proof.claimCorrection(conflict.id,scope,checks,current),false);
+    const newer=await f.proof.evaluate(scope,checks,{[checks[0].id]:['newer']},'eval-3',{
+      current,judge:confirm,observe:async()=>observation(checks[0].id,'pass',{observedAt:now-999}),
+    });
+    assert.equal(newer.checks[0].verdict,'pass');
+  }finally{f.store.close();}
+});
+
+test('different sources with conflicting conclusions require a new check',async()=>{
+  const f=fixture();try{
+    const twoChecks=[{...checks[0],evidenceBindings:[...checks[0].evidenceBindings!,{source:'github-check' as const,bindingHash:'7'.repeat(64)}]},checks[1]];
+    const hash=proofScopeHash(scope,twoChecks),actual=()=>({scope,checks:twoChecks});
+    const first=await f.proof.evaluate(scope,twoChecks,{[checks[0].id]:['test']},'eval-1',{
+      current:actual,judge:confirm,observe:async()=>observation(checks[0].id,'pass',{scopeHash:hash,observedAt:now-1000}),
+    });
+    assert.equal(first.checks[0].verdict,'pass');
+    const next=await f.proof.evaluate(scope,twoChecks,{[checks[0].id]:['github']},'eval-2',{
+      current:actual,observe:async()=>observation(checks[0].id,'fail',{scopeHash:hash,source:'github-check',bindingHash:'7'.repeat(64),observedAt:now-500}),
+    });
+    assert.equal(next.checks[0].verdict,'unverified');assert.equal(f.proof.claimCorrection(next.id,scope,twoChecks,actual),false);
   }finally{f.store.close();}
 });
 

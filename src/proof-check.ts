@@ -18,6 +18,9 @@ export type ProofCheck={id:string;text:string;evidenceBindings?:readonly ProofEv
 export type ProofObservation={
   scopeHash:string;checkId:string;source:'independent-test'|'github-check'|'consented-screen';
   // Digest of the exact evidence policy explicitly approved for this check.
+  // observedAt is the immutable trusted source event time, not retrieval time
+  // or a timestamp supplied by the session/model. Adapters must reject evidence
+  // when source ordering cannot be established.
   bindingHash:string;verdict:'pass'|'fail';observedAt:number;digest:string;
 };
 export type ProofResult={checkId:string;verdict:'pass'|'fail'|'unverified';reason:string;evidenceDigests:string[];expiresAt:number|null};
@@ -84,7 +87,15 @@ export class ProofChecks {
       UNIQUE(scope_hash,evaluation_id));
       CREATE TABLE IF NOT EXISTS proof_corrections(
       owner TEXT NOT NULL,destination TEXT NOT NULL,contract_id TEXT NOT NULL,revision INTEGER NOT NULL,
-      proof_id TEXT NOT NULL,claimed_at INTEGER NOT NULL,PRIMARY KEY(owner,destination,contract_id,revision));`);
+      proof_id TEXT NOT NULL,claimed_at INTEGER NOT NULL,PRIMARY KEY(owner,destination,contract_id,revision));
+      CREATE TABLE IF NOT EXISTS proof_evidence_watermarks(
+      scope_hash TEXT NOT NULL,check_id TEXT NOT NULL,source TEXT NOT NULL,binding_hash TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,verdict TEXT NOT NULL,digest TEXT NOT NULL,ambiguous INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(scope_hash,check_id,source,binding_hash));
+      CREATE TABLE IF NOT EXISTS proof_run_evidence(
+      run_id TEXT NOT NULL REFERENCES proof_runs(id),check_id TEXT NOT NULL,source TEXT NOT NULL,binding_hash TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,verdict TEXT NOT NULL,digest TEXT NOT NULL,
+      PRIMARY KEY(run_id,check_id,source,binding_hash,observed_at,digest));`);
   }
   private visible(encoded:string):ProofResult[] {
     return (JSON.parse(encoded) as ProofResult[]).map(result=>result.verdict!=='unverified'&&(!result.expiresAt||result.expiresAt<=this.clock())
@@ -95,9 +106,42 @@ export class ProofChecks {
     const latest=this.store.db.prepare('SELECT sequence FROM proof_evaluations WHERE scope_hash=? ORDER BY sequence DESC LIMIT 1').get(scopeHash) as {sequence:number}|undefined;
     return latest?.sequence===sequence;
   }
-  private visibleRun(encoded:string,scopeHash:string,sequence:number):ProofResult[] {
-    if(this.latest(scopeHash,sequence))return this.visible(encoded);
-    return this.visible(encoded).map(result=>({...result,verdict:'unverified',reason:'A newer proof assessment has started.',evidenceDigests:[],expiresAt:null}));
+  private recordObservation(scopeHash:string,observation:ProofObservation,current:ProofDependencies['current']) {
+    this.store.db.exec('SAVEPOINT proof_observation');
+    try {
+      const actual=current();
+      if(!actual||proofScopeHash(actual.scope,actual.checks)!==scopeHash)throw new Error('The approved task or session changed.');
+      const prior=this.store.db.prepare(`SELECT observed_at,verdict,digest,ambiguous FROM proof_evidence_watermarks
+        WHERE scope_hash=? AND check_id=? AND source=? AND binding_hash=?`).get(scopeHash,observation.checkId,observation.source,observation.bindingHash) as
+        {observed_at:number;verdict:string;digest:string;ambiguous:number}|undefined;
+      if(!prior)this.store.db.prepare('INSERT INTO proof_evidence_watermarks VALUES(?,?,?,?,?,?,?,0)').run(scopeHash,observation.checkId,observation.source,observation.bindingHash,observation.observedAt,observation.verdict,observation.digest);
+      else if(observation.observedAt>prior.observed_at)this.store.db.prepare(`UPDATE proof_evidence_watermarks SET observed_at=?,verdict=?,digest=?,ambiguous=0
+        WHERE scope_hash=? AND check_id=? AND source=? AND binding_hash=?`).run(observation.observedAt,observation.verdict,observation.digest,scopeHash,observation.checkId,observation.source,observation.bindingHash);
+      else if(observation.observedAt===prior.observed_at&&(observation.verdict!==prior.verdict||observation.digest!==prior.digest))this.store.db.prepare(`UPDATE proof_evidence_watermarks SET ambiguous=1
+        WHERE scope_hash=? AND check_id=? AND source=? AND binding_hash=?`).run(scopeHash,observation.checkId,observation.source,observation.bindingHash);
+      this.store.db.exec('RELEASE proof_observation');
+    }catch(e){this.store.db.exec('ROLLBACK TO proof_observation; RELEASE proof_observation');throw e;}
+  }
+  private evidenceCurrent(scopeHash:string,checkId:string,evidence:ProofObservation[]) {
+    const marks=this.store.db.prepare(`SELECT source,binding_hash,observed_at,verdict,digest,ambiguous FROM proof_evidence_watermarks
+      WHERE scope_hash=? AND check_id=?`).all(scopeHash,checkId) as {source:string;binding_hash:string;observed_at:number;verdict:string;digest:string;ambiguous:number}[];
+    if(!marks.length||!evidence.length||marks.some(mark=>mark.ambiguous)||new Set(marks.map(mark=>mark.verdict)).size!==1)return false;
+    const same=(mark:typeof marks[number],item:ProofObservation)=>mark.source===item.source&&mark.binding_hash===item.bindingHash&&mark.observed_at===item.observedAt&&mark.verdict===item.verdict&&mark.digest===item.digest;
+    // Every previously observed source must be represented and no stale or
+    // conflicting observation may be used. Source clocks are not compared.
+    return marks.every(mark=>evidence.some(item=>same(mark,item)))&&evidence.every(item=>marks.some(mark=>same(mark,item)));
+  }
+  private visibleRun(runId:string,encoded:string,scopeHash:string,sequence:number):ProofResult[] {
+    const latest=this.latest(scopeHash,sequence);
+    return this.visible(encoded).map(result=>{
+      if(result.verdict==='unverified')return result;
+      if(!latest)return {...result,verdict:'unverified',reason:'A newer proof assessment has started.',evidenceDigests:[],expiresAt:null};
+      const rows=this.store.db.prepare(`SELECT check_id,source,binding_hash,observed_at,verdict,digest FROM proof_run_evidence
+        WHERE run_id=? AND check_id=?`).all(runId,result.checkId) as {check_id:string;source:ProofObservation['source'];binding_hash:string;observed_at:number;verdict:'pass'|'fail';digest:string}[];
+      const evidence=rows.map(row=>({scopeHash,checkId:row.check_id,source:row.source,bindingHash:row.binding_hash,observedAt:row.observed_at,verdict:row.verdict,digest:row.digest}));
+      if(!this.evidenceCurrent(scopeHash,result.checkId,evidence))return {...result,verdict:'unverified',reason:'Newer or conflicting independent evidence requires a new check.',evidenceDigests:[],expiresAt:null};
+      return result;
+    });
   }
 
   /**
@@ -133,7 +177,7 @@ export class ProofChecks {
       }
       this.store.db.exec('RELEASE proof_existing');
     }catch(e){this.store.db.exec('ROLLBACK TO proof_existing; RELEASE proof_existing');throw e;}
-    if(prior)return {id:prior.id,scope,checks:this.visibleRun(prior.results,scopeHash,sequence),createdAt:prior.created_at};
+    if(prior)return {id:prior.id,scope,checks:this.visibleRun(prior.id,prior.results,scopeHash,sequence),createdAt:prior.created_at};
     const collected:ProofObservation[][]=[];
     const deadline=AbortSignal.timeout(30_000);
     for(const [index,check] of checks.entries()){
@@ -153,7 +197,9 @@ export class ProofChecks {
              !!check.evidenceBindings?.some(binding=>binding.source===observation.source&&binding.bindingHash===observation.bindingHash)&&
              ['pass','fail'].includes(observation.verdict)&&hex64.test(observation.digest)&&
              Number.isSafeInteger(observation.observedAt)&&observation.observedAt>=scope.startedAt&&
-             observation.observedAt<=this.clock()&&this.clock()-observation.observedAt<=ageLimit)valid.push({...observation});
+             observation.observedAt<=this.clock()&&this.clock()-observation.observedAt<=ageLimit){
+            const verified={...observation};this.recordObservation(scopeHash,verified,deps.current);valid.push(verified);
+          }
         }
       }
       collected.push(valid);
@@ -186,12 +232,16 @@ export class ProofChecks {
       if(!this.latest(scopeHash,sequence))throw new Error('Proof evaluation was superseded by a newer assessment.');
       // Immutable per evaluation; an explicit new ID allows a later recheck.
       const id=randomUUID(),createdAt=this.clock();
-      this.store.db.prepare('INSERT OR IGNORE INTO proof_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,scopeHash,evaluationId,referenceHash,scope.owner,scope.destination,scope.contractId,scope.revision,JSON.stringify(results),createdAt,sequence);
+      const currentResults=results.map((result,index)=>result.verdict!=='unverified'&&!this.evidenceCurrent(scopeHash,result.checkId,collected[index])
+        ?{...result,verdict:'unverified',reason:'Newer or conflicting independent evidence requires a new check.',evidenceDigests:[],expiresAt:null}:result);
+      this.store.db.prepare('INSERT OR IGNORE INTO proof_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,scopeHash,evaluationId,referenceHash,scope.owner,scope.destination,scope.contractId,scope.revision,JSON.stringify(currentResults),createdAt,sequence);
+      for(const observations of collected)for(const observation of observations)this.store.db.prepare('INSERT OR IGNORE INTO proof_run_evidence VALUES(?,?,?,?,?,?,?)').run(id,observation.checkId,observation.source,observation.bindingHash,observation.observedAt,observation.verdict,observation.digest);
       this.store.db.prepare("UPDATE proof_evaluations SET state='complete' WHERE sequence=? AND state='started'").run(sequence);
       const saved=this.store.db.prepare('SELECT id,reference_hash,results,created_at,evaluation_sequence FROM proof_runs WHERE scope_hash=? AND evaluation_id=?').get(scopeHash,evaluationId) as any;
       if(saved.reference_hash!==referenceHash)throw new Error('Proof evaluation ID was reused with different evidence.');
+      const visible=this.visibleRun(saved.id,saved.results,scopeHash,saved.evaluation_sequence);
       this.store.db.exec('RELEASE proof_finalize');
-      return {id:saved.id,scope,checks:this.visibleRun(saved.results,scopeHash,saved.evaluation_sequence),createdAt:saved.created_at};
+      return {id:saved.id,scope,checks:visible,createdAt:saved.created_at};
     }catch(e){this.store.db.exec('ROLLBACK TO proof_finalize; RELEASE proof_finalize');throw e;}
   }
 
@@ -203,8 +253,9 @@ export class ProofChecks {
       const actual=current();
       const row=actual&&proofScopeHash(actual.scope,actual.checks)===scopeHash
         ?this.store.db.prepare('SELECT id,results,created_at,evaluation_sequence FROM proof_runs WHERE id=? AND scope_hash=? AND owner=? AND destination=?').get(id,scopeHash,scope.owner,scope.destination) as any:undefined;
+      const result=row?{id:row.id,checks:this.visibleRun(row.id,row.results,scopeHash,row.evaluation_sequence),createdAt:row.created_at}:undefined;
       this.store.db.exec('RELEASE proof_read');
-      return row?{id:row.id,checks:this.visibleRun(row.results,scopeHash,row.evaluation_sequence),createdAt:row.created_at}:undefined;
+      return result;
     }catch(e){this.store.db.exec('ROLLBACK TO proof_read; RELEASE proof_read');throw e;}
   }
 
@@ -218,7 +269,7 @@ export class ProofChecks {
       if(!actual||proofScopeHash(actual.scope,actual.checks)!==scopeHash){this.store.db.exec('RELEASE proof_correction');return false;}
       // Do not act on an earlier failure after a newer evaluation has passed.
       const row=this.store.db.prepare('SELECT results,evaluation_sequence FROM proof_runs WHERE id=? AND scope_hash=? AND owner=? AND destination=?').get(runId,scopeHash,scope.owner,scope.destination) as {results:string;evaluation_sequence:number}|undefined;
-      const changed=!!row&&this.latest(scopeHash,row.evaluation_sequence)&&this.visible(row.results).some(r=>r.verdict==='fail')&&!!this.store.db.prepare('INSERT OR IGNORE INTO proof_corrections VALUES(?,?,?,?,?,?)').run(scope.owner,scope.destination,scope.contractId,scope.revision,runId,this.clock()).changes;
+      const changed=!!row&&this.visibleRun(runId,row.results,scopeHash,row.evaluation_sequence).some(r=>r.verdict==='fail')&&!!this.store.db.prepare('INSERT OR IGNORE INTO proof_corrections VALUES(?,?,?,?,?,?)').run(scope.owner,scope.destination,scope.contractId,scope.revision,runId,this.clock()).changes;
       this.store.db.exec('RELEASE proof_correction');return changed;
     }catch(e){this.store.db.exec('ROLLBACK TO proof_correction; RELEASE proof_correction');throw e;}
   }
