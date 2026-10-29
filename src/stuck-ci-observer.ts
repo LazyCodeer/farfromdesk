@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
  */
 export type ApprovedCiRun={owner:string;destination:string;ownerGeneration:string;rootRequestId:string;itemId:number;
   repository:string;prNumber:number;headSha:string;checkRunId:number;checkName:string};
-export type CiFailure={kind:'approved-ci-run-failed';repository:string;prNumber:number;headSha:string;checkRunId:number;checkName:string;completedAt:number;incident:string};
+export type CiFailure={kind:'approved-ci-run-failure-observed';repository:string;prNumber:number;headSha:string;checkRunId:number;checkName:string;completedAt:number;observedAt:number;incident:string};
 type TrustedAuthority=(binding:Readonly<ApprovedCiRun>)=>boolean;
 type TrustedFetch=typeof fetch;
 
@@ -41,8 +41,9 @@ async function readJson(url:URL,signal:AbortSignal,fetcher:TrustedFetch,current:
  * tuple and durable owner generation from the bridge's database. Both the
  * authority and the transport are bridge-owned trust boundaries, never
  * session/client callbacks. There is intentionally no default authority or
- * fetch implementation and no production caller. Results are evidence about
- * one check run only, not the PR's current aggregate CI or merge readiness.
+ * fetch implementation and no production caller. Results are timestamped
+ * historical observations of one check run, not the PR's current aggregate CI
+ * or merge readiness. Any later delivery must independently revalidate them.
  */
 export async function observeApprovedCiFailure(input:ApprovedCiRun,signal:AbortSignal,
   authority:TrustedAuthority,fetcher:TrustedFetch,now=()=>Date.now()):Promise<CiFailure|undefined>{
@@ -63,14 +64,21 @@ export async function observeApprovedCiFailure(input:ApprovedCiRun,signal:AbortS
       typeof pr.base?.repo?.full_name==='string'&&pr.base.repo.full_name.toLowerCase()===binding.repository.toLowerCase()&&pr.head?.sha===binding.headSha;
     const pr=await readJson(prUrl,bounded,fetcher,current);
     if(bounded.aborted||!current()||!matchesPr(pr))return;
-    const run=await readJson(new URL(`${prefix}/check-runs/${binding.checkRunId}`),bounded,fetcher,current);
-    if(!run||bounded.aborted||!current()||run.id!==binding.checkRunId||run.name!==binding.checkName||
-      run.head_sha!==binding.headSha||run.status!=='completed'||run.conclusion!=='failure'||typeof run.completed_at!=='string')return;
+    const runUrl=new URL(`${prefix}/check-runs/${binding.checkRunId}`);
+    const matchesRun=(run:any)=>!!run&&run.id===binding.checkRunId&&run.name===binding.checkName&&
+      run.head_sha===binding.headSha&&run.status==='completed'&&run.conclusion==='failure'&&typeof run.completed_at==='string';
+    const run=await readJson(runUrl,bounded,fetcher,current);
+    if(bounded.aborted||!current()||!matchesRun(run))return;
     const completedAt=Date.parse(run.completed_at),time=now();
     if(!Number.isSafeInteger(time)||!Number.isSafeInteger(completedAt)||completedAt>time||time-completedAt>maximumAge)return;
-    // The PR may have moved or closed while the check-run response was read.
+    // Re-read both sources: the head or the same run may change mid-observation.
     if(!matchesPr(await readJson(prUrl,bounded,fetcher,current))||bounded.aborted||!current())return;
+    const confirmedRun=await readJson(runUrl,bounded,fetcher,current);
+    if(bounded.aborted||!current()||!matchesRun(confirmedRun)||Date.parse(confirmedRun.completed_at)!==completedAt)return;
+    if(!matchesPr(await readJson(prUrl,bounded,fetcher,current))||bounded.aborted||!current())return;
+    const observedAt=now();
+    if(!Number.isSafeInteger(observedAt)||observedAt<completedAt||observedAt-completedAt>maximumAge)return;
     const incident=createHash('sha256').update(JSON.stringify(['approved-ci-run-failed-v1',binding.repository.toLowerCase(),binding.prNumber,binding.headSha,binding.checkRunId,binding.checkName,completedAt])).digest('hex');
-    return {kind:'approved-ci-run-failed',repository:binding.repository,prNumber:binding.prNumber,headSha:binding.headSha,checkRunId:binding.checkRunId,checkName:binding.checkName,completedAt,incident};
+    return {kind:'approved-ci-run-failure-observed',repository:binding.repository,prNumber:binding.prNumber,headSha:binding.headSha,checkRunId:binding.checkRunId,checkName:binding.checkName,completedAt,observedAt,incident};
   }catch{return;}
 }

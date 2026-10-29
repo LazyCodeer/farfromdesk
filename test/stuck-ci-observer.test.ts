@@ -16,8 +16,8 @@ function transport(prBody:unknown=pr(),checkBody:unknown=check()){
 
 test('an explicitly authorized exact failed run is independently read from two fixed API paths',async()=>{
   const t=transport(),result=await observeApprovedCiFailure(binding,new AbortController().signal,()=>true,t.fetcher,()=>now);
-  assert.equal(result?.kind,'approved-ci-run-failed');assert.equal(result?.completedAt,now-1000);assert.equal(result?.checkRunId,19);
-  assert.deepEqual(t.calls.map(c=>c.url),['https://api.github.com/repos/example/project/pulls/12','https://api.github.com/repos/example/project/check-runs/19','https://api.github.com/repos/example/project/pulls/12']);
+  assert.equal(result?.kind,'approved-ci-run-failure-observed');assert.equal(result?.completedAt,now-1000);assert.equal(result?.observedAt,now);assert.equal(result?.checkRunId,19);
+  assert.deepEqual(t.calls.map(c=>c.url),['https://api.github.com/repos/example/project/pulls/12','https://api.github.com/repos/example/project/check-runs/19','https://api.github.com/repos/example/project/pulls/12','https://api.github.com/repos/example/project/check-runs/19','https://api.github.com/repos/example/project/pulls/12']);
   for(const call of t.calls){assert.equal(call.init?.method,'GET');assert.equal(call.init?.redirect,'error');assert.equal(new Headers(call.init?.headers).has('authorization'),false);}
   assert.match(result!.incident,/^[a-f0-9]{64}$/);
 });
@@ -25,6 +25,18 @@ test('an explicitly authorized exact failed run is independently read from two f
 test('a PR whose head changes while reading the exact failed run is rejected',async()=>{
   let calls=0;const fetcher:typeof fetch=async()=>response(++calls===1?pr():calls===2?check():pr({head:{sha:'b'.repeat(40)}}));
   assert.equal(await observeApprovedCiFailure(binding,new AbortController().signal,()=>true,fetcher,()=>now),undefined);assert.equal(calls,3);
+});
+
+test('a check run changed or rerun during the PR head recheck is not reported as failed',async()=>{
+  for(const updated of [check({conclusion:'success'}),check({status:'in_progress'}),check({id:20}),check({completed_at:new Date(now-500).toISOString()})]){
+    let calls=0;const fetcher:typeof fetch=async()=>response(++calls===1?pr():calls===2?check():calls===3?pr():updated);
+    assert.equal(await observeApprovedCiFailure(binding,new AbortController().signal,()=>true,fetcher,()=>now),undefined);assert.equal(calls,4);
+  }
+});
+
+test('a PR that changes during the second check read is rejected',async()=>{
+  let calls=0;const fetcher:typeof fetch=async()=>response(++calls===1?pr():calls===2?check():calls===3?pr():calls===4?check():pr({state:'closed'}));
+  assert.equal(await observeApprovedCiFailure(binding,new AbortController().signal,()=>true,fetcher,()=>now),undefined);assert.equal(calls,5);
 });
 
 test('without an exact owner binding or with hostile identifiers nothing is fetched',async()=>{

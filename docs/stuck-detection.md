@@ -40,11 +40,13 @@ complete proactive unblock workflow described in the hackathon plan.
 
 The unwired `stuck-ci-observer` prototype can compare one explicitly
 owner-approved public PR, exact head and exact check-run ID against fixed
-GitHub API responses. A failed result describes that particular run only;
-it does not establish current aggregate CI, required checks, review state or
-merge readiness. The PR can move again after a read, so an eventual sender
-must revalidate before delivery. The prototype cannot fetch or notify by
-itself, and has no authority adapter or production caller.
+GitHub API responses. It re-reads both the run and the PR head and returns a
+timestamped historical observation of that particular run only. It does not
+establish current aggregate CI, required checks, review state or merge
+readiness. Either source can change again after a read; any eventual sender
+must revalidate both the exact run and PR head at delivery and describe the
+observation as historical. The prototype cannot fetch or notify by itself,
+and has no authority adapter or production caller.
 
 The existing product does not store the owner's approval of a particular PR,
 repository, revision and check run for an item. A PR link in a session's
