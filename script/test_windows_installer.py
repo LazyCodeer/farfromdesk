@@ -1,5 +1,6 @@
 """CI smoke test for install, reinstall and uninstall, without launching the app."""
 import argparse
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,8 +15,18 @@ with tempfile.TemporaryDirectory(prefix='ffd-installer-') as temp:
     target = Path(temp) / 'Installed app'
     preserved = Path(temp) / 'account-data'
     preserved.write_text('preserve pairing and history')
+    survivors = []
     try:
-        for _ in range(2):
+        for attempt in range(2):
+            if attempt:
+                # Background forwarding leaves the old backend running after the
+                # window closes. Reinstall must stop it, and only it.
+                idle = ['-e', 'setInterval(() => {}, 1000)']
+                ours = subprocess.Popen([str(target / 'backend/runtime/node.exe'), *idle])
+                other = Path(temp) / 'other-node/node.exe'
+                other.parent.mkdir()
+                shutil.copy2(target / 'backend/runtime/node.exe', other)
+                survivors.append(subprocess.Popen([str(other), *idle]))
             subprocess.run([str(setup), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
                             '/DIR=' + str(target), '/LOG=' + str(Path(temp) / 'setup.log')],
                            check=True, timeout=180)
@@ -23,7 +34,13 @@ with tempfile.TemporaryDirectory(prefix='ffd-installer-') as temp:
                          'speech/ffmpeg.exe', 'speech/whisper-cli.exe', 'speech/manifest.json']:
                 assert (target / name).is_file(), name
             assert not (target / 'speech/ggml-base.bin').exists(), 'Model belongs in first-use cache'
+            if attempt:
+                assert ours.wait(timeout=30) is not None, 'Old backend kept running'
+                assert survivors[0].poll() is None, 'Setup stopped an unrelated node.exe'
     finally:
+        for process in survivors:
+            process.kill()
+            process.wait()
         uninstaller = target / 'unins000.exe'
         if uninstaller.exists():
             subprocess.run([str(uninstaller), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],

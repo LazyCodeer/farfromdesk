@@ -152,6 +152,28 @@ AppRelease? selectRelease(
 }
 
 /// Bounded public metadata checks every six hours; never carries local credentials.
+class _FeedStatus implements Exception {
+  final int code;
+  const _FeedStatus(this.code);
+}
+
+/// Says why a check failed, so a rate limit never reads like a private feed.
+String updateProblem(Object error) {
+  if (error is _FeedStatus) {
+    if (error.code == 403 || error.code == 429) {
+      return 'GitHub is limiting update checks from this network. Try again in an hour.';
+    }
+    if (error.code == 404) {
+      return 'Could not check for updates. The release feed is private or missing.';
+    }
+    return 'Could not check for updates. GitHub is temporarily unavailable. Try again later.';
+  }
+  if (error is FormatException) {
+    return 'Could not check for updates. GitHub sent release information this version cannot read.';
+  }
+  return 'Could not check for updates. Check your internet connection and try again.';
+}
+
 class UpdateChecker {
   final String current, platform, architecture;
   final http.Client Function() clientFactory;
@@ -226,7 +248,7 @@ class UpdateChecker {
     // A full GitHub release object includes notes and every asset. Fetching 20
     // at once eventually exceeds the old 512 KiB response cap as history grows.
     // Keep the same 20-release selection window, with independent page and
-    // aggregate byte limits and one deadline for the entire check.
+    // aggregate byte limits, a deadline per page and one for the entire check.
     var active = true;
     try {
       final data = await (() async {
@@ -247,22 +269,27 @@ class UpdateChecker {
             'Accept': 'application/vnd.github+json',
             'User-Agent': 'FarFromDesk-update-check',
           });
-          final response = await client.send(request);
-          if (!active || _closed) throw const FormatException('Check stopped');
-          if (response.statusCode != 200) {
-            throw const FormatException('Release feed unavailable');
-          }
-          final bytes = <int>[];
-          await for (final part in response.stream) {
+          final bytes = await (() async {
+            final response = await client.send(request);
             if (!active || _closed) {
               throw const FormatException('Check stopped');
             }
-            if (bytes.length + part.length > maxPageBytes ||
-                totalBytes + bytes.length + part.length > maxTotalBytes) {
-              throw const FormatException('Release feed too large');
+            if (response.statusCode != 200) {
+              throw _FeedStatus(response.statusCode);
             }
-            bytes.addAll(part);
-          }
+            final bytes = <int>[];
+            await for (final part in response.stream) {
+              if (!active || _closed) {
+                throw const FormatException('Check stopped');
+              }
+              if (bytes.length + part.length > maxPageBytes ||
+                  totalBytes + bytes.length + part.length > maxTotalBytes) {
+                throw const FormatException('Release feed too large');
+              }
+              bytes.addAll(part);
+            }
+            return bytes;
+          })().timeout(const Duration(seconds: 10));
           totalBytes += bytes.length;
           final result = jsonDecode(utf8.decode(bytes));
           if (result is! List || result.length > pageSize) {
@@ -272,15 +299,15 @@ class UpdateChecker {
           if (result.length < pageSize) break;
         }
         return releases;
-      })().timeout(const Duration(seconds: 12));
+      })().timeout(const Duration(seconds: 30));
       final release = selectRelease(data, current, platform, architecture);
       _cachedData = data;
       latest = UpdateCheck(release: release, checkedAt: attemptedAt);
-    } catch (_) {
+    } catch (error) {
       // A failed/private/offline feed is not evidence that the app is up to date.
       latest = UpdateCheck(
         release: latest.release,
-        problem: 'Could not check for updates. Releases may be private or temporarily unavailable.',
+        problem: updateProblem(error),
         checkedAt: attemptedAt,
       );
     } finally {

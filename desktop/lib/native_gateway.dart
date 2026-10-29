@@ -17,6 +17,12 @@ Future<Directory> createUpdateAttempt(Directory directory) async {
   return directory.createTemp('attempt-');
 }
 
+/// Orders two release build ids; null when either is not a release version.
+int? compareBuilds(Object? running, Object? ours) {
+  final a = ReleaseVersion.parse('$running'), b = ReleaseVersion.parse('$ours');
+  return a == null || b == null ? null : a.compareTo(b);
+}
+
 class NativeGateway extends Gateway {
   final String state;
   final int port;
@@ -350,6 +356,27 @@ class NativeGateway extends Gateway {
     }
   }
 
+  /// Stops an older backend that answered with this account's own admin token,
+  /// so it is ours. It refuses while a request is running and says so.
+  Future<void> _stopOlderBackend() async {
+    await post('/api/update-shutdown', {});
+    for (var i = 0; i < 60; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      try {
+        await get('/api/health');
+      } on SocketException {
+        return;
+      } on http.ClientException {
+        return;
+      } on TimeoutException {
+        return;
+      }
+    }
+    throw StateError(
+      'The previous FarFromDesk version did not stop. Quit it from the menu bar or system tray, then try again.',
+    );
+  }
+
   Future<void> start() async {
     if (Platform.isWindows &&
         await Directory(p.join(state, 'app-update', 'lock')).exists()) {
@@ -400,8 +427,18 @@ class NativeGateway extends Gateway {
             (result['sourceCommit'] != expectedCommit ||
                 (expectedBuild['buildId'] != null &&
                     result['buildId'] != expectedBuild['buildId']))) {
+          final order = compareBuilds(
+            result['buildId'],
+            expectedBuild['buildId'],
+          );
+          if (order != null && order < 0) {
+            await _stopOlderBackend();
+            return false;
+          }
           throw StateError(
-            'Another FarFromDesk version is still running. Pause background forwarding and quit that version before starting this update.',
+            order != null && order > 0
+                ? 'A newer FarFromDesk (${result['buildId']}) is running. Open that version instead.'
+                : 'Another FarFromDesk build is still running. Quit it from the menu bar or system tray, then try again.',
           );
         }
         return true;

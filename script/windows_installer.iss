@@ -24,6 +24,7 @@ RestartApplications=no
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "windows_stop_backend.ps1"; Flags: dontcopy
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
@@ -34,3 +35,19 @@ Name: "{autodesktop}\FarFromDesk"; Filename: "{app}\farfromdesk.exe"; Tasks: des
 
 [Run]
 Filename: "{app}\farfromdesk.exe"; Description: "Open FarFromDesk"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// Background forwarding keeps node.exe running after the window closes, and
+// Restart Manager cannot close a windowless process. Stop only our own copy.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Result := '';
+  ExtractTemporaryFile('windows_stop_backend.ps1');
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+      ExpandConstant('{tmp}\windows_stop_backend.ps1') + '" -App "' + ExpandConstant('{app}') + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code <> 0) then
+    Result := 'FarFromDesk is still running in the background. Quit it from the system tray, then run Setup again.';
+end;
