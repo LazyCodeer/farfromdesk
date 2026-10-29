@@ -3,6 +3,7 @@ import argparse, hashlib, json, pathlib, platform, shutil, subprocess, tarfile, 
 from release_installers import write_installer
 from windows_installer import build_windows_installer
 from sign_macos_bundle import sign_bundle
+from mac_dmg import create_dmg
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--version', default=json.loads((ROOT/'release.json').read_text())['version'])
@@ -85,7 +86,7 @@ if os_name=='macos':
         image_root=pathlib.Path(td)
         subprocess.run(['ditto',str(app),str(image_root/app.name)],check=True)
         (image_root/'Applications').symlink_to('/Applications')
-        subprocess.run(['hdiutil','create','-volname','FarFromDesk','-srcfolder',td,'-format','UDZO','-ov',str(dmg)],check=True)
+        create_dmg(td,dmg)
     subprocess.run(['hdiutil','verify',str(dmg)],check=True);archives.append(dmg)
 artifacts=[]
 for asset in archives:
