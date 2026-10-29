@@ -226,17 +226,62 @@ void main() {
       final pending = checker.check();
       await tester.pump();
       expect(calls, 1);
-      await tester.pump(const Duration(seconds: 8));
-      expect(calls, 2);
-      await tester.pump(const Duration(seconds: 4));
+      for (var page = 2; page <= 4; page++) {
+        await tester.pump(const Duration(seconds: 8));
+        expect(calls, page);
+      }
+      await tester.pump(const Duration(seconds: 6));
       final result = await pending;
-      expect(result.problem, isNotNull);
+      expect(result.problem, contains('internet connection'));
       expect(result.release, isNull);
       await tester.pump(const Duration(seconds: 8));
-      expect(calls, 2);
+      expect(calls, 4);
       checker.close();
     },
   );
+
+  testWidgets('a stalled page times out on its own', (tester) async {
+    var calls = 0;
+    final checker = UpdateChecker(
+      current: '0.9.0',
+      platform: 'macos',
+      architecture: 'arm64',
+      clientFactory: () => MockClient((request) async {
+        calls++;
+        await Future<void>.delayed(const Duration(seconds: 20));
+        return http.Response('[]', 200);
+      }),
+    );
+    final pending = checker.check();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 10));
+    final result = await pending;
+    expect(result.problem, contains('internet connection'));
+    expect(calls, 1);
+    await tester.pump(const Duration(seconds: 10));
+    checker.close();
+  });
+
+  test('each failure says why the check failed', () async {
+    Future<String?> problemFor(int status, [String body = '[]']) async {
+      final checker = UpdateChecker(
+        current: '0.9.0',
+        platform: 'macos',
+        architecture: 'arm64',
+        clientFactory: () =>
+            MockClient((request) async => http.Response(body, status)),
+      );
+      final result = await checker.check();
+      checker.close();
+      return result.problem;
+    }
+
+    expect(await problemFor(403), contains('limiting update checks'));
+    expect(await problemFor(429), contains('limiting update checks'));
+    expect(await problemFor(404), contains('private or missing'));
+    expect(await problemFor(502), contains('temporarily unavailable'));
+    expect(await problemFor(200, '{}'), contains('cannot read'));
+  });
 
   testWidgets('closing an in-flight checker stops later page requests', (
     tester,
