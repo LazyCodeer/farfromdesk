@@ -108,8 +108,16 @@ export class CollaborationHarness {
   /** Any linked queued/running/uncertain job prevents a second claimant.
    * Use itemOf rather than only direct links so parent/report chains count. */
   private hasLiveWork(scope:CollaborationScope) {
-    const jobs=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain')").all() as {id:string;binding_id:string;status:string}[];
-    return jobs.some(j=>this.store.itemOf(j.id)===scope.itemId&&!this.authority.ignoreLive?.(scope,j));
+    // A final reply can mark the inbox job completed while its managed turn is
+    // still running. The managed fence, not inbox status, decides liveness.
+    const managed=this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_collaboration_handoffs'").get();
+    if(managed&&this.store.db.prepare("SELECT 1 FROM managed_collaboration_handoffs WHERE item_id=? AND state='claimed' AND COALESCE(finished,0)<>1 LIMIT 1").get(scope.itemId))return true;
+    const jobs=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain') OR attempt_id IS NOT NULL").all() as {id:string;binding_id:string;status:string}[];
+    return jobs.some(j=>this.store.itemsInAncestry(j.id).includes(scope.itemId)&&!this.authority.ignoreLive?.(scope,j));
+  }
+  private hasLiveSession(scope:CollaborationScope,bindingId:string) {
+    const jobs=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE binding_id=? AND (status IN ('dispatched','submitted','uncertain') OR attempt_id IS NOT NULL)").all(bindingId) as {id:string;binding_id:string;status:string}[];
+    return jobs.some(j=>!this.authority.ignoreLive?.(scope,j));
   }
   private current(s:CollaborationScope & {ownerGeneration:string},token:string,allowExpired=false) {
     const r=this.row(s.itemId);
@@ -137,7 +145,7 @@ export class CollaborationHarness {
       if(r&&(r.owner!==s.owner||r.destination!==s.destination))throw new Error('The item belongs to another owner or chat.');
       if(r&&r.owner_generation!==s.ownerGeneration)throw new Error('The owner connection changed.');
       if(r?.holder_id&&r.lease_until!==null&&r.lease_until>now)throw new Error('The item is already claimed.');
-      if(this.hasLiveWork(s))throw new Error('The item has active or uncertain work.');
+      if(this.hasLiveWork(s)||this.hasLiveSession(s,b.id))throw new Error('The item or session has active or uncertain work.');
       const generation=(r?.generation??0)+1,token=randomUUID(),leaseUntil=now+MAX_LEASE;
       if(r)this.store.db.prepare(`UPDATE collaboration_claims SET root_request_id=?,contract_id=?,contract_revision=?,approved_hash=?,
         generation=?,holder_id=?,holder_identity=?,token=?,lease_until=? WHERE item_id=?`).run(root,s.contractId,s.revision,s.approvedHash,generation,b.id,identity,token,leaseUntil,itemId);
@@ -150,7 +158,7 @@ export class CollaborationHarness {
   renew(root:string,itemId:number,token:string,eventId:string):Claim {
     return this.transaction(()=>{
       const s=this.scope(root,itemId),{r,b}=this.current(s,token,true),now=this.clock();
-      if((!r.lease_until||r.lease_until<=now)&&!this.hasLiveWork(s))throw new Error('The claim expired.');
+      if((!r.lease_until||r.lease_until<=now)&&!this.hasLiveWork(s)&&!this.hasLiveSession(s,b.id))throw new Error('The claim expired.');
       const fp=fingerprint([root,itemId,token,s.contractId,s.revision,s.approvedHash,s.ownerGeneration]);
       const prior=this.event(eventId,'renewed',fp);
       if(prior){if(prior.generation!==r.generation||!r.lease_until||r.lease_until<=now)throw new Error('The earlier renewal is no longer active.');return {itemId,bindingId:b.id,generation:r.generation,token,leaseUntil:r.lease_until};}
@@ -165,7 +173,7 @@ export class CollaborationHarness {
     this.transaction(()=>{
       const s=this.scope(root,itemId),fp=fingerprint([root,itemId,token,s.contractId,s.revision,s.approvedHash,s.ownerGeneration]);
       if(this.event(eventId,'released',fp))return;
-      const {r,b}=this.current(s,token);if(this.hasLiveWork(s))throw new Error('The item has active or uncertain work.');
+      const {r,b}=this.current(s,token);if(this.hasLiveWork(s)||this.hasLiveSession(s,b.id))throw new Error('The item or session has active or uncertain work.');
       this.store.db.prepare('UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL WHERE item_id=? AND generation=? AND token=?').run(itemId,r.generation,token);
       this.record(eventId,s,'released',fp,r.generation,null,b.id,null,null,this.clock());
     });
@@ -178,7 +186,7 @@ export class CollaborationHarness {
       const s=this.scope(root,itemId),fp=fingerprint([root,itemId,token,s.contractId,s.revision,s.approvedHash,s.ownerGeneration]);
       if(this.event(eventId,'released',fp))return;
       const {r,b}=this.current(s,token,true);if(!this.authority.observedFinished?.(s,b))throw new Error('A trusted session completion is required.');
-      if(this.hasLiveWork(s))throw new Error('The item has active or uncertain work.');
+      if(this.hasLiveWork(s)||this.hasLiveSession(s,b.id))throw new Error('The item or session has active or uncertain work.');
       this.store.db.prepare('UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL WHERE item_id=? AND generation=? AND token=?').run(itemId,r.generation,token);
       this.record(eventId,s,'released',fp,r.generation,null,b.id,null,null,this.clock());
     });
@@ -192,7 +200,7 @@ export class CollaborationHarness {
       if(this.event(eventId,'handoff',fp))return;
       this.requireClaimable(itemId);
       const {r,b}=this.current(s,token);if(to.id===b.id)throw new Error('Choose a different session for the handoff.');
-      if(this.hasLiveWork(s))throw new Error('The item has active or uncertain work.');
+      if(this.hasLiveWork(s)||this.hasLiveSession(s,b.id))throw new Error('The item or session has active or uncertain work.');
       this.store.db.prepare('UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL WHERE item_id=? AND generation=? AND token=?').run(itemId,r.generation,token);
       this.record(eventId,s,'handoff',fp,r.generation,null,b.id,to.id,text,this.clock());
     });

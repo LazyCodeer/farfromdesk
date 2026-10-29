@@ -53,6 +53,15 @@ test('separate SQLite connections cannot both claim the same item',()=>{
   }finally{other.close();f.close();}
 });
 
+test('a session already running unrelated work cannot acquire an item claim',()=>{
+  const f=fixture();try {
+    f.store.enqueue('wa:unrelated',f.a,'Other work',f.owner);f.store.jobState('wa:unrelated','dispatched');
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'busy-session'),/session has active or uncertain/);
+    f.store.jobState('wa:unrelated','completed');
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'finished-reply-only'),/session has active or uncertain/);
+  }finally{f.close();}
+});
+
 test('simultaneous processes produce exactly one successful claim',async()=>{
   const f=fixture(),children:ChildProcess[]=[];
   try{

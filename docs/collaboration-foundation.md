@@ -27,9 +27,9 @@ The ledger records explicit claims, renewals, releases and handoff summaries in
 SQLite. A claim is bound to one item, owner, destination, root request, exact
 approved contract ID/revision/hash and session fingerprint. Claims carry a
 generation and random fencing token. An explicit acquisition can replace an
-expired idle claim, but never while the bridge can see a linked queued,
-dispatched, submitted or uncertain job. Handoffs and releases also refuse while
-such work exists. A handoff records the contract identity and sender/recipient;
+expired idle claim, but never while the bridge can see linked queued work or an
+attempt whose provider has not been proven stopped. Handoffs and releases also
+refuse while such work exists. A handoff records the contract identity and sender/recipient;
 it neither starts work nor claims the recipient automatically. Summaries are
 untrusted local data and drift is always `not_checked`.
 
@@ -47,8 +47,8 @@ approval is single-use, and replacing or revoking the policy invalidates its
 staged handoffs even if the same rules are approved again. Role and approval
 revision are checked again at the provider boundary. Durable session revisions
 also invalidate an approval if a binding or route changes away and back while
-the bridge is stopped. Legacy handoffs without
-this revision fail closed. The role is recorded with the handoff, and the
+the bridge is stopped. Legacy handoffs without the role-order and exact-finish
+markers fail closed. The role is recorded with the handoff, and the
 contract remains attached; the session's report is still unverified.
 
 The memory and approval adapters are deliberately **not implemented or wired**.
@@ -57,18 +57,32 @@ every edit, including external edits and change-away-and-back across restarts;
 the present Markdown memory API cannot establish that guarantee. The future
 approval adapter must authenticate the owner and bind their explicit approval
 to the exact displayed proposal digest. A model suggestion, a memory line or a
-session report is not approval. Role rules constrain which session may receive
-which role, but do not enforce stage order, prove the summary stays within the
-contract, or authorize activity outside that contract. The synthetic tests use
-fake revisions and approvals; they do not establish those real adapters.
+session report is not approval. A policy must specify plan, build and review in
+that order. Each later stage requires the exact report from the preceding stage,
+the same policy and contract, and a finished, released provider attempt; a
+blocked, cancelled or subsequently uncertain predecessor cannot advance. A
+new approval starts again at plan. This order does not prove the work or summary
+stays within the contract. The synthetic tests use fake revisions and approvals;
+they do not establish those real adapters.
 
-The active-work check follows the bridge's bounded request/item ancestry; it
-cannot discover work that was never recorded or correctly linked to the item.
-Before enabling F5, ensure all native, managed, channel, option, scheduled,
-report and delegated paths persist links and use the same guard, renew leases
-during long active turns, and fail closed after restart, owner/session/contract
-changes, or uncertain delivery. A router without the prototype enabled cannot
-enforce its claims; the test adapter cannot protect concurrent external work.
+Within an opt-in database, the fence follows both recorded parent chains,
+including cycles and conflicting links, and checks other attempts on the source
+and target bindings. Persistent SQLite triggers also hold conflicting inbox
+dispatches from another bridge connection and prevent ancestry changes that
+could hide a claim. They conservatively block relinking even completed attempts
+while a claim remains. Older or ordinary completed attempts on the item or either
+session without an exact trusted end receipt block collaboration; there is no
+reconciliation UI yet.
+
+This cannot discover work that was never recorded or correctly linked to the
+item, or prevent external work in a native session. Worker creation, recovery
+and Desktop startup can start provider work outside the inbox dispatch fence;
+they need a durable shared ownership boundary before F5 can be enabled. Also
+verify all native, managed, channel, option, scheduled, report and delegated
+paths, renew leases during long active turns, and fail closed after restart,
+owner/session/contract changes, or uncertain delivery. The persistent triggers
+are cooperative protection for bridge database writes, not a fence against a
+process that modifies the database schema or starts provider work directly.
 
 Remaining work includes a production contract and role adapter, a scoped
 owner-visible timeline and brief integration, session roles from approved
