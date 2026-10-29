@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CoordinatorRegistry } from './coordinator-registry.js';
+import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -443,13 +444,19 @@ export class Masters {
     catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
   }
   async run(b:Binding,message:string,jobId:string) {
-    await this.connections.assert(b);
+    const guarded=this.router.assertDispatchAllowed(jobId,b);let handedOff=false;
+    try{
+    const verify=async<T>(pending:Promise<T>):Promise<T>=>{try{const value=await pending;this.router.assertDispatchAllowed(jobId,b);return value;}catch(e){if(e instanceof DispatchNotSubmittedError)throw e;this.router.assertDispatchAllowed(jobId,b);throw e;}};
+    await verify(this.connections.assert(b));
     const role=roleConfig(this.store,b);
     if(this.runtimeRoles.get(b.id)!==role.version){this.stopWorker(b.id);this.runtimeRoles.set(b.id,role.version);}
     if(b.provider==='claude'&&(this.store.get(`managed-worker:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true')) {
       let runtime=this.claudeRuntimes.get(b.id);
-      if(!runtime?.alive){runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);await runtime.initialize();}
-      const text=await runtime.run(message,this.router.attachments.imageInputs(b,jobId));
+      if(!runtime?.alive){runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);await verify(runtime.initialize());}
+      const images=this.router.attachments.imageInputs(b,jobId);
+      this.router.assertDispatchAllowed(jobId,b);
+      handedOff=true;
+      const text=await runtime.run(message,images);
       if(runtime.lastUsage)this.store.event(jobId,'provider_usage',{provider:'claude',...runtime.lastUsage});
       if(this.store.job(jobId)?.status==='replaced')return;
       if(this.store.job(jobId)?.status!=='completed') {
@@ -462,13 +469,16 @@ export class Masters {
     let runtime=this.runtimes.get(b.id);
     if(!runtime?.alive) {
       runtime=new CodexSession(codexBin,b.cwd,(method,params)=>this.approval(b,method,params));this.runtimes.set(b.id,runtime);
-      await runtime.initialize();
+      await verify(runtime.initialize());
       const worker=this.store.get(`managed-worker:${b.id}`)==='true';
-      await checkCodexEnvironment(runtime,b.cwd);
-      const resumed=await runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',developerInstructions:role.instructions,config:{'mcp_servers.session_bridge':this.mcpConfig(b)}});
+      await verify(checkCodexEnvironment(runtime,b.cwd));
+      this.router.assertDispatchAllowed(jobId,b);
+      const resumed=await verify(runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',developerInstructions:role.instructions,config:{'mcp_servers.session_bridge':this.mcpConfig(b)}}));
       if((resumed.thread?.id!==b.native_id||typeof resumed.thread?.cwd!=='string'||realpathSync(resumed.thread.cwd)!==realpathSync(b.cwd))){this.stopWorker(b.id);throw new Error('Native resume returned a different session or project. Delivery stopped.');}
     }
     const active=runtime;
+    const input=[{type:'text',text:message,text_elements:[]},...this.router.attachments.references(b,jobId,true).filter(a=>['image/jpeg','image/png','image/webp','image/gif'].includes(a.mime)&&a.bytes<=10*1024*1024).map(a=>({type:'localImage',path:a.path!}))];
+    this.router.assertDispatchAllowed(jobId,b);
     await new Promise<void>((resolve,reject)=>{
       let text='';
       const cleanup=()=>{active.off('notification',event);active.off('closed',closed);};
@@ -493,8 +503,16 @@ export class Masters {
         }
       };
       active.on('notification',event);active.on('closed',closed);
-      active.request('turn/start',{threadId:b.native_id,input:[{type:'text',text:message,text_elements:[]},...this.router.attachments.references(b,jobId,true).filter(a=>['image/jpeg','image/png','image/webp','image/gif'].includes(a.mime)&&a.bytes<=10*1024*1024).map(a=>({type:'localImage',path:a.path!}))]}).catch(e=>{cleanup();reject(e);});
+      handedOff=true;
+      active.request('turn/start',{threadId:b.native_id,input}).catch(e=>{cleanup();reject(e);});
     });
+    }catch(e){
+      if(guarded&&!handedOff&&!(e instanceof DispatchNotSubmittedError)){
+        this.router.assertDispatchAllowed(jobId,b);
+        throw new DispatchNotSubmittedError('The request was not sent because the session could not be prepared. Check its connection in the app before trying again.');
+      }
+      throw e;
+    }
   }
   private claudeWorker(b:Binding,resume:boolean) {
     if(portableAgents||(this.store.get(`managed-claude:${b.id}`)==='true'&&!this.registry.isCoordinator(b.id)&&this.store.get(`managed-worker:${b.id}`)!=='true'))return new ClaudeSDKSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{

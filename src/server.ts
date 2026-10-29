@@ -13,7 +13,7 @@ import { channelChosen, channelSwitchState, switchControlChannel, disconnectCont
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { timingSafeEqual, randomUUID } from 'node:crypto';
+import { timingSafeEqual, randomUUID,createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import QRCode from 'qrcode';
@@ -139,7 +139,35 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           json(res,200,result);return;
         }
         if(path==='/api/master/direct'&&req.method==='POST'){const d=await body(req);json(res,200,router.coordinator!.direct(d.requestId,d.target));return;}
-        if(path==='/api/master/items'&&req.method==='POST'){json(res,200,itemOperation(items,await body(req),router.coordinator!.name(binding)));return;}
+        if(path==='/api/master/items'&&req.method==='POST'){
+          const d=await body(req),by=router.coordinator!.name(binding);
+          const scopedNote=d.op==='set'&&d.note!==undefined&&d.status===undefined&&d.session===undefined;
+          if(d.requestId===undefined||d.op!=='add'&&!scopedNote){json(res,200,itemOperation(items,d,by));return;}
+          if(typeof d.requestId!=='string')throw new Error('An exact owner request ID is required.');
+          const request=router.coordinator!.ownerRequest(d.requestId),origin=store.requestOwnerOrigin(d.requestId);
+          if(!origin||request.destination!==origin.destination||origin.destination!==origin.owner&&(store.get('destination-jid')!==origin.destination||!store.get(`owned-group:${origin.destination}`)))throw new Error('This request has no verified current owner and chat. Create the item from a new owner request.');
+          store.db.exec('SAVEPOINT scoped_item_add');
+          try{
+            if(scopedNote){
+              const itemId=Number(d.id);if(!Number.isInteger(itemId)||itemId<1||!store.db.prepare('SELECT 1 FROM item_owner_origins WHERE item_id=? AND destination=? AND owner=?').get(itemId,origin.destination,origin.owner))throw new Error('This item does not belong to the owner and chat of this request.');
+              const result=itemOperation(items,d,by,d.requestId);store.db.exec('RELEASE scoped_item_add');json(res,200,result);return;
+            }
+            const old=d.eventId?store.db.prepare('SELECT id FROM items WHERE event_id=?').get(String(d.eventId)) as {id:number}|undefined:undefined;
+            const title=String(d.title??'').trim().replace(/\s+/g,' '),session=d.session?String(d.session).trim():null;
+            const note=d.note?String(d.note).trim():null;
+            const fingerprint=createHash('sha256').update(JSON.stringify([title,session,note,d.requestId])).digest('hex');
+            if(old){
+              const proof=store.db.prepare('SELECT 1 FROM item_owner_origins WHERE item_id=? AND destination=? AND owner=?').get(old.id,origin.destination,origin.owner);
+              const prior=store.db.prepare('SELECT fingerprint FROM item_add_fingerprints WHERE item_id=?').get(old.id) as {fingerprint:string}|undefined;
+              if(!proof||prior?.fingerprint!==fingerprint)throw new Error('This item event already belongs to different or unknown work. Use a new event ID.');
+            }
+            const result=itemOperation(items,old?{...d,note:undefined}:d,by,d.requestId);
+            if(!result.item||!store.db.prepare('SELECT 1 FROM item_owner_origins WHERE item_id=? AND destination=? AND owner=?').get(result.item.id,origin.destination,origin.owner))throw new Error('Item ownership could not be verified.');
+            if(!old)store.db.prepare('INSERT INTO item_add_fingerprints VALUES(?,?)').run(result.item.id,fingerprint);
+            store.db.prepare('INSERT OR IGNORE INTO brain_item_routes(item_id,destination) VALUES(?,?)').run(result.item.id,origin.destination);
+            store.db.exec('RELEASE scoped_item_add');json(res,200,result);return;
+          }catch(e){store.db.exec('ROLLBACK TO scoped_item_add; RELEASE scoped_item_add');throw e;}
+        }
         if(path==='/api/master/desktop-control'&&req.method==='POST') {
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);
@@ -194,7 +222,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const job=typeof d.requestId==='string'?store.job(d.requestId):jobs.length===1?jobs[0]:undefined;
         if(d.requestId!==undefined&&(!job||job.binding_id!==binding.id)||d.requestId===undefined&&jobs.length>1)throw new Error('Specify the exact request for this permission question.');
         const destination=job?.destination??store.destination();
-        const answer=await (destination?store.destinationContext.run(destination,()=>router.approvals.ask(binding,d.question)):router.approvals.ask(binding,d.question));
+        const answer=await (destination?store.destinationContext.run(destination,()=>router.approvals.ask(binding,d.question,'approval',job?.id)):router.approvals.ask(binding,d.question,'approval',job?.id));
         json(res,200,{answer});return;
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}

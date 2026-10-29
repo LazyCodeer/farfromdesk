@@ -37,16 +37,20 @@ export class Items {
     return matches[0];
   }
   /** Repeating an add with the same eventId returns the item it already made. */
-  add(title:string,by?:string,sessionRef?:string,eventId?:string):Item {
+  add(title:string,by?:string,sessionRef?:string,eventId?:string,requestId?:string):Item {
     const t=title.trim().replace(/\s+/g,' ');
     if(!t||t.length>200)throw new Error('An item needs a short title (up to 200 characters).');
     const existing=eventId&&this.store.db.prepare('SELECT id FROM items WHERE event_id=?').get(eventId) as {id:number}|undefined;
     if(existing)return this.get(existing.id);
     const binding=sessionRef?this.session(sessionRef):undefined,now=Date.now();
-    const r=this.store.db.prepare('INSERT INTO items(title,status,binding_id,event_id,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(t,binding?'in progress':'not started',binding?.id??null,eventId??null,now,now);
-    const id=Number(r.lastInsertRowid);
-    this.note(id,binding?`Added and given to ${itemSessionLabel(this.store,binding)}.`:'Added.',by);
-    return this.get(id);
+    this.store.db.exec('SAVEPOINT item_add');
+    try{
+      const r=this.store.db.prepare('INSERT INTO items(title,status,binding_id,event_id,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(t,binding?'in progress':'not started',binding?.id??null,eventId??null,now,now);
+      const id=Number(r.lastInsertRowid),origin=requestId?this.store.requestOwnerOrigin(requestId):undefined;
+      if(origin)this.store.db.prepare('INSERT INTO item_owner_origins VALUES(?,?,?)').run(id,origin.destination,origin.owner);
+      this.note(id,binding?`Added and given to ${itemSessionLabel(this.store,binding)}.`:'Added.',by);
+      const item=this.get(id);this.store.db.exec('RELEASE item_add');return item;
+    }catch(e){this.store.db.exec('ROLLBACK TO item_add; RELEASE item_add');throw e;}
   }
   setStatus(id:number,status:string,by?:string) {
     const s=itemStatus(status),item=this.get(id);
@@ -64,12 +68,17 @@ export class Items {
     if(item.binding_id!==b.id){this.store.db.prepare('UPDATE items SET binding_id=?,updated_at=? WHERE id=?').run(b.id,Date.now(),id);this.note(id,`Given to ${itemSessionLabel(this.store,b)}.`,by);}
     return this.get(id);
   }
-  note(id:number,text:string,by?:string,eventId?:string) {
+  note(id:number,text:string,by?:string,eventId?:string,requestId?:string) {
     const t=text.trim();if(!t||t.length>500)throw new Error('A note needs short text (up to 500 characters).');
     this.get(id);
-    this.store.db.prepare('INSERT OR IGNORE INTO item_notes(item_id,at,by,note,event_id) VALUES(?,?,?,?,?)').run(id,Date.now(),by??null,t,eventId??null);
-    this.store.db.prepare('UPDATE items SET updated_at=? WHERE id=?').run(Date.now(),id);
-    return this.get(id);
+    this.store.db.exec('SAVEPOINT item_note');
+    try{
+      const result=this.store.db.prepare('INSERT OR IGNORE INTO item_notes(item_id,at,by,note,event_id) VALUES(?,?,?,?,?)').run(id,Date.now(),by??null,t,eventId??null);
+      const origin=requestId?this.store.requestOwnerOrigin(requestId):undefined;
+      if(result.changes&&origin&&this.store.db.prepare('SELECT 1 FROM item_owner_origins WHERE item_id=? AND destination=? AND owner=?').get(id,origin.destination,origin.owner))this.store.db.prepare('INSERT INTO item_note_origins VALUES(?,?,?)').run(Number(result.lastInsertRowid),origin.destination,origin.owner);
+      this.store.db.prepare('UPDATE items SET updated_at=? WHERE id=?').run(Date.now(),id);
+      const item=this.get(id);this.store.db.exec('RELEASE item_note');return item;
+    }catch(e){this.store.db.exec('ROLLBACK TO item_note; RELEASE item_note');throw e;}
   }
   sessionName(item:Item) {const b=item.binding_id?this.store.bindings().find(b=>b.id===item.binding_id):undefined;return b?itemSessionLabel(this.store,b):'no session';}
   line(item:Item) {return `${item.id}. ${icon[item.status]} ${item.title} · ${item.status} · ${this.sessionName(item)}`;}
@@ -102,15 +111,15 @@ export class Items {
 }
 
 /** One endpoint for every item operation, so the ffd command, MCP tool and app share it. */
-export function itemOperation(items:Items,d:any,by:string):{text:string;item?:Item} {
+export function itemOperation(items:Items,d:any,by:string,requestId?:string):{text:string;item?:Item} {
   const id=Number(d.id);
   const needId=()=>{if(!Number.isInteger(id)||id<1)throw new Error('Give the item number.');return id;};
   switch(d.op) {
     case 'list':return {text:items.text(d.all===true)};
     case 'show':return {text:items.show(needId())};
-    case 'add':{const item=items.add(String(d.title??''),by,d.session?String(d.session):undefined,d.eventId?String(d.eventId):undefined);if(d.note)items.note(item.id,String(d.note),by);return {text:`Added item ${item.id}.\n${items.line(item)}`,item};}
+    case 'add':{const item=items.add(String(d.title??''),by,d.session?String(d.session):undefined,d.eventId?String(d.eventId):undefined,requestId);if(d.note)items.note(item.id,String(d.note),by,undefined,requestId);return {text:`Added item ${item.id}.\n${items.line(item)}`,item};}
     case 'set':{
-      const item=d.status!==undefined?items.setStatus(needId(),String(d.status),by):d.session!==undefined?items.setSession(needId(),String(d.session),by):d.note!==undefined?items.note(needId(),String(d.note),by,d.eventId?String(d.eventId):undefined):undefined;
+      const item=d.status!==undefined?items.setStatus(needId(),String(d.status),by):d.session!==undefined?items.setSession(needId(),String(d.session),by):d.note!==undefined?items.note(needId(),String(d.note),by,d.eventId?String(d.eventId):undefined,requestId):undefined;
       if(!item)throw new Error('Set a status, session or note.');
       return {text:items.line(item),item};
     }

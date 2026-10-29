@@ -3,14 +3,17 @@ import type { Binding } from './store.js';
 import { Store } from './store.js';
 
 export class Approvals {
-  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; destination:string|null; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
+  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; destination:string|null; owner:string|undefined; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
   constructor(private store:Store) {}
-  ask(binding:Binding, question:string, kind:'approval'|'question'='approval'):Promise<string> {
+  ask(binding:Binding, question:string, kind:'approval'|'question'='approval',requestId?:string):Promise<string> {
     const code=randomBytes(4).toString('hex'), expires=Date.now()+15*60_000;
     return new Promise(resolve=>{
       const settle=(answer:string)=>{const p=this.pending.get(code);if(!p)return;clearTimeout(p.timer);this.pending.delete(code);this.store.audit('permission-answer',binding.id,`${code}:${kind==='approval'?answer:'answered'}`);resolve(answer);};
       const timer=setTimeout(()=>settle('deny'),15*60_000);
-      this.pending.set(code,{binding,question,kind,expires,destination:this.store.destination(),settle,timer});
+      const destination=this.store.destination(),origin=requestId?this.store.requestOwnerOrigin(requestId):undefined;
+      // A group JID survives account changes, so a current owner alone cannot prove the prompt's origin.
+      const owner=destination&&destination===this.store.ownerFor(destination)?destination:origin?.destination===destination?origin.owner:undefined;
+      this.pending.set(code,{binding,question,kind,expires,destination,owner,settle,timer});
       this.store.output(binding,`${kind==='approval'?'Permission needed':'Answer needed'}\n${question}\n\n${kind==='approval'?'Reply to this message with “Yes, allow it” or “No, deny it”.':'Reply to this message with your answer.'}\nExpires in 15 minutes.`, `permission:${code}`);
     });
   }

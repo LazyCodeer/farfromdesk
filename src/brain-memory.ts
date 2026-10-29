@@ -13,12 +13,13 @@ export class BrainMemory {
   }
   /** One item of this chat, found directly rather than through the 100-row board view. */
   item(id:number,destination=this.store.destination()) {return this.board(destination,id)[0];}
-  board(destination=this.store.destination(),only?:number) {
+  board(destination=this.store.destination(),only?:number,verifiedOwner?:string) {
     if(!destination)return [];
     return (this.store.db.prepare(`SELECT DISTINCT i.* FROM items i WHERE (?1 IS NULL OR i.id=?1) AND (
       EXISTS(SELECT 1 FROM brain_item_routes r WHERE r.item_id=i.id AND r.destination=?2) OR
       EXISTS(SELECT 1 FROM item_requests r JOIN inbox j ON j.id=r.request_id WHERE r.item_id=i.id AND j.destination=?2))
-      ORDER BY i.updated_at DESC,i.id DESC LIMIT 100`).all(only??null,destination) as Item[]).map(item=>{
+      AND (?3 IS NULL OR EXISTS(SELECT 1 FROM item_owner_origins o WHERE o.item_id=i.id AND o.destination=?2 AND o.owner=?3))
+      ORDER BY i.updated_at DESC,i.id DESC LIMIT 100`).all(only??null,destination,verifiedOwner??null) as Item[]).map(item=>{
         let jobs=this.store.db.prepare('SELECT j.id,j.binding_id,j.status,j.outcome,j.first_reply_at,j.created_at,j.updated_at FROM inbox j JOIN item_requests r ON r.request_id=j.id WHERE r.item_id=? AND j.destination=? ORDER BY j.created_at DESC,j.rowid DESC').all(item.id,destination)
           // Status questions are about the work, not part of it, so their state never drives the item's.
           .filter(j=>!this.store.get(`brain-ask:${j.id}`));
@@ -96,7 +97,7 @@ export class BrainMemory {
     if(destination)this.store.db.prepare('INSERT OR IGNORE INTO brain_item_routes VALUES(?,?)').run(itemId,destination);
   }
   add(requestId:string,title:string) {
-    const item=this.items.add(title.slice(0,200),'Owner',undefined,`brain-item:${requestId}`);
+    const item=this.items.add(title.slice(0,200),'Owner',undefined,`brain-item:${requestId}`,requestId);
     this.link(requestId,item.id);return item;
   }
   /** Interpretation proposes a management operation; literal original commands authorize it. */

@@ -12,6 +12,8 @@ import { updateRole, turnEnvelope } from './roles.js';
 import { errorCode, type ReplyContext, type RequestOutcome } from './request-events.js';
 import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
+import type { MorningBrief } from './morning-brief.js';
+import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
 export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean};
@@ -29,6 +31,7 @@ export class Router {
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
+  morningBrief?:MorningBrief;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
@@ -36,7 +39,7 @@ export class Router {
   uncertainNoticeMs=120_000;
   attachments:Attachments;
   private ownerReplyPolicy:OwnerReplyPolicy;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);}
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -83,7 +86,12 @@ export class Router {
     if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
-    const text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
+      const destination=this.store.destination(),owner=this.store.ownerFor(destination);
+      try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
+    }
+    let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    this.morningBrief?.firstMessage(m);
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
@@ -100,6 +108,15 @@ export class Router {
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      const briefAction=this.morningBrief?.action(m);
+      if(briefAction?.reply){this.store.output(undefined,briefAction.reply,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
+      if(briefAction?.text&&briefAction.target&&briefAction.itemId){
+        this.store.db.exec('SAVEPOINT brief_action');
+        try{
+          this.store.linkItem(m.id,briefAction.itemId);if(this.store.itemOf(m.id)!==briefAction.itemId)throw new Error('This reply is already associated with a different item.');this.queue(m.id,this.need(briefAction.target),briefAction.text);recordBriefDispatch(this,this.store.job(m.id)!,briefAction.itemId,briefAction.target);if(briefAction.ack)this.store.output(undefined,briefAction.ack,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE brief_action');}
+        catch(e){this.store.db.exec('ROLLBACK TO brief_action; RELEASE brief_action');throw e;}
+        this.pump();return {status:'queued',requestId:m.id};
+      }
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
@@ -281,16 +298,42 @@ export class Router {
       this.store.db.exec('RELEASE queue_owner');
     }catch(e){this.store.db.exec('ROLLBACK TO queue_owner; RELEASE queue_owner');throw e;}
   }
+  private rejectBriefDispatch(job:ReturnType<Store['job']>,reason?:string) {
+    if(!job||!['queued','dispatched'].includes(job.status))return;
+    const guard=briefDispatchGuard(this.store,job.id);if(!guard)return;
+    const message=reason??new BriefDispatchError().message;
+    this.store.db.exec('SAVEPOINT reject_brief_dispatch');
+    try{
+      this.store.jobState(job.id,'failed',message);
+      this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Brief action was not sent' WHERE status='queued' AND source=?").run(`native-opening:${job.id}:0`);
+      if(briefDestinationValid(this.store,guard.destination,guard.owner))this.store.output(undefined,message,`brief-action-error:${job.id}`,guard.destination,{requestId:job.id,kind:'system',origin:'system',plain:true});
+      this.store.db.exec('RELEASE reject_brief_dispatch');
+    }catch(e){this.store.db.exec('ROLLBACK TO reject_brief_dispatch; RELEASE reject_brief_dispatch');throw e;}
+  }
+  /** Called before every channel/native submit; future dispatch guards share this boundary. */
+  assertDispatchAllowed(id:string,b:Binding){
+    const guard=briefDispatchGuard(this.store,id);if(!guard)return false;
+    const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
+    if(!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
+    return true;
+  }
+  /** F2 can extend this boundary for its own durable guard before integrating. */
+  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);}
   pump() {
     if(this.stopped)return;
     this.brain.tick(this);
+    for(const job of this.store.db.prepare("SELECT i.* FROM inbox i JOIN brief_dispatch_guards g ON g.request_id=i.id WHERE i.status='queued'").all() as unknown as import('./store.js').Job[]){
+      if(!briefDispatchValid(this,job))this.rejectBriefDispatch(job);
+    }
     for(const b of this.store.bindings()) {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.store.queued(b.id);if(!job)continue;
+      try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;}
       this.busy.add(b.id);this.store.jobState(job.id,'dispatched');
       const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
       void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');}).catch(e=>{
+        if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return;}
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
         this.store.jobState(job.id,'uncertain',(e as Error).message);
         // A slow native hand-off often still lands. Internal report deliveries never reach the owner; for
@@ -311,6 +354,7 @@ export class Router {
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.store.queued(b.id);if(!job)return null;
+    try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
   }
