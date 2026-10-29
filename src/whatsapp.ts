@@ -11,7 +11,7 @@ import type { Store } from './store.js';
 import type { Router } from './router.js';
 import { transcribeAudio, audioFormat, type AudioObserver } from './audio.js';
 import { voiceEngine } from './voice-cloud.js';
-import { createHash } from 'node:crypto';
+import { createHash,randomUUID } from 'node:crypto';
 import { BufferJSON } from '@whiskeysockets/baileys';
 import { disposeIncoming, incomingMetadata, type AttachmentKind, type IncomingFile } from './attachments.js';
 import { Artifacts } from './artifacts.js';
@@ -53,6 +53,7 @@ export class WhatsApp {
     if(this.loggingOut)throw new Error('Logout is already in progress.');
     if(!this.sock||this.status!=='connected')throw new Error('Reconnect to log out here, or remove this device in WhatsApp → Linked devices.');
     this.loggingOut=true;
+    this.store.set('incoming-owner-generation',randomUUID());
     try {
       await this.sock.logout();
       this.close();
@@ -207,15 +208,19 @@ export class WhatsApp {
     if(!text&&!audio&&!media&&!msg?.pollUpdateMessage)return;
     // With a group selected, the self chat only accepts the /self escape back to it.
     if(self&&destination?.endsWith('@g.us')&&text?.trim()!=='/self')return;
+    const origin=self?this.selfJid:destination;
+    if(!origin||!this.selfJid||this.store.get('whatsapp-owner')!==this.selfJid)return;
+    const owner=this.store.captureIncomingOwner(origin,'whatsapp');if(!owner)return;
     this.receiving.add(id);
     try {
+      await this.store.incomingOwnerContext.run(owner,async()=>{
       if(group)await this.verifyGroup(destination!);
-      if(this.closed||this.loggingOut||this.router.stopped)return;
-      const origin=self?this.selfJid!:destination!;
+      if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
       await this.store.destinationContext.run(origin,async()=>{
         if(msg?.pollUpdateMessage){const vote=this.polls.vote({...m,message:msg},origin,this.owners);if(vote)await this.router.receive(vote);return;}
         if(media) {
           if(!this.store.db.prepare("INSERT OR IGNORE INTO media_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now()).changes)return;
+          this.store.recordIncomingInput(id);
           const controller=new AbortController();let file:IncomingFile|undefined;
           try {
             incomingMetadata(media,kind);
@@ -224,22 +229,23 @@ export class WhatsApp {
             if(this.mediaControllers.size>=2)throw new Error('Two attachments are already downloading. Please wait, then resend this one.');
             this.mediaControllers.add(controller);
             file=await this.downloadFile(media,kind,controller.signal);
-            if(this.closed||this.loggingOut||this.router.stopped)return;
+            if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
             if(group)await this.verifyGroup(origin);
-            if(this.closed||this.loggingOut||this.router.stopped)return;
+            if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
             this.router.receiveAttachment(incoming,file,target);
           }catch(e) {
-            if(this.closed)return;
+            if(this.closed||!this.store.incomingOwnerCurrent())return;
             const message=(e as Error).message;
             const safe=/^(?:Use a simple|Unsupported|Attachment |Files must|Text files|Binary data|Invalid (?:PDF|PNG|JPEG|WebP|GIF|ZIP|gzip|executable|WebAssembly)|Expected a complete|The intended session|Choose an exact session|That quoted message|Session is missing|Two attachments|Incoming attachment)/;
             this.store.output(undefined,safe.test(message)?message:'I couldn’t receive this attachment. Please resend a supported image or document. Documents support the WhatsApp ceiling of 2,097,152,000 bytes when disk space permits.',`media-error:${id}`,origin);
             this.store.remember(id);this.store.db.prepare("UPDATE media_inbox SET status='failed' WHERE id=?").run(id);
-          }finally{disposeIncoming(file);this.mediaControllers.delete(controller);}
+          }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare("UPDATE media_inbox SET status='interrupted' WHERE id=? AND status='processing'").run(id);disposeIncoming(file);this.mediaControllers.delete(controller);}
           return;
         }
         if(audio) {
           const claimed=this.store.db.prepare("INSERT OR IGNORE INTO audio_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now());
           if(!claimed.changes)return;
+          this.store.recordIncomingInput(id);
           let started=false,routingStarted:number|undefined;const controller=new AbortController();
           this.store.event(id,'voice_received',{audioSeconds:Number(audio.seconds),...(voiceEngine(this.store)==='local'?{engine:'whisper.cpp',model:this.store.get('audio-origin')==='bundled'?'bundled':'custom'}:{engine:voiceEngine(this.store)})});
           const routing=()=>JSON.stringify([this.store.get('active'),this.store.get('master'),this.store.get('selected'),this.store.get(`owner-target:${origin}`),this.store.get(`direct:${origin}`)]);
@@ -250,9 +256,9 @@ export class WhatsApp {
             this.audioBusy++;started=true;this.audioControllers.add(controller);
             this.store.output(undefined,(!this.store.get('audio-config')&&this.store.get('audio-tools')?'Voice note received. I’m downloading the voice model once, then I’ll transcribe it locally. This first note may take a few minutes.':'Voice note received. I’m transcribing it locally on your computer.'),`audio-progress:${id}`,origin);
             text=await this.transcribe(audio,controller.signal,event=>this.store.voiceEvent(id,event));
-            if(this.closed||this.loggingOut||this.router.stopped)return; // Restart recovery reports interruption.
+            if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return; // Restart recovery reports interruption.
             if(group)await this.verifyGroup(origin);
-            if(this.closed||this.loggingOut||this.router.stopped)return;
+            if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
             routingStarted=performance.now();this.store.voiceEvent(id,{stage:'route',state:'started'});
             if(routing()!==originalRouting)throw new Error('The selected session changed during transcription. Please resend the note to the intended session.');
             if(!text?.trim()||text.length>32000)throw new Error('No clear speech detected. Please resend or type your message.');
@@ -265,7 +271,7 @@ export class WhatsApp {
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routed?'processed':'routing_blocked',id);
             if(!routed&&result.status!=='blocked')this.store.output(undefined,'Your voice note was transcribed, but could not be routed. Select an active session, then send a new request.',`audio-route:${id}`,origin);
           }catch(e) {
-            if(this.closed)return;
+            if(this.closed||!this.store.incomingOwnerCurrent())return;
             if(routingStarted!==undefined)this.store.voiceEvent(id,{stage:'route',state:'failed',durationMs:performance.now()-routingStarted,code:errorCode(e)});
             this.store.event(id,'voice_failed',{code:errorCode(e)});
             // Never echo provider output, media URLs, transcript or command paths.
@@ -273,15 +279,17 @@ export class WhatsApp {
             const message=allowed.test((e as Error).message)?(e as Error).message:'I couldn’t transcribe this voice note. Please resend a clear recording (up to 5 minutes for local transcription), or type your message.';
             this.store.output(undefined,message,`audio-error:${id}`,origin);this.store.remember(id);
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routingStarted===undefined?'failed':'routing_blocked',id);
-          }finally{if(started)this.audioBusy--;this.audioControllers.delete(controller);}
+          }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare("UPDATE audio_inbox SET status='interrupted' WHERE id=? AND status='processing'").run(id);if(started)this.audioBusy--;this.audioControllers.delete(controller);}
           return;
         }
         const context=msg?.extendedTextMessage?.contextInfo;
         const ownerCommand=!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
         if(self&&ownerCommand&&text!.trim()==='/self') {
-          await this.selectDestination();this.store.output(undefined,'Switched to Message yourself. You can continue here.',`self-switch:${m.key.id}`,origin);this.store.remember(id);return;
+          const selecting=this.selectDestination(),updated=this.store.captureIncomingOwner(origin,'whatsapp');await selecting;
+          if(updated&&updated.owner===owner.owner)this.store.incomingOwnerContext.run(updated,()=>{if(this.store.incomingOwnerCurrent()){this.store.output(undefined,'Switched to Message yourself. You can continue here.',`self-switch:${m.key.id}`,origin);this.store.remember(id);}});return;
         }
         await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand,ownerChoice:!context?.isForwarded&&!context?.forwardingScore});
+      });
       });
     }finally{this.receiving.delete(id);}
   }
@@ -291,6 +299,7 @@ export class WhatsApp {
     try {
       for(let i=0;i<5;i++) {
         const m=this.store.routableOutbound('whatsapp');if(!m)break;
+        if(!this.store.incomingOwnerDelivery(m.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
         const scheduleState=scheduleDeliveryState(this.store,m.id);if(scheduleState==='hold')return;
         if(scheduleState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=?").run(m.id);continue;}
         const contractState=contractDeliveryState(this.router,m.id);if(contractState==='hold')return;
@@ -302,7 +311,7 @@ export class WhatsApp {
           const sock:GuardedSocket=this.sock;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           if(destination!==this.selfJid)await this.verifyGroup(destination);
-          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock||scheduleDeliveryState(this.store,m.id)!=='ready'||contractDeliveryState(this.router,m.id)!=='ready')return;
+          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock||!this.store.incomingOwnerDelivery(m.id)||scheduleDeliveryState(this.store,m.id)!=='ready'||contractDeliveryState(this.router,m.id)!=='ready')return;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           const poll=this.polls.message(m.id);
           if(poll){

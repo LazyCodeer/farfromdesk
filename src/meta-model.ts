@@ -59,15 +59,15 @@ const MemoryInput=z.object({command:z.enum(['view','create','str_replace','inser
  * The memory commands follow Anthropic's memory tool (view, create, str_replace, insert). */
 export class MetaModel {
   constructor(private fetcher:typeof fetch=fetch,private timeoutMs=30000) {}
-  async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool):Promise<Interpretation> {
+  async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void):Promise<Interpretation> {
     const signal=AbortSignal.timeout(this.timeoutMs);let status=0;
     // Bound streamed bytes and never follow redirects with the key attached.
     const guarded:typeof fetch=async(url,init)=>{
-      const response=await this.fetcher(url,{...init,redirect:'error'});status=response.status;
+      authorize?.();const response=await this.fetcher(url,{...init,redirect:'error'});authorize?.();status=response.status;
       if(!response.ok)throw new Error(response.status===401||response.status===403?'Meta authentication failed.':`Meta API unavailable (HTTP ${response.status}).`);
       const reader=response.body?.getReader();if(!reader)throw new Error('Meta returned no response.');
       let size=0;const chunks:Uint8Array[]=[];
-      for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>262144){await reader.cancel();throw new Error('Meta response exceeded the limit.');}chunks.push(value);}
+      for(;;){const {done,value}=await reader.read();authorize?.();if(done)break;size+=value.length;if(size>262144){await reader.cancel();throw new Error('Meta response exceeded the limit.');}chunks.push(value);}
       return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
     };
     try {
@@ -75,13 +75,13 @@ export class MetaModel {
       const ask=()=>generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400
         providerOptions:{meta:{reasoningEffort:'low'}},
         tools:{
-          ...(memory?{memory:tool({description:'View, create or edit the owner\'s memory files.',inputSchema:MemoryInput,execute:async(i)=>memory(i)})}:{}),
+          ...(memory?{memory:tool({description:'View, create or edit the owner\'s memory files.',inputSchema:MemoryInput,execute:async(i)=>{authorize?.();return memory(i);}})}:{}),
           decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation}),
         },
         stopWhen:[hasToolCall('decide'),stepCountIs(6)]});
       let result=await ask();
       // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
-      if(!result.steps.some(s=>s.toolCalls.length))result=await ask();
+      if(!result.steps.some(s=>s.toolCalls.length)){authorize?.();result=await ask();}
       const call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
       if(!call)throw new Error('Meta interpretation was incomplete.');
       return Interpretation.parse(call!.input);

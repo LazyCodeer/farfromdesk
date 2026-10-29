@@ -140,9 +140,11 @@ export class Schedules {
     return listCommand(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));
   }
   async handle(router:Router,m:Incoming,ownerIntent:boolean,contractApproved=false):Promise<boolean> {
+    if(!this.store.incomingOwnerCurrent())return true;
     const destination=this.store.destination(),owner=destination?this.owner(destination):'',channel=this.store.controlChannel();
     try{return await this.handleOnce(router,m,ownerIntent,contractApproved);}
     catch(error){
+      if(!this.store.incomingOwnerCurrent())return true;
       // A short response to a validation error must not be delivered as a session task.
       if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));
       throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Please resend the complete reminder. Nothing was scheduled.`);
@@ -181,7 +183,7 @@ export class Schedules {
     const zone=this.store.get('schedule-timezone')??'Asia/Kolkata';if(!validZone(zone))throw new Error('Choose a valid reminder time zone in settings.');
     const decision=await this.interpret(text,this.now(),zone,this.secret.read()!);
     // Changes during the model call cannot create a schedule under another owner, group or channel.
-    if(router.stopped||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
+    if(router.stopped||!this.store.incomingOwnerCurrent()||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
     // An explicit time-shaped request must never fall through into immediate work.
     if(decision.kind==='not_schedule'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'I could not confirm that schedule. Please resend the complete request with its time and action. Nothing was sent.');return true;}
     if(decision.kind==='clarify'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'Please resend the complete reminder with its date, time and action, and the session if needed. Nothing has been scheduled.');return true;}

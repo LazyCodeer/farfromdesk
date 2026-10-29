@@ -13,10 +13,12 @@ const buildSource=(()=>{try{return JSON.parse(readFileSync(new URL('../build.jso
 export type Provider = 'codex' | 'claude';
 export type Binding = { id: string; alias: string; provider: Provider; native_id: string; cwd: string; enabled: number; mode: 'desktop' | 'channel'; token_hash: string; created_at: number };
 export type Job = { id: string; binding_id: string; body: string; status: string; created_at: number; error: string | null; destination?:string|null; updated_at?:number; outcome?:RequestOutcome|null; received_at?:number|null; submitted_at?:number|null; first_reply_at?:number|null; final_reply_at?:number|null; last_error?:string|null; last_error_at?:number|null; attempt_id?:string|null };
+export type IncomingOwner={owner:string;destination:string;channel:'whatsapp'|'telegram';generation:string};
 export const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 export class Store {
   db: DatabaseSync;
   destinationContext=new AsyncLocalStorage<string>();
+  incomingOwnerContext=new AsyncLocalStorage<IncomingOwner>();
   constructor(file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
@@ -38,6 +40,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS item_notes(id INTEGER PRIMARY KEY,item_id INTEGER NOT NULL REFERENCES items(id),at INTEGER NOT NULL,by TEXT,note TEXT NOT NULL,event_id TEXT UNIQUE);
       CREATE TABLE IF NOT EXISTS item_requests(request_id TEXT PRIMARY KEY,item_id INTEGER NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS owner_request_origins(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS incoming_owner_outbox(outbox_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,channel TEXT NOT NULL,generation TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS incoming_owner_inputs(id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,channel TEXT NOT NULL,generation TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS item_owner_origins(item_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(item_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_note_origins(note_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(note_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_add_fingerprints(item_id INTEGER PRIMARY KEY,fingerprint TEXT NOT NULL);
@@ -63,9 +67,38 @@ export class Store {
     this.db.exec(`CREATE INDEX IF NOT EXISTS inbox_binding_created ON inbox(binding_id,created_at);
       CREATE INDEX IF NOT EXISTS outbox_request_created ON outbox(request_id,created_at);`);
     initializeOptions(this);
+    // A durable epoch also changes when settings are removed directly, and
+    // makes change-away-and-back invalidate work that was already in flight.
+    for(const operation of ['INSERT','UPDATE','DELETE'] as const){
+      const row=operation==='DELETE'?'OLD':'NEW';
+      const changed=operation==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+      this.db.exec(`DROP TRIGGER IF EXISTS incoming_owner_${operation.toLowerCase()}; CREATE TRIGGER incoming_owner_${operation.toLowerCase()} AFTER ${operation} ON settings
+        WHEN (${row}.key IN ('whatsapp-owner','telegram-owner','telegram-bot-id','control-channel','destination-jid','background-enabled') OR ${row}.key LIKE 'owned-group:%')${changed}
+        BEGIN INSERT INTO settings(key,value) VALUES('incoming-owner-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
+    }
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  captureIncomingOwner(destination:string,channel:'whatsapp'|'telegram'):IncomingOwner|undefined {
+    const owner=this.ownerFor(destination);
+    if(!owner||this.controlChannel()!==channel||channel==='telegram'&&owner!==destination)return;
+    return {owner,destination,channel,generation:this.get('incoming-owner-generation')??''};
+  }
+  incomingOwnerCurrent() {
+    const captured=this.incomingOwnerContext.getStore();if(!captured)return true;
+    return this.controlChannel()===captured.channel&&this.ownerFor(captured.destination)===captured.owner&&
+      (this.get('incoming-owner-generation')??'')===captured.generation;
+  }
+  assertIncomingOwner(){if(!this.incomingOwnerCurrent())throw new Error('The owner connection changed.');}
+  recordIncomingInput(id:string){
+    this.assertIncomingOwner();const owner=this.incomingOwnerContext.getStore();
+    if(owner)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_inputs VALUES(?,?,?,?,?)').run(id,owner.owner,owner.destination,owner.channel,owner.generation);
+  }
+  recordedIncomingInput(id:string){return this.db.prepare('SELECT owner,destination,channel,generation FROM incoming_owner_inputs WHERE id=?').get(id) as IncomingOwner|undefined;}
+  incomingOwnerDelivery(id:string) {
+    const row=this.db.prepare('SELECT g.*,o.destination AS actual_destination FROM incoming_owner_outbox g JOIN outbox o ON o.id=g.outbox_id WHERE g.outbox_id=?').get(id) as (IncomingOwner&{actual_destination:string|null})|undefined;
+    return !row||row.actual_destination===row.destination&&this.controlChannel()===row.channel&&this.ownerFor(row.destination)===row.owner&&(this.get('incoming-owner-generation')??'')===row.generation;
+  }
   /** The item a request belongs to: its own link, else the nearest linked parent or report parent. */
   itemOf(requestId?:string|null):number|undefined {
     let id=requestId??undefined;
@@ -131,6 +164,7 @@ export class Store {
   }
   destination(){return this.destinationContext.getStore()??(this.controlChannel()==='telegram'?this.get('telegram-owner')??'tg:unpaired':this.get('destination-jid')??this.get('whatsapp-owner'))??null;}
   enqueue(id: string, b: Binding, body: string, destination:string|null=this.destination()) {
+    this.assertIncomingOwner();
     const existing=this.job(id);if(existing&&(existing.binding_id!==b.id||existing.body!==body))throw new Error('A delivery ID cannot be reused for different content or another session.');
     const now=Date.now();
     const result=this.db.prepare("INSERT OR IGNORE INTO inbox(id,binding_id,body,status,created_at,error,destination,updated_at,received_at) VALUES(?,?,?,'queued',?,NULL,?,?,?)").run(id,b.id,body,now,destination,now,now);
@@ -208,11 +242,15 @@ export class Store {
   }
   interruptAudio(message:string) {
     for(const row of this.db.prepare("SELECT id,destination FROM audio_inbox WHERE status='processing'").all() as any[]) {
-      if(!this.seen(row.id))this.output(undefined,message,`audio-error:${row.id}`,row.destination);
+      const origin=this.recordedIncomingInput(row.id);
+      if(origin&&origin.destination===row.destination)this.incomingOwnerContext.run(origin,()=>{if(this.incomingOwnerCurrent()&&!this.seen(row.id))this.output(undefined,message,`audio-error:${row.id}`,row.destination);});
       this.remember(row.id);this.db.prepare("UPDATE audio_inbox SET status='interrupted' WHERE id=?").run(row.id);
     }
   }
   output(binding: Binding | undefined, text: string, source: string = randomUUID(), destination:string|null=this.destination(), context:ReplyContext={}) {
+    this.assertIncomingOwner();
+    const capturedOwner=this.incomingOwnerContext.getStore();
+    if(capturedOwner&&destination!==capturedOwner.destination)throw new Error('The owner destination changed.');
     if (!text.trim()) return;
     const request=context.requestId?this.job(context.requestId):undefined;
     if(context.requestId&&(!request||(binding&&request.binding_id!==binding.id)))throw new Error('Reply request does not belong to this session');
@@ -259,6 +297,11 @@ export class Store {
     try {
       const now=Date.now();
       chunks.forEach((chunk,i) => insert.run(randomUUID(), binding?.id ?? null, present(chunk,i), `${source}:${i}`, `3EB0${randomBytes(16).toString('hex').toUpperCase()}`, now,destination,context.requestId??null,context.kind??null,context.turnId??null));
+      const origin=this.incomingOwnerContext.getStore();
+      if(origin&&destination===origin.destination)for(let i=0;i<chunks.length;i++){
+        const part=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:${i}`) as {id:string}|undefined;
+        if(part)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_outbox VALUES(?,?,?,?,?)').run(part.id,origin.owner,origin.destination,origin.channel,origin.generation);
+      }
       if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options);}
       this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId??null,binding?.id??null,context.kind??null,context.origin??null,context.turnId??null,receiptHash,now);
       if(request){

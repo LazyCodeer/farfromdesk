@@ -133,7 +133,9 @@ export class Attachments {
   interrupt(message:string) {
     if(this.allowRecovery)recoverDownloads(this.root);this.cleanupOrphans();
     for(const row of this.store.db.prepare("SELECT * FROM media_inbox WHERE status='processing'").all() as any[]) {
-      this.store.output(undefined,message,`media-error:${row.id}`,row.destination);this.store.remember(row.id);
+      const origin=this.store.recordedIncomingInput(row.id);
+      if(origin&&origin.destination===row.destination)this.store.incomingOwnerContext.run(origin,()=>{if(this.store.incomingOwnerCurrent())this.store.output(undefined,message,`media-error:${row.id}`,row.destination);});
+      this.store.remember(row.id);
       this.store.db.prepare("UPDATE media_inbox SET status='interrupted' WHERE id=?").run(row.id);
     }
   }

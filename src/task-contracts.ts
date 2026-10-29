@@ -20,7 +20,7 @@ function routingHash(r:Router,destination:string){return hash(JSON.stringify([
   r.store.bindings().map(b=>bindingHash(r,b)).sort(),
 ]));}
 function contextValid(r:Router,row:Pick<ContractRow,'owner'|'destination'|'channel'|'policy_hash'|'routing_hash'>){
-  return !r.stopped&&r.store.destination()===row.destination&&r.store.ownerFor(row.destination)===row.owner&&r.store.controlChannel()===row.channel&&
+  return !r.stopped&&r.store.incomingOwnerCurrent()&&r.store.destination()===row.destination&&r.store.ownerFor(row.destination)===row.owner&&r.store.controlChannel()===row.channel&&
     hash(JSON.stringify(brainPolicy(r.store)))===row.policy_hash&&routingHash(r,row.destination)===row.routing_hash;
 }
 function dispatchContextValid(r:Router,row:Pick<ContractRow,'owner'|'destination'|'channel'|'policy_hash'>,inactive=false){
@@ -107,6 +107,7 @@ export class TaskContracts {
   }
   /** Invoke only after permission/option replies have had their own chance to consume the message. */
   async preflight(r:Router,m:Incoming,reviewText?:string,schedule?:ContractSchedule,brief?:BriefIntent,option=false,optionGuarded=false):Promise<ContractResult>{
+    if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
     const context=this.context(r,m,option);if(!context)return {kind:'pass'};
     let pending=this.pending(context.owner,context.destination);
     if(pending&&pending.expires_at<=this.now()){
@@ -151,6 +152,7 @@ export class TaskContracts {
       if(!edit||edit.length>2000){this.answer(m,'Send a short answer or use edit: followed by your correction.');return {kind:'handled'};}
       const edits=JSON.parse(pending.edits) as string[];if(edits.length>=8){this.answer(m,'This contract has too many edits. Cancel it and send a new task.');return {kind:'handled'};}
       const decision=ContractDecision.parse(await this.interpret(this.secret.read()??'',pending.review_text,[...edits,edit]));
+      if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
       if(!contextValid(r,pending)||hash(this.secret.read()??'')!==pending.key_hash){this.answer(m,'The task or connection changed. Send the task again. Nothing was sent.');return {kind:'handled'};}
       // Once offered, editing never silently bypasses approval even if the model returns pass.
       if(decision.kind!=='contract'){this.answer(m,'I could not update the contract. Please send the correction again.');return {kind:'handled'};}
@@ -170,6 +172,7 @@ export class TaskContracts {
     const key=this.secret.read();if(!key)throw new Error('The task contract needs a Meta key. Nothing was sent.');
     const review=(reviewText??text).trim();if(text.length>4000||review.length>4000)throw new Error('Please send a task under 4,000 characters for review. Nothing was sent.');
     const decision=ContractDecision.parse(await this.interpret(key,review,[]));
+    if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
     if(!contextValid(r,context)||hash(this.secret.read()??'')!==hash(key))throw new Error('Your connection or settings changed. Nothing was sent.');
     if(decision.kind==='pass')return {kind:'pass'};
     const id=randomUUID(),draft=this.draft(decision,id,1),now=this.now();

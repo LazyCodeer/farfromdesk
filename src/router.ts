@@ -82,6 +82,11 @@ export class Router {
   }
   private receiving=new Set<string>();
   async receive(m:Incoming):Promise<RouteResult> {
+    if(!this.store.incomingOwnerContext.getStore()&&authenticatedOwner(this,m)){
+      const destination=this.store.destination(),captured=destination&&this.store.captureIncomingOwner(destination,this.store.controlChannel());
+      if(captured)return this.store.incomingOwnerContext.run(captured,()=>this.receive(m));
+    }
+    if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
     try{
@@ -89,12 +94,12 @@ export class Router {
       const failed=(e:unknown)=>{try{this.store.event(m.id,'owner_history_failed',{code:errorCode(e)});}catch{}};
       let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch(e){failed(e);}
       const result=await this.receiveOnce(m);
-      try{if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
+      try{if(this.store.incomingOwnerCurrent()&&label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
       return result;
     }finally{this.receiving.delete(m.id);}
   }
   private async receiveOnce(m:Incoming,contractApproved=false):Promise<RouteResult> {
-    if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+    if(this.stopped||!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
     if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
@@ -106,7 +111,7 @@ export class Router {
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     let ownerReply=false;
     try {
@@ -232,7 +237,7 @@ export class Router {
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
-    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`,undefined,ownerReply?{plain:true}:{});this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
+    } catch(e) {if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};this.store.output(undefined,(e as Error).message,`command-error:${m.id}`,undefined,ownerReply?{plain:true}:{});this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
     this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};
   }
   /** Hands this chat to one session until the owner says back, switches, or goes quiet for two hours. */

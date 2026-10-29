@@ -125,7 +125,7 @@ export class Telegram {
   }
   close() {++this.generation;this.closed=true;this.controller?.abort();clearInterval(this.timer);this.timer=undefined;for(const c of this.media)c.abort();}
   disconnect() {
-    ++this.generation;this.close();this.clearPairing();this.token=undefined;this.bot=undefined;
+    this.store.set('incoming-owner-generation',randomBytes(16).toString('hex'));++this.generation;this.close();this.clearPairing();this.token=undefined;this.bot=undefined;
     try{unlinkSync(this.path);}catch(e:any){if(e.code!=='ENOENT')throw new Error('Could not remove the Telegram token.');}
     for(const key of ['telegram-bot-id','telegram-username','telegram-user-id','telegram-owner-name','telegram-owner','telegram-paired-at'])this.store.db.prepare('DELETE FROM settings WHERE key=?').run(key);
     this.status='disconnected';this.error=undefined;
@@ -153,7 +153,9 @@ export class Telegram {
       const m=cb.message;
       if(this.closed||!this.bot||this.router.stopped||this.store.controlChannel()!=='telegram'||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(cb.from?.id)||cb.from.is_bot||cb.from.id!==m.chat.id||m.from?.id!==this.bot.id||!validId(m.message_id)||telegramDestination(this.bot.id,m.chat.id)!==this.store.get('telegram-owner')||typeof cb.id!=='string'||!/^[A-Za-z0-9_-]{1,200}$/.test(cb.id)||typeof cb.data!=='string')return;
       const destination=telegramDestination(this.bot.id,m.chat.id);
-      const result=await this.store.destinationContext.run(destination,()=>this.router.receive({id:`tg-choice:${this.bot!.id}:${cb.id}`,text:'Selected message option',quotedId:telegramMessageId(this.bot!.id,m.chat.id,m.message_id),optionToken:cb.data}));
+      const owner=this.store.captureIncomingOwner(destination,'telegram');if(!owner)return;
+      const result=await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,()=>this.router.receive({id:`tg-choice:${this.bot!.id}:${cb.id}`,text:'Selected message option',quotedId:telegramMessageId(this.bot!.id,m.chat.id,m.message_id),optionToken:cb.data})));
+      if(!this.store.incomingOwnerContext.run(owner,()=>this.store.incomingOwnerCurrent()))return;
       await this.call('answerCallbackQuery',{callback_query_id:cb.id,text:result.status==='blocked'?'Choice unavailable. Check the reply.':'Answer recorded.'}).catch(()=>{});
       return;
     }
@@ -181,28 +183,33 @@ export class Telegram {
     }
     const destination=telegramDestination(this.bot.id,m.chat.id);
     if(this.router.stopped||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner')||!Number.isFinite(m.date)||m.date<Number(this.store.get('telegram-paired-at')??0))return;
+    const owner=this.store.captureIncomingOwner(destination,'telegram');if(!owner)return;
     const quotedId=m.reply_to_message?.from?.id===this.bot.id&&validId(m.reply_to_message?.message_id)?telegramMessageId(this.bot.id,m.chat.id,m.reply_to_message.message_id):undefined;
     if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
     const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice&&!m.document&&!m.photo};
-    await this.store.destinationContext.run(destination,async()=>{
+    await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,async()=>{
       const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
         const table=m.voice?'audio_inbox':'media_inbox';
         if(this.store.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(id))return;
         if(this.media.size>=2){this.store.output(undefined,'Two files are processing. Please wait, then resend this one.',`telegram-busy:${id}`,destination);this.store.remember(id);return;}
         this.store.db.prepare(`INSERT INTO ${table} VALUES(?,?,'processing',?)`).run(id,destination,Date.now());
+        this.store.recordIncomingInput(id);
         const controller=new AbortController();this.media.add(controller);
         void this.processMedia(m,incoming,file,destination,controller.signal).catch(()=>{}).finally(()=>this.media.delete(controller));return;
       }
       if(!text){this.store.output(undefined,'Send text, a voice note, an image or a document to control your sessions.',`telegram-unsupported:${id}`,destination);this.store.remember(id);return;}
       await this.router.receive(incoming);
-    });
+    }));
   }
   private async download(file:any,filename:string,signal:AbortSignal):Promise<DownloadedMedia> {
+    this.store.assertIncomingOwner();
     if(!Number.isSafeInteger(file.file_size)||file.file_size<1||file.file_size>TELEGRAM_DOWNLOAD_BYTES)throw new Error('Telegram bot downloads must be at most 20 MB.');
     const meta=await this.call('getFile',{file_id:file.file_id},signal);
+    this.store.assertIncomingOwner();
     if(typeof meta?.file_path!=='string'||!/^[A-Za-z0-9_./-]+$/.test(meta.file_path)||meta.file_path.startsWith('/')||meta.file_path.split('/').includes('..'))throw new Error('Telegram returned an invalid file path.');
     const abort=AbortSignal.any([signal,AbortSignal.timeout(120000)]);
+    this.store.assertIncomingOwner();
     let response:Response;try{response=await this.fetcher(`https://api.telegram.org/file/bot${this.token}/${meta.file_path}`,{redirect:'error',signal:abort});}catch{throw new TelegramError(0);}
     if(!response.ok||!response.body)throw new TelegramError(response.status);
     return stageMediaStream(response.body,filename,file.file_size,TELEGRAM_DOWNLOAD_BYTES,abort,this.root);
@@ -223,19 +230,20 @@ export class Telegram {
       const target=voice?undefined:this.router.attachmentTarget(incoming);
       if(!voice)downloaded=await this.download(file,m.document?.file_name??'image.jpg',signal);
       signal.throwIfAborted();
-      if(this.closed||this.router.stopped||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner'))throw new Error('Connection changed. Resend from the intended chat.');
+      if(this.closed||this.router.stopped||!this.store.incomingOwnerCurrent()||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner'))throw new Error('Connection changed. Resend from the intended chat.');
       if(voice)await this.router.receive(incoming);
       else this.router.receiveAttachment(incoming,{kind:m.document?'document':'image',filename:downloaded!.filename,sha256:downloaded!.sha256,download:downloaded!},target!);
       this.store.db.prepare(`UPDATE ${table} SET status='processed' WHERE id=?`).run(incoming.id);
     }catch(e){
-      if(!this.closed){this.store.output(undefined,'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.',`telegram-media-error:${incoming.id}`,destination);this.store.remember(incoming.id);this.store.db.prepare(`UPDATE ${table} SET status='failed' WHERE id=?`).run(incoming.id);}
-    }finally{downloaded?.dispose();}
+      if(!this.closed&&this.store.incomingOwnerCurrent()){this.store.output(undefined,'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.',`telegram-media-error:${incoming.id}`,destination);this.store.remember(incoming.id);this.store.db.prepare(`UPDATE ${table} SET status='failed' WHERE id=?`).run(incoming.id);}
+    }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare(`UPDATE ${table} SET status='interrupted' WHERE id=? AND status='processing'`).run(incoming.id);downloaded?.dispose();}
   }
   async flush() {
     if(this.closed||this.router.stopped||this.flushing||!this.bot||!this.store.get('telegram-owner'))return;
     this.flushing=true;
     try {
       const row=this.store.routableOutbound('telegram');if(!row)return;
+      if(!this.store.incomingOwnerDelivery(row.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(row.id);return;}
       const scheduleState=scheduleDeliveryState(this.store,row.id);if(scheduleState==='hold')return;
       if(scheduleState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='failed',error='Paired owner changed; scheduled reminder was not sent' WHERE id=?").run(row.id);return;}
       const contractState=contractDeliveryState(this.router,row.id);if(contractState==='hold')return;
@@ -256,7 +264,7 @@ export class Telegram {
           const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set('document',new Blob([new Uint8Array(bytes)],{type:a.mime}),a.filename);form.set('caption',row.body);body=form;method='sendDocument';
         }catch{this.store.db.prepare("UPDATE outbox SET status='failed',error='Document failed ownership, integrity or Telegram size checks (50 MB file, 1024 character caption)' WHERE id=?").run(row.id);return;}
       }
-      if(this.closed||this.router.stopped||destination!==this.store.get('telegram-owner')||scheduleDeliveryState(this.store,row.id)!=='ready'||contractDeliveryState(this.router,row.id)!=='ready'||row.binding_id&&!this.store.binding(row.binding_id)?.enabled)return;
+      if(this.closed||this.router.stopped||!this.store.incomingOwnerDelivery(row.id)||destination!==this.store.get('telegram-owner')||scheduleDeliveryState(this.store,row.id)!=='ready'||contractDeliveryState(this.router,row.id)!=='ready'||row.binding_id&&!this.store.binding(row.binding_id)?.enabled)return;
       this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(row.id);
       try {
         const sent=await this.call(method,body,this.controller?.signal);
