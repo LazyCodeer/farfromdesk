@@ -6,6 +6,8 @@ import 'package:farfromdesk/preview.dart';
 class MetaGateway extends PreviewGateway {
   Map<String, dynamic>? submitted;
   bool fail = false;
+  bool activityFail = false;
+  List<Map<String, dynamic>> activity = [];
   final posts = <String>[];
   Map<String, dynamic> saved = {};
   Map<String, dynamic> files = {
@@ -39,6 +41,10 @@ class MetaGateway extends PreviewGateway {
   @override
   Future<Map<String, dynamic>> get(String path) async {
     lastGet = path;
+    if (path == '/api/meta-timeline') {
+      if (activityFail) throw Exception('raw provider error');
+      return {'events': activity};
+    }
     if (path == '/api/memory') return files;
     return {
       'tasks': [],
@@ -98,6 +104,59 @@ void main() {
     expect(tester.widget<SwitchListTile>(setting).value, isFalse);
   });
 
+  testWidgets('Meta activity shows only recorded calls and can refresh', (
+    tester,
+  ) async {
+    final api = MetaGateway();
+    api.activity = [
+      {
+        'stage': 'sorted',
+        'status': 'completed',
+        'durationMs': 2400,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+      {
+        'stage': 'heard',
+        'status': 'failed',
+        'durationMs': 325,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MetaBrainPanel(
+              gateway: api,
+              saved: const {'enabled': false},
+              onSaved: () async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Meta activity'), findsOneWidget);
+    expect(find.text('Message interpretation'), findsOneWidget);
+    expect(find.text('2.4 s'), findsOneWidget);
+    expect(find.text('Voice transcription'), findsOneWidget);
+    expect(find.text('Request failed'), findsOneWidget);
+    api.activity = [];
+    await tester.tap(find.text('Refresh'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No Meta calls recorded in this chat yet.'),
+      findsOneWidget,
+    );
+    api.activityFail = true;
+    await tester.tap(find.text('Refresh'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Could not load Meta activity. Try refresh.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('raw provider error'), findsNothing);
+  });
   for (final savedModel in [null, 'muse-spark-1.2']) {
     testWidgets(
       'model selection ${savedModel ?? 'defaults to Wonder'} is retained',

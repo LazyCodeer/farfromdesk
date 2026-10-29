@@ -34,6 +34,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS voice_attention_reviews(audio_id TEXT NOT NULL REFERENCES audio_inbox(id) ON DELETE CASCADE,destination TEXT NOT NULL,reviewed_at INTEGER NOT NULL,PRIMARY KEY(audio_id,destination));
       CREATE TABLE IF NOT EXISTS request_events(id INTEGER PRIMARY KEY,request_id TEXT NOT NULL,binding_id TEXT,event TEXT NOT NULL,at INTEGER NOT NULL,attempt_id TEXT,turn_id TEXT,source_commit TEXT,details TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS request_events_request ON request_events(request_id,id);
+      CREATE TABLE IF NOT EXISTS meta_timeline(id INTEGER PRIMARY KEY,scope TEXT NOT NULL,stage TEXT NOT NULL,status TEXT NOT NULL,duration_ms INTEGER NOT NULL,at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS meta_timeline_scope ON meta_timeline(scope,id DESC);
       CREATE TABLE IF NOT EXISTS reply_receipts(source TEXT PRIMARY KEY,request_id TEXT,binding_id TEXT,kind TEXT,origin TEXT,turn_id TEXT,text_hash TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS reply_receipts_turn ON reply_receipts(binding_id,request_id,turn_id);
       CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,status TEXT NOT NULL,binding_id TEXT,event_id TEXT UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);

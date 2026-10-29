@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FarFromDesk - Meta activity mock</title>
+  <style>
+    :root{color-scheme:dark;font-family:Onest,system-ui,sans-serif;background:#080808;color:#f5f5f5}
+    *{box-sizing:border-box}body{margin:0;padding:40px 24px}.page{max-width:860px;margin:auto}
+    h1{font-size:26px;margin:4px 0 6px}.eyebrow{color:#ff8a57;text-transform:uppercase;font-size:11px;letter-spacing:.13em;font-weight:700}
+    .intro{color:#a3a3a3;font-size:13px;margin:0 0 30px}.panel{background:#0f0f0f;border:1px solid #292929;border-radius:18px;padding:22px}
+    .heading{display:flex;align-items:start;gap:12px}.heading div{flex:1}h2{font-size:15px;margin:0 0 5px}.hint{font-size:12px;color:#aaa;margin:0;line-height:1.5}
+    button{border:1px solid #343434;border-radius:8px;background:#171717;color:#ddd;font:600 12px inherit;padding:8px 12px;cursor:pointer}
+    button:focus-visible{outline:2px solid #ff8a57;outline-offset:3px}.entries{list-style:none;padding:6px 0 0;margin:15px 0 0;border-top:1px solid #262626}
+    .entry{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #1f1f1f}
+    .entry:last-child{border:0;padding-bottom:0}.mark{height:34px;width:34px;border-radius:11px;display:grid;place-items:center;color:#ff8a57;background:#2b190f;font-size:15px}
+    .name{font-size:13px;font-weight:650;margin-bottom:4px}.detail{font-size:12px;color:#aaa}.duration{text-align:right;font-size:12px;color:#ddd;font-variant-numeric:tabular-nums}
+    .result{color:#64d898;font-size:11px;margin-top:4px}.warning{color:#facb61}.sample{margin-top:18px;font-size:11px;color:#888}
+    @media(max-width:480px){body{padding:24px 14px}.panel{padding:17px}.entry{grid-template-columns:30px minmax(0,1fr) auto;gap:9px}.mark{width:30px;height:30px}.detail{font-size:11px}}
+  </style>
+</head>
+<body><main class="page"><div class="eyebrow">Your assistant</div><h1>Brain</h1><p class="intro">Help your messages reach the right session and keep useful context close.</p>
+  <section class="panel" aria-labelledby="title"><div class="heading"><div><h2 id="title">Meta activity</h2><p class="hint">Meta API calls in this chat, not task outcomes. No message text is shown.</p></div><button type="button">Refresh</button></div>
+    <ol class="entries"><li class="entry"><span class="mark" aria-hidden="true">✳</span><div><div class="name">Message interpretation</div><div class="detail">Today, 8:02 AM</div></div><div class="duration">2.4 s<div class="result">API responded</div></div></li>
+    <li class="entry"><span class="mark" aria-hidden="true">◉</span><div><div class="name">Voice transcription</div><div class="detail">Today, 7:58 AM</div></div><div class="duration">4.1 s<div class="result">API responded</div></div></li>
+    <li class="entry"><span class="mark" aria-hidden="true">✳</span><div><div class="name">Morning brief</div><div class="detail">Today, 7:55 AM</div></div><div class="duration">3.2 s<div class="result warning">Request failed</div></div></li></ol>
+  </section><p class="sample">Design preview with example entries. The app will show recorded calls only.</p></main>
+</body></html>

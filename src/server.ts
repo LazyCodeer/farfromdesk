@@ -1,6 +1,7 @@
 import { reviewOrphanVoice } from './voice-attention.js';
 import { inboxSessions, inboxThread } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
+import { metaTimeline } from './meta-timeline.js';
 import { BrowserTabs } from './browser-tabs.js';
 import {PhoneRemoteService} from './remote-desktop/phone-service.js';
 import {RemoteDesktopService} from './remote-desktop/service.js';
@@ -240,6 +241,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,m.view());return;
       }
       if(path==='/api/meta-brain/tasks'&&req.method==='GET'){if(url.searchParams.get('fresh')==='1')await router.brain.refresh(router);json(res,200,{tasks:router.brain.tasks(),workItems:router.brain.memory.board()});return;}
+      if(path==='/api/meta-timeline'&&req.method==='GET'){json(res,200,{events:metaTimeline(store)});return;}
       if(path==='/api/meta-brain/verify'&&req.method==='POST'){const d=await body(req);if(d.confirmed!==true||typeof d.requestId!=='string')throw new Error('Owner verification requires an exact request and confirmation.');router.brain.verify(d.requestId);json(res,200,{ok:true});return;}
 
       if(path==='/api/control-channel/disconnect'&&req.method==='POST') {

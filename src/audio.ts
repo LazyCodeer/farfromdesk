@@ -9,6 +9,7 @@ import { stateDir } from './config.js';
 import type { Store } from './store.js';
 import { readVoiceKey, transcribeCloud, voiceEngine, needsWav } from './voice-cloud.js';
 import { errorCode, type VoiceStage, type VoiceStageEvent } from './request-events.js';
+import { metaObserver } from './meta-timeline.js';
 
 export type AudioObserver=(event:VoiceStageEvent)=>void;
 export async function measureVoiceStage<T>(stage:VoiceStage,operation:()=>Promise<T>,observe?:AudioObserver):Promise<T> {
@@ -104,6 +105,7 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
 export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver,download:typeof downloadAudio=downloadAudio) {
   store.assertIncomingOwner();
   const format=audioFormat(audio),engine=voiceEngine(store);
+  const observeMeta=engine==='meta'?metaObserver(store,'heard'):undefined;
   if(engine!=='local') {
     const k=readVoiceKey()!,mime=String(audio.mimetype).split(';')[0].trim().toLowerCase();
     const data=await measureVoiceStage('download',()=>download(audio,signal),observe);
@@ -112,7 +114,7 @@ export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,
         store.assertIncomingOwner();
         if(!needsWav(k.provider))return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,data.path,mime,signal,{authorize:()=>store.assertIncomingOwner()}),observe);
         const wav=await cloudAudio(store,data,format,signal,observe);
-        try{store.assertIncomingOwner();return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,wav.path,'audio/wav',signal,{authorize:()=>store.assertIncomingOwner()}),observe);}finally{await wav.dispose();}
+        try{store.assertIncomingOwner();return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,wav.path,'audio/wav',signal,{authorize:()=>store.assertIncomingOwner(),onMetaCall:k.provider==='meta'?observeMeta:undefined}),observe);}finally{await wav.dispose();}
       }
       catch(e) {
         store.assertIncomingOwner();
