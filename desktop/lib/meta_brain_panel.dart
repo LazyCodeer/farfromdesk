@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'bridge_theme.dart';
@@ -42,12 +44,14 @@ class MetaBrainPanel extends StatefulWidget {
   final Map<String, dynamic> saved;
   final Future<void> Function() onSaved;
   final VoidCallback? openItems;
+  final String? activityScope;
   const MetaBrainPanel({
     super.key,
     required this.gateway,
     required this.saved,
     required this.onSaved,
     this.openItems,
+    this.activityScope,
   });
   @override
   State<MetaBrainPanel> createState() => _MetaBrainPanelState();
@@ -62,6 +66,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   String? message, taskMessage;
   List<Map<String, dynamic>>? tasks;
   List<Map<String, dynamic>> workItems = [];
+  List<Map<String, dynamic>> metaActivity = [];
+  bool activityLoading = false, activityBusy = false, activityError = false;
+  int activityGeneration = 0;
+  Timer? activityTimer;
   @override
   void initState() {
     super.initState();
@@ -75,13 +83,255 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
     taskContracts = s['taskContracts'] != false;
+    activityLoading = widget.activityScope != null;
+    if (activityLoading) unawaited(loadActivity());
+    activityTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => loadActivity(),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant MetaBrainPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activityScope != widget.activityScope || oldWidget.gateway != widget.gateway) {
+      activityGeneration++;
+      metaActivity = [];
+      activityBusy = false;
+      activityError = false;
+      activityLoading = widget.activityScope != null;
+      if (activityLoading) unawaited(loadActivity());
+    }
   }
 
   @override
   void dispose() {
+    activityTimer?.cancel();
     keyInput.clear();
     keyInput.dispose();
     super.dispose();
+  }
+
+  Future<void> loadActivity() async {
+    final requestScope = widget.activityScope;
+    if (activityBusy || requestScope == null) return;
+    final generation = activityGeneration;
+    activityBusy = true;
+    try {
+      final data = await widget.gateway.get('/api/meta-timeline');
+      if (!mounted || generation != activityGeneration) return;
+      if (data['scope'] != requestScope) throw const FormatException('Activity scope changed');
+      final rows = data['events'];
+      if (rows is! List) throw const FormatException('Invalid activity');
+      final parsed = rows
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .where((row) {
+            final duration = row['durationMs'];
+            final at = row['at'];
+            return {
+                  'sorted',
+                  'briefed',
+                  'scheduled',
+                  'heard',
+                  'contracted',
+                }.contains(row['stage']) &&
+                {'completed', 'failed'}.contains(row['status']) &&
+                duration is num &&
+                duration.isFinite &&
+                duration >= 0 &&
+                duration <= 3600000 &&
+                at is num &&
+                at.isFinite &&
+                at >= 0 &&
+                at <= 8640000000000000;
+          })
+          .take(30)
+          .toList();
+      if (mounted && generation == activityGeneration) {
+        setState(() {
+          metaActivity = parsed;
+          activityLoading = false;
+          activityError = false;
+        });
+      }
+    } catch (_) {
+      // Never show stale activity as belonging to the currently selected chat.
+      if (mounted && generation == activityGeneration) {
+        setState(() {
+          metaActivity = [];
+          activityLoading = false;
+          activityError = true;
+        });
+      }
+    } finally {
+      if (generation == activityGeneration) activityBusy = false;
+    }
+  }
+
+  Widget activityTab() {
+    final localizations = MaterialLocalizations.of(context);
+    const labels = {
+      'sorted': 'Message interpretation',
+      'briefed': 'Morning brief',
+      'scheduled': 'Reminder interpretation',
+      'heard': 'Voice transcription',
+      'contracted': 'Task contract',
+    };
+    return box(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Meta activity',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      'Meta API calls in this chat, not task outcomes. No message text is shown.',
+                      style: TextStyle(fontSize: 12, color: muted),
+                    ),
+                  ],
+                ),
+              ),
+              TextButton(
+                onPressed: activityBusy || widget.activityScope == null ? null : loadActivity,
+                child: const Text('Refresh'),
+              ),
+            ],
+          ),
+          const Divider(color: line2),
+          if (activityLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'Loading activity...',
+                style: TextStyle(color: muted),
+              ),
+            )
+          else if (activityError)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'Could not load Meta activity. Try refresh.',
+                style: TextStyle(color: muted),
+              ),
+            )
+          else if (widget.activityScope == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('Connect a chat to view Meta activity.', style: TextStyle(color: muted)),
+            )
+          else if (metaActivity.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No Meta calls recorded in this chat yet.',
+                style: TextStyle(color: muted),
+              ),
+            )
+          else
+            for (final event in metaActivity)
+              Builder(
+                builder: (context) {
+                  final name = labels[event['stage']]!;
+                  final at = DateTime.fromMillisecondsSinceEpoch(
+                    (event['at'] as num).toInt(),
+                  ).toLocal();
+                  final time = localizations.formatTimeOfDay(
+                    TimeOfDay.fromDateTime(at),
+                  );
+                  final day = DateUtils.isSameDay(at, DateTime.now())
+                      ? 'Today'
+                      : localizations.formatShortDate(at);
+                  final ms = (event['durationMs'] as num).clamp(0, 3600000);
+                  final duration = ms < 1000
+                      ? '${ms.toInt()} ms'
+                      : '${(ms / 1000).toStringAsFixed(1)} s';
+                  final succeeded = event['status'] == 'completed';
+                  final status = succeeded ? 'API responded' : 'Request failed';
+                  return Semantics(
+                    label: '$name, $day, $time, $duration, $status',
+                    excludeSemantics: true,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 34,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              color: accentWash,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Icon(
+                              event['stage'] == 'heard'
+                                  ? Icons.mic_none_rounded
+                                  : Icons.auto_awesome_outlined,
+                              color: accentSoft,
+                              size: 17,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '$day, $time',
+                                  style: const TextStyle(
+                                    color: muted,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                duration,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                status,
+                                style: TextStyle(
+                                  color: succeeded ? success : warning,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+        ],
+      ),
+    );
   }
 
   Future<void> save({bool remove = false}) async {
@@ -848,6 +1098,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           ),
           saveRow('Save changes'),
         ],
+        KeyedSubtree(key: ValueKey('meta-activity-${widget.activityScope}'), child: activityTab()),
         const SizedBox(height: 24),
         pageHeading(
           'Memory',

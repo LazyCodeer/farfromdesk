@@ -6,6 +6,7 @@ import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta
 import { mentionedItems } from './owner-routing.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
+import { metaObserver } from './meta-timeline.js';
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
@@ -281,6 +282,8 @@ export class MetaBrain {
     if(!policy.enabled)return false;
     // IDs from internal delegation/reports cannot masquerade as owner input.
     if(!/^(wa|tg|local):/.test(m.id)||this.store.get(`parent:${m.id}`)||this.store.get(`report-parent:${m.id}`))return false;
+    const origin=m.activityScope;
+    const observeMeta=origin?metaObserver(this.store,'sorted',origin.destination,origin.owner):undefined;
     const prior=this.get(m.id);
     if(prior){if(prior.original!==m.text||prior.destination!==this.store.destination())throw new Error('Owner event identity was reused.');if(prior.state==='interpreting')this.stop(m.id,'Interpretation was interrupted. No automatic retry was made; send a new message when ready.');return true;}
     this.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run(m.id,m.text,m.source??'text',this.store.destination(),Date.now());
@@ -297,7 +300,7 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize));
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked())return true;

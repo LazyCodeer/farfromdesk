@@ -14,6 +14,7 @@ import {MorningBrief} from '../src/morning-brief.js';
 import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,brainPolicy,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts,contractDeliveryState} from '../src/task-contracts.js';
+import {metaTimeline} from '../src/meta-timeline.js';
 import {optionsMarkup} from '../src/message-options.js';
 import type {ContractDecision} from '../src/task-contract-model.js';
 
@@ -486,4 +487,15 @@ test('native handoff re-reads the bound session after readiness for roots, choic
   await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
   assert.equal(sent,0,path);assert.equal(f.store.job(id)?.status,'failed',path);
  }finally{f.r.stopped=true;f.close();}}
+});
+
+
+test('contract proposal and edit record only real scoped Meta calls',async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;try{
+    f.r.contracts=new TaskContracts(f.store,f.secret);
+    globalThis.fetch=async()=>new Response(JSON.stringify({id:'r',created:0,model:'muse-wonder-1.0',choices:[{index:0,finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id:'call_1',type:'function',function:{name:'decide',arguments:JSON.stringify(proposal())}}]}}]}),{headers:{'content-type':'application/json'}});
+    await f.send('timeline-task','PRIVATE TASK');f.markSent();await f.send('timeline-edit','edit: PRIVATE EDIT');
+    const rows=metaTimeline(f.store) as any[];assert.deepEqual(rows.map(r=>r.stage),['contracted','contracted']);
+    assert.doesNotMatch(JSON.stringify(f.store.db.prepare('SELECT * FROM meta_timeline').all()),/PRIVATE TASK|PRIVATE EDIT|synthetic-key/);
+  }finally{globalThis.fetch=originalFetch;f.close();}
 });

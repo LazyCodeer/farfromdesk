@@ -2,6 +2,7 @@ import {generateText,hasToolCall,stepCountIs,tool} from 'ai';
 import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
 import {z} from 'zod';
 import {META_ENDPOINT} from './meta-brain-config.js';
+import type {MetaObserver} from './meta-timeline.js';
 
 const Decision=z.object({
   kind:z.enum(['create','not_schedule','clarify']),
@@ -11,12 +12,12 @@ const Decision=z.object({
   text:z.string().max(2000),target:z.string().max(80),question:z.string().max(240),
 }).strict();
 export type ScheduleDecision=z.infer<typeof Decision>;
-export type ScheduleInterpreter=(text:string,now:number,zone:string,key:string)=>Promise<ScheduleDecision>;
+export type ScheduleInterpreter=(text:string,now:number,zone:string,key:string,observe?:MetaObserver)=>Promise<ScheduleDecision>;
 
 /** Model output is untrusted: the caller validates every action, time and target. */
-export const interpretSchedule:ScheduleInterpreter=async(text,now,zone,key)=>{
+export const interpretSchedule:ScheduleInterpreter=async(text,now,zone,key,observe)=>{
   let status=0;
-  const guarded:typeof fetch=async(url,init)=>{
+  const request:typeof fetch=async(url,init)=>{
     const response=await fetch(url,{...init,redirect:'error'});status=response.status;
     if(!response.ok)throw new Error('Schedule interpretation unavailable.');
     const reader=response.body?.getReader();if(!reader)throw new Error('Schedule interpretation unavailable.');
@@ -24,6 +25,7 @@ export const interpretSchedule:ScheduleInterpreter=async(text,now,zone,key)=>{
     for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>131072){await reader.cancel();throw new Error('Schedule interpretation unavailable.');}chunks.push(value);}
     return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
   };
+  const guarded:typeof fetch=(url,init)=>observe?observe(()=>request(url,init)):request(url,init);
   try {
     const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
     const result=await generateText({model:meta('muse-wonder-1.0'),maxRetries:0,abortSignal:AbortSignal.timeout(30000),toolChoice:'auto',providerOptions:{meta:{reasoningEffort:'low'}},

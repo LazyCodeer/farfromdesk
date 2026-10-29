@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:farfromdesk/meta_brain_panel.dart';
@@ -6,6 +7,9 @@ import 'package:farfromdesk/preview.dart';
 class MetaGateway extends PreviewGateway {
   Map<String, dynamic>? submitted;
   bool fail = false;
+  bool activityFail = false;
+  Future<Map<String, dynamic>> Function()? activityRequest;
+  List<Map<String, dynamic>> activity = [];
   final posts = <String>[];
   Map<String, dynamic> saved = {};
   Map<String, dynamic> files = {
@@ -39,6 +43,11 @@ class MetaGateway extends PreviewGateway {
   @override
   Future<Map<String, dynamic>> get(String path) async {
     lastGet = path;
+    if (path == '/api/meta-timeline') {
+      if (activityFail) throw Exception('raw provider error');
+      if (activityRequest != null) return activityRequest!();
+      return {'scope': 'test-scope', 'events': activity};
+    }
     if (path == '/api/memory') return files;
     return {
       'tasks': [],
@@ -98,6 +107,86 @@ void main() {
     expect(tester.widget<SwitchListTile>(setting).value, isFalse);
   });
 
+  testWidgets('Meta activity shows only recorded calls and can refresh', (
+    tester,
+  ) async {
+    final api = MetaGateway();
+    api.activity = [
+      {
+        'stage': 'contracted',
+        'status': 'completed',
+        'durationMs': 125,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+      {
+        'stage': 'sorted',
+        'status': 'completed',
+        'durationMs': 2400,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+      {
+        'stage': 'heard',
+        'status': 'failed',
+        'durationMs': 325,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      },
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MetaBrainPanel(
+              gateway: api,
+              activityScope: 'test-scope',
+              saved: const {'enabled': false},
+              onSaved: () async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Meta activity'), findsOneWidget);
+    expect(find.text('Message interpretation'), findsOneWidget);
+    expect(find.text('Task contract'), findsOneWidget);
+    expect(find.text('2.4 s'), findsOneWidget);
+    expect(find.text('Voice transcription'), findsOneWidget);
+    expect(find.text('Request failed'), findsOneWidget);
+    api.activity = [];
+    await tester.tap(find.text('Refresh'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No Meta calls recorded in this chat yet.'),
+      findsOneWidget,
+    );
+    api.activityFail = true;
+    await tester.tap(find.text('Refresh'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Could not load Meta activity. Try refresh.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('raw provider error'), findsNothing);
+  });
+  testWidgets('activity from an earlier chat or mismatched response is discarded', (tester) async {
+    final oldResponse = Completer<Map<String, dynamic>>();
+    final newResponse = Completer<Map<String, dynamic>>();
+    var calls = 0;
+    final api = MetaGateway()..activityRequest = () => (++calls == 1 ? oldResponse : newResponse).future;
+    Widget panel(String scope) => MaterialApp(home: Scaffold(body: SingleChildScrollView(
+      child: MetaBrainPanel(gateway: api, activityScope: scope, saved: const {'enabled': false}, onSaved: () async {}),
+    )));
+    final oldEvent = {'stage': 'sorted', 'status': 'completed', 'durationMs': 10, 'at': DateTime.now().millisecondsSinceEpoch};
+    await tester.pumpWidget(panel('old'));
+    await tester.pumpWidget(panel('new'));
+    newResponse.complete({'scope': 'wrong', 'events': [oldEvent]});
+    await tester.pump();
+    expect(find.text('Could not load Meta activity. Try refresh.'), findsOneWidget);
+    oldResponse.complete({'scope': 'old', 'events': [oldEvent]});
+    await tester.pump();
+    expect(find.text('Message interpretation'), findsNothing);
+    expect(find.text('Could not load Meta activity. Try refresh.'), findsOneWidget);
+  });
   for (final savedModel in [null, 'muse-spark-1.2']) {
     testWidgets(
       'model selection ${savedModel ?? 'defaults to Wonder'} is retained',

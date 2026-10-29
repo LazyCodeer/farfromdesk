@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
+import type { MetaObserver } from './meta-timeline.js';
 
 export type CloudProvider='deepgram'|'assemblyai'|'meta';
 export const CLOUD_NAMES:Record<CloudProvider,string>={deepgram:'Deepgram',assemblyai:'AssemblyAI',meta:'Meta'};
@@ -62,7 +63,7 @@ const noSpeech=(text:unknown)=>{
   return t;
 };
 
-export async function transcribeCloud(provider:CloudProvider,key:string,path:string,mime:string,signal?:AbortSignal,options:{fetcher?:Fetch;pollMs?:number;authorize?:()=>void}={}) {
+export async function transcribeCloud(provider:CloudProvider,key:string,path:string,mime:string,signal?:AbortSignal,options:{fetcher?:Fetch;pollMs?:number;authorize?:()=>void;onMetaCall?:MetaObserver}={}) {
   const rawFetch=options.fetcher??fetch,fetcher:Fetch=(...args)=>{options.authorize?.();return rawFetch(...args);};
   options.authorize?.();const audio=await readFile(path);options.authorize?.();
   if(provider==='deepgram') {
@@ -76,7 +77,8 @@ export async function transcribeCloud(provider:CloudProvider,key:string,path:str
     const form=new FormData();
     form.append('request',new Blob([JSON.stringify({model:META_VOICE_MODEL,audioEncoding:'WAV',mode:'PUSH_TO_TALK'})],{type:'application/json'}));
     form.append('audio',new Blob([audio],{type:'audio/wav'}),'voice.wav');
-    const d=await call(fetcher,provider,'https://api.meta.ai/v1/asr/transcribe',{method:'POST',redirect:'error',headers:{authorization:`Bearer ${key}`,accept:'application/json'},body:form},120000,signal);
+    const request=()=>call(fetcher,provider,'https://api.meta.ai/v1/asr/transcribe',{method:'POST',redirect:'error',headers:{authorization:`Bearer ${key}`,accept:'application/json'},body:form},120000,signal);
+    const d=await (options.onMetaCall?options.onMetaCall(request):request());
     return noSpeech(collapseRepeats(String(d?.transcript??'')));
   }
   const auth={authorization:key};

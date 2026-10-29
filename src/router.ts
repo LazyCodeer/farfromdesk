@@ -23,7 +23,7 @@ import {CollaborationHold,type ManagedCollaboration} from './managed-collaborati
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
 
 export type RouteResult={status:'queued'|'handled'|'ignored'|'blocked';requestId:string;code?:string};
-export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean};
+export type Incoming = {id:string;text:string;quotedId?:string;optionToken?:string;source?:'text'|'voice';ownerCommand?:boolean;ownerIntent?:boolean;ownerChoice?:boolean;activityScope?:{destination:string;owner:string}};
 export const help = `Just tell me what you need.
 
 • Show my recent sessions.

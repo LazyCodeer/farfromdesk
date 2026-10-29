@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { generateText, tool, hasToolCall, stepCountIs } from 'ai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { META_ENDPOINT, type BrainPolicy } from './meta-brain-config.js';
+import type { MetaObserver } from './meta-timeline.js';
 export const Interpretation=z.object({intent:z.enum(['task','status','update','clarify','manage','chat']),normalized:z.string().min(1).max(32000),provider:z.enum(['codex','claude','unspecified']),taskIds:z.array(z.string().max(1000)).max(20),operation:z.enum(['none','add_todo','set_todo','pause_session','resume_session']).optional(),sessionId:z.string().max(100).optional(),title:z.string().max(200).optional(),itemStatus:z.enum(['unchanged','not started','in progress','waiting on owner','blocked','done']).optional(),reply:z.string().max(2000).optional()}).strict();
 export type Interpretation=z.infer<typeof Interpretation>;
 // Tuned against 24 owner-message cases (scratch eval, 2026-10-28): 24/24 intents at low effort, median 2.6s.
@@ -59,10 +60,10 @@ const MemoryInput=z.object({command:z.enum(['view','create','str_replace','inser
  * The memory commands follow Anthropic's memory tool (view, create, str_replace, insert). */
 export class MetaModel {
   constructor(private fetcher:typeof fetch=fetch,private timeoutMs=30000) {}
-  async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void):Promise<Interpretation> {
+  async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void,observe?:MetaObserver):Promise<Interpretation> {
     const signal=AbortSignal.timeout(this.timeoutMs);let status=0;
     // Bound streamed bytes and never follow redirects with the key attached.
-    const guarded:typeof fetch=async(url,init)=>{
+    const request:typeof fetch=async(url,init)=>{
       authorize?.();const response=await this.fetcher(url,{...init,redirect:'error'});authorize?.();status=response.status;
       if(!response.ok)throw new Error(response.status===401||response.status===403?'Meta authentication failed.':`Meta API unavailable (HTTP ${response.status}).`);
       const reader=response.body?.getReader();if(!reader)throw new Error('Meta returned no response.');
@@ -70,6 +71,7 @@ export class MetaModel {
       for(;;){const {done,value}=await reader.read();authorize?.();if(done)break;size+=value.length;if(size>262144){await reader.cancel();throw new Error('Meta response exceeded the limit.');}chunks.push(value);}
       return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
     };
+    const guarded:typeof fetch=(url,init)=>observe?observe(()=>request(url,init)):request(url,init);
     try {
       const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
       const ask=()=>generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400

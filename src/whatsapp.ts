@@ -9,7 +9,7 @@ import { rm, readFile } from 'node:fs/promises';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
 import type { Router } from './router.js';
-import { transcribeAudio, audioFormat, type AudioObserver } from './audio.js';
+import { transcribeAudio, audioFormat, type AudioObserver, type VoiceOrigin } from './audio.js';
 import { voiceEngine } from './voice-cloud.js';
 import { createHash,randomUUID } from 'node:crypto';
 import { BufferJSON } from '@whiskeysockets/baileys';
@@ -38,7 +38,7 @@ export class WhatsApp {
   artifacts:Artifacts;
   readonly polls:WhatsAppPolls;
   sendDocument=sendDiskDocument;
-  transcribe=(audio:any,signal?:AbortSignal,observe?:AudioObserver)=>transcribeAudio(this.store,audio,signal,observe);
+  transcribe=(audio:any,signal?:AbortSignal,observe?:AudioObserver,origin?:VoiceOrigin)=>transcribeAudio(this.store,audio,signal,observe,undefined,origin);
   constructor(private store:Store,private router:Router,private authDirectory=join(stateDir,'whatsapp-auth')) {
     this.artifacts=new Artifacts(store);this.polls=new WhatsAppPolls(store);
     router.attachments.interrupt('The bridge restarted while downloading your attachment. Please resend it.');
@@ -217,8 +217,9 @@ export class WhatsApp {
       await this.store.incomingOwnerContext.run(owner,async()=>{
       if(group)await this.verifyGroup(destination!);
       if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
+      const activityScope={destination:origin,owner:owner.owner};
       await this.store.destinationContext.run(origin,async()=>{
-        if(msg?.pollUpdateMessage){const vote=this.polls.vote({...m,message:msg},origin,this.owners);if(vote)await this.router.receive(vote);return;}
+        if(msg?.pollUpdateMessage){const vote=this.polls.vote({...m,message:msg},origin,this.owners);if(vote)await this.router.receive({...vote,activityScope});return;}
         if(media) {
           if(!this.store.db.prepare("INSERT OR IGNORE INTO media_inbox VALUES(?,?,'processing',?)").run(id,origin,Date.now()).changes)return;
           this.store.recordIncomingInput(id);
@@ -256,7 +257,7 @@ export class WhatsApp {
             if(this.audioBusy>=2)throw new Error('Two voice notes are already processing. Please wait for their replies, then resend this one.');
             this.audioBusy++;started=true;this.audioControllers.add(controller);
             this.store.output(undefined,(!this.store.get('audio-config')&&this.store.get('audio-tools')?'Voice note received. I’m downloading the voice model once, then I’ll transcribe it locally. This first note may take a few minutes.':'Voice note received. I’m transcribing it locally on your computer.'),`audio-progress:${id}`,origin);
-            text=await this.transcribe(audio,controller.signal,event=>this.store.voiceEvent(id,event));
+            text=await this.transcribe(audio,controller.signal,event=>this.store.voiceEvent(id,event),{kind:'chat',destination:origin,owner:owner.owner});
             if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return; // Restart recovery reports interruption.
             if(group)await this.verifyGroup(origin);
             if(this.closed||this.loggingOut||this.router.stopped||!this.store.incomingOwnerCurrent())return;
@@ -266,7 +267,7 @@ export class WhatsApp {
             if(/^\/(?:approve|deny|answer)\b/i.test(text.trim()))throw new Error('Please type permission decisions explicitly; voice transcription may mishear them.');
             const context=audio.contextInfo;
             const ownerIntent=!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
-            const result=await this.router.receive({id,text,quotedId:context?.stanzaId??undefined,source:'voice',ownerCommand:false,ownerIntent});
+            const result=await this.router.receive({id,text,quotedId:context?.stanzaId??undefined,source:'voice',ownerCommand:false,ownerIntent,activityScope});
             const routed=result.status==='queued'||result.status==='handled';
             this.store.voiceEvent(id,{stage:'route',state:routed?'completed':'failed',durationMs:performance.now()-routingStarted,...(!routed?{code:result.code??'routing_unavailable'}:{})});
             this.store.db.prepare('UPDATE audio_inbox SET status=? WHERE id=?').run(routed?'processed':'routing_blocked',id);
@@ -289,7 +290,7 @@ export class WhatsApp {
           const selecting=this.selectDestination(),updated=this.store.captureIncomingOwner(origin,'whatsapp');await selecting;
           if(updated&&updated.owner===owner.owner)this.store.incomingOwnerContext.run(updated,()=>{if(this.store.incomingOwnerCurrent()){this.store.output(undefined,'Switched to Message yourself. You can continue here.',`self-switch:${m.key.id}`,origin);this.store.remember(id);}});return;
         }
-        await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand,ownerChoice:!context?.isForwarded&&!context?.forwardingScore});
+        await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand,ownerChoice:!context?.isForwarded&&!context?.forwardingScore,activityScope});
       });
       });
     }finally{this.receiving.delete(id);}

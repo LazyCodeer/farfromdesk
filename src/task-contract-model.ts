@@ -2,6 +2,7 @@ import {generateText,hasToolCall,stepCountIs,tool} from 'ai';
 import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
 import {z} from 'zod';
 import {META_ENDPOINT} from './meta-brain-config.js';
+import type {MetaObserver} from './meta-timeline.js';
 
 // Meta's wording is a proposal, not authorization. Only the owner can accept it.
 export const ContractDecision=z.object({
@@ -15,16 +16,17 @@ export const ContractDecision=z.object({
   if(value.kind==='contract'&&(value.question.match(/[?？]/g)?.length??0)>1)ctx.addIssue({code:'custom',message:'Ask at most one question.'});
 });
 export type ContractDecision=z.infer<typeof ContractDecision>;
-export type ContractInterpreter=(key:string,original:string,edits:string[])=>Promise<ContractDecision>;
+export type ContractInterpreter=(key:string,original:string,edits:string[],observe?:MetaObserver)=>Promise<ContractDecision>;
 
-export const interpretContract:ContractInterpreter=async(key,original,edits)=>{
-  const guarded:typeof fetch=async(url,init)=>{
+export const interpretContract:ContractInterpreter=async(key,original,edits,observe)=>{
+  const request:typeof fetch=async(url,init)=>{
     const response=await fetch(url,{...init,redirect:'error'});
     if(!response.ok||!response.body)throw new Error('Contract interpretation unavailable.');
     const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
     for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>131072){await reader.cancel();throw new Error('Contract response exceeded limit.');}chunks.push(value);}
     return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
   };
+  const guarded:typeof fetch=(url,init)=>observe?observe(()=>request(url,init)):request(url,init);
   try {
     const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
     const result=await generateText({model:meta('muse-wonder-1.0'),maxRetries:0,abortSignal:AbortSignal.timeout(30000),toolChoice:'auto',providerOptions:{meta:{reasoningEffort:'low'}},
