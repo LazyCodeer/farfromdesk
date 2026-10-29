@@ -4,16 +4,21 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync,rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Store,hash } from '../src/store.js';
-import { Router } from '../src/router.js';
-import { Approvals } from '../src/approvals.js';
-import { MetaBrain } from '../src/meta-brain.js';
-import { DEFAULT_BRAIN,MetaSecret } from '../src/meta-brain-config.js';
-import { MorningBrief,canDeliverBrief } from '../src/morning-brief.js';
-import { Coordinator } from '../src/coordinator.js';
+import type { Store as StoreType } from '../src/store.js';
 
 const instant=Date.parse('2026-10-29T03:00:00Z'); // 08:30 in India
 const testState=mkdtempSync(join(tmpdir(),'ffd-brief-media-'));process.env.WSB_STATE_DIR=testState;test.after(()=>rmSync(testState,{recursive:true,force:true}));
+// The app caches its state directory at import time. Set the isolated root
+// before loading any application module, even for direct test invocations.
+const {stateDir}=await import('../src/config.js');
+const {Store,hash}=await import('../src/store.js');
+const {Router}=await import('../src/router.js');
+const {Approvals}=await import('../src/approvals.js');
+const {MetaBrain}=await import('../src/meta-brain.js');
+const {DEFAULT_BRAIN,MetaSecret}=await import('../src/meta-brain-config.js');
+const {MorningBrief,canDeliverBrief}=await import('../src/morning-brief.js');
+const {Coordinator}=await import('../src/coordinator.js');
+test('application modules use the isolated test state',()=>assert.equal(stateDir,testState));
 function setup(file?:string){
   const dir=mkdtempSync(join(tmpdir(),'ffd-brief-')),store=new Store(file??join(dir,'test.db'));
   store.set('whatsapp-owner','owner@s.whatsapp.net');
@@ -22,7 +27,7 @@ function setup(file?:string){
   const secret=new MetaSecret(dir);secret.save('synthetic-test-key-not-real');router.brain=new MetaBrain(store,secret,{interpret:async()=>{throw Error('unused');}});
   return {dir,store,router,approvals,secret,close(){approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
-const sourceRows=(s:Store)=>s.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief:%' ORDER BY source").all() as any[];
+const sourceRows=(s:StoreType)=>s.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief:%' ORDER BY source").all() as any[];
 function addScoped(f:ReturnType<typeof setup>,id:string,title:string){const owner='owner@s.whatsapp.net';f.store.recordOwnerOrigin(id,owner,owner);return f.store.destinationContext.run(owner,()=>f.router.brain.memory.add(id,title));}
 test('first-message and scheduled race queue one grounded brief and persist the item numbers',async()=>{
   const f=setup();try{
