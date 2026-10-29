@@ -93,10 +93,10 @@ test('group text cannot move to a new owner during group verification',async()=>
     const message=(id:string)=>({key:{id,fromMe:true,remoteJid:group},message:{conversation:'A synthetic question'}});
     const task=wa.receiveMessage(message('synthetic-old'));
     s.set('whatsapp-owner',next);wa.selfJid=next;wa.owners=[next];resume();await task;
-    assert.equal(calls,1);assert.deepEqual(metaTimeline(s),[]);
+    assert.equal(calls,0);assert.deepEqual(metaTimeline(s),[]);
     s.set('whatsapp-owner',old);wa.selfJid=old;wa.owners=[old];assert.deepEqual(metaTimeline(s),[]);
     await wa.receiveMessage(message('synthetic-current'));
-    assert.equal(calls,2);assert.equal((metaTimeline(s) as any[])[0].stage,'sorted');
+    assert.equal(calls,1);assert.equal((metaTimeline(s) as any[])[0].stage,'sorted');
   }finally{wa.close();approvals.cancel();s.close();}
 });
 
@@ -127,7 +127,7 @@ test('group voice cannot move to a new owner while group verification awaits', {
     (router as any).receive=async()=>({status:'handled'});
     const task=wa.receiveMessage({key:{id:'synthetic',fromMe:true,remoteJid:group},message:{audioMessage:{mimetype:'audio/wav',seconds:1,fileLength:wav.length}}});
     s.set('whatsapp-owner',next);wa.selfJid=next;wa.owners=[next];resume();await task;
-    assert.deepEqual(captured,{kind:'chat',destination:group,owner:old});assert.deepEqual(metaTimeline(s),[]);
+    assert.equal(captured,undefined);assert.deepEqual(metaTimeline(s),[]);
     s.set('whatsapp-owner',old);assert.deepEqual(metaTimeline(s),[]);
   }finally{globalThis.fetch=originalFetch;wa.close();approvals.cancel();s.close();}
 });
@@ -151,7 +151,7 @@ test('scope lookup failure never prevents the underlying operation',async()=>{
 test('a failed Meta HTTP call records failure without exposing provider details',async()=>{
   const s=fixture();try{
     const model=new MetaModel(async()=>new Response('SYNTHETIC_PRIVATE_PROVIDER_ERROR',{status:401}));
-    await assert.rejects(model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Hello',source:'text',tasks:[]},undefined,metaObserver(s,'sorted','owner@s.whatsapp.net')));
+    await assert.rejects(model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Hello',source:'text',tasks:[]},undefined,undefined,metaObserver(s,'sorted','owner@s.whatsapp.net')));
     const rows=metaTimeline(s) as any[];assert.equal(rows.length,1);assert.equal(rows[0].status,'failed');
     assert.doesNotMatch(JSON.stringify(rows),/SYNTHETIC_PRIVATE_PROVIDER_ERROR|synthetic-key/);
   }finally{s.close();}
@@ -160,7 +160,7 @@ test('a failed Meta HTTP call records failure without exposing provider details'
 test('actual Brain, reminder and Meta voice requests each record a completed call',async()=>{
   const s=fixture(),originalFetch=globalThis.fetch;try{
     const model=new MetaModel(async()=>toolResponse('decide',{intent:'chat',normalized:'Hello',provider:'unspecified',taskIds:[],reply:'Hi'}));
-    await model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Hello',source:'text',tasks:[]},undefined,metaObserver(s,'sorted','owner@s.whatsapp.net'));
+    await model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Hello',source:'text',tasks:[]},undefined,undefined,metaObserver(s,'sorted','owner@s.whatsapp.net'));
     globalThis.fetch=async()=>toolResponse('decide',{kind:'create',action:'message',date:'2026-10-30',time:'18:00',zone:'Asia/Kolkata',repeat:'once',text:'call the bank',target:'',question:''});
     await interpretSchedule('Remind me tomorrow at 6 PM to call the bank',Date.parse('2026-10-29T02:00:00Z'),'Asia/Kolkata','synthetic-key',metaObserver(s,'scheduled','owner@s.whatsapp.net'));
     const wav=join(root,'synthetic.wav');writeFileSync(wav,Buffer.from('synthetic'));
@@ -193,4 +193,27 @@ test('contract timeline records actual API calls without storing task content',a
     await assert.rejects(interpretContract('synthetic-key','PRIVATE TASK',[],metaObserver(s,'contracted','owner@s.whatsapp.net')));
     assert.equal((metaTimeline(s) as any[])[0].status,'failed');
   }finally{globalThis.fetch=originalFetch;s.close();}
+});
+
+
+test('owner round trip during a Meta call omits the old activity',async()=>{
+  const s=fixture();try{
+    const owner='owner@s.whatsapp.net',captured=s.captureIncomingOwner(owner,'whatsapp')!;
+    let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});
+    const call=s.incomingOwnerContext.run(captured,()=>metaObserver(s,'sorted',owner,owner)(()=>wait));
+    s.set('whatsapp-owner','other@s.whatsapp.net');s.set('whatsapp-owner',owner);release();await call;
+    assert.deepEqual(metaTimeline(s),[]);
+  }finally{s.close();}
+});
+
+
+test('an owner scope lookup failure does not change the Meta call outcome',async()=>{
+  const s=fixture();try{
+    const owner='owner@s.whatsapp.net',captured=s.captureIncomingOwner(owner,'whatsapp')!;
+    await s.incomingOwnerContext.run(captured,async()=>{
+      const observe=metaObserver(s,'sorted',owner,owner);
+      s.incomingOwnerCurrent=()=>{throw new Error('synthetic lookup failure');};
+      assert.equal(await observe(async()=>42),42);
+    });
+  }finally{s.close();}
 });

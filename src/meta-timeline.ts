@@ -23,11 +23,12 @@ export function metaObserver(store:Store,stage:MetaStage,destination?:string|nul
   // Only a captured chat origin is attributable; inherited async context is
   // not evidence of the source of a call.
   const origin=destination??undefined,key=origin?safeScope(store,origin,owner):undefined;
+  const capturedOwner=store.incomingOwnerContext.getStore();
   return async <T>(work:()=>Promise<T>):Promise<T>=>{
     const start=performance.now();
     const record=(status:'completed'|'failed')=>{
-      if(!key||!origin||!stages.has(stage)||safeScope(store,origin,owner)!==key)return;
       try {
+        if(!key||!origin||!stages.has(stage)||safeScope(store,origin,owner)!==key||capturedOwner&&(origin!==capturedOwner.destination||owner&&owner!==capturedOwner.owner||!store.incomingOwnerContext.run(capturedOwner,()=>store.incomingOwnerCurrent())))return;
         const elapsed=Math.min(3600000,Math.max(0,Math.round(performance.now()-start)));
         store.db.prepare('INSERT INTO meta_timeline(scope,stage,status,duration_ms,at) VALUES(?,?,?,?,?)').run(key,stage,status,elapsed,Date.now());
         // A bounded global history keeps old owners and abandoned chats from accumulating.

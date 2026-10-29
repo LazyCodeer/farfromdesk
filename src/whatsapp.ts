@@ -200,7 +200,7 @@ export class WhatsApp {
   }
   async receiveMessage(m:any) {
     if(this.store.controlChannel()!=='whatsapp'||this.closed||this.loggingOut||this.router.stopped||this.status!=='connected'||!m.key?.id||this.store.isOurs(m.key.id)||m.key.fromMe!==true)return;
-    const id=`wa:${m.key.id}`,destination=this.destination().jid,self=isSelfMessage(m.key,this.owners),owner=this.selfJid,origin=self?this.selfJid:destination;
+    const id=`wa:${m.key.id}`,destination=this.destination().jid,self=isSelfMessage(m.key,this.owners);
     const group=m.key.remoteJid===destination&&destination?.endsWith('@g.us');
     if((!self&&!group)||this.store.seen(id)||this.receiving.has(id))return;
     const msg=normalizeMessageContent(m.message),audio=msg?.audioMessage;
