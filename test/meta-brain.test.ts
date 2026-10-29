@@ -9,7 +9,7 @@ import { Router } from '../src/router.js';
 import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
 import { MetaBrain } from '../src/meta-brain.js';
-import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
+import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
 import { BrainMemory } from '../src/brain-memory.js';
 
@@ -109,8 +109,15 @@ test('disable or policy revocation during interpretation prevents dispatch',asyn
 test('credentials are private, absent from status/SQLite, replaceable and removable',()=>{
   const f=fixture();try{const synthetic='another-synthetic-key-not-a-real-secret';saveBrainConfig(f.store,f.secret,{policy:f.policy,key:synthetic});assert.equal(statSync(join(f.dir,'meta-model-api-key')).mode&0o777,0o600);assert.equal(f.secret.read(),synthetic);assert.equal(brainView(f.store,f.secret).configured,true);assert.ok(!JSON.stringify(brainView(f.store,f.secret)).includes(synthetic));assert.ok(!JSON.stringify(f.store.db.prepare('SELECT * FROM settings').all()).includes(synthetic));f.secret.remove();assert.equal(f.secret.present(),false);}finally{f.close();}
 });
+test('new Brain policy defaults to Wonder but preserves an existing model choice',()=>{
+  const store=new Store(':memory:');try{
+    assert.equal(brainPolicy(store).model,'muse-wonder-1.0');
+    store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,model:'muse-spark-1.2'}));
+    assert.equal(brainPolicy(store).model,'muse-spark-1.2');
+  }finally{store.close();}
+});
 test('Meta uses documented endpoint, model, a decide tool and bearer server-side only',async()=>{
-  const model=new MetaModel((async(url,init)=>{assert.equal(url,META_ENDPOINT);assert.equal(init?.redirect,'error');assert.equal(new Headers(init?.headers).get('authorization'),'Bearer synthetic-key');const body=JSON.parse(init!.body as string);assert.equal(body.model,'muse-spark-1.3');assert.deepEqual(body.tools.map((t:any)=>t.function.name),['decide']);return call('decide',decision());}) as typeof fetch);
+  const model=new MetaModel((async(url,init)=>{assert.equal(url,META_ENDPOINT);assert.equal(init?.redirect,'error');assert.equal(new Headers(init?.headers).get('authorization'),'Bearer synthetic-key');const body=JSON.parse(init!.body as string);assert.equal(body.model,'muse-wonder-1.0');assert.deepEqual(body.tools.map((t:any)=>t.function.name),['decide']);return call('decide',decision());}) as typeof fetch);
   assert.deepEqual(await model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Fix it',source:'text',tasks:[]}),decision());
 });
 test('Meta reads memory through the tool before deciding',async()=>{

@@ -11,7 +11,7 @@ export const META_ENDPOINT='https://api.meta.ai/v1/chat/completions';
 export const META_MODELS=['muse-spark-1.3','muse-spark-1.2','muse-spark-1.1','muse-wonder-1.0'] as const;
 export const BrainPolicy=z.object({enabled:z.boolean(),model:z.enum(META_MODELS),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(['codex','claude'])).max(2),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true)}).strict();
 export type BrainPolicy=z.infer<typeof BrainPolicy>;
-export const DEFAULT_BRAIN:BrainPolicy={enabled:false,model:'muse-spark-1.3',allowRouting:false,allowStatus:true,allowManagement:false,providers:[],failure:'legacy',notes:'',learn:true};
+export const DEFAULT_BRAIN:BrainPolicy={enabled:false,model:'muse-wonder-1.0',allowRouting:false,allowStatus:true,allowManagement:false,providers:[],failure:'legacy',notes:'',learn:true};
 export function brainPolicy(store:Store):BrainPolicy {try{return BrainPolicy.parse(JSON.parse(store.get('meta-brain-policy')??'null'));}catch{return {...DEFAULT_BRAIN};}}
 const keyPath=(root:string)=>join(root,'meta-model-api-key');
 export class MetaSecret {

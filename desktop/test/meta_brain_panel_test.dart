@@ -69,6 +69,48 @@ class MetaGateway extends PreviewGateway {
 }
 
 void main() {
+  for (final savedModel in [null, 'muse-spark-1.2']) {
+    testWidgets(
+      'model selection ${savedModel ?? 'defaults to Wonder'} is retained',
+      (tester) async {
+        final api = MetaGateway();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: MetaBrainPanel(
+                  gateway: api,
+                  saved: {'enabled': true, 'model': savedModel},
+                  onSaved: () async {},
+                ),
+              ),
+            ),
+          ),
+        );
+        final dropdown = tester.widget<DropdownButton<String>>(
+          find.byType(DropdownButton<String>),
+        );
+        expect(dropdown.value, savedModel ?? 'muse-wonder-1.0');
+        expect(
+          dropdown.items!.map((item) => item.value).toList(),
+          containsAll([
+            'muse-spark-1.3',
+            'muse-spark-1.2',
+            'muse-spark-1.1',
+            'muse-wonder-1.0',
+          ]),
+        );
+        final save = find.text('Save changes');
+        await tester.ensureVisible(save);
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+        expect(
+          api.submitted?['policy']['model'],
+          savedModel ?? 'muse-wonder-1.0',
+        );
+      },
+    );
+  }
   for (final fail in [false, true]) {
     testWidgets(
       'Meta settings obscure and clear secret after ${fail ? 'failure' : 'save'}',

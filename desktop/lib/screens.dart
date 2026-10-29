@@ -3640,7 +3640,7 @@ extension _BrainAndItems on _DeskState {
     final summary = b['enabled'] != true
         ? 'Off. Your proxy gets every message as it is.'
         : b['configured'] == true
-        ? 'On with Meta ${b['model'] ?? 'muse-spark-1.3'}.'
+        ? 'On with Meta ${b['model'] ?? defaultMetaBrainModel}.'
         : 'On, but it needs a key. Messages use normal routing until then.';
     return card(
       Row(
