@@ -2,10 +2,13 @@
 
 This is an experimental WhatsApp-only Greenhouse workflow, not a general job
 search. A typed owner request can use `greenhouse jobs; board=example;
-role=Engineer; location=Bangalore`, with optional `salary=` or `avoid=` fields.
+role=Engineer; location=Bangalore`, with optional `salary=`, `avoid=` or
+`skills=Dart, Flutter` fields. Only skills explicitly supplied in that request
+are used, to annotate literal title mentions without changing the ranking.
+Those mentions do not establish a requirement, qualification or fit.
 It searches only that public board, preserves F3 review when applicable, and
 prepares an owner-only text draft after a delivered shortlist and `draft N`.
-There is no general web search, profile or resume integration, document sender,
+There is no general web search, automatic About-you or resume integration, document sender,
 automatic browser navigation, application opener or submit action. A selected
 page is not by itself proof of a current job listing or a working query-stripped URL.
 
@@ -77,6 +80,13 @@ yet the tailored document required by the approved plan.
   untrusted. Displayed reasons are generated locally from exact text matches,
   not model claims. This is not a reliable salary/eligibility check and does
   not yet use a resume or justify an application.
+- The owner can explicitly enter up to five short skill terms in the same
+  request. These terms are not sent as a separate field to the Greenhouse
+  source or ranking model, although listing text sent to the ranker can contain
+  the same words. If F3 review is enabled, its existing Meta interpretation
+  receives the whole typed request, including these terms. No memory file or
+  resume is read. A literal title mention may be negated or irrelevant; it
+  does not change candidate order or establish the owner's qualifications.
 - Exclusions currently support only `onsite`, `on-site` or `on site` (with an
   optional no/avoid/exclude prefix). Only a trusted independently verified
   `remote-only` workplace attestation qualifies; onsite, hybrid and unknown

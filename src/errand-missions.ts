@@ -9,7 +9,7 @@ import {toWhatsApp} from './whatsapp-format.js';
  * may authorize a contract or supply listing evidence; session or model text
  * must never be used as an evidence adapter.
  */
-export type ErrandContract={role:string;location:string;salary?:string;avoid?:string};
+export type ErrandContract={role:string;location:string;salary?:string;avoid?:string;skills?:string[]};
 export type ErrandScope={requestId:string;owner:string;destination:string;bindingId:string;bindingIdentity:string};
 /** The marker and workplace attestation are meaningful only from a trusted bridge-owned verifier. */
 export type Workplace='remote-only'|'onsite'|'hybrid'|'unknown';
@@ -57,7 +57,22 @@ function canonicalContract(input:ErrandContract):ErrandContract {
   const role=clean(input.role,121),location=clean(input.location,121),salary=input.salary?clean(input.salary,121):'',avoid=input.avoid?clean(input.avoid,501):'';
   if(!role||role.length>120||!location||location.length>120||salary.length>120||avoid.length>500)throw new Error('Provide a concise role and location.');
   if(SENSITIVE.test([role,location,salary,avoid].join(' ')))throw new Error('Remove credentials from the errand criteria.');
-  return {role,location,...(salary?{salary}:{}),...(avoid?{avoid}:{})};
+  const skills=input.skills===undefined?undefined:canonicalSkills(input.skills);
+  return {role,location,...(salary?{salary}:{}),...(avoid?{avoid}:{}),...(skills?{skills}:{})};
+}
+/** Only facts explicitly supplied for this search are considered; no memory or resume is read. */
+export function canonicalSkills(value:unknown):string[] {
+  if(!Array.isArray(value)||value.length<1||value.length>5||value.some(v=>typeof v!=='string'))throw new Error('Provide one to five short skills.');
+  const skills=(value as string[]).map(s=>s.trim());
+  if(skills.some(s=>!s||s.length>40||!/^[\p{L}\p{N}][\p{L}\p{N} +#.-]*$/u.test(s)||SENSITIVE.test(s))||new Set(skills.map(s=>s.toLocaleLowerCase())).size!==skills.length)throw new Error('Provide one to five distinct short skills.');
+  return skills;
+}
+function mentionedSkills(row:Candidate,contract:ErrandContract) {
+  const text=row.title;
+  return (contract.skills??[]).filter(skill=>{
+    const literal=skill.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}+#])${literal}(?=$|[^\\p{L}\\p{N}+#])`,'iu').test(text);
+  });
 }
 /** Only explicitly supported exclusions can be evaluated without guessing. */
 function eligible(row:Candidate,contract:ErrandContract):boolean {
@@ -157,23 +172,26 @@ export class ErrandMissions {
     const current=this.mission(id,scope);if(current.version!==before.version||current.state!=='gathered')throw new Error('The errand changed while ranking.');
     if(!fresh())throw new Error('Listing evidence is stale. Start a new errand with a new owner request.');
     if(!Array.isArray(proposed)||proposed.length>MAX_CANDIDATES||proposed.some(x=>typeof x!=='string')||new Set(proposed).size!==proposed.length||proposed.some(x=>!rows.some(r=>r.id===x)))throw new Error('Ranking did not match the verified listings.');
-    const chosen=proposed.slice(0,5).map(candidateId=>rows.find(r=>r.id===candidateId)!);
-    if(!chosen.length)throw new Error('No verified listing was selected.');
+    // The owner's skills field is omitted from source and ranking inputs;
+    // listing titles can contain the same terms. Mentions never change order.
+    const selected=proposed.slice(0,5).map(candidateId=>rows.find(r=>r.id===candidateId)!);
+    if(!selected.length)throw new Error('No verified listing was selected.');
     this.store.db.exec('SAVEPOINT errand_rank');
     try{
       this.mission(id,scope);const latest=this.store.db.prepare('SELECT version,state FROM errand_missions WHERE id=?').get(id) as {version:number;state:string};
       if(latest.version!==before.version||latest.state!=='gathered')throw new Error('The errand changed while ranking.');
       if(!fresh())throw new Error('Listing evidence is stale. Start a new errand with a new owner request.');
-      for(let i=0;i<chosen.length;i++)this.store.db.prepare('UPDATE errand_candidates SET position=? WHERE id=? AND mission_id=?').run(i+1,chosen[i].id,id);
+      for(let i=0;i<selected.length;i++)this.store.db.prepare('UPDATE errand_candidates SET position=? WHERE id=? AND mission_id=?').run(i+1,selected[i].id,id);
       this.store.db.prepare("UPDATE errand_missions SET state='shortlisted',version=version+1 WHERE id=?").run(id);this.store.db.exec('RELEASE errand_rank');
     }catch(e){this.store.db.exec('ROLLBACK TO errand_rank; RELEASE errand_rank');throw e;}
     if(!fresh())throw new Error('Listing evidence is stale. Start a new errand with a new owner request.');
-    return chosen.map((r,i)=>({number:i+1,title:r.title,url:r.url,sourceUrl:r.source_url,observedAt:r.observed_at,listingPageIdentity:'unverified' as const,applicationAvailability:'unverified' as const,reason:this.reason(r,contract)}));
+    return selected.map((r,i)=>({number:i+1,title:r.title,url:r.url,sourceUrl:r.source_url,observedAt:r.observed_at,listingPageIdentity:'unverified' as const,applicationAvailability:'unverified' as const,reason:this.reason(r,contract)}));
   }
   private reason(row:Candidate,contract:ErrandContract){
     const data=`${row.title} ${row.excerpt}`.toLocaleLowerCase(),reasons:string[]=[];
     if(data.includes(contract.role.toLocaleLowerCase()))reasons.push(`Mentions ${contract.role}`);
     if(data.includes(contract.location.toLocaleLowerCase()))reasons.push(`Mentions ${contract.location}`);
+    const skills=mentionedSkills(row,contract);if(skills.length)reasons.push(`Title includes your stated skill terms: ${skills.join(', ')}`);
     return reasons.length?reasons.join('; '):'Review the listing against your criteria';
   }
   /** A fresh owner request can reopen only its own unexpired immutable snapshot. */

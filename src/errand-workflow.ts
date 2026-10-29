@@ -1,7 +1,7 @@
 import {authenticatedOwner} from './owner-commands.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
-import {ErrandMissions,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
+import {ErrandMissions,canonicalSkills,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
 import {greenhouseBoardReader} from './errand-greenhouse.js';
 import {wonderErrandRanker} from './errand-ranker.js';
 import {ErrandOrder} from './errand-order.js';
@@ -16,9 +16,9 @@ type Guard={outbox_id:string;mission_id:string;root_request:string;request_id:st
 export function parseGreenhouseRequest(text:string):Request|undefined {
   if(!/^greenhouse jobs\s*;/i.test(text.trim()))return;
   const parts=text.trim().split(';').map(x=>x.trim());parts.shift();const values:Record<string,string>=Object.create(null);
-  for(const part of parts){const m=/^(board|role|location|salary|avoid)\s*=\s*(.+)$/i.exec(part);if(!m||values[m[1].toLowerCase()])throw new Error('Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary= and avoid=.');values[m[1].toLowerCase()]=m[2].trim();}
+  for(const part of parts){const m=/^(board|role|location|salary|avoid|skills)\s*=\s*(.+)$/i.exec(part);if(!m||values[m[1].toLowerCase()])throw new Error('Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary=, avoid= and skills=.');values[m[1].toLowerCase()]=m[2].trim();}
   if(!/^[a-z0-9][a-z0-9_-]{0,49}$/.test(values.board??'')||!values.role||!values.location||Object.values(values).some(v=>v.length>120||/[\r\n\x00-\x1f]/.test(v)))throw new Error('Provide a board, role and location in the Greenhouse request.');
-  return {board:values.board,contract:{role:values.role,location:values.location,...(values.salary?{salary:values.salary}:{}),...(values.avoid?{avoid:values.avoid}:{})}};
+  return {board:values.board,contract:{role:values.role,location:values.location,...(values.salary?{salary:values.salary}:{}),...(values.avoid?{avoid:values.avoid}:{}),...(values.skills?{skills:canonicalSkills(values.skills.split(','))}:{})}};
 }
 
 /** Owner-scoped local orchestration. No application submission or contact exists. */
@@ -138,7 +138,7 @@ export class ErrandWorkflow {
     }
     const generation=s.get('errand-authority-generation')??'';
     try{return await this.startExact(m);}catch(e){
-      const error=e instanceof Error?e.message:'',text=/^(Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary= and avoid=\.|Provide a board, role and location in the Greenhouse request\.|Select a session before finding jobs\.|The selected session changed\. Select it again\.)$/.test(error)?error:'Could not start this job search. Check the session and try again.';
+      const error=e instanceof Error?e.message:'',text=/^(Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary=, avoid= and skills=\.|Provide a board, role and location in the Greenhouse request\.|Provide one to five (?:distinct )?short skills\.|Select a session before finding jobs\.|The selected session changed\. Select it again\.)$/.test(error)?error:'Could not start this job search. Check the session and try again.';
       try{this.notice(owner,d,generation,`errand-start-error:${m.id}`,text);}catch{}
       s.remember(m.id);return true;
     }

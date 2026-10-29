@@ -51,8 +51,36 @@ test('owner request searches exact board and queues a labelled shortlist and own
 });
 test('an errand request accepts only exact owner-supplied criteria',()=>{
   assert.deepEqual(parseGreenhouseRequest(request),{board:'example',contract:{role:'Flutter',location:'Bangalore'}});
+  assert.deepEqual(parseGreenhouseRequest(request+'; skills=Dart, C++')?.contract.skills,['Dart','C++']);
+  for(const bad of ['Dart,dart','Dart,','a,b,c,d,e,f','password=secret','https://example.com','A'.repeat(41)])assert.throws(()=>parseGreenhouseRequest(request+'; skills='+bad));
   assert.throws(()=>parseGreenhouseRequest(request+'; board=other'),/Use greenhouse/);
   assert.throws(()=>parseGreenhouseRequest(request+'; send applications=yes'),/Use greenhouse/);
+});
+
+test('explicit owner skills annotate title mentions locally without changing order or sharing profile fields',async()=>{
+  const f=fixture();try{
+    const sentToSource:unknown[]=[],sentToRanker:unknown[]=[];
+    const listing=(id:string,title:string,excerpt:string):Listing=>({sourceUrl:`https://boards-api.greenhouse.io/v1/boards/example/jobs/${id}`,url:`https://job-boards.greenhouse.io/example/jobs/${id}`,title,excerpt,observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000});
+    f.router.errands=new ErrandWorkflow(f.router,async(_scope,query)=>{sentToSource.push(query);return [listing('100','No Dart or C++ required','C++'),listing('200','Experience with Dart.','Dart'),listing('300','Dartboard and C+++','Dart and C++')];},async rows=>{sentToRanker.push(rows);return ['No Dart or C++ required','Experience with Dart.','Dartboard and C+++'].map(title=>rows.find(row=>row.title===title)!.id);});
+    await f.wa.receiveMessage(f.msg('profile',request+'; skills=Dart, C++'));await f.wa.flush();
+    assert.equal(f.sent.length,1);const text=f.sent[0].content.text as string;
+    assert.ok(text.indexOf('/jobs/100')<text.indexOf('/jobs/200'));assert.ok(text.indexOf('/jobs/200')<text.indexOf('/jobs/300'));
+    assert.match(text,/Title includes your stated skill terms: Dart, C\+\+/);
+    assert.match(text,/Title includes your stated skill terms: Dart/);
+    assert.doesNotMatch(text.slice(text.indexOf('/jobs/300')),/Title includes your stated skill terms/);
+    assert.doesNotMatch(JSON.stringify(sentToSource),/Dart|C\+\+/);
+    assert.doesNotMatch(JSON.stringify(sentToRanker),/"skills"/);
+    assert.match(text,/eligibility.*unverified/i);
+  }finally{f.close();}
+});
+
+test('a profile-aware shortlist is not delivered after owner authority changes',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('profile',request+'; skills=Flutter'));
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);await f.wa.flush();
+    assert.equal(f.sent.length,0);
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
+  }finally{f.close();}
 });
 test('quoted, forwarded and voice job searches receive guarded instructions instead of disappearing',async()=>{
   for(const kind of ['quoted','forwarded','voice'] as const){
@@ -114,6 +142,39 @@ test('F3-approved root preserves owner scope and blocks delivery after owner cha
     assert.equal(f.store.job('wa:approve')?.status,'failed');
     assert.equal(f.sent.length,0);
   }finally{f.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('profile criteria require the same F3 approval and fail closed if that approval changes',async()=>{
+  const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-f6-profile-contract-'));
+  try{
+    const secret=new MetaSecret(dir);secret.save('synthetic-key-not-a-real-secret');
+    f.router.brain=new MetaBrain(f.store,secret,{interpret:async()=>{throw new Error('unused');}} as any);
+    saveBrainConfig(f.store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'block'}});
+    f.router.contracts=new TaskContracts(f.store,secret,async()=>({kind:'contract',goal:'Find the requested jobs',exclusions:['Do not submit'],checks:['Use the exact board','Show published listings'],question:''}));
+    await f.wa.receiveMessage(f.msg('root',request+'; skills=Flutter, Dart'));assert.equal(f.calls.length,0);
+    f.store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
+    await f.wa.receiveMessage(f.msg('approve','ok'));assert.equal(f.calls.length,1);
+    const contract=f.store.db.prepare('SELECT contract_json FROM errand_missions').get() as {contract_json:string};
+    assert.deepEqual(JSON.parse(contract.contract_json).skills,['Flutter','Dart']);
+    f.store.db.prepare("UPDATE task_contracts SET review_text=replace(review_text,'Dart','Other') WHERE dispatch_id='wa:approve'").run();
+    await f.wa.flush();assert.ok(f.sent.every(message=>!String(message.content.text).includes('Job shortlist.')));
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
+  }finally{f.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('F3 Meta interpretation receives the explicitly typed skill terms before any search',async()=>{
+  const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-f6-profile-disclosure-')),originalFetch=globalThis.fetch;
+  try{
+    const secret=new MetaSecret(dir);secret.save('synthetic-key-not-a-real-secret');
+    f.router.brain=new MetaBrain(f.store,secret,{interpret:async()=>{throw new Error('unused');}} as any);
+    saveBrainConfig(f.store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'block'}});
+    f.router.contracts=new TaskContracts(f.store,secret);
+    const calls:string[]=[];
+    globalThis.fetch=async(_url,init)=>{calls.push(String(init?.body??''));return new Response(JSON.stringify({id:'synthetic',created:0,model:'muse-wonder-1.0',choices:[{index:0,finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id:'call_1',type:'function',function:{name:'decide',arguments:JSON.stringify({kind:'contract',goal:'Find the requested jobs',exclusions:['Do not submit'],checks:['Use the exact board','Show published listings'],question:''})}}]}}]}),{headers:{'content-type':'application/json'}});};
+    await f.wa.receiveMessage(f.msg('root',request+'; skills=SyntheticDart, SyntheticFlutter'));
+    assert.equal(calls.length,1);assert.match(calls[0],/skills=SyntheticDart, SyntheticFlutter/);
+    assert.doesNotMatch(calls[0],/synthetic-key-not-a-real-secret/);assert.equal(f.calls.length,0);
+    f.store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
+    await f.wa.receiveMessage(f.msg('approve','ok'));assert.equal(f.calls.length,1);
+  }finally{globalThis.fetch=originalFetch;f.close();rmSync(dir,{recursive:true,force:true});}
 });
 test('F3 approval delivers the bound shortlist and the selected draft',async()=>{
   const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-f6-contract-'));
