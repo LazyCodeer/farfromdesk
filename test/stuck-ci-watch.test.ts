@@ -149,6 +149,17 @@ test('a check with unavailable detail rotates to the next failure on the followi
   }finally{f.close();}
 });
 
+test('existing watches gain a durable rotation cursor without losing their binding',()=>{
+  const store=new Store(':memory:'),approvals=new Approvals(store),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
+  try{
+    store.db.exec(`CREATE TABLE stuck_ci_watches(id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,generation TEXT NOT NULL,item_id INTEGER NOT NULL,request_id TEXT NOT NULL,binding_id TEXT NOT NULL,identity TEXT NOT NULL,item_identity TEXT NOT NULL,repository TEXT NOT NULL,pr_number INTEGER NOT NULL,expires_at INTEGER NOT NULL,last_checked INTEGER NOT NULL DEFAULT 0,UNIQUE(owner,destination,item_id));
+      INSERT INTO stuck_ci_watches VALUES('saved','owner','owner','generation',1,'request','session','identity','item','example/project',12,9999999999999,0);`);
+    new StuckCiWatch(store,router,async()=>{throw Error('no network');});
+    const row=store.db.prepare("SELECT id,repository,candidate_cursor FROM stuck_ci_watches WHERE id='saved'").get() as {id:string;repository:string;candidate_cursor:number};
+    assert.deepEqual({...row},{id:'saved',repository:'example/project',candidate_cursor:0});
+  }finally{approvals.cancel();store.close();}
+});
+
 test('an expired never-attempted notice is freshly observed; an uncertain one is never replayed',async()=>{
   for(const status of ['queued','cancelled','uncertain'] as const){const f=fixture();try{
     f.add();await f.watch.tick();const old=f.out()[0];
