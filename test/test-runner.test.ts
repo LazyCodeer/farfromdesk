@@ -9,7 +9,8 @@ test('test runner ignores installed state, isolates children and removes its tem
   const sentinel=mkdtempSync(join(tmpdir(),'ffd-test-sentinel-'));
   try {
     const file=join(sentinel,'meta-model-api-key');writeFileSync(file,'synthetic-sentinel');
-    const env={...process.env,WSB_STATE_DIR:sentinel,ISOLATION_SENTINEL:sentinel,WSB_PORT:'47831',OPENAI_API_KEY:'synthetic-api-key',FFD_META_KEY:'synthetic-meta-key',AWS_ACCESS_KEY_ID:'synthetic-access-id',AWS_SECRET_ACCESS_KEY:'synthetic-secret-key',SSH_AUTH_SOCK:'/must-not-use',WSB_DESKTOP_SYNC_BIN:'/must-not-run'};
+    const cert=join(sentinel,'synthetic-ca.pem');writeFileSync(cert,'');
+    const env={...process.env,WSB_STATE_DIR:sentinel,ISOLATION_SENTINEL:sentinel,WSB_PORT:'47831',OPENAI_API_KEY:'synthetic-api-key',FFD_META_KEY:'synthetic-meta-key',AWS_ACCESS_KEY_ID:'synthetic-access-id',AWS_SECRET_ACCESS_KEY:'synthetic-secret-key',AWS_SHARED_CREDENTIALS_FILE:'/must-not-read',AWS_CONFIG_FILE:'/must-not-read',GOOGLE_APPLICATION_CREDENTIALS:'/must-not-read',GIT_CONFIG_GLOBAL:'/must-not-read',AZURE_CONFIG_DIR:'/must-not-read',NODE_PATH:'/must-not-read',NODE_EXTRA_CA_CERTS:cert,NODE_V8_COVERAGE:join(sentinel,'synthetic-coverage'),SSH_AUTH_SOCK:'/must-not-use',WSB_DESKTOP_SYNC_BIN:'/must-not-run'};
     delete env.NODE_TEST_CONTEXT;
     const result=spawnSync(process.execPath,['script/run_node_tests.mjs','files','script/tests/fixtures/node_runner_probe.test.ts'],{
       env,encoding:'utf8',timeout:30000,
@@ -32,6 +33,18 @@ test('test runner removes its temporary state after a failing suite',()=>{
   assert.notEqual(result.status,0);
   const root=/ISOLATED_TEST_ROOT=([^\r\n]+)/.exec(result.stdout)?.[1];
   assert.ok(root);assert.equal(existsSync(root),false);
+});
+
+test('shell entry clears an inherited Node preload before starting Node',{skip:process.platform==='win32'},()=>{
+  const sentinel=mkdtempSync(join(tmpdir(),'ffd-preload-sentinel-'));
+  try{
+    const marker=join(sentinel,'ran'),preload=join(sentinel,'preload.cjs');
+    writeFileSync(preload,`require('node:fs').writeFileSync(${JSON.stringify(marker)},'loaded')`);
+    const env={...process.env,NODE_OPTIONS:`--require=${preload}`,ISOLATION_SENTINEL:sentinel};delete env.NODE_TEST_CONTEXT;
+    const result=spawnSync('/bin/sh',['script/run-tests.sh','files','script/tests/fixtures/node_runner_probe.test.ts'],{env,encoding:'utf8',timeout:30000});
+    assert.equal(result.status,0,`${result.stdout}\n${result.stderr}`);
+    assert.equal(existsSync(marker),false,'the inherited preload must never run');
+  }finally{rmSync(sentinel,{recursive:true,force:true});}
 });
 
 test('canceling the runner stops its test process group and removes isolated state',{skip:process.platform==='win32',timeout:15000},async()=>{
