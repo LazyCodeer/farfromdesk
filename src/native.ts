@@ -18,6 +18,7 @@ import { sameProject, activityTime, claudeHistory, claudeDesktopHistory, type Se
 import { claudeDiscoveryBinary, hasClaudeInboxes, claudeDesktopProcesses } from './desktop-claude.js';
 import { SessionActivation,DesktopReadinessError,openCodexDesktop } from './session-activation.js';
 import { Connections } from './connections.js';
+import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
 
 const exec=promisify(execFile);
@@ -57,6 +58,7 @@ export class NativeAgents {
   discoveryBlocked(provider:string){return this.deniedCatalogs.has(provider);}
   private catalogCache=new Map<string,{expires:number;page:{sessions:Session[];cursor:string|null}}>();
   beforeRun?:(b:Binding)=>void;
+  beforeDispatch?:(b:Binding,jobId:string)=>boolean;
   connectionChanged?:(b:Binding)=>void;
   managedRun?:(b:Binding,message:string,jobId:string)=>Promise<void>;
   configPath=join(stateDir,'desktop-sync.json');
@@ -178,11 +180,16 @@ export class NativeAgents {
     })().catch(()=>{});
   }
   async run(b:Binding,text:string,jobId:string) {
+    const guarded=this.beforeDispatch?.(b,jobId)??false;
+    let handedOff=false;
+    try{
+    const verify=async<T>(pending:Promise<T>):Promise<T>=>{try{const value=await pending;this.beforeDispatch?.(b,jobId);return value;}catch(e){if(e instanceof DispatchNotSubmittedError)throw e;this.beforeDispatch?.(b,jobId);throw e;}};
     this.beforeRun?.(b);
-    await this.connections.assert(b);
+    await verify(this.connections.assert(b));
     let route=this.connections.route(b);
     const managedFlags=this.store.get(`managed-codex:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true'||this.store.get(`managed-worker:${b.id}`)==='true';
     if(!route) {
+      if(guarded)throw new DispatchNotSubmittedError('The request was not sent because this session has no verified connection. Select its exact connection in the app first.');
       // Preserve legacy native destinations. A historical managed account cannot be inferred safely.
       if(this.store.get(`execution-mode:${b.id}`)!=='desktop'&&managedFlags)throw new Error('Review this existing CLI connection in Home and select it again to confirm its account. Pending work is preserved.');
       const catalog=await this.catalog(b.provider,undefined,{fresh:true});
@@ -192,7 +199,7 @@ export class NativeAgents {
       route=await this.connections.choose(b,s.executionMode??'cli',false,s.accountScope);
     }
     if(b.provider==='claude'&&route.transport==='native-session') {
-      let s=(await this.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===b.native_id&&sameProject(s.cwd,b.cwd)&&s.executionMode===route!.executionMode);
+      let s=(await verify(this.catalog('claude',undefined,{fresh:true}))).sessions.find(s=>s.id===b.native_id&&sameProject(s.cwd,b.cwd)&&s.executionMode===route!.executionMode);
       if(!s||(s.available!==true&&!waitingForDesktopInbox(s))||s.executionMode!==route.executionMode||(route.accountScope&&s.accountScope!==route.accountScope))throw new Error('Selected Claude session is unavailable or its platform/account changed. No CLI/Desktop fallback was used.');
       if(waitingForDesktopInbox(s)) {
         const job=this.store.job(jobId);
@@ -203,7 +210,8 @@ export class NativeAgents {
           const name=this.store.get(`name:${b.id}`)??b.alias;
           this.store.output(undefined,`Opening ${name} in Claude Desktop. Your message will be sent when it is ready.`,notice,job.destination,{requestId:jobId,kind:'system',origin:'system'});
         }
-        try {s=await this.activation.ready({...s,activation:'desktop-open'});}catch(error) {
+        try {s=await verify(this.activation.ready({...s,activation:'desktop-open'}));}catch(error) {
+          if(error instanceof DispatchNotSubmittedError)throw error;
           throw error instanceof DesktopReadinessError?error:new DesktopReadinessError(error instanceof Error?error.message:'Claude Desktop could not be opened. No task was sent.');
         }
         // Readiness is not permission to revive a request closed while the app opened.
@@ -212,12 +220,13 @@ export class NativeAgents {
         if(job&&(!current||current.binding_id!==b.id||current.body!==job.body||current.status!=='dispatched'))throw new DesktopReadinessError('This request changed while Claude Desktop opened. No task was sent.');
       }
       if(s.activation==='cli-resume') {
+        if(guarded)throw new DispatchNotSubmittedError('The request was not sent because this legacy CLI connection needs review in the app first.');
         const preference=JSON.parse(this.store.get('platform-preference:claude')??'null');
         const next=await this.connections.prepare(b,'cli',true);
         if(preference?.executionMode!=='cli'||preference.route?.accountKey!==next.accountKey||preference.route?.profileId!==next.profileId)throw new Error('Review Claude CLI in Coding platforms before resuming this legacy connection with a managed account.');
         this.connections.save(b,next);this.store.set(`managed-claude:${b.id}`,'true');route=next;
       }
-      this.beforeRun?.(b);await this.connections.assert(b);
+      this.beforeRun?.(b);await verify(this.connections.assert(b));
       if(!this.store.binding(b.id)?.enabled)throw new Error('Session was paused before delivery.');
     }
     const id=deliveryId(jobId),dir=join(stateDir,'native-delivery');mkdirSync(dir,{recursive:true,mode:0o700});
@@ -235,21 +244,27 @@ export class NativeAgents {
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');
     if(managed) {
       if(b.provider==='claude'&&!this.managedActive?.(b)) {
-        const matches=(await this.catalog('claude',undefined,{fresh:true})).sessions.filter(s=>s.id===b.native_id);
+        const matches=(await verify(this.catalog('claude',undefined,{fresh:true}))).sessions.filter(s=>s.id===b.native_id);
         if(matches.some(s=>s.live))throw new Error('This Claude session is already running outside the managed connection. No duplicate process or fork was started.');
         const current=matches.find(s=>s.executionMode==='cli');
         if(!current||current.liveDiscoveryComplete===false||current.executionMode!=='cli')throw new Error('The exact Claude CLI runtime could not be checked. Resume held; no replacement process was started.');
         if(current.live)throw new Error('This Claude session is already running outside the managed connection. No duplicate process or fork was started.');
       }
       if(!this.managedRun)throw new Error('Managed native runtime is unavailable.');
+      if(guarded)this.beforeRun?.(b);
+      this.beforeDispatch?.(b,jobId);
+      handedOff=true;
       await this.managedRun(b,message,jobId);envelope.acknowledge();return;
     }
-    if(b.provider==='codex')await this.validate(b.provider,b.native_id,b.cwd);
+    if(b.provider==='codex')await verify(this.validate(b.provider,b.native_id,b.cwd));
+    this.beforeDispatch?.(b,jobId);
     writeFileSync(file,message,{mode:0o600});
     const args=['--config',this.configPath,'--coord-dir',dir,...(b.provider==='codex'?['send-codex','--target',b.native_id,'--id',id]:['send-claude','--session',b.native_id]),'--sender',sender,'--file',file];
     try {
-      if(b.provider==='claude')await this.desktopConfig();
+      if(b.provider==='claude')await verify(this.desktopConfig());
+      this.beforeDispatch?.(b,jobId);
       // Longer than the helper's own 30-second wait on codex queue, so the helper records the outcome itself.
+      handedOff=true;
       const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024});
       const r=JSON.parse(stdout);
       if(r.status!=='submitted'&&r.status!=='received')throw new Error(`Native delivery is ${r.status??'unconfirmed'}. Reference ${id}`);
@@ -260,9 +275,17 @@ export class NativeAgents {
         catch{throw new Error('Message is saved in the Codex queue, but Desktop could not be opened. Open this exact chat to continue; do not resend the message.');}
       }
     } catch(e:any) {
+      if(e instanceof DispatchNotSubmittedError)throw e;
       let receipt;try{receipt=JSON.parse(e.stdout);}catch{}
       throw new Error(receipt?`Native delivery ${receipt.status}; reference ${id}. Do not resubmit until checked.`:e.message);
     } finally {try{unlinkSync(file);}catch{}}
+    }catch(e){
+      if(guarded&&!handedOff&&!(e instanceof DispatchNotSubmittedError)){
+        this.beforeDispatch?.(b,jobId);
+        throw new DispatchNotSubmittedError('The request was not sent because the session could not be prepared. Check its connection in the app before trying again.');
+      }
+      throw e;
+    }
   }
   async sendDesktopCreation(sessionId:string,file:string) {
     await this.desktopConfig();

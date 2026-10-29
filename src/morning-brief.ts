@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { brainPolicy, META_ENDPOINT } from './meta-brain-config.js';
 import type { Router, Incoming } from './router.js';
 import { authenticatedOwner } from './owner-commands.js';
+import { briefDestinationValid,briefTargetIdentity } from './brief-dispatch-guard.js';
 import type { Store } from './store.js';
 
 type Entry={kind:'item'|'approval'|'pr'|'info';id:number|string;title:string;status:string;reason:string;section:'done'|'needs'|'today';binding?:string|null;target?:string;identity?:string;category?:string;urgency?:string;ageHours?:number;idleHours?:number;sessionState?:string};
@@ -15,7 +16,7 @@ type PullRequest={title:string;merged_at:string|null;html_url:string};
 type PrReader=(owner:string,repo:string,number:number)=>Promise<PullRequest>;
 const short=(value:unknown,n=120)=>String(value??'').replace(/!?\[([^\]\n]+)\]\(https?:\/\/[^\s)]+\)/g,'$1').replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/[—–]/g,',').replace(/\s+/g,' ').trim().slice(0,n);
 const source=(destination:string,owner:string,date:string)=>`morning-brief:${createHash('sha256').update(JSON.stringify([destination,owner,date])).digest('hex')}`;
-const targetIdentity=(store:Store,id:string)=>{const b=store.binding(id);return b?createHash('sha256').update(JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,store.get(`execution-mode:${b.id}`),store.get(`session-route:${b.id}`)])).digest('hex'):undefined;};
+const targetIdentity=briefTargetIdentity;
 // Only allowlisted classifications leave the machine, never free-form task text.
 function classify(title:string){
   const text=title.toLowerCase();
@@ -241,14 +242,18 @@ export class MorningBrief {
 }
 
 /** Recheck persisted owner at the actual transport boundary, not just when queued. */
-export function canDeliverBrief(store:Store,row:{source:string;destination:string|null},connectedOwner:string|undefined,now=Date.now()){
+export function canDeliverBrief(store:Store,row:{source:string;destination:string|null;request_id?:string|null},connectedOwner:string|undefined,now=Date.now()){
+  if(row.request_id){
+    const guard=store.db.prepare('SELECT owner,destination FROM brief_dispatch_guards WHERE request_id=?').get(row.request_id) as {owner:string;destination:string}|undefined;
+    if(guard&&(!connectedOwner||guard.owner!==connectedOwner||guard.destination!==row.destination||!briefDestinationValid(store,guard.destination,guard.owner)))return false;
+  }
   if(row.source.startsWith('morning-brief-error:')){
     if(!connectedOwner||!row.destination||!validDestination(store,row.destination,connectedOwner))return false;
     try{return row.source===`morning-brief-error:${source(row.destination,connectedOwner,localTime(now,store.get('morning-brief-zone')??'Asia/Kolkata').date)}:0`;}catch{return false;}
   }
-  if(row.source.startsWith('brief-action:')){
+  if(row.source.startsWith('brief-action:')||row.source.startsWith('brief-action-error:')){
     if(!connectedOwner||!row.destination||!validDestination(store,row.destination,connectedOwner))return false;
-    const match=/^brief-action:(wa:.+):\d+$/.exec(row.source);if(!match)return false;
+    const match=/^brief-action(?:-error)?:(wa:.+):\d+$/.exec(row.source);if(!match)return false;
     const origin=store.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(match[1]) as {owner:string;destination:string}|undefined;
     return !!origin&&origin.owner===connectedOwner&&origin.destination===row.destination;
   }

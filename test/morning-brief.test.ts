@@ -221,6 +221,122 @@ test('a disabled platform or changed session identity blocks numbered actions',a
     f.store.set('enabled-apps','["codex"]');f.store.set(`session-route:${worker.id}`,'changed');assert.match(brief.action({id:'wa:b',text:'go 1'})?.reply??'',/changed/);
   }finally{f.close();}
 });
+for(const change of ['native-id','owner','disabled','route','item','mode'] as const)test(`queued brief action fails closed before native dispatch when ${change} changes`,async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const calls:any[]=[];(f.router.native as any).run=async (...args:any[])=>{calls.push(args);};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    if(change==='native-id')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);
+    if(change==='owner')f.store.set('whatsapp-owner','other@s.whatsapp.net');
+    if(change==='disabled')f.store.enable(worker.id,false);
+    if(change==='route')f.store.set(`session-route:${worker.id}`,'changed');
+    if(change==='item')f.store.db.prepare('UPDATE items SET title=? WHERE id=?').run('Changed task',item.id);
+    if(change==='mode')f.store.db.prepare("UPDATE bindings SET mode='channel' WHERE id=?").run(worker.id);
+    f.router.busy.delete(worker.id);f.router.pump();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(calls.length,0);assert.equal(f.store.job('wa:action')?.status,'failed');assert.match(f.store.job('wa:action')?.error??'',/not sent/);
+    const notice=f.store.db.prepare("SELECT destination FROM outbox WHERE source='brief-action-error:wa:action:0'").get() as any;
+    if(change==='owner')assert.equal(notice,undefined);else assert.equal(notice?.destination,'owner@s.whatsapp.net');
+  }finally{f.close();}
+});
+test('a queued channel action is never delivered if its saved session identity changes',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp','channel').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:channel-action',text:'pause 1'}))).status,'queued');
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);
+    assert.equal(f.router.channelPoll(f.store.binding(worker.id)!,'client'),null);assert.equal(f.store.job('wa:channel-action')?.status,'failed');
+  }finally{f.close();}
+});
+test('a valid guarded channel action reaches only its bound channel once',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp','channel').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:channel-action',text:'go 1'}));
+    const job=f.router.channelPoll(worker,'client');assert.equal(job?.id,'wa:channel-action');assert.match(job?.body??'',/Do not repeat/);
+    assert.equal(f.router.channelPoll(worker,'client'),null);
+  }finally{f.close();}
+});
+test('a queued guarded action retains its owner and target checks after reopening the database',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}));
+    const reopened=new Store(join(f.dir,'test.db')),approvals=new Approvals(reopened),calls:any[]=[];
+    try{const native={run:async(...args:any[])=>{calls.push(args);},stop:()=>{}},router=new Router(reopened,native as any,approvals);router.coordinator=new Coordinator(reopened,native as any,router,()=>{});
+      reopened.set('whatsapp-owner','other@s.whatsapp.net');router.pump();await new Promise(resolve=>setImmediate(resolve));
+      assert.equal(calls.length,0);assert.equal(reopened.job('wa:action')?.status,'failed');
+    }finally{approvals.cancel();reopened.close();}
+  }finally{f.close();}
+});
+test('a guarded native action with an unverified legacy connection stops before delivery',async()=>{
+  const f=setup();try{
+    const {NativeAgents}=await import('../src/native.js');f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const native=f.router.native as any;native.store=f.store;native.connections={assert:async()=>{},route:()=>undefined};native.run=NativeAgents.prototype.run;
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:legacy-action',text:'go 1'}));
+    await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.store.job('wa:legacy-action')?.status,'failed');assert.match(f.store.job('wa:legacy-action')?.error??'',/no verified connection/);
+  }finally{f.close();}
+});
+for(const mode of ['native-preflight','managed-preflight','post-submit'] as const)test(`guarded ${mode} distinguishes not-sent from uncertain delivery`,async()=>{
+  const f=setup();try{
+    const {NativeAgents}=await import('../src/native.js'),{Masters}=await import('../src/masters.js');f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});f.router.uncertainNoticeMs=0;
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const route={transport:'managed-cli',executionMode:'cli'};f.store.set(`execution-mode:${worker.id}`,'cli');f.store.set(`session-route:${worker.id}`,JSON.stringify(route));
+    let sends=0;const native=f.router.native as any;native.store=f.store;native.connections={assert:async()=>{if(mode==='native-preflight')throw Error('synthetic secret failure');},route:()=>route};native.run=NativeAgents.prototype.run;
+    const managed=Object.create(Masters.prototype) as any;managed.store=f.store;managed.router=f.router;managed.connections={assert:async()=>{throw Error('synthetic secret failure');}};
+    native.managedRun=mode==='managed-preflight'?(...args:any[])=>managed.run(...args):async()=>{sends++;throw Error('delivery reply lost');};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:preflight-action',text:'go 1'}));
+    await new Promise(resolve=>setTimeout(resolve,20));const job=f.store.job('wa:preflight-action')!;
+    if(mode==='post-submit'){assert.equal(sends,1);assert.equal(job.status,'uncertain');}
+    else {assert.equal(sends,0);assert.equal(job.status,'failed');assert.match(job.error??'',/not sent/);assert.doesNotMatch(job.error??'',/synthetic secret/);
+      const notice=f.store.db.prepare("SELECT body FROM outbox WHERE source='brief-action-error:wa:preflight-action:0'").get() as any;assert.match(notice.body,/not sent/);}
+  }finally{f.close();}
+});
+for(const outcome of ['resolve','reject'] as const)test(`native readiness rechecks owner after an awaited connection check that ${outcome}s`,async()=>{
+  const f=setup();try{
+    const {NativeAgents}=await import('../src/native.js');f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    let release!:()=>void,fail!:(e:Error)=>void;const held=new Promise<void>((r,j)=>{release=r;fail=j;});const native=f.router.native as any;
+    native.store=f.store;native.connections={assert:async()=>held,route:()=>({transport:'native-session'})};native.run=NativeAgents.prototype.run;
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:wait-action',text:'go 1'}))).status,'queued');
+    assert.equal(f.store.job('wa:wait-action')?.status,'dispatched');f.store.set('whatsapp-owner','other@s.whatsapp.net');if(outcome==='resolve')release();else fail(Error('connection lookup failed'));
+    await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.store.job('wa:wait-action')?.status,'failed');assert.match(f.store.job('wa:wait-action')?.error??'',/not sent/);
+  }finally{f.close();}
+});
+test('desktop readiness cancels an unsent opening notice when the session changes mid-wait',async()=>{
+  const f=setup();try{
+    const {NativeAgents}=await import('../src/native.js');f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Task'),worker=f.store.register('worker','claude',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const route={transport:'native-session',executionMode:'desktop'};f.store.set(`execution-mode:${worker.id}`,'desktop');f.store.set(`session-route:${worker.id}`,JSON.stringify(route));
+    let started!:()=>void,release!:(value:any)=>void;const startedPromise=new Promise<void>(r=>started=r),held=new Promise<any>(r=>release=r);
+    const session={id:worker.native_id,cwd:worker.cwd,provider:'claude',executionMode:'desktop',activation:'desktop-open',available:false};const native=f.router.native as any;
+    native.store=f.store;native.connections={assert:async()=>{},route:()=>route};native.catalog=async()=>({sessions:[session]});native.activation={ready:()=>{started();return held;}};native.run=NativeAgents.prototype.run;
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:desktop-action',text:'go 1'}));await startedPromise;
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);release({...session,available:true});
+    await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.store.job('wa:desktop-action')?.status,'failed');assert.match(f.store.job('wa:desktop-action')?.error??'',/not sent/);
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source='native-opening:wa:desktop-action:0'").get() as any).status,'cancelled');
+  }finally{f.close();}
+});
 test('a linked pull request lookup failure is disclosed without fabricating a merge',async()=>{
   const f=setup();try{
     const item=addScoped(f,'wa:task','Task');f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.brain.memory.items.note(item.id,'https://github.com/Owner/Repo/pull/42',undefined,undefined,'wa:task'));

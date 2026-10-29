@@ -41,6 +41,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS item_owner_origins(item_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(item_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_note_origins(note_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(note_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_add_fingerprints(item_id INTEGER PRIMARY KEY,fingerprint TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS brief_dispatch_guards(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,target_id TEXT NOT NULL,target_identity TEXT NOT NULL,item_identity TEXT NOT NULL,assignment_id TEXT,body_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS hook_updates(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,turn_id TEXT,at INTEGER NOT NULL,text TEXT NOT NULL);
     `);
     if(!this.db.prepare('PRAGMA table_info(inbox)').all().some((c:any)=>c.name==='updated_at')) {
