@@ -2,7 +2,7 @@ import {authenticatedOwner} from './owner-commands.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
 import {ErrandMissions,ErrandSearchFailure,canonicalContract,canonicalSkills,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
-import {greenhouseBoardReader} from './errand-greenhouse.js';
+import {greenhouseBoardsReader} from './errand-greenhouse.js';
 import {wonderErrandRanker} from './errand-ranker.js';
 import {ErrandOrder} from './errand-order.js';
 import {parseErrandChoice} from './errand-choice.js';
@@ -11,7 +11,7 @@ import {hash,type Binding} from './store.js';
 import {toWhatsApp} from './whatsapp-format.js';
 import type {Incoming,Router} from './router.js';
 
-type Request={board:string;contract:ErrandContract};
+type Request={board:string|string[];contract:ErrandContract};
 type Guard={outbox_id:string;mission_id:string;root_request:string;request_id:string;owner:string;destination:string;binding_id:string;binding_identity:string;kind:string;body_hash:string;authority_generation:string};
 const draftText=(draft:{title:string;url:string;text:string})=>`Draft for ${draft.title}\n${draft.url}\n\n${draft.text}\n\nReview the listing and draft yourself. Application availability is unverified.`;
 
@@ -20,8 +20,9 @@ export function parseGreenhouseRequest(text:string):Request|undefined {
   if(!/^greenhouse jobs\s*;/i.test(text.trim()))return;
   const parts=text.trim().split(';').map(x=>x.trim());parts.shift();const values:Record<string,string>=Object.create(null);
   for(const part of parts){const m=/^(board|role|location|salary|avoid|skills)\s*=\s*(.+)$/i.exec(part);if(!m||values[m[1].toLowerCase()])throw new Error('Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary=, avoid= and skills=.');values[m[1].toLowerCase()]=m[2].trim();}
-  if(!/^[a-z0-9][a-z0-9_-]{0,49}$/.test(values.board??'')||!values.role||!values.location||Object.values(values).some(v=>v.length>120||/[\r\n\x00-\x1f]/.test(v)))throw new Error('Provide a board, role and location in the Greenhouse request.');
-  return {board:values.board,contract:canonicalContract({role:values.role,location:values.location,...(values.salary?{salary:values.salary}:{}),...(values.avoid?{avoid:values.avoid}:{}),...(values.skills?{skills:canonicalSkills(values.skills.split(','))}:{})})};
+  const boards=(values.board??'').split(',').map(v=>v.trim());
+  if(boards.length<1||boards.length>3||boards.some(board=>!/^[a-z0-9][a-z0-9_-]{0,49}$/.test(board))||new Set(boards).size!==boards.length||!values.role||!values.location||Object.entries(values).some(([key,value])=>value.length>(key==='board'?160:120)||/[\r\n\x00-\x1f]/.test(value)))throw new Error('Provide one to three distinct boards, a role and location in the Greenhouse request.');
+  return {board:boards.length===1?boards[0]:boards,contract:canonicalContract({role:values.role,location:values.location,...(values.salary?{salary:values.salary}:{}),...(values.avoid?{avoid:values.avoid}:{}),...(values.skills?{skills:canonicalSkills(values.skills.split(','))}:{})})};
 }
 
 /** Owner-scoped local orchestration. No application submission or contact exists. */
@@ -52,7 +53,7 @@ export class ErrandWorkflow {
         return !!row&&row.state==='searching'&&store.job(scope.requestId)?.status==='submitted'&&this.authorized(scope,JSON.parse(row.contract_json),row.root_request);
       }catch{return false;}
     };
-    const source=reader??greenhouseBoardReader(current);
+    const source=reader??greenhouseBoardsReader(current);
     const choose:ErrandRanker=ranker??(async(input,signal)=>{
       const context=this.rankScope.getStore();
       const currentRank=()=>{if(!context||signal.aborted)return false;try{
@@ -93,7 +94,9 @@ export class ErrandWorkflow {
   }
   private authorized(scope:ErrandScope,contract:ErrandContract,root:string) {
     const r=this.router,s=r.store,b=s.binding(scope.bindingId),rootJob=s.job(root);
-    if(r.stopped||s.controlChannel()!=='whatsapp'||scope.destination!==scope.owner||s.destination()!==scope.destination||s.ownerFor(scope.destination)!==scope.owner||!b?.enabled||!rootJob||!['submitted','completed'].includes(rootJob.status)||rootJob.binding_id!==b.id||rootJob.destination!==scope.destination||errandBindingIdentity(s,b)!==scope.bindingIdentity||s.get(`parent:${root}`)||s.get(`report-parent:${root}`))return false;
+    if(r.stopped||s.controlChannel()!=='whatsapp'||scope.destination!==scope.owner||s.destination()!==scope.destination||s.ownerFor(scope.destination)!==scope.owner||!b?.enabled||!rootJob||!['submitted','completed'].includes(rootJob.status)||['blocked','reviewed','cancelled'].includes(rootJob.outcome??'')||rootJob.binding_id!==b.id||rootJob.destination!==scope.destination||errandBindingIdentity(s,b)!==scope.bindingIdentity||s.get(`parent:${root}`)||s.get(`report-parent:${root}`))return false;
+    const mission=s.db.prepare('SELECT root_body_hash,state FROM errand_missions WHERE root_request=?').get(root) as {root_body_hash:string|null;state:string}|undefined;
+    if(mission&&(!mission.root_body_hash||mission.root_body_hash!==hash(rootJob.body)||mission.state==='invalidated'))return false;
     const origin=s.requestOwnerOrigin(root),caller=s.requestOwnerOrigin(scope.requestId);
     if(!origin||!caller||origin.owner!==scope.owner||origin.destination!==scope.destination||caller.owner!==scope.owner||caller.destination!==scope.destination)return false;
     const request=this.request(root);if(!request||JSON.stringify(request.contract)!==JSON.stringify(contract))return false;
@@ -164,7 +167,7 @@ export class ErrandWorkflow {
     }
     const generation=s.get('errand-authority-generation')??'';
     try{return await this.startExact(m);}catch(e){
-      const error=e instanceof Error?e.message:'',text=/^(Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary=, avoid= and skills=\.|Provide a board, role and location in the Greenhouse request\.|Provide one to five (?:distinct )?short skills\.|Select a session before finding jobs\.|The selected session changed\. Select it again\.)$/.test(error)?error:'Could not start this job search. Check the session and try again.';
+      const error=e instanceof Error?e.message:'',text=/^(Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary=, avoid= and skills=\.|Provide one to three distinct boards, a role and location in the Greenhouse request\.|Provide one to five (?:distinct )?short skills\.|Select a session before finding jobs\.|The selected session changed\. Select it again\.)$/.test(error)?error:'Could not start this job search. Check the session and try again.';
       try{this.notice(owner,d,generation,`errand-start-error:${m.id}`,text);}catch{}
       s.remember(m.id);return true;
     }

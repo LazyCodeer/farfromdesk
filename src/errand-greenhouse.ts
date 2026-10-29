@@ -157,11 +157,11 @@ export function greenhouseListingReader(current:(scope:ErrandScope)=>boolean,now
  * and contract; filtering happens locally and never sends owner criteria.
  * It does not search the whole web or infer salary or workplace eligibility.
  */
-export function greenhouseBoardReader(current:(scope:ErrandScope)=>boolean,now=()=>Date.now(),transport?:Transport):VerifiedListingReader {
+export function greenhouseBoardReader(current:(scope:ErrandScope)=>boolean,now=()=>Date.now(),transport?:Transport,maxCandidates=MAX_IDS):VerifiedListingReader {
   const exact=greenhouseListingReader(current,now,transport);
   return async(scope,raw,signal)=>{
     const q=raw as {board?:unknown;role?:unknown;location?:unknown}|null;
-    if(!q||typeof q.board!=='string'||!BOARD.test(q.board)||CREDENTIAL.test(q.board)||typeof q.role!=='string'||!q.role.trim()||q.role.length>120||typeof q.location!=='string'||!q.location.trim()||q.location.length>120)throw new Error('A Greenhouse board, role and location are required.');
+    if(!Number.isInteger(maxCandidates)||maxCandidates<1||maxCandidates>MAX_IDS||!q||typeof q.board!=='string'||!BOARD.test(q.board)||CREDENTIAL.test(q.board)||typeof q.role!=='string'||!q.role.trim()||q.role.length>120||typeof q.location!=='string'||!q.location.trim()||q.location.length>120)throw new Error('A Greenhouse board, role and location are required.');
     if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
     const response=await greenhouseGet('boards-api.greenhouse.io',`/v1/boards/${q.board}/jobs`,signal,transport,()=>current(scope));
     if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
@@ -174,7 +174,7 @@ export function greenhouseBoardReader(current:(scope:ErrandScope)=>boolean,now=(
       if(!item||typeof item.title!=='string'||typeof item.location?.name!=='string')continue;
       const id=typeof item.id==='number'&&Number.isSafeInteger(item.id)?String(item.id):typeof item.id==='string'?item.id:'';
       if(!/^[1-9][0-9]{0,17}$/.test(id)||ids.includes(id)||!norm(item.title).includes(role)||!norm(item.location.name).includes(location))continue;
-      ids.push(id);if(ids.length===MAX_IDS)break;
+      ids.push(id);if(ids.length===maxCandidates)break;
     }
     const listings:Listing[]=[];
     for(const id of ids){
@@ -188,5 +188,23 @@ export function greenhouseBoardReader(current:(scope:ErrandScope)=>boolean,now=(
       }
     }
     return listings;
+  };
+}
+
+/** Search only the owner's one to three explicit boards; never hide a failed board. */
+export function greenhouseBoardsReader(current:(scope:ErrandScope)=>boolean,now=()=>Date.now(),transport?:Transport):VerifiedListingReader {
+  return async(scope,raw,signal)=>{
+    const q=raw as {board?:unknown;role?:unknown;location?:unknown}|null;
+    const boards=typeof q?.board==='string'?[q.board]:q?.board;
+    if(!q||!Array.isArray(boards)||boards.length<1||boards.length>3||boards.some(b=>typeof b!=='string'||!BOARD.test(b)||CREDENTIAL.test(b))||new Set(boards).size!==boards.length||typeof q.role!=='string'||!q.role.trim()||q.role.length>120||typeof q.location!=='string'||!q.location.trim()||q.location.length>120)throw new Error('One to three distinct Greenhouse boards, a role and location are required.');
+    if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
+    const controller=new AbortController(),combined=AbortSignal.any([signal,controller.signal]);
+    // The ten-candidate budget is shared across boards; each board runs in
+    // parallel, with at most one request per board active at any time.
+    try{
+      const results=await Promise.all(boards.map((board,index)=>greenhouseBoardReader(current,now,transport,Math.floor(MAX_IDS/boards.length)+(index<MAX_IDS%boards.length?1:0))(scope,{board,role:q.role,location:q.location},combined)));
+      if(combined.aborted||!current(scope))throw new Error('The owner request changed.');
+      return results.flat();
+    }catch(error){controller.abort();throw error;}
   };
 }

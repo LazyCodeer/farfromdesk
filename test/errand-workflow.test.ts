@@ -260,10 +260,27 @@ test('delayed or misaddressed draft choices cannot select a newer shortlist',asy
 });
 test('an errand request accepts only exact owner-supplied criteria',()=>{
   assert.deepEqual(parseGreenhouseRequest(request),{board:'example',contract:{role:'Flutter',location:'Bangalore'}});
+  assert.deepEqual(parseGreenhouseRequest(request.replace('board=example','board=alpha, beta'))?.board,['alpha','beta']);
+  const longBoards=['a'.repeat(50),'b'.repeat(50),'c'.repeat(50)];
+  assert.deepEqual(parseGreenhouseRequest(request.replace('board=example',`board=${longBoards.join(', ')}`))?.board,longBoards);
+  for(const board of ['alpha,alpha','alpha,','alpha,beta,gamma,delta','alpha,../private'])assert.throws(()=>parseGreenhouseRequest(request.replace('board=example',`board=${board}`)));
   assert.deepEqual(parseGreenhouseRequest(request+'; skills=Dart, C++')?.contract.skills,['Dart','C++']);
   for(const bad of ['Dart,dart','Dart,','a,b,c,d,e,f','password=secret','https://example.com','A'.repeat(41)])assert.throws(()=>parseGreenhouseRequest(request+'; skills='+bad));
   assert.throws(()=>parseGreenhouseRequest(request+'; board=other'),/Use greenhouse/);
   assert.throws(()=>parseGreenhouseRequest(request+'; send applications=yes'),/Use greenhouse/);
+});
+test('an explicit multi-board request produces one ranked owner shortlist',async()=>{
+  const f=fixture();try{
+    const listings:Listing[]=['alpha','beta'].map((board,index)=>({sourceUrl:`https://boards-api.greenhouse.io/v1/boards/${board}/jobs/${index+1}`,url:`https://job-boards.greenhouse.io/${board}/jobs/${index+1}`,title:index?'Flutter Beta':'Flutter Alpha',excerpt:'Flutter Bangalore',observedAt:Date.now(),sourceHash:(index?'b':'a').repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000}));
+    let query:unknown;f.router.errands=new ErrandWorkflow(f.router,async(_scope,input)=>{query=input;return listings;},async rows=>[...rows].sort((a,b)=>b.title.localeCompare(a.title)).map(x=>x.id));
+    await f.wa.receiveMessage(f.msg('root',request.replace('board=example','board=alpha,beta')));await f.wa.flush();
+    assert.deepEqual(query,{board:['alpha','beta'],role:'Flutter',location:'Bangalore'});
+    assert.match(f.sent[0].content.text,/1\. Flutter Beta/);assert.match(f.sent[0].content.text,/2\. Flutter Alpha/);
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 2'));await f.wa.flush();
+    assert.ok(f.sent.some(x=>/Draft for Flutter Alpha/.test(x.content.text)));
+  }finally{f.close();}
 });
 test('extra spaces in criteria are normalized before search and authority checks',async()=>{
   const f=fixture();try{
@@ -348,6 +365,58 @@ test('session and route changes away and back invalidate queued owner output',as
       assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
     }finally{f.close();}
   }
+});
+test('changing the requested board while searching invalidates the mission even if restored',async()=>{
+  const f=fixture();let release!:()=>void;try{
+    const waiting=new Promise<void>(resolve=>{release=resolve;});
+    const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+    f.router.errands=new ErrandWorkflow(f.router,async()=>{await waiting;return [listing];},async rows=>rows.map(x=>x.id));
+    const pending=f.wa.receiveMessage(f.msg('root',request));await new Promise(resolve=>setImmediate(resolve));
+    f.store.db.prepare('UPDATE inbox SET body=? WHERE id=?').run(request.replace('board=example','board=other'),'wa:root');
+    f.store.db.prepare('UPDATE inbox SET body=? WHERE id=?').run(request,'wa:root');release();await pending;await f.wa.flush();
+    assert.equal((f.store.db.prepare('SELECT state FROM errand_missions').get() as {state:string}).state,'invalidated');
+    assert.equal(f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-shortlist:%'").get()?.n,0);
+  }finally{release?.();f.close();}
+});
+test('changing the requested board invalidates an already queued shortlist',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('root',request));
+    f.store.db.prepare('UPDATE inbox SET body=? WHERE id=?').run(request.replace('board=example','board=other'),'wa:root');
+    f.store.db.prepare('UPDATE inbox SET body=? WHERE id=?').run(request,'wa:root');await f.wa.flush();
+    assert.ok(f.sent.every(x=>!/Job shortlist/.test(x.content.text)));
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
+  }finally{f.close();}
+});
+test('changing the root request identity and restoring it invalidates queued output',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('root',request));
+    f.store.db.prepare('UPDATE inbox SET id=? WHERE id=?').run('wa:replacement','wa:root');
+    f.store.db.prepare('UPDATE inbox SET id=? WHERE id=?').run('wa:root','wa:replacement');await f.wa.flush();
+    assert.ok(f.sent.every(x=>!/Job shortlist/.test(x.content.text)));
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
+  }finally{f.close();}
+});
+test('root replacement, destination changes and unsafe status changes cannot revive queued output',async()=>{
+  for(const mode of ['replace','destination','uncertain','queued','dispatched','outcome'] as const){
+    const f=fixture();try{
+      await f.wa.receiveMessage(f.msg('root',request));
+      if(mode==='replace')f.store.db.prepare('INSERT OR REPLACE INTO inbox SELECT * FROM inbox WHERE id=?').run('wa:root');
+      if(mode==='destination'){f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run('other@s.whatsapp.net','wa:root');f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run(owner,'wa:root');}
+      if(mode==='uncertain'||mode==='queued'||mode==='dispatched'){f.store.db.prepare('UPDATE inbox SET status=? WHERE id=?').run(mode,'wa:root');f.store.db.prepare("UPDATE inbox SET status='submitted' WHERE id=?").run('wa:root');}
+      if(mode==='outcome'){f.store.db.prepare("UPDATE inbox SET outcome='cancelled' WHERE id=?").run('wa:root');f.store.db.prepare('UPDATE inbox SET outcome=NULL WHERE id=?').run('wa:root');}
+      await f.wa.flush();assert.ok(f.sent.every(x=>!/Job shortlist/.test(x.content.text)),mode);
+      assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled',mode);
+    }finally{f.close();}
+  }
+});
+test('rolling back an attempted root mutation also rolls back invalidation',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('root',request));f.store.db.exec('SAVEPOINT synthetic_rollback');
+    f.store.db.prepare('UPDATE inbox SET body=? WHERE id=?').run(request.replace('board=example','board=other'),'wa:root');
+    assert.equal((f.store.db.prepare('SELECT state FROM errand_missions').get() as {state:string}).state,'invalidated');
+    f.store.db.exec('ROLLBACK TO synthetic_rollback; RELEASE synthetic_rollback');await f.wa.flush();
+    assert.ok(f.sent.some(x=>/Job shortlist/.test(x.content.text)));
+  }finally{f.close();}
 });
 test('quoted, forwarded and voice job searches receive guarded instructions instead of disappearing',async()=>{
   for(const kind of ['quoted','forwarded','voice'] as const){

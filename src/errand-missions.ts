@@ -25,7 +25,7 @@ export type ShortlistOrderProof=(scope:ErrandScope,outboxId:string)=>boolean;
 export class ErrandSearchFailure extends Error {
   constructor(readonly reason:'no-evidence'|'unsupported-exclusion'|'exclusion-unverified',message:string){super(message);}
 }
-type Mission={id:string;root_request:string;owner:string;destination:string;binding_id:string;binding_identity:string;contract_json:string;contract_hash:string;state:string;version:number;created_at:number};
+type Mission={id:string;root_request:string;owner:string;destination:string;binding_id:string;binding_identity:string;contract_json:string;contract_hash:string;root_body_hash:string|null;state:string;version:number;created_at:number};
 type Candidate={id:string;mission_id:string;source_url:string;url:string;title:string;excerpt:string;listing_location:string|null;listing_employer:string|null;observed_at:number;source_hash:string;workplace:Workplace;verification:string;application_deadline:number|null;position:number|null};
 const MAX_CANDIDATES=40,MAX_TITLE=160,MAX_EXCERPT=600,MAX_AGE=24*60*60*1000,NO_DEADLINE_MAX_AGE=60*60*1000;
 // Defense in depth only; a trusted source must still exclude private content.
@@ -108,7 +108,7 @@ export class ErrandMissions {
     store.db.exec(`CREATE TABLE IF NOT EXISTS errand_missions(
       id TEXT PRIMARY KEY,root_request TEXT UNIQUE NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,
       binding_id TEXT NOT NULL,binding_identity TEXT NOT NULL,contract_json TEXT NOT NULL,contract_hash TEXT NOT NULL,
-      state TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL);
+      state TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL,root_body_hash TEXT);
       CREATE TABLE IF NOT EXISTS errand_candidates(
       id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES errand_missions(id),source_url TEXT NOT NULL,url TEXT NOT NULL,
       title TEXT NOT NULL,excerpt TEXT NOT NULL,listing_location TEXT,listing_employer TEXT,observed_at INTEGER NOT NULL,source_hash TEXT NOT NULL,workplace TEXT NOT NULL DEFAULT 'unknown',verification TEXT NOT NULL DEFAULT 'unverified',application_deadline INTEGER,position INTEGER,
@@ -117,6 +117,21 @@ export class ErrandMissions {
       outbox_id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES errand_missions(id),owner TEXT NOT NULL,destination TEXT NOT NULL,root_request TEXT NOT NULL,body_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS errand_draft_claims(
       request_id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES errand_missions(id),candidate_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,draft_json TEXT,candidate_hash TEXT,profile_revision TEXT);`);
+    if(!store.db.prepare('PRAGMA table_info(errand_missions)').all().some((c:any)=>c.name==='root_body_hash'))store.db.exec('ALTER TABLE errand_missions ADD COLUMN root_body_hash TEXT');
+    store.db.exec(`CREATE TRIGGER IF NOT EXISTS errand_root_body_change_v1 AFTER UPDATE OF body ON inbox WHEN OLD.body IS NOT NEW.body
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=NEW.id AND state NOT IN ('cancelled','invalidated'); END;
+      CREATE TRIGGER IF NOT EXISTS errand_root_id_change_v1 AFTER UPDATE OF id ON inbox WHEN OLD.id IS NOT NEW.id
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=OLD.id AND state NOT IN ('cancelled','invalidated'); END;
+      CREATE TRIGGER IF NOT EXISTS errand_root_scope_change_v1 AFTER UPDATE OF binding_id,destination ON inbox WHEN OLD.binding_id IS NOT NEW.binding_id OR OLD.destination IS NOT NEW.destination
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=OLD.id AND state NOT IN ('cancelled','invalidated'); END;
+      CREATE TRIGGER IF NOT EXISTS errand_root_unsafe_status_v2 AFTER UPDATE OF status ON inbox WHEN OLD.status IS NOT NEW.status AND NEW.status NOT IN ('submitted','completed')
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=OLD.id AND state NOT IN ('cancelled','invalidated'); END;
+      CREATE TRIGGER IF NOT EXISTS errand_root_unsafe_outcome_v1 AFTER UPDATE OF outcome ON inbox WHEN OLD.outcome IS NOT NEW.outcome AND NEW.outcome IN ('blocked','reviewed','cancelled')
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=OLD.id AND state NOT IN ('cancelled','invalidated'); END;
+      CREATE TRIGGER IF NOT EXISTS errand_root_delete_v1 AFTER DELETE ON inbox
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=OLD.id AND state NOT IN ('cancelled','invalidated'); END;
+      CREATE TRIGGER IF NOT EXISTS errand_root_insert_v1 AFTER INSERT ON inbox
+      BEGIN UPDATE errand_missions SET state='invalidated',version=version+1 WHERE root_request=NEW.id AND state NOT IN ('cancelled','invalidated'); END;`);
     // Existing local prototypes have no workplace attestation; never infer one.
     if(!store.db.prepare('PRAGMA table_info(errand_candidates)').all().some((c:any)=>c.name==='workplace'))store.db.exec("ALTER TABLE errand_candidates ADD COLUMN workplace TEXT NOT NULL DEFAULT 'unknown'");
     if(!store.db.prepare('PRAGMA table_info(errand_candidates)').all().some((c:any)=>c.name==='verification'))store.db.exec("ALTER TABLE errand_candidates ADD COLUMN verification TEXT NOT NULL DEFAULT 'unverified'");
@@ -140,7 +155,8 @@ export class ErrandMissions {
   }
   private mission(id:string,scope:ErrandScope):Mission {
     const row=this.store.db.prepare('SELECT * FROM errand_missions WHERE id=?').get(id) as Mission|undefined;
-    if(!row||row.owner!==scope.owner||row.destination!==scope.destination||row.binding_id!==scope.bindingId||row.binding_identity!==scope.bindingIdentity||!this.active(scope)||row.state==='cancelled')throw new Error('This errand is unavailable for the current owner and session.');
+    const root=row&&this.store.job(row.root_request);
+    if(!row||row.owner!==scope.owner||row.destination!==scope.destination||row.binding_id!==scope.bindingId||row.binding_identity!==scope.bindingIdentity||!this.active(scope)||!root||!row.root_body_hash||row.root_body_hash!==hash(root.body)||['cancelled','invalidated'].includes(row.state))throw new Error('This errand is unavailable for the current owner and session.');
     const contract=JSON.parse(row.contract_json) as ErrandContract;
     if(digest(row.contract_json)!==row.contract_hash||!this.approved(scope,contract,row.root_request))throw new Error('The approved errand contract is unavailable or changed.');
     return row;
@@ -154,8 +170,9 @@ export class ErrandMissions {
     const contract=canonicalContract(input),json=JSON.stringify(contract);
     if(!this.active(scope)||!this.approved(scope,contract,scope.requestId))throw new Error('An approved owner request and exact session are required.');
     const existing=this.store.db.prepare('SELECT * FROM errand_missions WHERE root_request=?').get(scope.requestId) as Mission|undefined;
-    if(existing){if(existing.owner!==scope.owner||existing.destination!==scope.destination||existing.binding_id!==scope.bindingId||existing.binding_identity!==scope.bindingIdentity||existing.contract_hash!==digest(json)||existing.state==='cancelled')throw new Error('This request already belongs to a different or cancelled errand.');return existing.id;}
-    const id=randomUUID();this.store.db.prepare('INSERT INTO errand_missions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,scope.requestId,scope.owner,scope.destination,scope.bindingId,scope.bindingIdentity,json,digest(json),'searching',1,this.now());return id;
+    const root=this.store.job(scope.requestId);if(!root)throw new Error('The original owner request is unavailable.');
+    if(existing){if(existing.owner!==scope.owner||existing.destination!==scope.destination||existing.binding_id!==scope.bindingId||existing.binding_identity!==scope.bindingIdentity||existing.contract_hash!==digest(json)||existing.root_body_hash!==hash(root.body)||['cancelled','invalidated'].includes(existing.state))throw new Error('This request already belongs to a different or cancelled errand.');return existing.id;}
+    const id=randomUUID();this.store.db.prepare('INSERT INTO errand_missions(id,root_request,owner,destination,binding_id,binding_identity,contract_json,contract_hash,state,version,created_at,root_body_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,scope.requestId,scope.owner,scope.destination,scope.bindingId,scope.bindingIdentity,json,digest(json),'searching',1,this.now(),hash(root.body));return id;
   }
   /** `readListings` must verify public pages independently and bind every result to this exact request. */
   async gather(id:string,scope:ErrandScope,query:unknown,signal:AbortSignal) {

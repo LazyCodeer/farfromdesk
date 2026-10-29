@@ -6,7 +6,8 @@ role=Engineer; location=Bangalore`, with optional `salary=`, `avoid=` or
 `skills=Dart, Flutter` fields. Only skills explicitly supplied in that request
 are used to annotate literal title mentions without changing the ranking.
 Those mentions do not establish a requirement, qualification or fit.
-It searches only that public board, preserves F3 review when applicable, and
+The owner may list up to three distinct boards in `board=alpha,beta,gamma`.
+It searches only those public boards, preserves F3 review when applicable, and
 prepares an owner-only text draft after a delivered shortlist and a reply with
 the displayed code, for example `draft 2 1a2b3c4d`. A bare `draft 2` works only
 while exactly one shortlist has been delivered in that owner chat.
@@ -66,9 +67,12 @@ normal owner-only outbox and draft claim retain selected profile notes.
   service end-to-end. API or page changes, redirects and links with query
   parameters fail closed. The generic API and page checks are not proof that a
   job matches the owner's criteria.
-  The board search sends only the board identifier and filters role and
-  location locally. It checks at most ten candidates and propagates transport
-  failures. It is not general internet search and does not verify salary or
+  The board search sends only the board identifiers and filters role and
+  location locally. Across the selected boards it checks at most ten candidates,
+  divided into fixed per-board quotas (5/5 or 4/3/3). Unused slots are not
+  reassigned, and unverifiable candidates consume a slot. Failures propagate
+  without returning a partial shortlist. The source operation has a 30-second
+  overall limit and may time out on slow boards. It is not general internet search and does not verify salary or
   workplace eligibility. The separately stored public location is the API's
   field, not an inference from the owner's requested location; it does not
   establish geographic eligibility. The employer label is a bounded page-title
@@ -145,6 +149,11 @@ normal owner-only outbox and draft claim retain selected profile notes.
   Search, shortlist and draft output are limited to the direct owner chat;
   owned-group membership is not treated as proof of private delivery. A group
   gets only a fixed instruction to use the direct chat.
+  The root owner-request body (including all selected boards) is bound to the
+  mission. Root body, identity, destination, binding or unsafe status/outcome changes
+  invalidate it even if the previous value is restored; legacy missions lacking
+  this binding fail closed. If the root ID is changed and never restored, the
+  moved inbox row needs manual recovery; guarded output remains blocked.
 - Draft selection also requires a bridge-owned ingress ordering proof for the
   authenticated owner message and the exact delivered shortlist. An initial
   WhatsApp adapter captures a typed draft choice before async group checks,

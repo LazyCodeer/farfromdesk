@@ -148,7 +148,7 @@ test('a colliding shortlist code fails closed',async()=>{
     await f.ledger.gather(f.id,f.scope,{},new AbortController().signal);await f.ledger.shortlist(f.id,f.scope,new AbortController().signal);
     deliver(f.store,queueShortlist(f.store,f.ledger,f.id,f.scope));
     const collision=`${shortlistReference(f.id)}-0000-4000-8000-000000000000`;
-    f.store.db.prepare(`INSERT INTO errand_missions SELECT ?,root_request||':collision',owner,destination,binding_id,binding_identity,contract_json,contract_hash,state,version,created_at FROM errand_missions WHERE id=?`).run(collision,f.id);
+    f.store.db.prepare(`INSERT INTO errand_missions(id,root_request,owner,destination,binding_id,binding_identity,contract_json,contract_hash,state,version,created_at,root_body_hash) SELECT ?,root_request||':collision',owner,destination,binding_id,binding_identity,contract_json,contract_hash,state,version,created_at,root_body_hash FROM errand_missions WHERE id=?`).run(collision,f.id);
     f.store.db.prepare('INSERT INTO errand_shortlist_messages VALUES(?,?,?,?,?,?)').run('synthetic-collision',collision,f.owner,f.owner,'wa:collision','a'.repeat(64));
     const choice=f.request('wa:collision-choice',`draft 1 ${shortlistReference(f.id)}`);
     assert.throws(()=>f.ledger.draft(f.id,choice,1),/code is unavailable/);

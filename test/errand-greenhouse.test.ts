@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import type {request as httpsRequest} from 'node:https';
-import {greenhouseBoardReader,greenhouseGet,greenhouseListingReader,publicGreenhouseAddress,requestPinned} from '../src/errand-greenhouse.js';
+import {greenhouseBoardReader,greenhouseBoardsReader,greenhouseGet,greenhouseListingReader,publicGreenhouseAddress,requestPinned} from '../src/errand-greenhouse.js';
 import {greenhousePageIdentity} from '../src/errand-greenhouse-page.js';
 import type {ErrandScope} from '../src/errand-missions.js';
 
@@ -112,6 +112,39 @@ test('searches only the authorized board, matching role and location locally and
   assert.equal(result.length,1);assert.equal(result[0].verification,'public-listing-published');
   assert.deepEqual(calls.map(x=>x.path),['/v1/boards/example/jobs','/v1/boards/example/jobs/12345','/example/jobs/12345']);
   assert.ok(calls.every(x=>!x.path.includes('Flutter')&&!x.path.includes('Bangalore')&&!x.path.includes('?')));
+});
+test('multiple explicit boards are checked independently without sending search criteria',async()=>{
+  const calls:{host:string;path:string}[]=[];
+  const fake={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>{
+    calls.push({host,path});const match=/^\/(?:v1\/boards\/)?(alpha|beta)\/jobs(?:\/(\d+))?$/.exec(path)!;
+    const board=match[1],id=board==='alpha'?101:202,title='Flutter Engineer';
+    if(host==='boards-api.greenhouse.io')return {status:200,contentType:'application/json',body:JSON.stringify(match[2]?{id,title,location:{name:'Bangalore'},absolute_url:`https://job-boards.greenhouse.io/${board}/jobs/${id}`}:{jobs:[{id,title,location:{name:'Bangalore'}}]})};
+    return {status:200,contentType:'text/html',body:`<!DOCTYPE html><html><head><title>Job Application for ${title} at Example</title><meta property="og:url" content="https://job-boards.greenhouse.io/${board}/jobs/${id}"/></head><body><h1 class="section-header">${title}</h1><form id="application-form"></form></body></html>`};
+  }};
+  const rows=await greenhouseBoardsReader(()=>true,()=>1234,fake)(scope,{board:['alpha','beta'],role:'Flutter',location:'Bangalore'},new AbortController().signal);
+  assert.deepEqual(rows.map(r=>r.url),['https://job-boards.greenhouse.io/alpha/jobs/101','https://job-boards.greenhouse.io/beta/jobs/202']);
+  assert.equal(calls.length,6);assert.ok(calls.every(c=>!c.path.includes('Flutter')&&!c.path.includes('Bangalore')));
+});
+test('multiple-board search fails closed on invalid input or a later board failure',async()=>{
+  let calls=0;
+  const fake={resolve:async()=>['8.8.8.8'],request:async(_host:string,path:string)=>{calls++;if(path.includes('/beta/'))throw new Error('Synthetic transport failure');return {status:200,contentType:'application/json',body:JSON.stringify({jobs:[]})};}};
+  const reader=greenhouseBoardsReader(()=>true,()=>1234,fake);
+  for(const board of [['alpha','alpha'],['alpha','beta','gamma','delta'],['alpha','../private'],['alpha','sk-'+ 'a'.repeat(20)]])await assert.rejects(reader(scope,{board,role:'Flutter',location:'Bangalore'},new AbortController().signal));
+  assert.equal(calls,0);
+  await assert.rejects(reader(scope,{board:['alpha','beta'],role:'Flutter',location:'Bangalore'},new AbortController().signal),/Synthetic transport failure/);
+  assert.equal(calls,2);
+});
+test('multiple-board search shares a ten-candidate budget',async()=>{
+  const exactCalls:Record<string,number>={alpha:0,beta:0,gamma:0};
+  const fake={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>{
+    const match=/^\/(?:v1\/boards\/)?(alpha|beta|gamma)\/jobs(?:\/(\d+))?$/.exec(path)!;
+    const board=match[1],title='Flutter Engineer';
+    if(!match[2])return {status:200,contentType:'application/json',body:JSON.stringify({jobs:Array.from({length:12},(_,i)=>({id:i+1,title,location:{name:'Bangalore'}}))})};
+    const id=Number(match[2]);if(host==='boards-api.greenhouse.io'){exactCalls[board]++;return {status:200,contentType:'application/json',body:JSON.stringify({id,title,location:{name:'Bangalore'},absolute_url:`https://job-boards.greenhouse.io/${board}/jobs/${id}`})};}
+    return {status:200,contentType:'text/html',body:`<!DOCTYPE html><html><head><title>Job Application for ${title} at Example</title><meta property="og:url" content="https://job-boards.greenhouse.io/${board}/jobs/${id}"/></head><body><h1 class="section-header">${title}</h1><form id="application-form"></form></body></html>`};
+  }};
+  const rows=await greenhouseBoardsReader(()=>true,()=>1234,fake)(scope,{board:['alpha','beta','gamma'],role:'Flutter',location:'Bangalore'},new AbortController().signal);
+  assert.equal(rows.length,10);assert.deepEqual(exactCalls,{alpha:4,beta:3,gamma:3});
 });
 test('board search does not turn a transport failure into an empty result',async()=>{
   const fake={resolve:async()=>['8.8.8.8'],request:async(_host:string,path:string)=>{
