@@ -62,8 +62,9 @@ const noSpeech=(text:unknown)=>{
   return t;
 };
 
-export async function transcribeCloud(provider:CloudProvider,key:string,path:string,mime:string,signal?:AbortSignal,options:{fetcher?:Fetch;pollMs?:number}={}) {
-  const fetcher=options.fetcher??fetch,audio=await readFile(path);
+export async function transcribeCloud(provider:CloudProvider,key:string,path:string,mime:string,signal?:AbortSignal,options:{fetcher?:Fetch;pollMs?:number;authorize?:()=>void}={}) {
+  const rawFetch=options.fetcher??fetch,fetcher:Fetch=(...args)=>{options.authorize?.();return rawFetch(...args);};
+  options.authorize?.();const audio=await readFile(path);options.authorize?.();
   if(provider==='deepgram') {
     // nova-3 with language=multi handles English, Hindi and code-switched speech.
     const d=await call(fetcher,provider,'https://api.deepgram.com/v1/listen?model=nova-3&language=multi&smart_format=true',{method:'POST',headers:{authorization:`Token ${key}`,'content-type':mime},body:audio},120000,signal);

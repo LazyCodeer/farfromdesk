@@ -30,7 +30,7 @@ export function optionsMarkup(store:Store,outboxId:string){
 }
 /** Caller supplies an authenticated channel identity. Queueing and consumption are one transaction.
  * No approval handler or slash-command parser sees an option label. */
-export function selectOption(store:Store,input:{responseId:string;destination:string;messageId:string;token?:string;number?:number},queue:(bindingId:string,text:string)=>void,chooseTarget?:(requestId:string,choiceId:string)=>void){
+export function previewOption(store:Store,input:{responseId:string;destination:string;messageId:string;token?:string;number?:number},allowTarget=false){
   const match=input.token?/^opt:([A-Za-z0-9_-]{24}):([1-6])$/.exec(input.token):undefined;
   if(input.token&&!match)throw new Error('Invalid choice.');
   const row=store.db.prepare(`SELECT o.*,b.wa_id,b.status FROM message_options o JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?`).get(input.messageId,input.destination) as any;
@@ -38,13 +38,18 @@ export function selectOption(store:Store,input:{responseId:string;destination:st
   if(match&&row.id!==match[1])throw new Error('This choice does not belong to that message.');
   if(store.controlChannel()!==(input.destination.startsWith('tg:')?'telegram':'whatsapp')||(!row.owner||store.ownerFor(input.destination)!==row.owner||input.destination!==row.owner&&(store.get('destination-jid')!==input.destination||!store.get(`owned-group:${input.destination}`)))||row.status!=='sent'||row.expires_at<=Date.now())throw new Error('These choices expired or are unavailable. Ask for fresh choices.');
   const target=!!store.db.prepare('SELECT 1 FROM owner_target_options WHERE option_id=?').get(row.id);
-  if(target&&!chooseTarget)throw new Error('Choose this session using its original target list.');
+  if(target&&!allowTarget)throw new Error('Choose this session using its original target list.');
   const job=store.job(row.request_id);
   if(!target&&(!job||job.binding_id!==row.binding_id||job.destination!==input.destination||!store.binding(row.binding_id)?.enabled||['replaced','cancelled','reviewed','auto_closed'].includes(job.status)))throw new Error('The original request is no longer available.');
   const index=match?Number(match[2]):input.number;
   const choices=JSON.parse(row.choices);
   const choice=target&&!match?choices.find((c:any)=>c.id===`target${index}`):choices[Number(index)-1];
   if(!choice)throw new Error('Choose one of the offered numbers.');
+  return {row,target,choice,body:`Owner selected an offered answer for request ${row.request_id}: ${JSON.stringify(choice)}. This is a message choice, not a native permission grant. Preserve the original task scope.`};
+}
+export function selectOption(store:Store,input:{responseId:string;destination:string;messageId:string;token?:string;number?:number},queue:(bindingId:string,text:string)=>void,chooseTarget?:(requestId:string,choiceId:string)=>void){
+  const preview=previewOption(store,input,!!chooseTarget);if(!preview)return false;
+  const {row,target,choice,body}=preview;
   if(row.selected_id){if(row.selected_id===choice.id)return true;throw new Error('This question already has an answer.');}
   store.db.exec('SAVEPOINT choose_option');
   try{
@@ -52,7 +57,7 @@ export function selectOption(store:Store,input:{responseId:string;destination:st
     if(changed.changes){
       if(target)chooseTarget!(row.request_id,choice.id);
       else {const item=store.itemOf(row.request_id);if(item)store.linkItem(input.responseId,item);
-      queue(row.binding_id,`Owner selected an offered answer for request ${row.request_id}: ${JSON.stringify(choice)}. This is a message choice, not a native permission grant. Preserve the original task scope.`);}
+      queue(row.binding_id,body);}
       store.remember(input.responseId);
     }
     store.db.exec('RELEASE choose_option');

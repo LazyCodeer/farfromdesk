@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync } from 'node:fs';
@@ -14,7 +15,7 @@ const {WhatsApp}=await import('../src/whatsapp.js');
 
 function fixture(){
   const store=new Store(':memory:'),approvals=new Approvals(store),native={run:async()=>{},stop:()=>{}},router=new Router(store,native as any,approvals);
-  store.set('whatsapp-owner','owner@s.whatsapp.net');store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowStatus:true}));
+  store.set('whatsapp-owner','owner@s.whatsapp.net');store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowStatus:true}));
   const secret=new MetaSecret(root);secret.save('synthetic-transport-key');router.brain=new MetaBrain(store,secret,{interpret:async()=>{throw Error('unused');}});
   const brief=new MorningBrief(store,router,async()=>({opening:'Hello.',priorities:[]}));
   const wa=new WhatsApp(store,router);wa.status='connected';wa.selfJid='owner@s.whatsapp.net';wa.owners=[wa.selfJid];

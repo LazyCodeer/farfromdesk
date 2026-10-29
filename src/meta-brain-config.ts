@@ -9,9 +9,9 @@ import type { Store } from './store.js';
 // No custom hosts or Contributor models: never redirect credentials or opt into data sharing.
 export const META_ENDPOINT='https://api.meta.ai/v1/chat/completions';
 export const META_MODELS=['muse-spark-1.3','muse-spark-1.2','muse-spark-1.1','muse-wonder-1.0'] as const;
-export const BrainPolicy=z.object({enabled:z.boolean(),model:z.enum(META_MODELS),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(['codex','claude'])).max(2),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true)}).strict();
+export const BrainPolicy=z.object({enabled:z.boolean(),model:z.enum(META_MODELS),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(['codex','claude'])).max(2),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true),taskContracts:z.boolean().default(true)}).strict();
 export type BrainPolicy=z.infer<typeof BrainPolicy>;
-export const DEFAULT_BRAIN:BrainPolicy={enabled:false,model:'muse-wonder-1.0',allowRouting:false,allowStatus:true,allowManagement:false,providers:[],failure:'legacy',notes:'',learn:true};
+export const DEFAULT_BRAIN:BrainPolicy={enabled:false,model:'muse-wonder-1.0',allowRouting:false,allowStatus:true,allowManagement:false,providers:[],failure:'legacy',notes:'',learn:true,taskContracts:true};
 export function brainPolicy(store:Store):BrainPolicy {try{return BrainPolicy.parse(JSON.parse(store.get('meta-brain-policy')??'null'));}catch{return {...DEFAULT_BRAIN};}}
 const keyPath=(root:string)=>join(root,'meta-model-api-key');
 export class MetaSecret {
@@ -28,6 +28,9 @@ export class MetaSecret {
 export function brainView(store:Store,secret:MetaSecret) {const policy=brainPolicy(store);return {...policy,configured:secret.present(),state:!policy.enabled?'disabled':secret.present()?'configured':'missing-key',models:META_MODELS};}
 export function saveBrainConfig(store:Store,secret:MetaSecret,input:unknown) {
   const d=z.object({policy:BrainPolicy,key:z.string().optional(),removeKey:z.boolean().optional()}).strict().parse(input);
+  // Older desktop clients omit the new setting; saving another preference must not re-enable it.
+  const submitted=(input as {policy?:Record<string,unknown>})?.policy;
+  if(submitted&&submitted.taskContracts===undefined)d.policy.taskContracts=brainPolicy(store).taskContracts;
   if(d.removeKey&&d.key)throw new Error('Choose save or remove key.');
   if(d.key)secret.save(d.key);
   if(d.removeKey)secret.remove();

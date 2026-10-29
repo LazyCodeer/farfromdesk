@@ -69,6 +69,35 @@ class MetaGateway extends PreviewGateway {
 }
 
 void main() {
+  testWidgets('task contract review can be switched off in Brain settings', (
+    tester,
+  ) async {
+    final api = MetaGateway();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MetaBrainPanel(
+              gateway: api,
+              saved: const {'enabled': true, 'taskContracts': true},
+              onSaved: () async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    final setting = find.ancestor(
+      of: find.text('Review unclear coding tasks'),
+      matching: find.byType(SwitchListTile),
+    );
+    await tester.ensureVisible(setting);
+    expect(tester.widget<SwitchListTile>(setting).value, isTrue);
+    await tester.tap(setting);
+    await tester.pumpAndSettle();
+    expect(api.submitted?['policy']['taskContracts'], isFalse);
+    expect(tester.widget<SwitchListTile>(setting).value, isFalse);
+  });
+
   for (final savedModel in [null, 'muse-spark-1.2']) {
     testWidgets(
       'model selection ${savedModel ?? 'defaults to Wonder'} is retained',

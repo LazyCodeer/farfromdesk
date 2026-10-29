@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -11,7 +12,7 @@ async function setup() {
   const [{Store},{MetaBrain},{MetaSecret,DEFAULT_BRAIN,saveBrainConfig}]=await Promise.all([import('../src/store.js'),import('../src/meta-brain.js'),import('../src/meta-brain-config.js')]);
   const store=new Store(':memory:');store.set('whatsapp-owner','synthetic-owner');
   const secret=new MetaSecret(root);secret.save('synthetic-review-key-not-real');
-  const policy={...DEFAULT_BRAIN,enabled:true,learn:true};saveBrainConfig(store,secret,{policy});
+  const policy={...DEFAULT_BRAIN,taskContracts:false,enabled:true,learn:true};saveBrainConfig(store,secret,{policy});
   return {root,store,secret,policy,saveBrainConfig,MetaBrain,done:()=>{store.close();rmSync(root,{recursive:true,force:true});}};
 }
 const router=()=>({stopped:false,coordinator:undefined,native:{},approvals:{pending:new Map()}}) as any;

@@ -5,6 +5,7 @@ import {interpretSchedule,type ScheduleInterpreter} from './schedule-model.js';
 import {addDay,localDate,localInstants,nextOccurrence,validZone,type Recurrence} from './schedule-time.js';
 import {hash,type Binding,type Store} from './store.js';
 import type {Incoming,Router} from './router.js';
+import type {ContractSchedule} from './task-contracts.js';
 
 type Action='message'|'brief'|'session';
 type Row={id:string;owner:string;destination:string;channel:string;action:Action;text:string;binding_id:string|null;binding_identity:string|null;date:string;time:string;zone:string;repeat:Recurrence;next_at:number;status:string;created_at:number};
@@ -39,13 +40,13 @@ function briefDirective(original:string):string|undefined {
 }
 function explicitSessionDispatch(original:string,target:string,body:string):{directive:string;action:string}|undefined {
   // A model cannot turn "remind me to ..." or a negated request into a live task.
-  if(/\b(?:remind\s+me|do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original))return;
+  if(/\bremind\s+me\b/i.test(original))return;
   const name=normalized(target).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   if(!name)return;
   const match=new RegExp(`\\b(?:ask|tell)\\s+(?:session\\s+)?${name}\\s+to\\s+`,'iu').exec(original);
   // Every qualifier after "ask SESSION to" remains part of the task. A substring
   // such as "deploy" must not replace "check whether it is safe to deploy".
-  if(!match||cleanAction(original.slice(match.index+match[0].length))!==cleanAction(body))return;
+  if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||cleanAction(original.slice(match.index+match[0].length))!==cleanAction(body))return;
   // Timing is checked only against the directive, not words inside the task.
   return {directive:original.slice(0,match.index+match[0].length),action:original.slice(match.index+match[0].length).trim()};
 }
@@ -114,7 +115,7 @@ export class Schedules {
   private clarification(destination:string){try{return JSON.parse(this.store.get(clarifyKey(destination))??'null') as {owner:string;expires:number}|null;}catch{return null;}}
   isScheduleLike(text:string){return candidate(text.trim());}
   private list(m:Incoming,destination:string,owner:string) {
-    const rows=this.store.db.prepare("SELECT * FROM schedules WHERE owner=? AND destination=? AND status='active' ORDER BY next_at,id LIMIT 100").all(owner,destination) as Row[];
+    const rows=this.store.db.prepare(`SELECT s.* FROM schedules s WHERE s.owner=? AND s.destination=? AND (s.status='active' OR (s.status='done' AND EXISTS(SELECT 1 FROM schedule_occurrences o JOIN schedule_jobs j ON j.occurrence_id=o.id JOIN inbox i ON i.id=j.job_id WHERE o.schedule_id=s.id AND i.status IN ('queued','dispatched')))) ORDER BY s.next_at,s.id LIMIT 100`).all(owner,destination) as Row[];
     this.store.set(scheduleKey(destination),JSON.stringify({owner,destination,expires:this.now()+600000,ids:rows.map(r=>r.id)}));
     const lines=rows.map((r,i)=>`${i+1}. ${r.action==='brief'?'Morning brief':r.text} · ${new Intl.DateTimeFormat('en-IN',{timeZone:r.zone,dateStyle:'medium',timeStyle:'short'}).format(r.next_at)} (${r.zone}${r.repeat==='once'?'':`, ${r.repeat}`})`);
     this.answer(m,lines.length?`Your reminders:\n${lines.join('\n')}\nReply cancel NUMBER to cancel one.`:'You have no active reminders.');
@@ -124,9 +125,9 @@ export class Schedules {
     if(!id){this.answer(m,'That reminder list is unavailable or expired. Say list my reminders first.');return;}
     this.store.db.exec('SAVEPOINT schedule_cancel');
     try{
-      const result=this.store.db.prepare("UPDATE schedules SET status='cancelled' WHERE id=? AND owner=? AND destination=? AND status='active'").run(id,owner,destination);
+      const result=this.store.db.prepare("UPDATE schedules SET status='cancelled' WHERE id=? AND owner=? AND destination=? AND status IN ('active','done')").run(id,owner,destination);
       this.store.set(scheduleKey(destination),'null');
-      this.answer(m,result.changes?'Reminder cancelled. A message already queued may still be delivered.':'That reminder is no longer active.');
+      this.answer(m,result.changes?'Reminder cancelled. Work already submitted may still run.':'That reminder is no longer active.');
       this.store.db.exec('RELEASE schedule_cancel');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_cancel; RELEASE schedule_cancel');throw e;}
   }
@@ -138,21 +139,41 @@ export class Schedules {
     const clarify=this.clarification(destination),pending=!!(clarify&&clarify.owner===this.owner(destination)&&clarify.expires>this.now());
     return listCommand(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));
   }
-  async handle(router:Router,m:Incoming,ownerIntent:boolean):Promise<boolean> {
+  async handle(router:Router,m:Incoming,ownerIntent:boolean,contractApproved=false):Promise<boolean> {
+    if(!this.store.incomingOwnerCurrent())return true;
     const destination=this.store.destination(),owner=destination?this.owner(destination):'',channel=this.store.controlChannel();
-    try{return await this.handleOnce(router,m,ownerIntent);}
+    try{return await this.handleOnce(router,m,ownerIntent,contractApproved);}
     catch(error){
+      if(!this.store.incomingOwnerCurrent())return true;
       // A short response to a validation error must not be delivered as a session task.
       if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));
       throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Please resend the complete reminder. Nothing was scheduled.`);
     }
   }
-  private async handleOnce(router:Router,m:Incoming,ownerIntent:boolean):Promise<boolean> {
+  private async handleOnce(router:Router,m:Incoming,ownerIntent:boolean,contractApproved:boolean):Promise<boolean> {
     const text=m.text.trim(),destination=this.store.destination();
     if(!destination||!this.shouldHandle(router,m,ownerIntent))return false;
     const isList=listCommand(text),cancel=cancelCommand(text),snapshot=this.snapshot(destination);
     const owner=this.owner(destination),channel=this.store.controlChannel();
     if(!this.context(destination,owner,channel)){this.answer(m,'For reminders, please message me in your own self-chat.');return true;}
+    if(contractApproved){
+      const approved=router.contracts.approvedSchedule(m.id);
+      if(approved){
+        const s=approved.schedule,now=this.now();
+        if(s.owner!==owner||s.destination!==destination||s.channel!==channel||s.valid_until<=now)throw new Error('Your approved schedule or connection changed.');
+        let next=s.next_at;
+        if(next<=now){if(s.repeat==='once')throw new Error('The approved time has passed.');next=nextOccurrence(localDate(now,s.zone),s.time,s.zone,s.repeat,now)??0;}
+        if(!next||next>s.valid_until||!sessionAvailable(router,{binding_id:s.binding_id,binding_identity:s.binding_identity}))throw new Error('The approved schedule or session is no longer available.');
+        this.store.db.exec('SAVEPOINT approved_schedule');
+        try{
+          this.store.db.prepare('INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(s.id,m.id,s.owner,s.destination,s.channel,s.action,s.text,s.binding_id,s.binding_identity,s.date,s.time,s.zone,s.repeat,next,'active',now);
+          router.contracts.saveSchedule(s,approved.contractId,'approved',next);
+          const when=new Intl.DateTimeFormat('en-IN',{timeZone:s.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
+          this.answer(m,`Approved schedule set for ${when} (${s.zone}${s.repeat==='once'?'':`, ${s.repeat}`}).`);
+          this.store.db.exec('RELEASE approved_schedule');return true;
+        }catch(e){this.store.db.exec('ROLLBACK TO approved_schedule; RELEASE approved_schedule');throw e;}
+      }
+    }
     const pending=this.clarification(destination);
     if(pending&&pending.owner===owner&&pending.expires>this.now()&&bareTime(text)){this.answer(m,'Please resend the complete reminder with its date, time and action. Nothing has been scheduled.');return true;}
     if(!isList&&!candidate(text)&&!(cancel&&(snapshot||/\b(?:reminder|schedule)\b/i.test(text))))return false;
@@ -162,7 +183,7 @@ export class Schedules {
     const zone=this.store.get('schedule-timezone')??'Asia/Kolkata';if(!validZone(zone))throw new Error('Choose a valid reminder time zone in settings.');
     const decision=await this.interpret(text,this.now(),zone,this.secret.read()!);
     // Changes during the model call cannot create a schedule under another owner, group or channel.
-    if(router.stopped||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
+    if(router.stopped||!this.store.incomingOwnerCurrent()||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
     // An explicit time-shaped request must never fall through into immediate work.
     if(decision.kind==='not_schedule'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'I could not confirm that schedule. Please resend the complete request with its time and action. Nothing was sent.');return true;}
     if(decision.kind==='clarify'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'Please resend the complete reminder with its date, time and action, and the session if needed. Nothing has been scheduled.');return true;}
@@ -201,14 +222,22 @@ export class Schedules {
     if(repeat==='once'&&!localInstants(date,time,decision.zone).length)throw new Error('That local time does not exist. Please choose another time.');
     if(next>now+2*366*86400000)throw new Error('Please choose a future time within two years.');
     const id=randomUUID();
+    const schedule:ContractSchedule|undefined=action==='session'&&binding?{id,origin:m.id,owner,destination,channel,action:'session',text:body,binding_id:binding.id,binding_identity:bindingFingerprint(router,binding),date,time,zone:decision.zone,repeat,next_at:next,valid_until:now+2*366*86400000}:undefined;
+    if(schedule&&router.contracts.enabled()){
+      const contract=await router.contracts.preflight(router,m,body,schedule);
+      if(contract.kind==='handled')return true;
+      if(contract.kind==='replay')throw new Error('Finish the pending task contract before scheduling another task.');
+      if(!this.context(destination,owner,channel)||!sessionAvailable(router,{binding_id:schedule.binding_id,binding_identity:schedule.binding_identity}))throw new Error('Your session or connection changed.');
+    }
     this.store.db.exec('SAVEPOINT schedule_create');
     try{
       if(!this.context(destination,owner,channel))throw new Error('Your paired owner changed. No reminder was created.');
       if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)throw new Error('You have 100 active reminders. Cancel one first.');
       this.store.db.prepare("INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id,m.id,owner,destination,channel,action,body,binding?.id??null,binding?bindingFingerprint(router,binding):null,date,time,decision.zone,repeat,next,'active',now);
+      if(schedule)router.contracts.saveSchedule(schedule,null,router.contracts.enabled()?'pass':'disabled',next);
       this.store.set(clarifyKey(destination),'null');
       const when=new Intl.DateTimeFormat('en-IN',{timeZone:decision.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
-      this.answer(m,`Reminder set for ${when} (${decision.zone}${repeat==='once'?'':`, ${repeat}`})${binding?` for ${binding.alias}`:''}.`);
+      this.answer(m,`Reminder set for ${when} (${decision.zone}${repeat==='once'?'':`, ${repeat}`})${binding?` for ${binding.alias}`:''}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString()}.`:''}`);
       this.store.db.exec('RELEASE schedule_create');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_create; RELEASE schedule_create');throw e;}
     return true;
@@ -216,6 +245,7 @@ export class Schedules {
   private advance(row:Row,now:number) {
     const start=localDate(now,row.zone),next=row.repeat==='once'?undefined:nextOccurrence(start,row.time,row.zone,row.repeat,now);
     this.store.db.prepare('UPDATE schedules SET status=?,next_at=? WHERE id=?').run(next===undefined?'done':'active',next??row.next_at,row.id);
+    if(row.action==='session')this.store.db.prepare('UPDATE task_contract_schedules SET expected_next=? WHERE schedule_id=?').run(next??row.next_at,row.id);
   }
   /** Serialize due claims. Occurrence + outbox/job are one transaction; uncertain network sends are never assumed delivered. */
   async tick(router:Router):Promise<void> {
@@ -250,6 +280,12 @@ export class Schedules {
         try{
           const current=this.store.db.prepare("SELECT * FROM schedules WHERE id=? AND status='active' AND next_at=?").get(row.id,row.next_at) as Row|undefined;
           if(!current||!this.context(row.destination,row.owner,row.channel)){this.store.db.exec('RELEASE schedule_fire');continue;}
+          if(row.action==='session'&&!router.contracts.scheduleAllowed(router,row)){
+            this.store.db.prepare("UPDATE schedules SET status='invalid' WHERE id=?").run(row.id);
+            this.store.output(undefined,'The scheduled request needs a new owner review or its approval expired. Nothing was sent.',`${occurrence}:contract-unavailable`,row.destination,{plain:true});
+            const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${occurrence}:contract-unavailable:0`) as {id:string}|undefined;if(out)this.store.db.prepare('INSERT OR IGNORE INTO schedule_outbox VALUES(?,?,?,?,?)').run(out.id,occurrence,row.owner,row.destination,row.channel);
+            this.store.db.exec('RELEASE schedule_fire');continue;
+          }
           const binding=row.action==='session'?sessionAvailable(router,row):undefined;
           if(row.action==='session'&&!binding){this.store.db.prepare("UPDATE schedules SET status='invalid' WHERE id=?").run(row.id);this.store.output(undefined,'A scheduled request was not sent because its session or Brain permissions changed.',`${occurrence}:unavailable`,row.destination,{plain:true});const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${occurrence}:unavailable:0`) as {id:string}|undefined;if(out)this.store.db.prepare('INSERT OR IGNORE INTO schedule_outbox VALUES(?,?,?,?,?)').run(out.id,occurrence,row.owner,row.destination,row.channel);this.store.db.exec('RELEASE schedule_fire');continue;}
           this.store.db.prepare('INSERT OR IGNORE INTO schedule_occurrences VALUES(?,?,?,?,?,?,?)').run(occurrence,row.id,row.owner,row.destination,row.channel,row.next_at,'queued');
@@ -260,8 +296,9 @@ export class Schedules {
             this.store.db.prepare('INSERT OR IGNORE INTO schedule_outbox VALUES(?,?,?,?,?)').run(out.id,occurrence,row.owner,row.destination,row.channel);
           }else if(binding){
             const existing=this.store.job(occurrence);if(existing&&existing.destination!==row.destination)throw new Error('Scheduled request identity was reused.');
+            router.contracts.linkScheduled(router,row.id,occurrence,binding,row.text);
             this.store.destinationContext.run(row.destination,()=>router.queue(occurrence,binding,row.text));
-            this.store.db.prepare('INSERT OR IGNORE INTO schedule_jobs(job_id,occurrence_id,owner,destination,channel,binding_id,binding_identity,body_hash) VALUES(?,?,?,?,?,?,?,?)').run(occurrence,occurrence,row.owner,row.destination,row.channel,binding.id,row.binding_identity,hash(row.text));
+            this.store.db.prepare('INSERT OR IGNORE INTO schedule_jobs(job_id,occurrence_id,owner,destination,channel,binding_id,binding_identity,body_hash) VALUES(?,?,?,?,?,?,?,?)').run(occurrence,occurrence,row.owner,row.destination,row.channel,binding.id,row.binding_identity,hash(this.store.job(occurrence)!.body));
           }
           this.advance(row,now);this.store.db.exec('RELEASE schedule_fire');
         }catch(e){this.store.db.exec('ROLLBACK TO schedule_fire; RELEASE schedule_fire');throw e;}
@@ -279,7 +316,7 @@ export function scheduleOwnerValid(store:Store,kind:'job'|'outbox',id:string) {
   return !row||validScheduleOwner(store,row.owner,row.destination,row.channel);
 }
 /** Channel changes hold work; pairing/session changes invalidate it rather than reroute it. */
-export function scheduleJobState(router:Router,id:string):'ready'|'hold'|'invalid' {
+export function scheduleJobState(router:Router,id:string,inactive=false):'ready'|'hold'|'invalid' {
   const row=router.store.db.prepare(`SELECT j.owner,j.destination,j.channel,j.binding_id,j.binding_identity,j.occurrence_id,j.body_hash FROM schedule_jobs j
     JOIN schedule_occurrences o ON o.id=j.occurrence_id AND o.owner=j.owner AND o.destination=j.destination AND o.channel=j.channel
     JOIN schedules s ON s.id=o.schedule_id AND s.owner=j.owner AND s.destination=j.destination AND s.channel=j.channel WHERE j.job_id=?`).get(id) as (Pick<Row,'owner'|'destination'|'channel'|'binding_id'|'binding_identity'>&{occurrence_id:string;body_hash:string})|undefined;
@@ -292,15 +329,17 @@ export function scheduleJobState(router:Router,id:string):'ready'|'hold'|'invali
   }
   const job=router.store.job(id);
   if(!validScheduleOwner(router.store,row.owner,row.destination,row.channel)||!sessionAvailable(router,row)||!job||job.binding_id!==row.binding_id||job.destination!==row.destination||hash(job.body)!==row.body_hash)return 'invalid';
-  if(row.occurrence_id!==id){const root=scheduleJobState(router,row.occurrence_id);if(root!=='ready')return root;if(!['queued','dispatched','submitted'].includes(router.store.job(row.occurrence_id)?.status??''))return 'invalid';}
-  return router.store.controlChannel()===row.channel?'ready':'hold';
+  const schedule=router.store.db.prepare('SELECT s.* FROM schedule_occurrences o JOIN schedules s ON s.id=o.schedule_id WHERE o.id=?').get(row.occurrence_id) as Row|undefined;
+  if(!schedule||!router.contracts.scheduleAllowed(router,schedule,false,true))return 'invalid';
+  if(row.occurrence_id!==id){const root=scheduleJobState(router,row.occurrence_id,inactive);if(root!=='ready')return root;if(!['queued','dispatched','submitted'].includes(router.store.job(row.occurrence_id)?.status??''))return 'invalid';}
+  return !inactive&&router.store.controlChannel()!==row.channel?'hold':'ready';
 }
 /** Follow coordinator delegation to its root; scheduled roots require a live owner-bound occurrence. */
-export function scheduleRootState(router:Router,id:string):'not-schedule'|'ready'|'hold'|'invalid' {
+export function scheduleRootState(router:Router,id:string,inactive=false):'not-schedule'|'ready'|'hold'|'invalid' {
   let root=id;const seen=new Set<string>();
   while(root.startsWith('master:')){if(seen.has(root)||seen.size>=4)return 'invalid';seen.add(root);const parent=router.store.get(`parent:${root}`);if(!parent)return 'invalid';root=parent;}
-  if(root.startsWith('schedule:')&&root!==id){if(!['queued','dispatched','submitted'].includes(router.store.job(root)?.status??''))return 'invalid';const child=router.store.db.prepare('SELECT 1 FROM schedule_jobs WHERE job_id=? AND occurrence_id=?').get(id,root);if(!child)return 'invalid';return scheduleJobState(router,id);}
-  return root.startsWith('schedule:')?scheduleJobState(router,root):'not-schedule';
+  if(root.startsWith('schedule:')&&root!==id){if(!['queued','dispatched','submitted'].includes(router.store.job(root)?.status??''))return 'invalid';const child=router.store.db.prepare('SELECT 1 FROM schedule_jobs WHERE job_id=? AND occurrence_id=?').get(id,root);if(!child)return 'invalid';return scheduleJobState(router,id,inactive);}
+  return root.startsWith('schedule:')?scheduleJobState(router,root,inactive):'not-schedule';
 }
 /** True for guarded schedule roots, descendants and their internal reports. */
 export function hasScheduleGuard(router:Router,id:string) {
@@ -326,10 +365,10 @@ export function failScheduledBeforeSubmission(router:Router,id:string,reason:str
   }catch(e){router.store.db.exec('ROLLBACK TO reject_schedule_dispatch; RELEASE reject_schedule_dispatch');throw e;}
 }
 /** Carry the immutable owner/occurrence and exact target fingerprint through delegation. */
-export function bindScheduledChild(router:Router,parentId:string,id:string,target:Binding,body:string) {
+export function bindScheduledChild(router:Router,parentId:string,id:string,target:Binding,body:string,inactive=false) {
   const parent=router.store.db.prepare('SELECT occurrence_id,owner,destination,channel FROM schedule_jobs WHERE job_id=?').get(parentId) as {occurrence_id:string;owner:string;destination:string;channel:string}|undefined;
   if(!parent){if(scheduleRootState(router,parentId)!=='not-schedule')throw new Error('Scheduled request ownership is unavailable.');return;}
-  if(scheduleJobState(router,parentId)!=='ready')throw new Error('The scheduled request owner or session changed.');
+  if(scheduleJobState(router,parentId,inactive)!=='ready')throw new Error('The scheduled request owner or session changed.');
   const identity=bindingFingerprint(router,target),bodyHash=hash(body),existing=router.store.db.prepare('SELECT binding_id,binding_identity,occurrence_id,body_hash FROM schedule_jobs WHERE job_id=?').get(id) as {binding_id:string;binding_identity:string;occurrence_id:string;body_hash:string}|undefined;
   if(existing&&(existing.binding_id!==target.id||existing.binding_identity!==identity||existing.occurrence_id!==parent.occurrence_id||existing.body_hash!==bodyHash))throw new Error('Scheduled delegation identity changed.');
   router.store.db.prepare('INSERT OR IGNORE INTO schedule_jobs(job_id,occurrence_id,owner,destination,channel,binding_id,binding_identity,body_hash) VALUES(?,?,?,?,?,?,?,?)').run(id,parent.occurrence_id,parent.owner,parent.destination,parent.channel,target.id,identity,bodyHash);

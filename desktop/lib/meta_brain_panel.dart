@@ -55,7 +55,7 @@ class MetaBrainPanel extends StatefulWidget {
 
 class _MetaBrainPanelState extends State<MetaBrainPanel> {
   final keyInput = TextEditingController();
-  late bool enabled, routing, summaries, management, learn;
+  late bool enabled, routing, summaries, management, learn, taskContracts;
   late String model, failure;
   late Set<String> providers;
   bool saving = false, replacingKey = false;
@@ -74,6 +74,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     failure = s['failure'] as String? ?? 'legacy';
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
+    taskContracts = s['taskContracts'] != false;
   }
 
   @override
@@ -100,6 +101,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           'failure': failure,
           'notes': widget.saved['notes'] as String? ?? '',
           'learn': learn,
+          'taskContracts': taskContracts,
         },
         if (!remove && keyInput.text.isNotEmpty) 'key': keyInput.text,
         if (remove) 'removeKey': true,
@@ -826,6 +828,18 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
             'Choose the model and what happens if it can’t answer.',
           ),
           modelTab(configured),
+          const SizedBox(height: 12),
+          box(
+            toggle(
+              'Review unclear coding tasks',
+              'Propose a short task contract for your approval when a coding request needs clarification.',
+              taskContracts,
+              (v) {
+                setState(() => taskContracts = v);
+                save();
+              },
+            ),
+          ),
           section(
             'Instructions',
             'The built-in rules every message follows',

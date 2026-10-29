@@ -67,7 +67,7 @@ export class MetaBrain {
     await Promise.all(jobs.map(async j=>{
       const id=String(j.id);
       try {
-        const observed=await router.native.requestStatus({id,binding_id:String(j.binding_id)});
+        const observed=await router.native.requestStatus({id,binding_id:String(j.binding_id)});if(!this.store.incomingOwnerCurrent())return;
         this.store.set(`brain-native:${id}`,JSON.stringify({at:Date.now(),status:observed?.status??'unknown',turnId:observed?.turnId}));
         if(observed){
           this.store.event(id,'native_observed',{code:observed.status},observed.turnId);
@@ -276,6 +276,7 @@ export class MetaBrain {
     }
   }
   async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
+    if(!this.store.incomingOwnerCurrent())return true;
     const policy=brainPolicy(this.store);
     if(!policy.enabled)return false;
     // IDs from internal delegation/reports cannot masquerade as owner input.
@@ -283,18 +284,23 @@ export class MetaBrain {
     const prior=this.get(m.id);
     if(prior){if(prior.original!==m.text||prior.destination!==this.store.destination())throw new Error('Owner event identity was reused.');if(prior.state==='interpreting')this.stop(m.id,'Interpretation was interrupted. No automatic retry was made; send a new message when ready.');return true;}
     this.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run(m.id,m.text,m.source??'text',this.store.destination(),Date.now());
+    const revoked=()=>{if(this.store.incomingOwnerCurrent())return false;this.store.db.prepare("UPDATE brain_tasks SET state='blocked',permission='denied',reason='Owner connection changed; no automatic retry' WHERE id=? AND state='interpreting'").run(m.id);return true;};
     this.memory.synchronize();
-    if(await this.localIntent(router,m))return true;
+    let handled:boolean;
+    try{handled=await this.localIntent(router,m);}catch(e){if(revoked())return true;throw e;}
+    if(revoked())return true;if(handled)return true;
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
     try {
       const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
-      const memoryTool=(i:Parameters<MemoryTool>[0])=>this.owner.command(i,`brain:${m.id}`,policy.learn&&!router.stopped&&JSON.stringify(brainPolicy(this.store))===JSON.stringify(policy));
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool));
+      const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
+      const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
+      if(revoked())return true;
       const raw=(e as {code?:unknown})?.code,code=typeof raw==='string'?raw:errorCode(e);
       this.store.event(m.id,'brain_interpretation_failed',{code,durationMs:Date.now()-interpretationStarted});
       if(this.get(m.id)?.state!=='interpreting')return true;
@@ -309,7 +315,7 @@ export class MetaBrain {
         :code==='timeout'?'Meta took too long to answer. Send your message again.'
         :'Meta could not read that message right now. Send it again in a moment.');return true;
     }
-    if(this.get(m.id)?.state!=='interpreting')return true;
+    if(revoked()||this.get(m.id)?.state!=='interpreting')return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);
     this.announce(m);
     if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
@@ -340,6 +346,7 @@ export class MetaBrain {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
       const relevant=this.memory.board().filter(i=>!decision.taskIds.length||decision.taskIds.some(ref=>ref===i.ref||this.store.itemOf(ref)===i.id));
       await this.refreshEvidence(router,relevant);
+      if(revoked())return true;
       const selectedItems=this.memory.board().filter(i=>!decision.taskIds.length||decision.taskIds.some(ref=>ref===i.ref||this.store.itemOf(ref)===i.id));
       if(selectedItems.length===1)this.store.set(topicKey,selectedItems[0].ref);
       const rows=this.tasks(this.get(m.id)!.destination).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)&&(!decision.taskIds.length||decision.taskIds.includes(t.id))).slice(0,20);
@@ -401,8 +408,11 @@ export class MetaBrain {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
       // Queue original verbatim. Normalized wording is advisory ledger data, never an authorization source.
+      // A pre-existing topic must be linked before a contract binds the request to an item.
+      if(topic){const linked=this.store.itemOf(id);if(linked&&linked!==topic.id)throw new Error('Request belongs to another item.');this.memory.link(id,topic.id);}
       router.queue(id,target,text);
-      const item=topic??this.memory.add(id,text);
+      const existing=this.store.itemOf(id);
+      const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,text));
       this.memory.link(id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
       // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.

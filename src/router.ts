@@ -1,8 +1,9 @@
 import { DesktopReadinessError } from './session-activation.js';
 import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel } from './owner-commands.js';
-import { selectOption, parseMessageOptions } from './message-options.js';
+import { selectOption, previewOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
+import { TaskContracts } from './task-contracts.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
@@ -34,6 +35,7 @@ export class Router {
   brain:MetaBrain;
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
+  contracts:TaskContracts;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
@@ -45,7 +47,7 @@ export class Router {
   uncertainNoticeMs=120_000;
   attachments:Attachments;
   private ownerReplyPolicy:OwnerReplyPolicy;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.contracts=new TaskContracts(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -65,6 +67,8 @@ export class Router {
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
     if(this.stopped||this.store.seen(m.id))return;
+    // Attachment captions use a separate synchronous path; do not let them bypass task review.
+    if(this.contracts.enabled()&&m.text.trim())throw new Error('Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.');
     if(this.attachmentTarget(m).identity!==target.identity)throw new Error('The intended session changed during download. Please resend to the intended session.');
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
@@ -77,7 +81,13 @@ export class Router {
     this.pump();
   }
   private receiving=new Set<string>();
+  hasPendingIngress(){return this.receiving.size>0;}
   async receive(m:Incoming):Promise<RouteResult> {
+    if(!this.store.incomingOwnerContext.getStore()&&authenticatedOwner(this,m)){
+      const destination=this.store.destination(),captured=destination&&this.store.captureIncomingOwner(destination,this.store.controlChannel());
+      if(captured)return this.store.incomingOwnerContext.run(captured,()=>this.receive(m));
+    }
+    if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.receiving.has(m.id))return {status:'ignored',requestId:m.id};
     this.receiving.add(m.id);
     try{
@@ -85,12 +95,12 @@ export class Router {
       const failed=(e:unknown)=>{try{this.store.event(m.id,'owner_history_failed',{code:errorCode(e)});}catch{}};
       let label:string|undefined;try{label=ownerTurnLabel(this,m);}catch(e){failed(e);}
       const result=await this.receiveOnce(m);
-      try{if(label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
+      try{if(this.store.incomingOwnerCurrent()&&label&&result.status!=='ignored'&&!this.store.job(m.id))this.store.recordOwnerCommand(m.id,label,result.status);}catch(e){failed(e);}
       return result;
     }finally{this.receiving.delete(m.id);}
   }
-  private async receiveOnce(m:Incoming):Promise<RouteResult> {
-    if(this.stopped)return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+  private async receiveOnce(m:Incoming,contractApproved=false):Promise<RouteResult> {
+    if(this.stopped||!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
     if((m.ownerCommand||m.ownerIntent)&&!authenticatedOwner(this,m))return {status:'blocked',requestId:m.id};
     if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
@@ -102,30 +112,59 @@ export class Router {
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     let ownerReply=false;
     try {
+      if(!contractApproved){const recovered=this.contracts.recoverApproved(this,m);if(recovered)return await this.receiveOnce(recovered,true);}
       // Replies to owner commands and session picks, errors included, go out without the session header and footer.
       ownerReply=true;const targetReply=pickOwnerTarget(this,m);ownerReply=false;
       if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
-        const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>this.queue(m.id,this.need(bindingId),body));
-        if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
+        const input={responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)};
+        const preview=previewOption(this.store,input);
+        if(preview){
+          const guarded=this.contracts.hasGuard(preview.row.request_id);
+          const reviewBody=guarded?this.contracts.choiceReview(this,preview.row.request_id,preview.body):preview.body;
+          if(preview.row.selected_id){if(contractApproved)throw new Error('These choices were already answered. Nothing was sent.');selectOption(this.store,input,()=>{throw new Error('Choice was already answered.');});return {status:'handled',requestId:m.id};}
+          if(!contractApproved&&(this.contracts.enabled()||guarded)){
+            // Token callbacks and polls have already been authenticated by their channel adapter.
+            // Typed choices must be direct owner replies, never forwarded data.
+            if(!m.optionToken&&(!authenticatedOwner(this,m)||m.ownerChoice!==true))throw new Error('Choose with your own direct reply. Nothing was sent.');
+            if(!this.contracts.enabled())throw new Error('Send your answer as a new message so it can be reviewed. Nothing was sent.');
+            const contract=await this.contracts.preflight(this,m,reviewBody,undefined,undefined,true,true);
+            if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+            if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
+          }
+          const selected=selectOption(this.store,input,(bindingId,body)=>{if(bindingId!==preview.row.binding_id||body!==preview.body)throw new Error('These choices changed. Nothing was sent.');const b=this.need(bindingId);if(guarded&&!contractApproved){const item=this.store.itemOf(preview.row.request_id);const guardedBody=this.contracts.bindChild(this,preview.row.request_id,m.id,b,body,item);this.store.enqueue(m.id,b,guardedBody);}else this.queue(m.id,b,contractApproved?reviewBody:body);this.contracts.bindChoice(this,preview.row.request_id,m.id,preview.row.id);});
+          if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
+        }
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       const briefAction=this.morningBrief?.action(m);
       if(briefAction?.reply){this.store.output(undefined,briefAction.reply,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(briefAction?.text&&briefAction.target&&briefAction.itemId){
+        if(contractApproved)this.contracts.verifyBrief(this,m.id,briefAction.itemId,briefAction.target,briefAction.text);
+        if(!contractApproved&&this.contracts.shouldHandle(this,m)){
+          const contract=await this.contracts.preflight(this,m,briefAction.text,undefined,this.contracts.briefIntent(this,briefAction.itemId,briefAction.target,briefAction.text));
+          if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+          if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
+        }
         this.store.db.exec('SAVEPOINT brief_action');
         try{
           this.store.linkItem(m.id,briefAction.itemId);if(this.store.itemOf(m.id)!==briefAction.itemId)throw new Error('This reply is already associated with a different item.');this.queue(m.id,this.need(briefAction.target),briefAction.text);recordBriefDispatch(this,this.store.job(m.id)!,briefAction.itemId,briefAction.target);if(briefAction.ack)this.store.output(undefined,briefAction.ack,`brief-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE brief_action');}
         catch(e){this.store.db.exec('ROLLBACK TO brief_action; RELEASE brief_action');throw e;}
         this.pump();return {status:'queued',requestId:m.id};
       }
+      if(contractApproved&&this.contracts.approvedBrief(m.id))throw new Error('The approved brief item is unavailable. Nothing was sent.');
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
-      if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent))return {status:'handled',requestId:m.id};
+      if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent,contractApproved))return {status:'handled',requestId:m.id};
+      if(!contractApproved&&this.contracts.shouldHandle(this,m)){
+        const contract=await this.contracts.preflight(this,m);
+        if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+        if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
+      }
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
@@ -199,7 +238,7 @@ export class Router {
         this.queue(m.id,this.need(b.id),text);
       }
       this.store.remember(m.id);
-    } catch(e) {this.store.output(undefined,(e as Error).message,`command-error:${m.id}`,undefined,ownerReply?{plain:true}:{});this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
+    } catch(e) {if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};this.store.output(undefined,(e as Error).message,`command-error:${m.id}`,undefined,ownerReply?{plain:true}:{});this.store.remember(m.id);this.store.event(m.id,'routing_failed',{code:errorCode(e)});return {status:'blocked',requestId:m.id,code:errorCode(e)};}
     this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};
   }
   /** Hands this chat to one session until the owner says back, switches, or goes quiet for two hours. */
@@ -301,7 +340,14 @@ export class Router {
     this.store.db.exec('SAVEPOINT queue_owner');
     try {
       const exists=!!this.store.job(id);
+      text=this.contracts.augment(this,id,b,text);
       this.store.enqueue(id,b,text);
+      const approved=this.contracts.approved(id);
+      if(approved){
+        let item=this.store.itemOf(id);
+        if(!item){const title=approved.original.replace(/\s+/g,' ').slice(0,200);item=this.brain.memory.items.add(title,'Owner',undefined,`contract:${approved.id}`,id).id;this.store.linkItem(id,item);}
+        this.contracts.bindItem(id,item);
+      }
       const item=this.store.itemOf(id),destination=this.store.destination();
       if(item&&destination)this.store.set(`brain-topic:${destination}`,`item:${item}`);
       if(!exists&&this.coordinator?.isCoordinator(b.id))queueOwnerReceipt(this.store,id,b);
@@ -322,21 +368,26 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id);
-    if(!scheduled&&!guard)return false;
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id);
+    if(!scheduled&&!guard&&!contract&&!choice)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
     if(scheduled){
       const state=job.binding_id===b.id?scheduleJobState(this,id):'invalid';
       if(state==='hold')throw new ScheduledChannelHold('Scheduled request held until its original channel is active.');
       if(state==='invalid'){const reason='The scheduled request was not sent because its owner or session changed.';this.failBeforeSubmission(id,reason);throw new DispatchNotSubmittedError(reason);}
     }
+    if(choice){try{this.contracts.assertOption(this,id,b,true);}catch{throw new DispatchNotSubmittedError('The original choice or session changed. Nothing was sent.');}if(this.contracts.optionChannel(id)!==this.store.controlChannel())throw new ScheduledChannelHold('Choice held until its original channel is active.');}
+    if(contract){const approved=this.contracts.approved(id);if(approved&&this.store.controlChannel()!==approved.channel){try{this.contracts.assertDispatch(this,id,b,job.body,new Set(),true);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}throw new ScheduledChannelHold('Task held until its original channel is active.');}try{this.contracts.assertDispatch(this,id,b,job.body);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}}
     if(guard&&!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
     return true;
   }
-  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);}
+  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);this.contracts.rejectDispatch(id,reason);const j=this.store.job(id);if(j&&this.contracts.hasOptionGuard(id)&&['queued','dispatched'].includes(j.status))this.store.jobState(id,'failed',reason);}
   private routableJob(b:Binding) {
     for(;;){
-      const job=this.store.routableQueued(b.id,this.store.controlChannel());if(!job)return;
+      const channel=this.store.controlChannel();
+      const job=this.store.db.prepare(`SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id
+        LEFT JOIN task_contract_jobs cj ON cj.job_id=i.id LEFT JOIN task_contracts c ON c.id=cj.contract_id OR c.dispatch_id=i.id LEFT JOIN task_contract_option_proofs p ON p.job_id=i.id
+        WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) AND (c.id IS NULL OR c.channel=?) AND (p.job_id IS NULL OR p.channel=?) ORDER BY i.created_at,i.rowid LIMIT 1`).get(b.id,channel,channel,channel) as import('./store.js').Job|undefined;if(!job)return;
       const state=scheduleJobState(this,job.id);
       if(state==='hold')return;
       if(state==='invalid'){this.failBeforeSubmission(job.id,'The paired owner or session changed; scheduled request was not sent.');if(this.store.job(job.id)?.status==='queued')this.store.jobState(job.id,'failed','Request ownership is unavailable; nothing was sent.');continue;}

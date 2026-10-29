@@ -102,17 +102,20 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
   }finally{await rm(dir,{recursive:true,force:true});}
 }
 export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,observe?:AudioObserver,download:typeof downloadAudio=downloadAudio) {
+  store.assertIncomingOwner();
   const format=audioFormat(audio),engine=voiceEngine(store);
   if(engine!=='local') {
     const k=readVoiceKey()!,mime=String(audio.mimetype).split(';')[0].trim().toLowerCase();
     const data=await measureVoiceStage('download',()=>download(audio,signal),observe);
     try {
       try{
-        if(!needsWav(k.provider))return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,data.path,mime,signal),observe);
+        store.assertIncomingOwner();
+        if(!needsWav(k.provider))return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,data.path,mime,signal,{authorize:()=>store.assertIncomingOwner()}),observe);
         const wav=await cloudAudio(store,data,format,signal,observe);
-        try{return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,wav.path,'audio/wav',signal),observe);}finally{await wav.dispose();}
+        try{store.assertIncomingOwner();return await measureVoiceStage('transcribe',()=>transcribeCloud(k.provider,k.key,wav.path,'audio/wav',signal,{authorize:()=>store.assertIncomingOwner()}),observe);}finally{await wav.dispose();}
       }
       catch(e) {
+        store.assertIncomingOwner();
         // Fall back only to a model that is already on disk; never start a download here.
         const local=store.get('audio-config');
         if(signal?.aborted||store.get('voice-fallback')==='0'||!local||/No clear speech/.test((e as Error).message))throw e;
@@ -122,11 +125,12 @@ export async function transcribeAudio(store:Store,audio:any,signal?:AbortSignal,
   }
   if(!store.get('audio-config')&&store.get('audio-tools')) {
     const {prepareVoiceModel}=await import('./voice-model.js');await prepareVoiceModel(store);
+    store.assertIncomingOwner();
     signal?.throwIfAborted();
   }
   const saved=store.get('audio-config');
   if(!saved)throw new Error('Voice transcription is not configured on this computer yet. Please type your message, or set up voice notes in the FarFromDesk app.');
   const config=validateAudioConfig(JSON.parse(saved));
   const data=await measureVoiceStage('download',()=>download(audio,signal),observe);
-  try{return await transcribeLocal(data,format,config,stateDir,signal,observe);}finally{data.dispose();}
+  try{store.assertIncomingOwner();return await transcribeLocal(data,format,config,stateDir,signal,observe);}finally{data.dispose();}
 }

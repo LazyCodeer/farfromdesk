@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN } from '../src/meta-brain-config.js';
 import test from 'node:test';
@@ -14,11 +15,14 @@ import { Coordinator } from '../src/coordinator.js';
 import { queueCoordinatorUpdates, initializeCoordinatorUpdates, COORDINATOR_UPDATE_INTERVAL_MS } from '../src/coordinator-updates.js';
 import { Attachments } from '../src/attachments.js';
 import { Schedules } from '../src/schedules.js';
+import { TaskContracts } from '../src/task-contracts.js';
 
 const token='123456:'+('x'.repeat(35)),bot=123456,owner=777,other=888;
 function fixture() {
   const root=mkdtempSync(join(tmpdir(),'ffd-telegram-')),store=new Store(join(root,'test.sqlite')),approvals=new Approvals(store);
   const router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
+  const contractSecret={present:()=>true,read:()=>'synthetic-contract-test-key'} as MetaSecret;
+  router.contracts=new TaskContracts(store,contractSecret,async()=>({kind:'pass',goal:'',exclusions:[],checks:[],question:''}));
   router.attachments=new Attachments(store,root);
   const binding=store.register('test','codex','11111111-1111-4111-8111-111111111111',root,'channel').binding;store.set('active',binding.id);store.set('control-channel','telegram');
   const calls:{method:string;body:any}[]=[];
@@ -274,7 +278,7 @@ test('brain mode requires enabled configured Meta and blocks model failures even
     const secret=new MetaSecret(f.root);let interpretations=0;
     f.router.brain=new MetaBrain(f.store,secret,{interpret:async()=>{interpretations++;throw Error('Synthetic offline');}});
     await f.tg.receive(f.message(90,'/brain'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),undefined);
-    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'legacy'}));
+    f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowRouting:true,providers:['codex'],failure:'legacy'}));
     await f.tg.receive(f.message(91,'/brain'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),undefined);
     secret.save('synthetic-meta-key-123456789');await f.tg.receive(f.message(92,'/brain'));
     await f.tg.receive(f.message(93,'Investigate the custom rendering bug'));assert.equal(interpretations,1);assert.equal(f.store.job(telegramMessageId(bot,owner,93)),undefined);

@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +13,7 @@ import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig } from '../src/meta-brain-config.js';
 import type { Interpretation } from '../src/meta-model.js';
 import { mentionedItems } from '../src/owner-routing.js';
+import { TaskContracts } from '../src/task-contracts.js';
 
 const task:Interpretation={intent:'task',provider:'unspecified',normalized:'n',taskIds:[]};
 function fixture() {
@@ -22,7 +24,8 @@ function fixture() {
   const proxy=store.register('personal-bot','codex',randomUUID(),'/tmp').binding;store.set(`name:${proxy.id}`,'Personal Bot');c.registry.register(proxy);
   const worker=store.register('billing','codex',randomUUID(),'/tmp/billing').binding;store.set(`name:${worker.id}`,'Billing API');store.set('selected',JSON.stringify([worker.id]));
   const secret=new MetaSecret(dir);secret.save('synthetic-test-key-never-a-real-key');
-  saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,allowStatus:true,allowManagement:true,failure:'block',providers:['codex','claude']}});
+  router.contracts=new TaskContracts(store,secret,async()=>({kind:'pass',goal:'',exclusions:[],checks:[],question:''}));
+  saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,taskContracts:false,enabled:true,allowRouting:true,allowStatus:true,allowManagement:true,failure:'block',providers:['codex','claude']}});
   let calls=0,next:Interpretation=task,seen:any;
   router.brain=new MetaBrain(store,secret,{interpret:async(_k:any,_p:any,input:any)=>{calls++;seen=input;return next;}});
   // An owner who already answered the brain's introduction, so greetings stay on the local fast path.
