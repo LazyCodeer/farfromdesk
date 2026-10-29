@@ -47,6 +47,18 @@ test('shell entry clears an inherited Node preload before starting Node',{skip:p
   }finally{rmSync(sentinel,{recursive:true,force:true});}
 });
 
+test('Windows batch entry clears an inherited Node preload before starting Node',{skip:process.platform!=='win32'},()=>{
+  const sentinel=mkdtempSync(join(tmpdir(),'ffd-preload-sentinel-'));
+  try{
+    const marker=join(sentinel,'ran'),preload=join(sentinel,'preload.cjs');
+    writeFileSync(preload,`require('node:fs').writeFileSync(${JSON.stringify(marker)},'loaded')`);
+    const env={...process.env,NODE_OPTIONS:`--require="${preload}"`,ISOLATION_SENTINEL:sentinel};delete env.NODE_TEST_CONTEXT;
+    const result=spawnSync('cmd.exe',['/d','/c','script\\run-tests.cmd','files','script/tests/fixtures/node_runner_probe.test.ts'],{env,encoding:'utf8',timeout:30000});
+    assert.equal(result.status,0,`${result.stdout}\n${result.stderr}`);
+    assert.equal(existsSync(marker),false,'the inherited preload must never run');
+  }finally{rmSync(sentinel,{recursive:true,force:true});}
+});
+
 test('canceling the runner stops its test process group and removes isolated state',{skip:process.platform==='win32',timeout:15000},async()=>{
   const outer=mkdtempSync(join(tmpdir(),'ffd-cancel-test-'));
   const env={...process.env,TMPDIR:outer};delete env.NODE_TEST_CONTEXT;

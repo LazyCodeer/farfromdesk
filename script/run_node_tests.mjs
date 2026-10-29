@@ -15,7 +15,7 @@ const portable=['test/portable.test.ts','test/coordinator.test.ts','test/speech-
 const inheritedNames=new Set([
   'PATH','PATHEXT','SYSTEMROOT','WINDIR','COMSPEC','OS',
   'PROCESSOR_ARCHITECTURE','PROCESSOR_IDENTIFIER','NUMBER_OF_PROCESSORS',
-  'TMPDIR','TMP','TEMP','LANG','LANGUAGE','LC_ALL','LC_CTYPE','LC_COLLATE',
+  'LANG','LANGUAGE','LC_ALL','LC_CTYPE','LC_COLLATE',
   'LC_MESSAGES','LC_NUMERIC','LC_TIME','LC_MONETARY','LC_PAPER','LC_NAME',
   'LC_ADDRESS','LC_TELEPHONE','LC_MEASUREMENT','LC_IDENTIFICATION','TZ',
   'TERM','COLORTERM','NO_COLOR','FORCE_COLOR','CI','GITHUB_ACTIONS',
@@ -78,8 +78,8 @@ export async function startTests(mode,args) {
   let guardPort;
   try {
     chmodSync(root,0o700);
-    const state=join(root,'state'),projects=join(root,'projects'),codex=join(root,'codex'),claude=join(root,'claude'),userHome=join(root,'home'),appData=join(root,'appdata'),xdg=join(root,'xdg');
-    for(const dir of [state,projects,codex,claude,userHome,appData,xdg])mkdirSync(dir,{mode:0o700});
+    const state=join(root,'state'),projects=join(root,'projects'),codex=join(root,'codex'),claude=join(root,'claude'),userHome=join(root,'home'),appData=join(root,'appdata'),xdg=join(root,'xdg'),temp=join(root,'tmp');
+    for(const dir of [state,projects,codex,claude,userHome,appData,xdg,temp])mkdirSync(dir,{mode:0o700});
     const preload=pathToFileURL(join(repo,'script/test_fetch_guard.mjs')).href;
     // Do not copy arbitrary inherited environment into tests or their children.
     // In particular this excludes service URLs, credential/config locations,
@@ -96,7 +96,7 @@ export async function startTests(mode,args) {
       await new Promise(resolve=>guardPort.close(resolve));guardPort=undefined;
     }
     if(!guardPort)throw new Error('Could not allocate an isolated bridge port.');
-    Object.assign(env,{HOME:userHome,USERPROFILE:userHome,APPDATA:appData,LOCALAPPDATA:appData,XDG_CONFIG_HOME:xdg,XDG_DATA_HOME:xdg,XDG_CACHE_HOME:xdg,XDG_RUNTIME_DIR:xdg,WSB_PORT:String(guardPort.address().port),WSB_STATE_DIR:state,FARFROMDESK_HOME:projects,CODEX_HOME:codex,CLAUDE_CONFIG_DIR:claude,
+    Object.assign(env,{HOME:userHome,USERPROFILE:userHome,APPDATA:appData,LOCALAPPDATA:appData,XDG_CONFIG_HOME:xdg,XDG_DATA_HOME:xdg,XDG_CACHE_HOME:xdg,XDG_RUNTIME_DIR:xdg,TMPDIR:temp,TMP:temp,TEMP:temp,WSB_PORT:String(guardPort.address().port),WSB_STATE_DIR:state,FARFROMDESK_HOME:projects,CODEX_HOME:codex,CLAUDE_CONFIG_DIR:claude,
       WSB_CODEX_BIN:join(root,'missing-codex'),WSB_CLAUDE_BIN:join(root,'missing-claude'),WSB_CLAUDE_DESKTOP_BIN:join(root,'missing-claude-desktop'),WSB_DESKTOP_SYNC_BIN:join(root,'missing-desktop-sync'),NODE_OPTIONS:`--import=${preload}`});
     const child=spawn(process.execPath,['--import','tsx','--test',...options,...files],{cwd:repo,env,stdio:'inherit',detached:process.platform!=='win32'});
     return {child,root,guardPort};

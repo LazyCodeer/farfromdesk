@@ -16,12 +16,12 @@ test('test temp selection rejects configured and default state, including aliase
     assert.throws(()=>safeTestTempBase(nested,[configured,defaultState]),/outside app state/);
     assert.throws(()=>safeTestTempBase(defaultState,[configured,defaultState]),/outside app state/);
     assert.equal(safeTestTempBase(safe,[configured,defaultState]),safeTestTempBase(safe,[]));
-    if(process.platform!=='win32'){
-      const stateAlias=join(root,'state-alias'),tempAlias=join(root,'temp-alias');
-      symlinkSync(configured,stateAlias);symlinkSync(nested,tempAlias);
-      assert.throws(()=>safeTestTempBase(tempAlias,[configured,defaultState]),/outside app state/);
-      assert.throws(()=>safeTestTempBase(nested,[stateAlias,defaultState]),/outside app state/);
-    }
+    const stateAlias=join(root,'state-alias'),tempAlias=join(root,'temp-alias');
+    // Directory junctions work on Windows without symlink privileges.
+    const kind=process.platform==='win32'?'junction':'dir';
+    symlinkSync(configured,stateAlias,kind);symlinkSync(nested,tempAlias,kind);
+    assert.throws(()=>safeTestTempBase(tempAlias,[configured,defaultState]),/outside app state/);
+    assert.throws(()=>safeTestTempBase(nested,[stateAlias,defaultState]),/outside app state/);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
@@ -30,10 +30,8 @@ test('a missing state root is resolved through its existing symlinked ancestor',
   try {
     const safe=join(root,'safe'),parent=join(root,'parent');mkdirSync(safe);mkdirSync(parent);
     assert.equal(safeTestTempBase(safe,[join(parent,'not-created')]),safeTestTempBase(safe,[]));
-    if(process.platform!=='win32'){
-      const alias=join(root,'alias');symlinkSync(safe,alias);
-      assert.throws(()=>safeTestTempBase(safe,[alias]),/outside app state/);
-    }
+    const alias=join(root,'alias');symlinkSync(safe,alias,process.platform==='win32'?'junction':'dir');
+    assert.throws(()=>safeTestTempBase(safe,[alias]),/outside app state/);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 

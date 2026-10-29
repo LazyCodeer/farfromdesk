@@ -16,6 +16,8 @@ test('the runner isolates state before imports and blocks unmocked remote fetch'
   assert.equal(process.env.HOME,join(root,'home'));
   assert.equal(process.env.XDG_CONFIG_HOME,join(root,'xdg'));
   assert.equal(process.env.APPDATA,join(root,'appdata'));
+  assert.equal(tmpdir(),join(root,'tmp'));
+  for(const key of ['TMPDIR','TMP','TEMP'])assert.equal(process.env[key],join(root,'tmp'));
   assert.ok(Number(process.env.WSB_PORT)>0&&Number(process.env.WSB_PORT)<=65535);
   assert.notEqual(process.env.WSB_PORT,'47831');
   assert.equal(process.env.OPENAI_API_KEY,undefined);
