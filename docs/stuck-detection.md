@@ -7,6 +7,10 @@ It can report:
 - A dispatched or submitted task with no recorded progress for 10 minutes.
 - An open native permission or question that is bound to the exact task
   request and still awaits an answer.
+- A delivered, unexpired session choice that has not been selected, when its
+  original session and request can be verified. This does not establish that
+  the session itself is blocked. If an owner follow-up may have answered a
+  choice but cannot be matched to one message, the detector stays quiet.
 - Two consecutive recorded task failures with the same known error category.
 
 Change the idle limit with `/stuck interval 20`, using 1 to 1440 minutes.

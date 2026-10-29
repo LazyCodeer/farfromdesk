@@ -7,7 +7,7 @@ import {briefTargetIdentity} from './brief-dispatch-guard.js';
 import type {Incoming,Router} from './router.js';
 import type {Store} from './store.js';
 
-type Kind='idle'|'approval'|'question'|'repeated-error';
+type Kind='idle'|'approval'|'question'|'choice'|'repeated-error';
 type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string};
 type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string};
 type Writer=(kinds:Kind[],key:string)=>Promise<string>;
@@ -45,7 +45,18 @@ export class StuckDetection {
     store.db.exec(`CREATE TABLE IF NOT EXISTS stuck_alerts(
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,request_id TEXT NOT NULL,
       binding_id TEXT NOT NULL,identity TEXT NOT NULL,kind TEXT NOT NULL,incident TEXT NOT NULL,expires_at INTEGER NOT NULL,
-      state TEXT NOT NULL,outbox_id TEXT NOT NULL UNIQUE,UNIQUE(owner,destination,item_id,kind,incident));`);
+      state TEXT NOT NULL,outbox_id TEXT NOT NULL UNIQUE,UNIQUE(owner,destination,item_id,kind,incident));
+      CREATE TABLE IF NOT EXISTS stuck_quoted_replies(response_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL);`);
+  }
+  /** Capture the exact quoted message before routing the owner's reply. */
+  recordQuotedReply(m:Incoming){
+    if(!m.quotedId||!authenticatedOwner(this.router,m))return;
+    const destination=this.store.destination(),owner=this.store.ownerFor(destination),origin=this.store.requestOwnerOrigin(m.id);
+    if(!destination||!owner||!origin||origin.owner!==owner||origin.destination!==destination)return;
+    const out=this.store.db.prepare('SELECT id,request_id FROM outbox WHERE wa_id=? AND destination=? AND status=?').get(m.quotedId,destination,'sent') as {id:string;request_id:string|null}|undefined;
+    const source=out?.request_id?this.store.requestOwnerOrigin(out.request_id):undefined;
+    if(!out||!source||source.owner!==owner||source.destination!==destination)return;
+    this.store.db.prepare('INSERT OR IGNORE INTO stuck_quoted_replies(response_id,outbox_id,owner,destination) VALUES(?,?,?,?)').run(m.id,out.id,owner,destination);
   }
   private context(owner:string,destination:string) {
     return !this.router.stopped&&this.store.controlChannel()==='whatsapp'&&!!owner&&destination===owner&&
@@ -64,6 +75,33 @@ export class StuckDetection {
       const kind:Kind=p.kind==='approval'?'approval':'question';
       return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind,incident:digest([kind,job.id,code,p.expires,identity])};
     }
+    // Agent message choices remain actionable until selected or expired, but
+    // they do not prove that a native session is blocked. Report only the
+    // unanswered choice, bound to its exact owner, item, request and attempt.
+    const choices=this.store.db.prepare(`SELECT m.id,m.request_id,m.binding_id,m.expires_at,m.stuck_identity,m.stuck_attempt,m.choices,o.body
+      FROM message_options m JOIN outbox o ON o.id=m.outbox_id
+      JOIN reply_receipts rr ON o.source=rr.source||':0' AND rr.request_id=m.request_id AND rr.binding_id=m.binding_id AND rr.origin='agent'
+      JOIN inbox j ON j.id=m.request_id AND j.binding_id=m.binding_id AND j.destination=m.destination
+      JOIN item_requests ir ON ir.request_id=j.id AND ir.item_id=?
+      LEFT JOIN owner_target_options target ON target.option_id=m.id
+      WHERE m.owner=? AND m.destination=? AND m.selected_id IS NULL AND m.response_id IS NULL AND m.expires_at>?
+      AND m.stuck_identity IS NOT NULL AND m.stuck_attempt IS NOT NULL AND m.stuck_attempt<>''
+      AND j.attempt_id IS NOT NULL AND j.attempt_id=m.stuck_attempt AND j.status IN ('dispatched','submitted','completed')
+      AND COALESCE(j.outcome,'') NOT IN ('cancelled','reviewed','done')
+      AND o.status='sent' AND o.sent_at IS NOT NULL AND o.destination=m.destination AND o.request_id=m.request_id AND o.binding_id=m.binding_id
+      AND NOT EXISTS(SELECT 1 FROM inbox f LEFT JOIN item_requests fi ON fi.request_id=f.id
+        JOIN owner_request_origins fo ON fo.request_id=f.id AND fo.owner=m.owner AND fo.destination=m.destination
+        LEFT JOIN stuck_quoted_replies q ON q.response_id=f.id AND q.owner=m.owner AND q.destination=m.destination
+        WHERE f.id<>m.request_id AND f.binding_id=m.binding_id AND f.destination=m.destination
+        AND (fi.item_id=ir.item_id OR fi.request_id IS NULL)
+        AND f.status NOT IN ('cancelled','replaced','failed') AND COALESCE(f.received_at,f.created_at)>=o.sent_at
+        AND (q.response_id IS NULL OR q.outbox_id=m.outbox_id))
+      AND target.option_id IS NULL ORDER BY o.sent_at DESC,o.rowid DESC LIMIT 100`).all(itemId,owner,destination,now) as {id:string;request_id:string;binding_id:string;expires_at:number;stuck_identity:string;stuck_attempt:string|null;choices:string;body:string}[];
+    for(const choice of choices){
+      const origin=this.store.requestOwnerOrigin(choice.request_id),identity=this.identity(choice.binding_id);
+      if(!origin||origin.owner!==owner||origin.destination!==destination||!identity||identity!==choice.stuck_identity||this.store.itemOf(choice.request_id)!==itemId)continue;
+      return {itemId,title:item.title,requestId:choice.request_id,bindingId:choice.binding_id,identity,kind:'choice',incident:digest(['choice',choice.id,choice.request_id,choice.expires_at,choice.stuck_attempt,choice.choices,choice.body,identity])};
+    }
     // A newer completed child must not hide an older request still running.
     // Once no request is active, only the latest attempt may supply failures.
     const jobs=this.store.db.prepare(`SELECT j.* FROM inbox j JOIN item_requests r ON r.request_id=j.id
@@ -79,13 +117,18 @@ export class StuckDetection {
     }
     if(!['dispatched','submitted'].includes(job.status))return;
     const last=this.store.db.prepare('SELECT MAX(created_at) AS at FROM reply_receipts WHERE request_id=?').get(job.id) as {at:number|null};
-    const progress=Math.max(job.created_at,job.updated_at??0,last.at??0);
+    // An owner answer linked to this item is recent activity even if the
+    // original request remains submitted while the answer is being routed.
+    const ownerActivity=this.store.db.prepare(`SELECT MAX(COALESCE(j.received_at,j.created_at)) AS at FROM inbox j
+      JOIN item_requests r ON r.request_id=j.id JOIN owner_request_origins o ON o.request_id=j.id
+      WHERE r.item_id=? AND j.destination=? AND o.owner=? AND o.destination=?`).get(itemId,destination,owner,destination) as {at:number|null};
+    const progress=Math.max(job.created_at,job.updated_at??0,last.at??0,ownerActivity.at??0);
     const configured=Number(this.store.get('stuck-idle-minutes')??10),threshold=Number.isInteger(configured)&&configured>=1&&configured<=1440?configured*60_000:IDLE_MS;
     if(now-progress<threshold)return;
     return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind:'idle',incident:digest(['idle',job.id,job.attempt_id,progress,identity])};
   }
   private message(signal:Signal,token:string,opening:string) {
-    const reason:Record<Kind,string>={idle:'No recorded progress for the configured idle period.',approval:'A permission request is waiting for your decision.',question:'The session asked a question and is waiting for your answer.','repeated-error':'Two consecutive failures have the same recorded error category.'};
+    const reason:Record<Kind,string>={idle:'No recorded progress for the configured idle period.',approval:'A permission request is waiting for your decision.',question:'The session asked a question and is waiting for your answer.',choice:'An unanswered choice is still available from the session.','repeated-error':'Two consecutive failures have the same recorded error category.'};
     return `${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.`;
   }
   /** A never-sent expired notice may be replaced; a sending, sent or uncertain one never is. */

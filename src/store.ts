@@ -305,7 +305,7 @@ export class Store {
         const part=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:${i}`) as {id:string}|undefined;
         if(part)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_outbox VALUES(?,?,?,?,?)').run(part.id,origin.owner,origin.destination,origin.channel,origin.generation);
       }
-      if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options);}
+      if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options,binding);}
       this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId??null,binding?.id??null,context.kind??null,context.origin??null,context.turnId??null,receiptHash,now);
       if(request){
         if(context.kind==='progress'||context.kind==='final')this.db.prepare('UPDATE inbox SET first_reply_at=COALESCE(first_reply_at,?),final_reply_at=CASE WHEN ?=\'final\' THEN COALESCE(final_reply_at,?) ELSE final_reply_at END WHERE id=?').run(now,context.kind,now,request.id);
