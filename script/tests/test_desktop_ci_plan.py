@@ -92,3 +92,17 @@ class AutomaticReleaseVersionTests(unittest.TestCase):
         self.assertNotIn('  pull_request:', workflow)
         self.assertNotIn('  push:', checks)
         self.assertIn('  pull_request:', checks)
+
+    def test_intel_retry_cache_is_run_scoped_and_keeps_release_checks(self):
+        root=Path(__file__).resolve().parents[2]
+        workflow=(root/'.github/workflows/desktop.yml').read_text()
+        key=next(line for line in workflow.splitlines() if 'INTEL_APP_CACHE_KEY:' in line)
+        for identity in ['github.run_id', 'github.sha', 'needs.version.outputs.app',
+                         'needs.version.outputs.build', 'needs.version.outputs.version']:
+            self.assertIn(identity, key)
+        self.assertNotIn('restore-keys:', workflow)
+        self.assertIn("if: matrix.runner == 'macos-15-intel' && steps.intel-app-cache.outputs.cache-hit == 'true'", workflow)
+        self.assertIn("if: steps.intel-app-validation.outputs.valid != 'true'", workflow)
+        self.assertLess(workflow.index('Validate restored Intel app'), workflow.index('flutter build ${{ matrix.target }}'))
+        self.assertLess(workflow.index('Cache this run\'s Intel app for retries'), workflow.index('node script/smoke_supervisor.mjs'))
+        self.assertIn('needs: [version, checks, desktop]', workflow)
