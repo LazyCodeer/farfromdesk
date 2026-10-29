@@ -6,7 +6,7 @@ import {discoverApprovedCiFailure,observeApprovedCiFailure,parseCiPullRequest,ty
 import type {Incoming,Router} from './router.js';
 import type {Store} from './store.js';
 
-type Watch={id:string;owner:string;destination:string;generation:string;item_id:number;request_id:string;binding_id:string;identity:string;item_identity:string;repository:string;pr_number:number;expires_at:number;last_checked:number};
+type Watch={id:string;owner:string;destination:string;generation:string;item_id:number;request_id:string;binding_id:string;identity:string;item_identity:string;repository:string;pr_number:number;expires_at:number;last_checked:number;candidate_cursor:number};
 type Alert={outbox_id:string;watch_id:string;incident:string;head_sha:string;check_run_id:number;check_name:string;completed_at:number;expires_at:number;boot_id:string};
 type Row={id:string;source:string;destination?:string|null};
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -21,10 +21,11 @@ export class StuckCiWatch {
     store.db.exec(`CREATE TABLE IF NOT EXISTS stuck_ci_watches(
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,generation TEXT NOT NULL,item_id INTEGER NOT NULL,
       request_id TEXT NOT NULL,binding_id TEXT NOT NULL,identity TEXT NOT NULL,item_identity TEXT NOT NULL,repository TEXT NOT NULL,
-      pr_number INTEGER NOT NULL,expires_at INTEGER NOT NULL,last_checked INTEGER NOT NULL DEFAULT 0,UNIQUE(owner,destination,item_id));
+      pr_number INTEGER NOT NULL,expires_at INTEGER NOT NULL,last_checked INTEGER NOT NULL DEFAULT 0,candidate_cursor INTEGER NOT NULL DEFAULT 0,UNIQUE(owner,destination,item_id));
       CREATE TABLE IF NOT EXISTS stuck_ci_alerts(outbox_id TEXT PRIMARY KEY,watch_id TEXT NOT NULL,incident TEXT NOT NULL,head_sha TEXT NOT NULL,
       check_run_id INTEGER NOT NULL,check_name TEXT NOT NULL,completed_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,boot_id TEXT NOT NULL,UNIQUE(watch_id,incident));
       CREATE TABLE IF NOT EXISTS stuck_ci_api_reads(id INTEGER PRIMARY KEY,at INTEGER NOT NULL);`);
+    if(!store.db.prepare('PRAGMA table_info(stuck_ci_watches)').all().some((column:any)=>column.name==='candidate_cursor'))store.db.exec('ALTER TABLE stuck_ci_watches ADD COLUMN candidate_cursor INTEGER NOT NULL DEFAULT 0');
     // A queued, never-attempted notice is not sent after restart. Remove it
     // and let a fresh observation recreate it; attempted sends stay deduped.
     const stale=store.db.prepare(`SELECT a.outbox_id,a.watch_id,o.source FROM stuck_ci_alerts a JOIN outbox o ON o.id=a.outbox_id
@@ -76,7 +77,7 @@ export class StuckCiWatch {
   }
   private valid(w:Watch){
     const current=this.store.db.prepare('SELECT * FROM stuck_ci_watches WHERE id=?').get(w.id) as Watch|undefined;
-    if(!current||JSON.stringify({...current,last_checked:0})!==JSON.stringify({...w,last_checked:0})||w.expires_at<=this.clock()||!this.context(w.owner,w.destination,w.generation)||
+    if(!current||JSON.stringify({...current,last_checked:0,candidate_cursor:0})!==JSON.stringify({...w,last_checked:0,candidate_cursor:0})||w.expires_at<=this.clock()||!this.context(w.owner,w.destination,w.generation)||
       this.itemIdentity(w.item_id)!==w.item_identity||!this.store.db.prepare('SELECT 1 FROM item_owner_origins WHERE item_id=? AND owner=? AND destination=?').get(w.item_id,w.owner,w.destination))return false;
     const job=this.store.job(w.request_id),origin=this.store.requestOwnerOrigin(w.request_id),binding=this.store.binding(w.binding_id);
     return !!job&&job.destination===w.destination&&job.binding_id===w.binding_id&&this.store.itemOf(job.id)===w.item_id&&
@@ -133,7 +134,7 @@ export class StuckCiWatch {
     this.store.db.exec('SAVEPOINT stuck_ci_bind');
     try{
       this.store.db.prepare('DELETE FROM stuck_ci_watches WHERE owner=? AND destination=? AND item_id=?').run(owner,destination,itemId);
-      this.store.db.prepare('INSERT INTO stuck_ci_watches VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),owner,destination,generation,itemId,root.id,root.binding_id,identity,itemIdentity,parsed.repository,parsed.prNumber,this.clock()+watchTime,0);
+      this.store.db.prepare('INSERT INTO stuck_ci_watches(id,owner,destination,generation,item_id,request_id,binding_id,identity,item_identity,repository,pr_number,expires_at,last_checked,candidate_cursor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),owner,destination,generation,itemId,root.id,root.binding_id,identity,itemIdentity,parsed.repository,parsed.prNumber,this.clock()+watchTime,0,0);
       this.store.db.exec('RELEASE stuck_ci_bind');
     }catch(e){this.store.db.exec('ROLLBACK TO stuck_ci_bind; RELEASE stuck_ci_bind');throw e;}
     return `Watching the public PR ${parsed.repository} #${parsed.prNumber} for item #${itemId} for 24 hours. I can report a failed check observed on its current head; this does not establish merge readiness.`;
@@ -150,7 +151,8 @@ export class StuckCiWatch {
       this.rearmExpired(w);
       this.store.db.prepare('UPDATE stuck_ci_watches SET last_checked=? WHERE id=?').run(now,w.id);w.last_checked=now;
       const result=await discoverApprovedCiFailure(this.approved(w),new AbortController().signal,()=>this.valid(w),this.read,this.clock,
-        (head,id,name,completedAt)=>!!this.store.db.prepare('SELECT 1 FROM stuck_ci_alerts WHERE watch_id=? AND head_sha=? AND check_run_id=? AND check_name=? AND completed_at=?').get(w.id,head,id,name,completedAt));
+        (head,id,name,completedAt)=>!!this.store.db.prepare('SELECT 1 FROM stuck_ci_alerts WHERE watch_id=? AND head_sha=? AND check_run_id=? AND check_name=? AND completed_at=?').get(w.id,head,id,name,completedAt),w.candidate_cursor,
+        id=>{if(this.valid(w))this.store.db.prepare('UPDATE stuck_ci_watches SET candidate_cursor=? WHERE id=?').run(id,w.id);});
       if(!result||!this.valid(w))return;
       const f=result.failure,source=`stuck-ci-alert:${digest([w.id,f.incident])}`;
       this.store.db.exec('SAVEPOINT stuck_ci_enqueue');

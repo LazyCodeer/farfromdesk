@@ -24,13 +24,14 @@ function fixture(){
   const binding=store.register('worker','codex',randomUUID(),'/tmp').binding;
   store.recordOwnerOrigin('wa:root',owner,owner);store.destinationContext.run(owner,()=>store.enqueue('wa:root',binding,'synthetic',owner));
   const item=store.destinationContext.run(owner,()=>router.brain.memory.add('wa:root','Synthetic task'));
-  let now=Date.now(),calls:string[]=[],failed=true,headSha=head,privateRepo=false,second=false,hook:(()=>void)|undefined;
+  let now=Date.now(),calls:string[]=[],failed=true,headSha=head,privateRepo=false,second=false,firstUnavailable=false,firstCompleted:string|undefined,hook:(()=>void)|undefined;
   const completedAt=new Date(now-1000).toISOString();
   const fetcher:typeof fetch=async(url,init)=>{
     calls.push(String(url));assert.equal(init?.redirect,'error');assert.equal(new Headers(init?.headers).has('authorization'),false);hook?.();
     if(String(url).includes('/pulls/'))return reply({number:12,state:'open',merged_at:null,base:{repo:{full_name:'example/project',private:privateRepo}},head:{sha:headSha}});
-    const run={id:19,name:'Synthetic checks',head_sha:head,status:'completed',conclusion:failed?'failure':'success',completed_at:completedAt};
-    const next={...run,id:20,name:'Other checks'};
+    if(firstUnavailable&&String(url).endsWith('/check-runs/19'))return new Response('',{status:404});
+    const run={id:19,name:'Synthetic checks',head_sha:head,status:'completed',conclusion:failed?'failure':'success',completed_at:firstCompleted??completedAt};
+    const next={...run,id:20,name:'Other checks',completed_at:completedAt};
     return reply(String(url).includes('/commits/')?{check_runs:second?[run,next]:[run]}:String(url).endsWith('/check-runs/20')?next:run);
   };
   const watch=new StuckCiWatch(store,router,fetcher,()=>now);router.stuckCiWatch=watch;
@@ -39,7 +40,7 @@ function fixture(){
   const out=()=>store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'stuck-ci-alert:%'").all() as any[];
   const close=()=>{router.stopped=true;approvals.cancel();store.close();};
   return {store,router,binding,item,watch,command,add,out,close,calls,advance:(ms:number)=>{now+=ms;},
-    setFailure:(v:boolean)=>{failed=v;},setHead:(v:string)=>{headSha=v;},setPrivate:(v:boolean)=>{privateRepo=v;},setSecond:(v:boolean)=>{second=v;},onFetch:(fn:(()=>void)|undefined)=>{hook=fn;}};
+    setFailure:(v:boolean)=>{failed=v;},setHead:(v:string)=>{headSha=v;},setPrivate:(v:boolean)=>{privateRepo=v;},setSecond:(v:boolean)=>{second=v;},setFirstUnavailable:(v:boolean)=>{firstUnavailable=v;},setFirstCompleted:(v:string)=>{firstCompleted=v;},onFetch:(fn:(()=>void)|undefined)=>{hook=fn;}};
 }
 
 test('only an exact public PR link and a direct authenticated self-chat command can create a watch',()=>{
@@ -128,6 +129,23 @@ test('a previously reported failure does not hide a second failed check on the s
     f.store.sent(f.out()[0].id);f.advance(5*60_000+1);await f.watch.tick();
     assert.equal(f.out().length,2);assert.ok(f.out().some(row=>/Other checks/.test(row.body)));
     assert.deepEqual((f.store.db.prepare('SELECT check_run_id FROM stuck_ci_alerts ORDER BY check_run_id').all() as {check_run_id:number}[]).map(x=>x.check_run_id),[19,20]);
+  }finally{f.close();}
+});
+
+test('an old or future-dated failed check does not hide a later fresh one',async()=>{
+  for(const at of [new Date(Date.now()-25*60*60_000).toISOString(),new Date(Date.now()+60_000).toISOString()]){const f=fixture();try{
+    f.setFirstCompleted(at);f.setSecond(true);f.add();await f.watch.tick();
+    assert.equal(f.out().length,1);assert.match(f.out()[0].body,/Other checks/);
+    assert.equal((f.store.db.prepare('SELECT check_run_id FROM stuck_ci_alerts').get() as {check_run_id:number}).check_run_id,20);
+  }finally{f.close();}}
+});
+
+test('a check with unavailable detail rotates to the next failure on the following tick',async()=>{
+  const f=fixture();try{
+    f.setSecond(true);f.setFirstUnavailable(true);f.add();await f.watch.tick();assert.equal(f.out().length,0);
+    assert.equal((f.store.db.prepare('SELECT candidate_cursor FROM stuck_ci_watches').get() as {candidate_cursor:number}).candidate_cursor,19);
+    f.advance(5*60_000+1);await f.watch.tick();assert.equal(f.out().length,1);assert.match(f.out()[0].body,/Other checks/);
+    assert.equal((f.store.db.prepare('SELECT check_run_id FROM stuck_ci_alerts').get() as {check_run_id:number}).check_run_id,20);
   }finally{f.close();}
 });
 

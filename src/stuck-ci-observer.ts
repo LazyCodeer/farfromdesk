@@ -47,7 +47,8 @@ async function readJson(url:URL,signal:AbortSignal,fetcher:TrustedFetch,current:
 /** Discover at most one failure on the current head of the explicitly watched public PR. */
 export async function discoverApprovedCiFailure(watch:ApprovedCiWatch,signal:AbortSignal,
   authority:(watch:Readonly<ApprovedCiWatch>)=>boolean,fetcher:TrustedFetch,now=()=>Date.now(),
-  alreadyReported?:(headSha:string,checkRunId:number,checkName:string,completedAt:number)=>boolean):Promise<{binding:ApprovedCiRun;failure:CiFailure}|undefined>{
+  alreadyReported?:(headSha:string,checkRunId:number,checkName:string,completedAt:number)=>boolean,afterRunId=0,
+  selected?:(checkRunId:number)=>void):Promise<{binding:ApprovedCiRun;failure:CiFailure}|undefined>{
   try{
     const w=Object.freeze({...watch}),current=()=>!signal.aborted&&authority(w)===true;
     if(!w.owner||!w.destination||!w.ownerGeneration||!w.rootRequestId||!Number.isSafeInteger(w.itemId)||w.itemId<1||
@@ -61,11 +62,14 @@ export async function discoverApprovedCiFailure(watch:ApprovedCiWatch,signal:Abo
     const headSha=pr.head.sha;
     const list=await readJson(new URL(`${prefix}/commits/${headSha}/check-runs?per_page=100`),bounded,fetcher,current);
     if(bounded.aborted||!current()||!Array.isArray(list?.check_runs)||list.check_runs.length>100)return;
-    const candidate=list.check_runs.find((r:any)=>{
+    const instant=now();if(!Number.isSafeInteger(instant))return;
+    const candidates=list.check_runs.filter((r:any)=>{
       if(!Number.isSafeInteger(r?.id)||r.id<1||typeof r.name!=='string'||!checkName.test(r.name)||r.name!==r.name.trim()||r.head_sha!==headSha||r.status!=='completed'||r.conclusion!=='failure'||typeof r.completed_at!=='string')return false;
-      const at=Date.parse(r.completed_at);return Number.isSafeInteger(at)&&!alreadyReported?.(headSha,r.id,r.name,at);
+      const at=Date.parse(r.completed_at);return Number.isSafeInteger(at)&&at<=instant&&instant-at<=maximumAge&&!alreadyReported?.(headSha,r.id,r.name,at);
     });
-    if(!candidate)return;
+    if(!candidates.length)return;
+    const prior=candidates.findIndex((r:any)=>r.id===afterRunId),candidate=candidates[(prior+1)%candidates.length];
+    if(!current())return;selected?.(candidate.id);if(!current())return;
     const binding:ApprovedCiRun={...w,headSha,checkRunId:candidate.id,checkName:candidate.name};
     const failure=await observeApprovedCiFailure(binding,bounded,b=>current()&&authority(w)&&b.headSha===headSha&&b.checkRunId===candidate.id&&b.checkName===candidate.name,fetcher,now);
     if(!failure||!current())return;
