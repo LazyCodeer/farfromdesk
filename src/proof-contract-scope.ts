@@ -1,5 +1,33 @@
 import {proofScopeHash,type ProofCheck,type ProofDependencies,type ProofScope} from './proof-check.js';
 import type {Router} from './router.js';
+import type {Store} from './store.js';
+
+/** Install before an approval is created. Never backfill earlier approvals. */
+export class ProofScopeFence {
+  constructor(store:Store) {
+    store.db.exec('SAVEPOINT proof_scope_install');
+    try {
+    store.db.exec(`CREATE TABLE IF NOT EXISTS proof_scope_epoch(id INTEGER PRIMARY KEY CHECK(id=1),generation TEXT NOT NULL);
+      INSERT OR IGNORE INTO proof_scope_epoch VALUES(1,lower(hex(randomblob(16))));
+      CREATE TABLE IF NOT EXISTS proof_scope_approvals(contract_id TEXT PRIMARY KEY,root_request TEXT NOT NULL,generation TEXT NOT NULL,owner_generation TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS proof_scope_approval AFTER UPDATE OF state ON task_contracts
+      WHEN OLD.state='pending' AND NEW.state='approved' AND NEW.dispatch_id IS NOT NULL
+      BEGIN INSERT OR IGNORE INTO proof_scope_approvals VALUES(NEW.id,NEW.dispatch_id,
+        (SELECT generation FROM proof_scope_epoch WHERE id=1),COALESCE((SELECT value FROM settings WHERE key='incoming-owner-generation'),'')); END;`);
+    const relevant="('meta-brain-policy','coordinator-registry','master','active','selected','enabled-apps','background-enabled')";
+    for(const op of ['INSERT','UPDATE','DELETE'] as const){
+      const row=op==='DELETE'?'OLD':'NEW',changed=op==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+      store.db.exec(`CREATE TRIGGER IF NOT EXISTS proof_scope_settings_${op.toLowerCase()} AFTER ${op} ON settings
+        WHEN (${row}.key IN ${relevant} OR ${row}.key LIKE 'execution-mode:%' OR ${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'direct:%' OR ${row}.key LIKE 'owner-target:%')${changed}
+        BEGIN UPDATE proof_scope_epoch SET generation=lower(hex(randomblob(16))) WHERE id=1; END`);
+      const bindingChanged=op==='UPDATE'?'WHEN OLD.id IS NOT NEW.id OR OLD.provider IS NOT NEW.provider OR OLD.native_id IS NOT NEW.native_id OR OLD.cwd IS NOT NEW.cwd OR OLD.mode IS NOT NEW.mode OR OLD.token_hash IS NOT NEW.token_hash OR OLD.enabled IS NOT NEW.enabled':'';
+      store.db.exec(`CREATE TRIGGER IF NOT EXISTS proof_scope_binding_${op.toLowerCase()} AFTER ${op} ON bindings ${bindingChanged}
+        BEGIN UPDATE proof_scope_epoch SET generation=lower(hex(randomblob(16))) WHERE id=1; END`);
+    }
+    store.db.exec('RELEASE proof_scope_install');
+    } catch(e) {store.db.exec('ROLLBACK TO proof_scope_install; RELEASE proof_scope_install');throw e;}
+  }
+}
 
 /**
  * Experimental F3-to-F4 provenance adapter. This establishes only the exact
@@ -25,6 +53,9 @@ export function contractProofScope(router:Router,rootRequestId:string):ReturnTyp
     if(!binding?.enabled||!origin||origin.owner!==contract.owner||origin.destination!==contract.destination||origin.channel!==contract.channel||
        origin.generation!==(store.get('incoming-owner-generation')??'')||store.controlChannel()!==origin.channel||
        store.ownerFor(origin.destination)!==origin.owner||!store.incomingOwnerCurrent())return;
+    const fence=store.db.prepare(`SELECT a.owner_generation,a.generation,e.generation AS current_generation
+      FROM proof_scope_approvals a JOIN proof_scope_epoch e ON e.id=1 WHERE a.contract_id=? AND a.root_request=?`).get(contract.id,rootRequestId) as {owner_generation:string;generation:string;current_generation:string}|undefined;
+    if(!fence||fence.owner_generation!==origin.generation||fence.generation!==fence.current_generation)return;
     if(origin.channel==='whatsapp'){
       const owned=store.requestOwnerOrigin(rootRequestId);
       if(!owned||owned.owner!==origin.owner||owned.destination!==origin.destination)return;

@@ -54,6 +54,12 @@ does not show that the provider completed work, and a session final remains
 an unverified claim. Missing approval-generation records fail closed; the
 plain-text approval path on this base does not yet capture them. This adapter
 is an internal prototype, not connected to a production route or report.
+Its experimental SQLite fence must be installed before approval; it records
+the approval epoch and invalidates it on binding, route or Brain policy changes,
+even if their prior values are restored or the process restarts. Legacy
+approvals are not backfilled. This database fence does not establish the
+history of files outside SQLite, including the Meta key, and is not sufficient
+authorization for independent evidence or a correction.
 
 1. Map the approved, immutable F3 contract and check IDs to a verified task
    attempt and current target project revision. Do not infer the latter from a
