@@ -25,6 +25,18 @@ export class StuckCiWatch {
       CREATE TABLE IF NOT EXISTS stuck_ci_alerts(outbox_id TEXT PRIMARY KEY,watch_id TEXT NOT NULL,incident TEXT NOT NULL,head_sha TEXT NOT NULL,
       check_run_id INTEGER NOT NULL,check_name TEXT NOT NULL,completed_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,boot_id TEXT NOT NULL,UNIQUE(watch_id,incident));
       CREATE TABLE IF NOT EXISTS stuck_ci_api_reads(id INTEGER PRIMARY KEY,at INTEGER NOT NULL);`);
+    // A queued, never-attempted notice is not sent after restart. Remove it
+    // and let a fresh observation recreate it; attempted sends stay deduped.
+    const stale=store.db.prepare(`SELECT a.outbox_id,a.watch_id,o.source FROM stuck_ci_alerts a JOIN outbox o ON o.id=a.outbox_id
+      WHERE o.status='queued' AND o.attempts=0 AND o.sent_at IS NULL AND o.wa_message IS NULL`).all() as {outbox_id:string;watch_id:string;source:string}[];
+    store.db.exec('SAVEPOINT stuck_ci_restart');
+    try{
+      for(const row of stale){
+        const removed=store.db.prepare("DELETE FROM outbox WHERE id=? AND status='queued' AND attempts=0 AND sent_at IS NULL AND wa_message IS NULL").run(row.outbox_id);
+        if(removed.changes){store.db.prepare('DELETE FROM stuck_ci_alerts WHERE outbox_id=?').run(row.outbox_id);store.db.prepare('DELETE FROM reply_receipts WHERE source=?').run(row.source.replace(/:0$/,''));store.db.prepare('UPDATE stuck_ci_watches SET last_checked=0 WHERE id=?').run(row.watch_id);}
+      }
+      store.db.exec('RELEASE stuck_ci_restart');
+    }catch(e){store.db.exec('ROLLBACK TO stuck_ci_restart; RELEASE stuck_ci_restart');throw e;}
     // Reverting a change must not revive an old approval or an in-flight read.
     // Watches are deliberately discarded when their authority changes.
     store.db.exec(`CREATE TRIGGER IF NOT EXISTS stuck_ci_item_update AFTER UPDATE ON items
@@ -44,8 +56,11 @@ export class StuckCiWatch {
     for(const operation of ['INSERT','UPDATE','DELETE'] as const){
       const row=operation==='DELETE'?'OLD':'NEW',changed=operation==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
       store.db.exec(`CREATE TRIGGER IF NOT EXISTS stuck_ci_setting_${operation.toLowerCase()} AFTER ${operation} ON settings
-        WHEN (${row}.key IN ('meta-brain-policy','coordinator-registry') OR ${row}.key LIKE 'execution-mode:%' OR ${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'role-kind:%' OR ${row}.key LIKE 'coordinator-retired:%')${changed}
-        BEGIN DELETE FROM stuck_ci_watches; END`);
+        WHEN ${row}.key IN ('meta-brain-policy','coordinator-registry')${changed}
+        BEGIN DELETE FROM stuck_ci_watches; END;
+        CREATE TRIGGER IF NOT EXISTS stuck_ci_scoped_setting_${operation.toLowerCase()} AFTER ${operation} ON settings
+        WHEN (${row}.key LIKE 'execution-mode:%' OR ${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'role-kind:%' OR ${row}.key LIKE 'coordinator-retired:%' OR ${row}.key LIKE 'parent:%' OR ${row}.key LIKE 'report-parent:%')${changed}
+        BEGIN DELETE FROM stuck_ci_watches WHERE ${row}.key IN ('execution-mode:'||binding_id,'session-route:'||binding_id,'role-kind:'||binding_id,'coordinator-retired:'||binding_id,'parent:'||request_id,'report-parent:'||request_id); END`);
     }
   }
   private context(owner:string,destination:string,generation:string){
@@ -95,7 +110,7 @@ export class StuckCiWatch {
     const roots=this.store.db.prepare(`SELECT j.id,j.binding_id FROM inbox j JOIN item_requests ir ON ir.request_id=j.id
       JOIN owner_request_origins o ON o.request_id=j.id WHERE ir.item_id=? AND j.destination=? AND o.owner=? AND o.destination=?
       ORDER BY j.created_at,j.rowid LIMIT 100`).all(itemId,destination,owner,destination) as {id:string;binding_id:string}[];
-    const root=roots.find(r=>{const b=this.store.binding(r.binding_id),origin=this.store.requestOwnerOrigin(r.id);return !!b?.enabled&&!!briefTargetIdentity(this.store,r.binding_id)&&origin?.owner===owner&&origin.destination===destination;});
+    const root=roots.find(r=>{const b=this.store.binding(r.binding_id),origin=this.store.requestOwnerOrigin(r.id);return !this.store.get(`parent:${r.id}`)&&!this.store.get(`report-parent:${r.id}`)&&!!b?.enabled&&!!briefTargetIdentity(this.store,r.binding_id)&&origin?.owner===owner&&origin.destination===destination;});
     if(!root)return 'That item has no available owner-linked session. Nothing was watched.';
     const identity=briefTargetIdentity(this.store,root.binding_id);if(!identity)return 'That item has no available owner-linked session. Nothing was watched.';
     const existing=this.store.db.prepare('SELECT id FROM stuck_ci_watches WHERE owner=? AND destination=? AND item_id=?').get(owner,destination,itemId);

@@ -89,7 +89,16 @@ test('a restart invalidates queued notices even if the watch itself remains',asy
   const f=fixture();try{
     f.add();await f.watch.tick();const row=f.out()[0];assert.equal(f.watch.deliveryState(row,owner),'ready');
     const restarted=new StuckCiWatch(f.store,f.router,async()=>{throw Error('no network');});
-    assert.equal(restarted.deliveryState(row,owner),'invalid');
+    assert.equal(restarted.deliveryState(row,owner),'invalid');assert.equal(f.out().length,0);
+    assert.equal((f.store.db.prepare('SELECT last_checked FROM stuck_ci_watches').get() as {last_checked:number}).last_checked,0);
+  }finally{f.close();}
+});
+
+test('a restart never re-arms an attempted or uncertain notice',async()=>{
+  const f=fixture();try{
+    f.add();await f.watch.tick();const row=f.out()[0];f.store.db.prepare("UPDATE outbox SET status='uncertain',attempts=1 WHERE id=?").run(row.id);
+    new StuckCiWatch(f.store,f.router,async()=>{throw Error('no network');});
+    assert.equal(f.out().length,1);assert.equal(f.out()[0].status,'uncertain');
   }finally{f.close();}
 });
 
