@@ -18,6 +18,7 @@ import { namedItem, directSession, startDirect, endDirect, backToProxy } from '.
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
+import {isCollaborationFenceError} from './collaboration-dispatch-fence.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -378,6 +379,7 @@ export class Router {
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
     const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id),collaboration=this.collaboration?.has(id)??false;
+    if(!collaboration)this.collaboration?.assertOrdinaryDispatch(id,b);
     if(!scheduled&&!guard&&!contract&&!choice&&!collaboration)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
     if(scheduled){
@@ -417,22 +419,26 @@ export class Router {
       // The claim and attempt belong to one SQLite transaction: a failed or
       // concurrent dispatch must never leave an orphaned claim behind.
       const collaboration=this.collaboration?.has(job.id)??false;
-      if(collaboration)this.store.db.exec('SAVEPOINT collaboration_dispatch');
+      const fence=!!this.collaboration;
+      if(fence)this.store.db.exec('SAVEPOINT collaboration_dispatch');
       try{
-        if(collaboration&&this.store.job(job.id)?.status!=='queued')throw new CollaborationHold('The handoff is no longer queued.');
+        if(fence&&this.store.job(job.id)?.status!=='queued')throw new CollaborationHold('The request is no longer queued.');
         this.assertDispatchAllowed(job.id,b);
-        this.store.jobState(job.id,'dispatched');
+        const attempt=collaboration?this.collaboration!.reserveDispatchAttempt(job.id):this.collaboration?.reserveWorkflowReport(job.id,b);
+        this.store.jobState(job.id,'dispatched',null,undefined,attempt);
         if(collaboration)this.collaboration!.captureDispatchAttempt(job.id);
-        if(collaboration)this.store.db.exec('RELEASE collaboration_dispatch');
+        if(fence)this.store.db.exec('RELEASE collaboration_dispatch');
       }catch(e){
-        if(collaboration)this.store.db.exec('ROLLBACK TO collaboration_dispatch; RELEASE collaboration_dispatch');
-        if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold)continue;
+        if(fence)this.store.db.exec('ROLLBACK TO collaboration_dispatch; RELEASE collaboration_dispatch');
+        if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold||isCollaborationFenceError(e))continue;
         if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;
       }
       this.busy.add(b.id);
+      const dispatchAttempt=this.store.job(job.id)?.attempt_id;
       const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
-      void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');this.collaboration?.managedTurnEnded(job.id,b);}).catch(e=>{
+      void task.then(()=>{const current=this.store.job(job.id);if(!dispatchAttempt||current?.attempt_id!==dispatchAttempt)return;if(current.status==='dispatched')this.store.jobState(job.id,'submitted');this.collaboration?.managedTurnEnded(job.id,b,dispatchAttempt);}).catch(e=>{
+        if(!dispatchAttempt||this.store.job(job.id)?.attempt_id!==dispatchAttempt)return;
         if((e instanceof ScheduledChannelHold||e instanceof CollaborationHold)&&!this.collaboration?.mayHaveSubmitted(job.id)){this.collaboration?.heldBeforeSubmission(job.id);if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
         if(e instanceof DispatchNotSubmittedError&&!this.collaboration?.mayHaveSubmitted(job.id)){this.failBeforeSubmission(job.id,e.message);return;}
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
@@ -456,9 +462,18 @@ export class Router {
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.routableJob(b);if(!job)return null;
-    try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold)return null;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
-    this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};
+    const fence=!!this.collaboration;if(fence)this.store.db.exec('SAVEPOINT collaboration_channel');
+    try{
+      if(fence&&this.store.job(job.id)?.status!=='queued')throw new CollaborationHold('The request is no longer queued.');
+      this.assertDispatchAllowed(job.id,b);this.store.jobState(job.id,'dispatched');
+      if(fence)this.store.db.exec('RELEASE collaboration_channel');
+    }catch(e){
+      if(fence)this.store.db.exec('ROLLBACK TO collaboration_channel; RELEASE collaboration_channel');
+      if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold||isCollaborationFenceError(e))return null;
+      if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;
+    }
+    envelope.acknowledge();return {...job,body:envelope.body};
   }
   channelReply(b:Binding,text:string,kind:string,requestId?:string,source?:string,context:Pick<ReplyContext,'turnId'|'outcome'|'options'>={}) {
     if(context.options!==undefined)context={...context,options:parseMessageOptions(context.options)};

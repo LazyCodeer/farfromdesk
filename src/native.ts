@@ -20,6 +20,7 @@ import { SessionActivation,DesktopReadinessError,openCodexDesktop } from './sess
 import { Connections, usableCLIConnection } from './connections.js';
 import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
@@ -291,7 +292,11 @@ export class NativeAgents {
     }
   }
   async sendDesktopCreation(sessionId:string,file:string) {
+    return withProviderSetup(this.store,'desktop-submit',()=>this.sendDesktopCreationScoped(sessionId,file));
+  }
+  private async sendDesktopCreationScoped(sessionId:string,file:string) {
     await this.desktopConfig();
+    assertProviderSetup(this.store);
     const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{timeout:30000,maxBuffer:1024*1024});
     const receipt=JSON.parse(stdout);
     if(receipt.status!=='submitted'&&receipt.status!=='received')throw new Error('Desktop creation submission could not be confirmed. Do not resubmit.');

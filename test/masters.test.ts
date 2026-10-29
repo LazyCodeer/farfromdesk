@@ -20,7 +20,8 @@ if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt',email
 else if(m.method==='config/read')send({id:m.id,result:{config:{model_provider:'openai'}}});
 else if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
 else if((m.method==='thread/read'||m.method==='thread/resume')){const path=require('node:path').join(process.cwd(),'fake-rollout.jsonl');require('node:fs').writeFileSync(path,'{}\\n');send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd(),path}}});}
-else {send({id:m.id,result:{}});if(m.method==='turn/start'){send({method:'item/completed',params:{threadId:'${nativeId}',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{status:'completed'}}});}}
+else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-synthetic'}}});send({method:'item/completed',params:{threadId:'${nativeId}',turnId:'turn-synthetic',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{id:'turn-synthetic',status:'completed'}}});}
+else send({id:m.id,result:{}});
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=join(dir,'state');process.env.FARFROMDESK_HOME=join(dir,'home');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
 const { Connections }=await import('../src/connections.js');

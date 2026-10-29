@@ -2,8 +2,8 @@
 
 This is an internal, **opt-in prototype**, not the finished collaboration
 feature. No production path enables the adapter or exposes a handoff endpoint.
-The prototype stages handoffs only between verified managed CLI connections;
-Desktop and channel sessions are not supported. It does not renew claims
+The prototype stages handoffs only between managed Codex CLI connections;
+Claude, Desktop and channel sessions are not supported. It does not renew claims
 automatically, inspect Collaboration memory, call Meta, validate drift or run
 a proof check. Do not present it as enforcing one-session execution until
 every dispatch and handoff path uses the same guard.
@@ -27,9 +27,9 @@ The ledger records explicit claims, renewals, releases and handoff summaries in
 SQLite. A claim is bound to one item, owner, destination, root request, exact
 approved contract ID/revision/hash and session fingerprint. Claims carry a
 generation and random fencing token. An explicit acquisition can replace an
-expired idle claim, but never while the bridge can see a linked queued,
-dispatched, submitted or uncertain job. Handoffs and releases also refuse while
-such work exists. A handoff records the contract identity and sender/recipient;
+expired idle claim, but never while the bridge can see linked queued work or an
+attempt whose provider has not been proven stopped. Handoffs and releases also
+refuse while such work exists. A handoff records the contract identity and sender/recipient;
 it neither starts work nor claims the recipient automatically. Summaries are
 untrusted local data and drift is always `not_checked`.
 
@@ -39,19 +39,144 @@ the same SQLite connection. The ledger additionally checks current owner,
 destination, item provenance and exact session identity. F3's approved-contract
 interface is still changing; no production role adapter exists.
 
-The active-work check follows the bridge's bounded request/item ancestry; it
-cannot discover work that was never recorded or correctly linked to the item.
-Before enabling F5, ensure all native, managed, channel, option, scheduled,
-report and delegated paths persist links and use the same guard, renew leases
-during long active turns, and fail closed after restart, owner/session/contract
-changes, or uncertain delivery. A router without the prototype enabled cannot
-enforce its claims; the test adapter cannot protect concurrent external work.
+`CollaborationRoles` provides an internal, contract-scoped role policy for the
+managed prototype. A proposal binds exact session identities, role routes,
+contract scope and a Collaboration-memory snapshot. It is inert until a
+trusted adapter verifies an explicit owner approval of its exact digest. Each
+approval is single-use, and replacing or revoking the policy invalidates its
+staged handoffs even if the same rules are approved again. Role and approval
+revision are checked again at the provider boundary. Durable session revisions
+also invalidate an approval if a binding or route changes away and back while
+the bridge is stopped. Legacy handoffs without the role-order and exact-finish
+markers fail closed. The role is recorded with the handoff, and the
+contract remains attached; the session's report is still unverified.
+
+The memory and approval adapters are deliberately **not implemented or wired**.
+The future memory adapter must provide a durable revision that changes on
+every edit, including external edits and change-away-and-back across restarts;
+the present Markdown memory API cannot establish that guarantee. The future
+approval adapter must authenticate the owner and bind their explicit approval
+to the exact displayed proposal digest. A model suggestion, a memory line or a
+session report is not approval. A policy must specify plan, build and review in
+that order. Each later stage requires the exact report from the preceding stage,
+the same policy and contract, and a finished, released provider attempt; a
+blocked, cancelled or subsequently uncertain predecessor cannot advance. A
+new approval starts again at plan. This order does not prove the work or summary
+stays within the contract. The synthetic tests use fake revisions and approvals;
+they do not establish those real adapters.
+
+Within an opt-in database, the fence follows both recorded parent chains,
+including cycles and conflicting links, and checks other attempts on the source
+and target bindings. Persistent SQLite triggers also hold conflicting inbox
+dispatches from another bridge connection and prevent ancestry changes that
+could hide a claim. They conservatively block relinking even completed attempts
+while a claim remains. Older or ordinary completed attempts on the item or either
+session without an exact trusted end receipt block collaboration; there is no
+reconciliation UI yet.
+
+This cannot discover work that was never recorded or correctly linked to the
+item, or prevent external work in a native session. Worker creation, recovery
+and Desktop startup use the experimental setup reservation below, but older
+bridge processes and external native work can still start outside it. Also
+verify all native, managed, channel, option, scheduled, report and delegated
+paths, renew leases during long active turns, and fail closed after restart,
+owner/session/contract changes, or uncertain delivery. The persistent triggers
+are cooperative protection for bridge database writes, not a fence against a
+process that modifies the database schema or starts provider work directly.
+
+## Setup and recovery boundary
+
+Provider setup is not represented by an inbox dispatch attempt. Worker create,
+recovery and automatic Desktop reconciliation in `src/workers.ts` can call
+`Masters.provisionWorker` or `Masters.recoverWorker`. Coordinator create,
+selection, recovery and automatic Desktop reconciliation in `src/masters.ts`
+can also start or reconnect a provider outside the claim. Desktop startup and
+confirmation in `src/desktop-start.ts` can submit work separately. These paths
+must not be treated as protected merely because their eventual task uses the
+inbox fence.
+
+The prototype reserves setup before asynchronous worker and coordinator setup,
+selection or recovery, and before Desktop creation, confirmation or submission.
+Nested calls share the reservation; detached work retains it. Reservations and
+collaboration workflows exclude each other through SQLite across bridge
+connections. A workflow reservation also holds setup and competing item or
+coordinator dispatches between stages; the exact prior-stage report receives a
+separate, authorization-checked dispatch attempt. Earlier handoffs are
+conservatively migrated, and legacy setup records block F5.
+
+**There is no release or reconciliation path yet.** Every setup reservation is
+retained, even for a rejected or no-op attempt, and every workflow reservation
+is retained after review. Completed target sessions also hold ordinary dispatch
+across bridge connections, even if completion evidence remains valid. This deliberately blocks later collaboration or setup,
+including on normally configured installations with old setup records. It is
+not suitable for production. A restart, timeout, lost response, set-aside,
+abandonment, Desktop `needs_action`, `ready` status, socket receipt, session
+report or Claude READY response does not establish a trusted provider end.
+Reconciliation must distinguish a proven unsent attempt from an exact ended
+turn and bind any release to the original reservation and owner scope.
+
+Synthetic tests cover separate-process setup/claim races, setup-first and
+workflow-first holds, legacy records, restart, stale nested reservations and
+report gaps. They do not establish a real provider lifecycle or exclusive access
+to native sessions. An older bridge can perform some setup mutations before its
+legacy record is written, and native work started outside the bridge requires a
+separate exclusive ownership boundary.
 
 Remaining work includes a production contract and role adapter, a scoped
 owner-visible timeline and brief integration, session roles from approved
 Collaboration memory, an actual Wonder drift check grounded in the contract,
 and a single run-bound proof check after the final handoff. Test a complete
 plan/build/review flow and concurrent claimants before considering release.
+
+## Provider exclusivity gate
+
+Managed collaboration has no default provider-exclusivity adapter. Staging a
+handoff requires a trusted adapter to attest a non-reused ownership revision
+for the exact source attempt and target session; coordinator reports require a
+separate attestation for their exact dispatch attempt. The revision is checked
+again through readiness, submission and completion. A separate exact-turn
+completion attestation must establish that no continuation or background work
+remains before a source yields, a claim is released or a report turn is
+recorded as ended. Losing either proof keeps submitted work claimed. Legacy rows
+with no attestation fail closed. Test fixtures supply
+synthetic revisions only; they are not evidence of native exclusivity.
+
+A real adapter must establish the source fence before the source was dispatched,
+hold the target fence through its exact turn end, bind owner generation,
+contract, item, sessions and attempts, and enforce exclusivity across all
+provider processes. A one-time process scan or bridge-local lock is not proof.
+The provider must reject stale capabilities, or guarantee a lease cannot expire
+or be reassigned while a turn remains live. If enforcement requires a capability
+on each provider call, that transport is still to be implemented. The current
+root dispatch does not obtain such a fence, and no real provider adapter is
+wired. Do not enable this gate with a permissive callback.
+
+## Managed Claude CLI correlation
+
+Claude SDK and stdio sessions cannot be staged as an F5 source or target, and
+their results do not authorize an F5 source yield or target claim release.
+Both adapters serialize calls within one runtime instance, but
+the current stdio adapter accepts a result for whichever turn is pending, and
+the SDK adapter accepts results without a session ID or without a matching
+request identifier. Synthetic protocol fixtures reproduced both cases; they
+did not contact a provider or use a real session.
+
+The installed SDK 0.3.310 declarations allow a client UUID on a structured
+streamed user message and describe optional result `user_message_uuid` and
+`user_message_uuids` fields. A future adapter could persist a unique message
+UUID with the exact bridge attempt, then require the same session and UUID on
+the result. It must fail closed on missing, mismatched or ambiguous fields,
+mixed or queued turns, interrupted runs, duplicate results and uncertain
+transport outcomes. Older producers may omit correlation fields. The actual
+CLI's echo behavior and event ordering have not been verified by a live call.
+
+Matching a UUID would identify a result; it would not prove exclusive control
+of the native session. Two independent synthetic SDK instances can run the
+same session concurrently. A bridge-local lock and one-time live-process scan
+cannot prevent another process from starting that session afterward. A future
+implementation needs a defensible cross-process ownership boundary and
+evidence that relevant background work has stopped. Continue holding the claim
+when these facts are unavailable, including after restart.
 
 ## Claude Desktop handoff blocker
 

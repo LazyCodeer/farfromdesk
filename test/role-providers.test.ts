@@ -19,7 +19,7 @@ const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
 rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(m)+'\\n');
  if(m.method==='config/read')send({id:m.id,result:{config:{model_provider:'openai'}}});
  else if(m.method==='thread/resume')send({id:m.id,result:{thread:{id:'${id}',cwd:process.cwd()}}});
- else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-1'}}});send({method:'item/completed',params:{threadId:'${id}',item:{type:'agentMessage',text:'Done',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${id}',turn:{id:'turn-1',status:'completed'}}});}
+ else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-1'}}});send({method:'item/completed',params:{threadId:'${id}',turnId:'turn-1',item:{type:'agentMessage',text:'Done',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${id}',turn:{id:'turn-1',status:'completed'}}});}
  else send({id:m.id,result:{}});
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=dir;process.env.WSB_CODEX_BIN=fake;

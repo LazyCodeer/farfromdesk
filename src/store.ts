@@ -111,6 +111,15 @@ export class Store {
     }
     return undefined;
   }
+  /** Conservative reachability for collaboration fences. Follow both parent
+   * forms to completion, including cycles and conflicting direct links. */
+  itemsInAncestry(requestId:string):number[] {
+    const rows=this.db.prepare(`WITH RECURSIVE ancestors(id) AS (
+      SELECT ? UNION SELECT s.value FROM ancestors a JOIN settings s
+        ON s.key='parent:'||a.id OR s.key='report-parent:'||a.id
+      ) SELECT DISTINCT item_id FROM item_requests WHERE request_id IN (SELECT id FROM ancestors)`).all(requestId) as {item_id:number}[];
+    return rows.map(r=>r.item_id);
+  }
   linkItem(requestId:string,itemId:number){this.db.prepare('INSERT OR IGNORE INTO item_requests VALUES(?,?,?)').run(requestId,itemId,Date.now());}
   /** Only the authenticated inbound WhatsApp path may call this. Never upgrade an existing request to a different owner. */
   recordOwnerOrigin(requestId:string,destination:string,owner:string){
@@ -180,9 +189,9 @@ export class Store {
   queued(id: string) { return this.db.prepare("SELECT * FROM inbox WHERE binding_id=? AND status='queued' ORDER BY created_at LIMIT 1").get(id) as Job | undefined; }
   /** Skip scheduled work held for the inactive control channel, without starving ordinary jobs. */
   routableQueued(id:string,channel:string) {return this.db.prepare("SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) ORDER BY i.created_at,i.rowid LIMIT 1").get(id,channel) as Job|undefined;}
-  jobState(id: string, status: string, error: string | null = null, outcome?:RequestOutcome) {
+  jobState(id: string, status: string, error: string | null = null, outcome?:RequestOutcome,dispatchAttempt?:string) {
     const prior=this.job(id);if(!prior)return;
-    const now=Date.now(),attempt=status==='dispatched'?randomUUID():prior.attempt_id??null;
+    const now=Date.now(),attempt=status==='dispatched'?dispatchAttempt??randomUUID():prior.attempt_id??null;
     const resultOutcome=outcome??(['reviewed','auto_closed'].includes(status)?'reviewed':status==='replaced'?'cancelled':null);
     this.db.prepare('UPDATE inbox SET status=?,error=?,updated_at=?,attempt_id=?,outcome=COALESCE(?,outcome),last_error=CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END,last_error_at=CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_at END,submitted_at=CASE WHEN ?=\'submitted\' THEN COALESCE(submitted_at,?) ELSE submitted_at END WHERE id=?').run(status,error,now,attempt,resultOutcome,error,error,error,now,status,now,id);
     if(prior.status!==status||prior.error!==error)this.event(id,status,{...(error?{code:errorCode(error)}:{}),...(resultOutcome?{outcome:resultOutcome}:{})});
