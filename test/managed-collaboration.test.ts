@@ -143,7 +143,7 @@ test('native readiness rechecks the claimed exact target before actual submissio
   }finally{await f.close();}
 });
 
-test('a channel hold during native readiness resumes without duplicate submission',async()=>{
+test('a channel change during native readiness invalidates the old handoff',async()=>{
   const f=await fixture();try{
     const id=f.collab.stage('wa:approve',f.worker.id,'Implement','channel-hold'),waiting=deferred(),started=deferred();let sent=0,first=true;
     const prior=f.native.run;f.native.store=f.store;
@@ -152,7 +152,53 @@ test('a channel hold during native readiness resumes without duplicate submissio
     f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
     f.sourceEnd.resolve();await started.promise;f.store.set('control-channel','telegram');waiting.resolve();
     await until(()=>f.store.job(id)?.status==='queued'&&!f.r.busy.has(f.worker.id));assert.equal(sent,0);
-    f.store.set('control-channel','whatsapp');f.r.pump();await until(()=>sent===1);f.r.pump();await turn();assert.equal(sent,1);
+    f.store.set('control-channel','whatsapp');f.r.pump();await until(()=>f.store.job(id)?.status==='failed');assert.equal(sent,0);
+  }finally{await f.close();}
+});
+
+test('owner and channel changes away and back invalidate a staged handoff',async()=>{
+  for(const mode of ['owner','channel']){
+    const f=await fixture();try{
+      const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`roundtrip-${mode}`);
+      if(mode==='owner'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
+      else{f.store.set('control-channel','telegram');f.store.set('control-channel','whatsapp');}
+      assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement',`roundtrip-${mode}`),/changed/);
+      f.sourceEnd.resolve();await until(()=>f.store.job(id)?.status==='failed');
+      assert.equal(f.starts.filter(x=>x.id===id).length,0,mode);
+    }finally{await f.close();}
+  }
+});
+
+test('a stale owner context cannot stage a new handoff',async()=>{
+  const f=await fixture();try{
+    const captured=f.store.captureIncomingOwner(f.owner,'whatsapp')!;
+    f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);
+    assert.throws(()=>f.store.incomingOwnerContext.run(captured,()=>f.collab.stage('wa:approve',f.worker.id,'Implement','stale-context')),/owner connection changed/);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM managed_collaboration_handoffs').get()?.n,0);
+  }finally{await f.close();}
+});
+
+test('an owner roundtrip while readiness is pending prevents provider submission',async()=>{
+  const f=await fixture();try{
+    const id=f.collab.stage('wa:approve',f.worker.id,'Implement','readiness-owner'),waiting=deferred(),started=deferred();let sent=0;
+    const prior=f.native.run;f.native.store=f.store;
+    f.native.connections.assert=async(b:any)=>{if(b.id===f.worker.id){started.resolve();await waiting.promise;}};
+    f.native.managedRun=async()=>{sent++;};
+    f.native.run=async(b:any,body:string,jobId:string)=>jobId===id?NativeAgents.prototype.run.call(f.native,b,body,jobId):prior(b,body,jobId);
+    f.sourceEnd.resolve();await started.promise;
+    f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);
+    waiting.resolve();await until(()=>f.store.job(id)?.status==='failed');assert.equal(sent,0);
+    assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token);
+  }finally{await f.close();}
+});
+
+test('an owner roundtrip after submission cannot release the claim',async()=>{
+  const f=await fixture();try{
+    const id=f.collab.stage('wa:approve',f.worker.id,'Implement','release-owner');f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);
+    f.r.channelReply(f.worker,'Done','final',id);f.targetEnd.resolve();await until(()=>!f.r.busy.has(f.worker.id));
+    assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token);
+    assert.equal(f.store.db.prepare('SELECT state FROM managed_collaboration_handoffs WHERE job_id=?').get(id)?.state,'claimed');
   }finally{await f.close();}
 });
 
@@ -277,7 +323,7 @@ test('a provider-bound failure remains uncertain and retains its exact claim',as
 });
 
 test('restart releases only a proven unsent exact attempt and never replays a handoff',async()=>{
-  for(const phase of ['before','after','legacy','other-fence']){
+  for(const phase of ['before','after','legacy','other-fence','owner-roundtrip','legacy-owner']){
     const f=await fixture();let reopened:InstanceType<typeof Store>|undefined;try{
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`recovery-${phase}`),ready=deferred(),started=deferred(),providerEnd=deferred();let calls=0;
       const prior=f.native.run;f.native.store=f.store;
@@ -288,6 +334,8 @@ test('restart releases only a proven unsent exact attempt and never replays a ha
       const item=f.store.itemOf(id)!;
       if(phase==='legacy')f.store.db.exec('ALTER TABLE managed_collaboration_handoffs DROP COLUMN submission_started');
       if(phase==='other-fence')f.store.db.prepare('UPDATE collaboration_claims SET token=?,generation=generation+1 WHERE item_id=?').run(randomUUID(),item);
+      if(phase==='owner-roundtrip'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
+      if(phase==='legacy-owner')f.store.db.exec('ALTER TABLE managed_collaboration_handoffs DROP COLUMN owner_generation');
       reopened=new Store(join(f.dir,'test.sqlite'));reopened.recover();
       let replayed=0;const n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{replayed++;}};
       const a=new Approvals(reopened),r=new Router(reopened,n,a),c=new Coordinator(reopened,n,r,()=>{});r.coordinator=c;

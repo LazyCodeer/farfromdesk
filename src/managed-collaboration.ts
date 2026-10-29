@@ -11,7 +11,7 @@ export type HandoffAuthority={allows(scope:CollaborationScope,from:Binding,to:Bi
 type Row={job_id:string;source_id:string;source_attempt:string;source_binding:string;source_identity:string;source_body:string;
   target_binding:string;target_identity:string;item_id:number;root_id:string;owner:string;destination:string;
   contract_id:string;revision:number;approved_hash:string;body_hash:string;summary:string;yielded:number;
-  claim_token:string|null;generation:number|null;target_attempt:string|null;submission_started:number;finished:number;state:string};
+  claim_token:string|null;generation:number|null;target_attempt:string|null;submission_started:number;finished:number;state:string;owner_generation:string|null};
 
 /** Experimental internal adapter. No endpoint or default Router enables this. */
 export class ManagedCollaboration {
@@ -22,11 +22,13 @@ export class ManagedCollaboration {
       item_id INTEGER NOT NULL,root_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,
       contract_id TEXT NOT NULL,revision INTEGER NOT NULL,approved_hash TEXT NOT NULL,body_hash TEXT NOT NULL,
       summary TEXT NOT NULL,yielded INTEGER NOT NULL DEFAULT 0,claim_token TEXT,generation INTEGER,target_attempt TEXT,submission_started INTEGER NOT NULL DEFAULT 0,
-      finished INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'waiting');
+      finished INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'waiting',owner_generation TEXT);
       CREATE UNIQUE INDEX IF NOT EXISTS managed_collaboration_active_item ON managed_collaboration_handoffs(item_id) WHERE state IN ('waiting','claimed');`);
     // Older prototype rows have no trustworthy submission boundary.
     if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_handoffs)').all().some((c:any)=>c.name==='submission_started'))
       router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN submission_started INTEGER NOT NULL DEFAULT 1');
+    if(!router.store.db.prepare('PRAGMA table_info(managed_collaboration_handoffs)').all().some((c:any)=>c.name==='owner_generation'))
+      router.store.db.exec('ALTER TABLE managed_collaboration_handoffs ADD COLUMN owner_generation TEXT');
     this.recoverKnownUnsent();
   }
   private get store(){return this.router.store;}
@@ -36,7 +38,8 @@ export class ManagedCollaboration {
   private context(row:Row):CollaborationScope {
     const source=this.store.job(row.source_id),binding=source&&this.store.binding(source.binding_id),target=this.store.binding(row.target_binding);
     const contract=this.router.contracts.approved(row.source_id);
-    if(!source||!binding||!target||source.binding_id!==row.source_binding||source.attempt_id!==row.source_attempt||
+    if(row.owner_generation===null||row.owner_generation!==(this.store.get('incoming-owner-generation')??'')||
+      !source||!binding||!target||source.binding_id!==row.source_binding||source.attempt_id!==row.source_attempt||
       this.identity(binding)!==row.source_identity||hash(source.body)!==row.source_body||!this.managed(binding)||
       this.identity(target)!==row.target_identity||!this.managed(target)||!contract||contract.id!==row.contract_id||
       contract.revision!==row.revision||contract.approved_hash!==row.approved_hash||contract.dispatch_id!==row.root_id||
@@ -54,6 +57,7 @@ export class ManagedCollaboration {
   }
   /** Internal prototype only: called by trusted bridge code during the exact managed source turn. */
   stage(sourceId:string,targetId:string,body:string,eventId:string) {
+    this.store.assertIncomingOwner();
     const source=this.store.job(sourceId),from=source&&this.store.binding(source.binding_id),target=this.store.binding(targetId),c=this.router.coordinator;
     if(!source||!from||!target||target.id!==targetId||!c||!c.isCoordinator(from.id)||!target.enabled||from.id===target.id||
       !this.selected(from,target)||!this.managed(from)||!this.managed(target)||!this.router.busy.has(from.id)||source.status!=='dispatched'||!source.attempt_id)
@@ -67,7 +71,7 @@ export class ManagedCollaboration {
     let cursor:string|undefined=sourceId;const visited=new Set<string>();
     while(cursor){if(visited.has(cursor)||visited.size>=4)throw new Error('Collaboration delegation depth exceeded.');visited.add(cursor);if(this.store.job(cursor)?.binding_id===target.id)throw new Error('Collaboration delegation cycle refused.');cursor=this.store.get(`parent:${cursor}`);}
     const jobId=`master:${sourceId}:f5-${eventId}:${target.id}`,prior=this.row(jobId);
-    if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body)throw new Error('The handoff ID was reused.');return jobId;}
+    if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body)throw new Error('The handoff ID was reused.');this.context(prior);return jobId;}
     this.store.db.exec('SAVEPOINT managed_collaboration_stage');
     try{
       const live=this.store.db.prepare("SELECT id FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain') AND id<>?").all(sourceId) as {id:string}[];
@@ -77,8 +81,8 @@ export class ManagedCollaboration {
       bindScheduledChild(this.router,sourceId,jobId,target,scoped);
       this.store.enqueue(jobId,target,scoped,contract.destination);
       this.store.db.prepare(`INSERT INTO managed_collaboration_handoffs(job_id,source_id,source_attempt,source_binding,source_identity,source_body,
-        target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body);
+        target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`).run(jobId,sourceId,source.attempt_id,from.id,this.identity(from),hash(source.body),target.id,this.identity(target),item,root,contract.owner,contract.destination,contract.id,contract.revision,contract.approved_hash,hash(scoped),body,this.store.get('incoming-owner-generation')??'');
       this.store.db.exec('RELEASE managed_collaboration_stage');return jobId;
     }catch(e){this.store.db.exec('ROLLBACK TO managed_collaboration_stage; RELEASE managed_collaboration_stage');throw e;}
   }
@@ -127,6 +131,8 @@ export class ManagedCollaboration {
   heldBeforeSubmission(id:string){this.store.db.prepare("UPDATE managed_collaboration_handoffs SET target_attempt=NULL WHERE job_id=? AND state='claimed'").run(id);}
   /** Called in the same transaction as the claim and dispatch attempt. */
   captureDispatchAttempt(id:string){
+    const row=this.row(id);if(!row)throw new DispatchNotSubmittedError('The collaboration handoff changed. Nothing was sent.');
+    try{this.context(row);}catch{throw new DispatchNotSubmittedError('The collaboration owner, task or session changed. Nothing was sent.');}
     const job=this.store.job(id);
     if(!job?.attempt_id||job.status!=='dispatched')throw new DispatchNotSubmittedError('The collaboration attempt changed. Nothing was sent.');
     const changed=this.store.db.prepare(`UPDATE managed_collaboration_handoffs SET target_attempt=?
@@ -137,6 +143,8 @@ export class ManagedCollaboration {
    * only a persisted zero marker tied to this exact attempt and claim. */
   private recoverKnownUnsent(){
     if(!this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_claims'").get())return;
+    if(!this.store.db.prepare('PRAGMA table_info(collaboration_claims)').all().some((c:any)=>c.name==='owner_generation'))
+      this.store.db.exec('ALTER TABLE collaboration_claims ADD COLUMN owner_generation TEXT');
     this.store.db.exec('SAVEPOINT managed_collaboration_recover');
     try {
       const rows=this.store.db.prepare(`SELECT h.* FROM managed_collaboration_handoffs h
@@ -146,11 +154,12 @@ export class ManagedCollaboration {
         AND i.attempt_id=h.target_attempt AND i.binding_id=h.target_binding
         AND c.token=h.claim_token AND c.generation=h.generation AND c.holder_id=h.target_binding
         AND c.owner=h.owner AND c.destination=h.destination AND c.root_request_id=h.root_id
-        AND c.contract_id=h.contract_id AND c.contract_revision=h.revision AND c.approved_hash=h.approved_hash`).all() as Row[];
+        AND c.contract_id=h.contract_id AND c.contract_revision=h.revision AND c.approved_hash=h.approved_hash
+        AND h.owner_generation IS NOT NULL AND c.owner_generation=h.owner_generation AND h.owner_generation=?`).all(this.store.get('incoming-owner-generation')??'') as Row[];
       for(const row of rows){
         const cleared=this.store.db.prepare(`UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL
           WHERE item_id=? AND generation=? AND token=? AND holder_id=? AND owner=? AND destination=? AND root_request_id=?
-          AND contract_id=? AND contract_revision=? AND approved_hash=?`).run(row.item_id,row.generation!,row.claim_token!,row.target_binding,row.owner,row.destination,row.root_id,row.contract_id,row.revision,row.approved_hash);
+          AND contract_id=? AND contract_revision=? AND approved_hash=? AND owner_generation=?`).run(row.item_id,row.generation!,row.claim_token!,row.target_binding,row.owner,row.destination,row.root_id,row.contract_id,row.revision,row.approved_hash,row.owner_generation!);
         if(!cleared.changes)continue;
         this.store.jobState(row.job_id,'failed','FarFromDesk restarted before this managed handoff was sent.');
         this.store.db.prepare("UPDATE managed_collaboration_handoffs SET state='invalid' WHERE job_id=? AND state='claimed' AND submission_started=0 AND target_attempt=?").run(row.job_id,row.target_attempt!);
@@ -180,9 +189,9 @@ export class ManagedCollaboration {
     this.store.db.exec('SAVEPOINT managed_collaboration_reject');
     try {
       if(job.status!=='failed')this.store.jobState(id,'failed',reason);
-      if(row.claim_token&&row.generation!==null)this.store.db.prepare(`UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL
+      if(row.claim_token&&row.generation!==null&&row.owner_generation!==null&&row.owner_generation===(this.store.get('incoming-owner-generation')??''))this.store.db.prepare(`UPDATE collaboration_claims SET holder_id=NULL,holder_identity=NULL,token=NULL,lease_until=NULL
         WHERE item_id=? AND generation=? AND token=? AND holder_id=? AND owner=? AND destination=? AND root_request_id=?
-        AND contract_id=? AND contract_revision=? AND approved_hash=?`).run(row.item_id,row.generation,row.claim_token,row.target_binding,row.owner,row.destination,row.root_id,row.contract_id,row.revision,row.approved_hash);
+        AND contract_id=? AND contract_revision=? AND approved_hash=? AND owner_generation=?`).run(row.item_id,row.generation,row.claim_token,row.target_binding,row.owner,row.destination,row.root_id,row.contract_id,row.revision,row.approved_hash,row.owner_generation);
       this.store.db.prepare("UPDATE managed_collaboration_handoffs SET state='invalid' WHERE job_id=? AND state IN ('waiting','claimed') AND submission_started=0").run(id);
       this.store.db.exec('RELEASE managed_collaboration_reject');
     } catch(e) {this.store.db.exec('ROLLBACK TO managed_collaboration_reject; RELEASE managed_collaboration_reject');throw e;}

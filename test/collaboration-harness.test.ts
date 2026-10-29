@@ -130,6 +130,71 @@ test('owner, item, binding and contract changes fail closed',()=>{
   }
 });
 
+test('registered owner group uses its stored name and requires the current destination',()=>{
+  const f=fixture();try{
+    const group='123456@g.us';
+    f.store.set(`owned-group:${group}`,'My owner group');f.store.set('destination-jid',group);
+    f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run(group,f.request);
+    f.store.db.prepare('UPDATE item_owner_origins SET destination=? WHERE item_id=?').run(group,f.itemId);
+    f.scope.destination=group;
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'group-claim');
+    f.ledger.renew(f.request,f.itemId,claim.token,'group-renew');
+    f.ledger.release(f.request,f.itemId,claim.token,'group-release');
+    assert.deepEqual(f.ledger.history(f.request,f.itemId).map(x=>x.kind),['claimed','renewed','released']);
+    f.store.set('destination-jid','another@g.us');
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'group-wrong-destination'),/changed/);
+  }finally{f.close();}
+});
+
+test('revoking and restoring a group grant invalidates its existing claim',()=>{
+  const f=fixture();try{
+    const group='123456@g.us';
+    f.store.set(`owned-group:${group}`,'My owner group');f.store.set('destination-jid',group);
+    f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run(group,f.request);
+    f.store.db.prepare('UPDATE item_owner_origins SET destination=? WHERE item_id=?').run(group,f.itemId);
+    f.scope.destination=group;
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'group-claim');
+    f.store.db.prepare('DELETE FROM settings WHERE key=?').run(`owned-group:${group}`);
+    f.store.set(`owned-group:${group}`,'My owner group');
+    assert.throws(()=>f.ledger.renew(f.request,f.itemId,claim.token,'after-revoke'),/changed|unavailable/);
+    assert.throws(()=>f.ledger.release(f.request,f.itemId,claim.token,'after-revoke-release'),/changed|unavailable/);
+  }finally{f.close();}
+});
+
+test('owner and channel roundtrips invalidate claims and idempotent events',()=>{
+  for(const mode of ['owner','channel']){
+    const f=fixture();try{
+      const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'claim');
+      if(mode==='owner'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
+      else{f.store.set('control-channel','telegram');f.store.set('control-channel','whatsapp');}
+      assert.throws(()=>f.ledger.assertClaim(f.request,f.itemId,f.a.id,claim.token,claim.generation),/changed|unavailable/);
+      assert.throws(()=>f.ledger.release(f.request,f.itemId,claim.token,'release'),/changed|unavailable/);
+      assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'claim'),/reused|changed/);
+      assert.deepEqual(f.ledger.history(f.request,f.itemId),[]);
+    }finally{f.close();}
+  }
+});
+
+test('old claims without an owner generation cannot be reused or released',()=>{
+  const f=fixture();try{
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'claim');
+    f.store.db.prepare('UPDATE collaboration_claims SET owner_generation=NULL WHERE item_id=?').run(f.itemId);
+    assert.throws(()=>f.ledger.assertClaim(f.request,f.itemId,f.a.id,claim.token,claim.generation),/changed|unavailable/);
+    assert.throws(()=>f.ledger.release(f.request,f.itemId,claim.token,'release'),/changed|unavailable/);
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.b.id,'other'),/changed/);
+  }finally{f.close();}
+});
+
+test('migration of old claim and event tables does not authorize their rows',()=>{
+  const f=fixture();try{
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'claim');
+    f.store.db.exec('ALTER TABLE collaboration_claims DROP COLUMN owner_generation; ALTER TABLE collaboration_events DROP COLUMN owner_generation');
+    const migrated=new CollaborationHarness(f.store,f.authority,f.clock);
+    assert.throws(()=>migrated.assertClaim(f.request,f.itemId,f.a.id,claim.token,claim.generation),/changed|unavailable/);
+    assert.deepEqual(migrated.history(f.request,f.itemId),[]);
+  }finally{f.close();}
+});
+
 test('new approved contract revisions can claim an idle item without mixing history',()=>{
   const f=fixture();try{
     const first=f.ledger.claim(f.request,f.itemId,f.a.id,'v1-claim');
