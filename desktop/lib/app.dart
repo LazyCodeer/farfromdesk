@@ -10,6 +10,7 @@ import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
 import 'updates.dart';
 import 'connection_status.dart';
+import 'startup_trace.dart';
 
 import 'bridge_theme.dart';
 part 'screens.dart';
@@ -130,7 +131,9 @@ class _DeskState extends State<Desk> {
   Future<void> boot() async {
     try {
       await widget.initialize?.call();
+      traceStartup('reading login registration');
       startup = await api.startupEnabled();
+      traceStartup('reading initial status');
       await refresh();
       if (mounted) {
         setState(() => ready = true);
@@ -141,9 +144,13 @@ class _DeskState extends State<Desk> {
       unawaited(loadItems());
       timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
       await WidgetsBinding.instance.endOfFrame;
-      if (mounted && error == null) await api.reportReady();
+      if (mounted && error == null) {
+        await api.reportReady();
+        traceStartup('UI ready');
+      }
       unawaited(showUpdateOutcome());
     } catch (e) {
+      traceStartup('startup failed');
       if (mounted) setState(() => error = clean(e));
     }
   }
