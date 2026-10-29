@@ -5,7 +5,7 @@ import {observeApprovedCiFailure,type ApprovedCiRun} from '../src/stuck-ci-obser
 const now=1_850_000_000_000,sha='a'.repeat(40);
 const binding:ApprovedCiRun={owner:'synthetic-owner',destination:'synthetic-chat',ownerGeneration:'gen-a',rootRequestId:'wa:owner',itemId:1,
   repository:'example/project',prNumber:12,headSha:sha,checkRunId:19,checkName:'Synthetic checks'};
-const pr=(extra:Record<string,unknown>={})=>({number:12,state:'open',merged_at:null,base:{repo:{full_name:'example/project'}},head:{sha},...extra});
+const pr=(extra:Record<string,unknown>={})=>({number:12,state:'open',merged_at:null,base:{repo:{full_name:'example/project',private:false}},head:{sha},...extra});
 const check=(extra:Record<string,unknown>={})=>({id:19,name:'Synthetic checks',head_sha:sha,status:'completed',conclusion:'failure',completed_at:new Date(now-1000).toISOString(),...extra});
 const response=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});
 function transport(prBody:unknown=pr(),checkBody:unknown=check()){

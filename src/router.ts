@@ -17,6 +17,7 @@ import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 import type { MorningBrief } from './morning-brief.js';
 import type { StuckDetection } from './stuck-detection.js';
+import type { StuckCiWatch } from './stuck-ci-watch.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
 
@@ -46,6 +47,7 @@ export class Router {
   remoteControl?:(text:string)=>Promise<string|undefined>;
   morningBrief?:MorningBrief;
   stuckDetection?:StuckDetection;
+  stuckCiWatch?:StuckCiWatch;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
   stopped=false;
@@ -128,7 +130,7 @@ export class Router {
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
     this.morningBrief?.firstMessage(m);
-    const stuckReply=this.stuckDetection?.dismiss(m);
+    const stuckReply=this.stuckCiWatch?.command(m)??this.stuckDetection?.dismiss(m);
     if(stuckReply!==undefined){this.store.output(undefined,stuckReply,`stuck-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);

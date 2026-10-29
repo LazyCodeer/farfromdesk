@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
  */
 export type ApprovedCiRun={owner:string;destination:string;ownerGeneration:string;rootRequestId:string;itemId:number;
   repository:string;prNumber:number;headSha:string;checkRunId:number;checkName:string};
+export type ApprovedCiWatch=Omit<ApprovedCiRun,'headSha'|'checkRunId'|'checkName'>;
 export type CiFailure={kind:'approved-ci-run-failure-observed';repository:string;prNumber:number;headSha:string;checkRunId:number;checkName:string;completedAt:number;observedAt:number;incident:string};
 type TrustedAuthority=(binding:Readonly<ApprovedCiRun>)=>boolean;
 type TrustedFetch=typeof fetch;
@@ -15,6 +16,13 @@ const repo=/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const sha=/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const checkName=/^[A-Za-z0-9][A-Za-z0-9 _./()\[\]-]{0,99}$/;
 const maxBytes=512*1024,maximumAge=24*60*60_000;
+
+/** Only an explicit public GitHub pull request URL is accepted, without query, fragments or credentials. */
+export function parseCiPullRequest(value:string):{repository:string;prNumber:number}|undefined {
+  const match=/^https:\/\/github\.com\/([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})\/pull\/([1-9][0-9]{0,8})\/?$/.exec(value);
+  if(!match||[match[1],match[2]].some(v=>v==='.'||v==='..'))return;
+  return {repository:`${match[1]}/${match[2]}`,prNumber:Number(match[3])};
+}
 
 /** Fetch only the fixed GitHub API origin. No credentials, redirects or URL supplied by an agent. */
 async function readJson(url:URL,signal:AbortSignal,fetcher:TrustedFetch,current:()=>boolean):Promise<any|undefined>{
@@ -34,6 +42,31 @@ async function readJson(url:URL,signal:AbortSignal,fetcher:TrustedFetch,current:
       return JSON.parse(Buffer.concat(chunks).toString('utf8'));
     }finally{reader.releaseLock();}
   }catch{return;}finally{signal.removeEventListener('abort',stop);}
+}
+
+/** Discover at most one failure on the current head of the explicitly watched public PR. */
+export async function discoverApprovedCiFailure(watch:ApprovedCiWatch,signal:AbortSignal,
+  authority:(watch:Readonly<ApprovedCiWatch>)=>boolean,fetcher:TrustedFetch,now=()=>Date.now()):Promise<{binding:ApprovedCiRun;failure:CiFailure}|undefined>{
+  try{
+    const w=Object.freeze({...watch}),current=()=>!signal.aborted&&authority(w)===true;
+    if(!w.owner||!w.destination||!w.ownerGeneration||!w.rootRequestId||!Number.isSafeInteger(w.itemId)||w.itemId<1||
+      !repo.test(w.repository)||w.repository.split('/').some(s=>s==='.'||s==='..')||!Number.isSafeInteger(w.prNumber)||w.prNumber<1||!current())return;
+    const [owner,name]=w.repository.split('/'),prefix=`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const bounded=AbortSignal.any([signal,AbortSignal.timeout(5000)]);
+    const pr=await readJson(new URL(`${prefix}/pulls/${w.prNumber}`),bounded,fetcher,current);
+    if(bounded.aborted||!current()||!pr||pr.number!==w.prNumber||pr.state!=='open'||pr.merged_at!==null||
+      pr.base?.repo?.private!==false||typeof pr.base?.repo?.full_name!=='string'||pr.base.repo.full_name.toLowerCase()!==w.repository.toLowerCase()||
+      typeof pr.head?.sha!=='string'||!sha.test(pr.head.sha))return;
+    const headSha=pr.head.sha;
+    const list=await readJson(new URL(`${prefix}/commits/${headSha}/check-runs?per_page=100`),bounded,fetcher,current);
+    if(bounded.aborted||!current()||!Array.isArray(list?.check_runs)||list.check_runs.length>100)return;
+    const candidate=list.check_runs.find((r:any)=>Number.isSafeInteger(r?.id)&&r.id>0&&typeof r.name==='string'&&checkName.test(r.name)&&r.name===r.name.trim()&&r.head_sha===headSha&&r.status==='completed'&&r.conclusion==='failure');
+    if(!candidate)return;
+    const binding:ApprovedCiRun={...w,headSha,checkRunId:candidate.id,checkName:candidate.name};
+    const failure=await observeApprovedCiFailure(binding,bounded,b=>current()&&authority(w)&&b.headSha===headSha&&b.checkRunId===candidate.id&&b.checkName===candidate.name,fetcher,now);
+    if(!failure||!current())return;
+    return {binding,failure};
+  }catch{return;}
 }
 
 /**
@@ -61,7 +94,7 @@ export async function observeApprovedCiFailure(input:ApprovedCiRun,signal:AbortS
     const bounded=AbortSignal.any([signal,AbortSignal.timeout(5000)]);
     const prUrl=new URL(`${prefix}/pulls/${binding.prNumber}`);
     const matchesPr=(pr:any)=>!!pr&&pr.number===binding.prNumber&&pr.state==='open'&&pr.merged_at===null&&
-      typeof pr.base?.repo?.full_name==='string'&&pr.base.repo.full_name.toLowerCase()===binding.repository.toLowerCase()&&pr.head?.sha===binding.headSha;
+      pr.base?.repo?.private===false&&typeof pr.base?.repo?.full_name==='string'&&pr.base.repo.full_name.toLowerCase()===binding.repository.toLowerCase()&&pr.head?.sha===binding.headSha;
     const pr=await readJson(prUrl,bounded,fetcher,current);
     if(bounded.aborted||!current()||!matchesPr(pr))return;
     const runUrl=new URL(`${prefix}/check-runs/${binding.checkRunId}`);
