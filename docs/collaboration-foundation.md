@@ -53,6 +53,32 @@ Collaboration memory, an actual Wonder drift check grounded in the contract,
 and a single run-bound proof check after the final handoff. Test a complete
 plan/build/review flow and concurrent claimants before considering release.
 
+## Managed Claude CLI correlation
+
+Claude SDK and stdio results do not yet authorize an F5 source yield or target
+claim release. Both adapters serialize calls within one runtime instance, but
+the current stdio adapter accepts a result for whichever turn is pending, and
+the SDK adapter accepts results without a session ID or without a matching
+request identifier. Synthetic protocol fixtures reproduced both cases; they
+did not contact a provider or use a real session.
+
+The installed SDK 0.3.310 declarations allow a client UUID on a structured
+streamed user message and describe optional result `user_message_uuid` and
+`user_message_uuids` fields. A future adapter could persist a unique message
+UUID with the exact bridge attempt, then require the same session and UUID on
+the result. It must fail closed on missing, mismatched or ambiguous fields,
+mixed or queued turns, interrupted runs, duplicate results and uncertain
+transport outcomes. Older producers may omit correlation fields. The actual
+CLI's echo behavior and event ordering have not been verified by a live call.
+
+Matching a UUID would identify a result; it would not prove exclusive control
+of the native session. Two independent synthetic SDK instances can run the
+same session concurrently. A bridge-local lock and one-time live-process scan
+cannot prevent another process from starting that session afterward. A future
+implementation needs a defensible cross-process ownership boundary and
+evidence that relevant background work has stopped. Continue holding the claim
+when these facts are unavailable, including after restart.
+
 ## Claude Desktop handoff blocker
 
 The existing signals do not establish that the exact Claude Desktop turn has
