@@ -40,6 +40,14 @@ yet the tailored document required by the approved plan.
   untrusted. Displayed reasons are generated locally from exact text matches,
   not model claims. This is not a reliable salary/eligibility check and does
   not yet use a resume or justify an application.
+- Exclusions currently support only `onsite`, `on-site` or `on site` (with an
+  optional no/avoid/exclude prefix). Only a trusted independently verified
+  `remote-only` workplace attestation qualifies; onsite, hybrid and unknown
+  fail closed. Excerpts, sessions and models may not mint the attestation. It
+  must be bound to the exact source/listing hash and request, and regional
+  restrictions require independent verification. No such verifier exists yet.
+  Other exclusion wording fails closed; this is not a general language
+  understanding or salary verification system.
 - The ledger rejects a few recognizable credential patterns in criteria and
   snippets as defense in depth. This is not comprehensive secret detection:
   the future verifier must ensure it supplies only public listing content, and
@@ -47,11 +55,27 @@ yet the tailored document required by the approved plan.
 - Every async transition rechecks the owner, destination, exact binding and
   native identity, contract authority, mission version and state. Results are
   discarded on cancellation or changed scope. Shortlist entries expire after
-  24 hours. A later `draft N` requires a new authenticated owner request in the
-  same owner/chat and a trusted check of the original approved contract.
+  24 hours, including after ranking completes. A later `draft N` requires the
+  exact text of a new top-level authenticated owner request in the same
+  owner/chat and a trusted check of the original approved contract.
+- Draft selection also requires a bridge-owned ingress ordering proof for the
+  authenticated owner message and the exact delivered shortlist. No such
+  adapter exists here: selection fails closed by default. `inbox.received_at`
+  is set after asynchronous routing and must never be used as ingress time.
+  The future adapter must durably capture order before any async work, and
+  prove the selected shortlist was delivered before the owner sent the reply.
+- Expired evidence requires a new owner request and a new mission. Existing
+  missions cannot be reset or reused. A draft claim and its local result are
+  committed together and a repeated identical request recovers that result;
+  a future sender must still atomically queue delivery or make it idempotent.
+  A dispatched owner job marked uncertain during bridge recovery is not an
+  active request here, so its saved draft cannot yet be recovered through this
+  API. Design and test that recovery before connecting delivery.
 - The `publicListingUrl` lexical check rejects local names, literal IPs,
-  credentials, private-looking query parameters and non-HTTPS URLs. It does not
-  resolve DNS or prevent rebinding and must not be used alone to fetch a URL.
+  known credential patterns, queries, fragments and non-HTTPS URLs. It does
+  not silently strip a query and claim the result works. It does not resolve
+  DNS or prevent rebinding and must not be used alone to fetch a URL. Links
+  requiring query parameters are currently unsupported.
 
 ## Work still required
 

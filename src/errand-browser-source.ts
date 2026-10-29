@@ -12,7 +12,8 @@ const Query=z.object({tabRefs:z.array(z.string().uuid()).min(1).max(40)}).strict
  * page is a live job posting; the owner must inspect each link before acting.
  * The guard must be bridge-owned, and revalidate current owner/request/session.
  */
-export type ObservedPage=Omit<Listing,'verification'>&{evidence:'selected-page'};
+// Browser text is not a verified job or workplace-mode classification.
+export type ObservedPage=Omit<Listing,'verification'|'workplace'>&{evidence:'selected-page'};
 export type ObservedPageReader=(scope:ErrandScope,query:unknown,signal:AbortSignal)=>Promise<ObservedPage[]>;
 export function existingTabListingReader(browser:Pick<BrowserTabs,'run'>,current:(scope:ErrandScope)=>boolean,now=()=>Date.now()):ObservedPageReader {
   return async(scope,query,signal)=>{
