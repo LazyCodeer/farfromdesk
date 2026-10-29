@@ -4,6 +4,14 @@ import 'bridge_theme.dart';
 import 'gateway.dart';
 import 'memory_panel.dart';
 
+const defaultMetaBrainModel = 'muse-wonder-1.0';
+const fallbackMetaBrainModels = [
+  'muse-spark-1.3',
+  'muse-spark-1.2',
+  'muse-spark-1.1',
+  defaultMetaBrainModel,
+];
+
 /// Small (i) button whose tooltip says what a feature does and why.
 Widget infoTip(String message, {String label = 'About this'}) => Tooltip(
   message: message,
@@ -62,7 +70,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     routing = s['allowRouting'] == true;
     summaries = s['allowStatus'] != false;
     management = s['allowManagement'] == true;
-    model = s['model'] as String? ?? 'muse-spark-1.3';
+    model = s['model'] as String? ?? defaultMetaBrainModel;
     failure = s['failure'] as String? ?? 'legacy';
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
@@ -438,7 +446,8 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
             value: model,
             underline: const SizedBox(),
             items: [
-              for (final m in (widget.saved['models'] ?? ['muse-spark-1.3']))
+              for (final m
+                  in (widget.saved['models'] ?? fallbackMetaBrainModels))
                 DropdownMenuItem(value: m as String, child: Text('Meta · $m')),
             ],
             onChanged: saving ? null : (v) => setState(() => model = v!),
