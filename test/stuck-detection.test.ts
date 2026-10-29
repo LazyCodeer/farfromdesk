@@ -138,7 +138,7 @@ test('the existing approval incident identity stays stable across the new notice
 });
 
 test('permission notice decisions fail closed for stale, untrusted or altered requests',async()=>{
-  for(const change of ['original-unsent','notice-unsent','expired','owner','session','prompt','original-body','forwarded','voice','invalid-number','legacy','dismissed','long','unsafe-format'] as const){const f=fixture();try{
+  for(const change of ['original-unsent','notice-unsent','expired','owner','session','attempt','prompt','original-body','forwarded','voice','invalid-number','legacy','dismissed','long','unsafe-format'] as const){const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
     const question=change==='long'?'x'.repeat(4000):change==='unsafe-format'?'Synthetic \u202epermission':'Synthetic permission question';
     void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,question,'approval','wa:permission'));
@@ -147,6 +147,7 @@ test('permission notice decisions fail closed for stale, untrusted or altered re
     if(change==='expired')f.advance(10*60_000+1);
     if(change==='owner'){f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);}
     if(change==='session')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+    if(change==='attempt')f.store.jobState('wa:permission','dispatched');
     if(change==='prompt')[...f.approvals.pending.values()][0].question='A different request';
     if(change==='original-body')f.store.db.prepare('UPDATE outbox SET body=? WHERE id=?').run('A different displayed request',original.id);
     if(change==='legacy')f.store.db.prepare('UPDATE stuck_alerts SET permission_code=NULL').run();
@@ -154,6 +155,17 @@ test('permission notice decisions fail closed for stale, untrusted or altered re
     const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:reject-${change}`,text:change==='invalid-number'?'3':'2',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:change!=='forwarded',source:change==='voice'?'voice':'text'}));
     assert.equal(result.status,'blocked',change);assert.equal(f.approvals.pending.size,1,change);assert.equal(f.store.job(`wa:reject-${change}`),undefined,change);
   }finally{f.close();}}
+});
+
+test('a permission created before a verifiable dispatch cannot become actionable after dispatch',async()=>{
+  const f=fixture();try{
+    f.store.recordOwnerOrigin('wa:early',owner,owner);f.store.destinationContext.run(owner,()=>f.store.enqueue('wa:early',f.binding,'Synthetic task',owner));
+    f.store.destinationContext.run(owner,()=>f.router.brain.memory.add('wa:early','Synthetic task'));
+    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Early request','approval','wa:early'));
+    const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);
+    f.store.jobState('wa:early','dispatched');f.store.jobState('wa:early','submitted');await f.detector.tick();
+    assert.equal(alerts(f.store).filter(a=>a.kind==='approval').length,0);
+  }finally{f.close();}
 });
 
 test('a permission notice never approves a different pending request',async()=>{

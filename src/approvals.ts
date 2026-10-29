@@ -4,7 +4,7 @@ import { Store } from './store.js';
 import { briefTargetIdentity } from './brief-dispatch-guard.js';
 
 export class Approvals {
-  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; destination:string|null; owner:string|undefined; requestId?:string; targetIdentity?:string; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
+  pending = new Map<string,{binding:Binding; question:string; kind:'approval'|'question'; expires:number; destination:string|null; owner:string|undefined; requestId?:string; targetIdentity?:string; attemptId?:string; settle:(answer:string)=>void; timer:NodeJS.Timeout}>();
   constructor(private store:Store) {}
   ask(binding:Binding, question:string, kind:'approval'|'question'='approval',requestId?:string):Promise<string> {
     const code=randomBytes(4).toString('hex'), expires=Date.now()+15*60_000;
@@ -14,11 +14,12 @@ export class Approvals {
       const destination=this.store.destination(),origin=requestId?this.store.requestOwnerOrigin(requestId):undefined;
       // A group JID survives account changes, so a current owner alone cannot prove the prompt's origin.
       const owner=destination&&destination===this.store.ownerFor(destination)?destination:origin?.destination===destination?origin.owner:undefined;
-      let targetIdentity:string|undefined;
+      let targetIdentity:string|undefined,attemptId:string|undefined;
       if(requestId)try{const current=this.store.binding(binding.id),same=current&&current.native_id===binding.native_id&&current.cwd===binding.cwd&&current.token_hash===binding.token_hash&&current.mode===binding.mode&&current.provider===binding.provider&&current.created_at===binding.created_at;
-        if(same)targetIdentity=briefTargetIdentity(this.store,binding.id);
+        const job=this.store.job(requestId);
+        if(same){targetIdentity=briefTargetIdentity(this.store,binding.id);if(job?.binding_id===binding.id&&job.destination===destination&&job.attempt_id)attemptId=job.attempt_id;}
       }catch{} // Missing identity only suppresses the optional stuck notice, never the native prompt.
-      this.pending.set(code,{binding,question,kind,expires,destination,owner,requestId,targetIdentity,settle,timer});
+      this.pending.set(code,{binding,question,kind,expires,destination,owner,requestId,targetIdentity,attemptId,settle,timer});
       this.store.output(binding,`${kind==='approval'?'Permission needed':'Answer needed'}\n${question}\n\n${kind==='approval'?'Reply to this message with “Yes, allow it” or “No, deny it”.':'Reply to this message with your answer.'}\nExpires in 15 minutes.`, `permission:${code}`);
     });
   }

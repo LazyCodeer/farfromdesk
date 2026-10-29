@@ -153,7 +153,9 @@ export class StuckDetection {
     for(const [code,p] of this.router.approvals.pending) {
       if(!p.requestId||p.owner!==owner||p.destination!==destination||p.expires<=now||this.store.itemOf(p.requestId)!==itemId)continue;
       const job=this.store.job(p.requestId),origin=this.store.requestOwnerOrigin(p.requestId),identity=this.identity(p.binding.id);
-      if(!job||job.binding_id!==p.binding.id||job.destination!==destination||!['dispatched','submitted'].includes(job.status)||!origin||origin.owner!==owner||origin.destination!==destination||!identity||p.targetIdentity!==identity)continue;
+      if(!job||job.binding_id!==p.binding.id||job.destination!==destination||!['dispatched','submitted'].includes(job.status)||!p.attemptId||job.attempt_id!==p.attemptId||
+        !this.store.db.prepare("SELECT 1 FROM request_events WHERE request_id=? AND binding_id=? AND attempt_id=? AND event='dispatched'").get(job.id,job.binding_id,p.attemptId)||
+        !origin||origin.owner!==owner||origin.destination!==destination||!identity||p.targetIdentity!==identity)continue;
       const kind:Kind=p.kind==='approval'?'approval':'question';
       const original=this.store.db.prepare('SELECT body,status,destination,binding_id FROM outbox WHERE source=?').get(`permission:${code}:0`) as {body:string;status:string;destination:string|null;binding_id:string|null}|undefined;
       const single=this.store.db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE source LIKE ?').get(`permission:${code}:%`) as {n:number};
