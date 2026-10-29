@@ -29,6 +29,7 @@ initializeCoordinatorUpdates(store);
 try {installBundledAudio(store);}catch{console.error('Bundled voice assets could not be initialized. Reinstall the app or configure local speech tools.');}
 const approvals=new Approvals(store),native=portableAgents?new PortableNative(store,approvals):new NativeAgents(store,approvals),router=new Router(store,native,approvals),wa=new WhatsApp(store,router),telegram=new Telegram(store,router);
 router.morningBrief=new MorningBrief(store,router);
+router.scheduledBrief=(destination,owner,occurrence,canSend)=>router.morningBrief!.scheduledBrief(destination,owner,occurrence,canSend);
 const coordinator=new Coordinator(store,native,router);router.coordinator=coordinator;
 const masters=new Masters(store,router),power=new PowerPolicy(store,router,wa,undefined,telegram);
 const workers=new Workers(store,router,masters);router.hasPendingCreation=id=>workers.pending(id);
@@ -42,6 +43,7 @@ server.on('listening',()=>{
   // Remove only this service's private scratch recordings after a crash.
   rmSync(join(stateDir,'audio-tmp'),{recursive:true,force:true});
   store.recover();
+  void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));
   if(power.enabled){void coordinator.refresh();void masters.discover();}
   power.apply();
   console.log(`FarFromDesk listening at ${baseUrl}. Open FarFromDesk to manage it.`);
@@ -55,7 +57,7 @@ const worker=setInterval(()=>{drainHooks(store);router.pump();},2000);
 // A paused bridge must not keep touching protected provider folders.
 const discovery=setInterval(()=>{if(power.enabled){void coordinator.refresh();void masters.discover();}},30000);
 const setupRecovery=setInterval(()=>{if(power.enabled){void masters.reconcileDesktopSetup();workers.reconcileDesktop();}},5000);
-const maintenance=setInterval(()=>{power.apply();router.autoCloseStale();if(power.enabled)router.morningBrief?.tick();if(wa.status==='connected'||telegram.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
+const maintenance=setInterval(()=>{power.apply();router.autoCloseStale();if(power.enabled)router.morningBrief?.tick();void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));if(wa.status==='connected'||telegram.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
 let shutting=false;
 function shutdown(){if(shutting)return;shutting=true;router.stopped=true;agentInstaller.close();clearInterval(worker);clearInterval(discovery);clearInterval(setupRecovery);clearInterval(maintenance);power.close();workers.close();masters.close();approvals.cancel();wa.close();telegram.close();native.close();server.close();setTimeout(()=>{store.close();process.exit(0);},1500).unref();}
 process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);
