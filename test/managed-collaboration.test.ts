@@ -55,7 +55,7 @@ test('managed-only handoff waits for the source turn, claims once, and carries t
     f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
     const delivered=f.starts.find(x=>x.id===id)!;assert.match(delivered.body,/Owner-approved task contract/);assert.match(delivered.body,/Do NOT publish/);
     assert.equal(f.starts.filter(x=>x.id===id).length,1);
-    const h=f.collab.history('wa:approve',f.store.itemOf(id)!);assert.equal(h.length,1);assert.equal(h[0].drift,'not_checked');assert.equal(h[0].state,'claimed');
+    const h=f.collab.history('wa:approve',f.store.itemOf(id)!);assert.equal(h.length,1);assert.equal(h[0].drift,'not_checked');assert.equal(h[0].state,'claimed');assert.equal(h[0].result,null);
     f.r.channelReply(f.worker,'Implementation reported complete.','final',id);
     f.targetEnd.resolve();await until(()=>f.collab.history('wa:approve',f.store.itemOf(id)!)[0]?.state==='complete');
     assert.equal(f.store.job(id)?.status,'completed');
@@ -96,7 +96,7 @@ test('synthetic managed sessions plan, build and review in sequence under one co
     f.r.channelReply(f.worker,'Review reported: checks still require independent proof.','final',review);gates.get(review)!.resolve();
     await until(()=>f.collab.history('wa:approve',item).filter(h=>h.state==='complete').length===3);
     assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.summary),['Plan the approved change.','Build the approved plan.','Review the approved change.']);
-    assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.result),['Plan recorded: implement the theme and preserve existing settings.','Build reported: theme implementation prepared.','Review reported: checks still require independent proof.']);
+    assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.result),['Plan recorded: implement the theme and preserve existing settings.','Build reported: theme implementation prepared.','Review reported: checks still require independent proof.'].map(text=>({kind:'session_report',verification:'unverified',text})));
     assert.ok(f.collab.history('wa:approve',item).every(h=>h.drift==='not_checked'));
     for(const id of [plan,build,review]){assert.equal(f.store.itemOf(id),item);assert.match(f.starts.find(x=>x.id===id)!.body,/Do NOT publish/);}
   }finally{for(const gate of gates.values())gate.resolve();await f.close();}

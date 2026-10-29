@@ -244,8 +244,10 @@ export class ManagedCollaboration {
   /** This is recorded task context, never a verified outcome or a Meta drift check. */
   history(root:string,itemId:number) {
     const rows=this.store.db.prepare('SELECT * FROM managed_collaboration_handoffs WHERE root_id=? AND item_id=? ORDER BY rowid').all(root,itemId) as Row[];
-    return rows.filter(row=>{try{this.context(row);return true;}catch{return false;}}).map(row=>({sourceId:row.source_id,targetBindingId:row.target_binding,itemId:row.item_id,contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash,summary:row.summary,
-      // This is the recorded session report, not independent proof of its claims.
-      result:row.state==='complete'?this.store.get(`final-reply:${row.job_id}`)??null:null,state:row.state,drift:'not_checked' as const}));
+    return rows.filter(row=>{try{this.context(row);return true;}catch{return false;}}).map(row=>{
+      const text=row.state==='complete'?this.store.get(`final-reply:${row.job_id}`):undefined;
+      return {sourceId:row.source_id,targetBindingId:row.target_binding,itemId:row.item_id,contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash,summary:row.summary,
+        result:text===undefined?null:{kind:'session_report' as const,verification:'unverified' as const,text},state:row.state,drift:'not_checked' as const};
+    });
   }
 }
