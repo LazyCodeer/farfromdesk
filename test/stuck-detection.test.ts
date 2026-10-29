@@ -764,6 +764,29 @@ test('repeated known errors are distinguished from unrelated or unknown failures
   }finally{f.close();}
 });
 
+test('one recorded authentication failure alerts without sending the original error or asserting a visible login page',async()=>{
+  const f=fixture();try{
+    f.add('wa:auth','Synthetic task');f.store.jobState('wa:auth','failed','Authentication required; synthetic private token detail');
+    await f.detector.tick();await f.detector.tick();assert.equal(alerts(f.store).length,1);
+    assert.equal(alerts(f.store)[0].kind,'authentication');assert.match(alertOut(f.store)[0].body,/recorded an authentication error/);
+    assert.doesNotMatch(alertOut(f.store)[0].body,/synthetic private token|login page|captcha/i);assert.deepEqual(f.inputs,[['authentication']]);
+    f.store.jobState('wa:auth','dispatched');assert.equal(f.detector.deliveryState(alertOut(f.store)[0],owner),'invalid');
+  }finally{f.close();}
+});
+
+test('authentication notices require the latest matching owner-linked task failure',async()=>{
+  for(const change of ['other-error','newer-error','owner','attempt','resolved'] as const){const f=fixture();try{
+    f.add('wa:auth','Synthetic task');
+    if(change==='other-error')f.store.jobState('wa:auth','failed','Timeout');
+    else f.store.jobState('wa:auth','failed','Authentication required');
+    if(change==='newer-error')f.store.jobState('wa:auth','uncertain','unknown issue');
+    if(change==='owner')f.store.set('whatsapp-owner','other@s.whatsapp.net');
+    if(change==='attempt')f.store.jobState('wa:auth','dispatched');
+    if(change==='resolved')f.store.jobState('wa:auth','completed',null,'done');
+    await f.detector.tick();assert.equal(alerts(f.store).filter(row=>row.kind==='authentication').length,0,change);
+  }finally{f.close();}}
+});
+
 test('WhatsApp cancels stale notices before send and never retries an uncertain send',async()=>{
   for(const mode of ['owner','owner-returned','destination','progress','network','restart']){
     const f=fixture();try{

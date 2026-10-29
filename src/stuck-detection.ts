@@ -8,7 +8,7 @@ import {metaObserver,type MetaObserver} from './meta-timeline.js';
 import type {Incoming,Router} from './router.js';
 import type {Store} from './store.js';
 
-type Kind='idle'|'approval'|'question'|'choice'|'repeated-error';
+type Kind='idle'|'approval'|'question'|'choice'|'authentication'|'repeated-error';
 type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string;choiceText?:string};
 type Alert={id:string;owner:string;destination:string;item_id:number;request_id:string;binding_id:string;identity:string;kind:Kind;incident:string;expires_at:number;state:string;outbox_id:string;owner_generation:string|null;choice_id:string|null};
 type Writer=(kinds:Kind[],key:string,observe?:MetaObserver)=>Promise<string>;
@@ -193,7 +193,12 @@ export class StuckDetection {
       ORDER BY CASE WHEN j.status IN ('dispatched','submitted') THEN 0 ELSE 1 END,COALESCE(j.updated_at,j.created_at),j.rowid LIMIT 100`).all(itemId,destination,itemId,destination) as {id:string;binding_id:string;status:string;updated_at:number|null;created_at:number;attempt_id:string|null}[];
     const found=jobs.map(job=>({job,origin:this.store.requestOwnerOrigin(job.id),identity:this.identity(job.binding_id)})).find(x=>x.origin?.owner===owner&&x.origin.destination===destination&&x.identity);
     if(!found?.identity)return;const {job,identity}=found;
-    const errors=this.store.db.prepare(`SELECT id,event,details FROM request_events WHERE request_id=? AND event IN ('queued','dispatched','submitted','failed','uncertain','completed') ORDER BY id DESC LIMIT 2`).all(job.id) as {id:number;event:string;details:string}[];
+    const errors=this.store.db.prepare(`SELECT id,event,attempt_id,details FROM request_events WHERE request_id=? AND event IN ('queued','dispatched','submitted','failed','uncertain','completed') ORDER BY id DESC LIMIT 2`).all(job.id) as {id:number;event:string;attempt_id:string|null;details:string}[];
+    // This is a recorded diagnostic, not a claim that a login page is visible.
+    if((job.status==='failed'||job.status==='uncertain')&&errors[0]?.event===job.status&&errors[0].attempt_id===job.attempt_id){
+      let code:string|undefined;try{code=JSON.parse(errors[0].details).code;}catch{}
+      if(code==='authentication_required')return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind:'authentication',incident:digest(['authentication',job.id,job.attempt_id,errors[0].id,identity])};
+    }
     if(errors.length===2&&errors.every(e=>e.event==='failed'||e.event==='uncertain')) {
       let codes:string[]=[];try{codes=errors.map(e=>JSON.parse(e.details).code);}catch{}
       if(codes[0]&&codes[0]!=='unknown'&&codes[0]===codes[1])return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind:'repeated-error',incident:digest(['error',job.id,errors.map(e=>e.id),codes[0],identity])};
@@ -216,7 +221,7 @@ export class StuckDetection {
       // A notice must display the whole original question in a single message.
       if(text.length<=3000)return {text,choiceId:signal.choiceId};
     }
-    const reason:Record<Kind,string>={idle:'No recorded progress for the configured idle period.',approval:'A permission request is waiting for your decision.',question:'The session asked a question and is waiting for your answer.',choice:'An unanswered choice is still available from the session.','repeated-error':'Two consecutive failures have the same recorded error category.'};
+    const reason:Record<Kind,string>={idle:'No recorded progress for the configured idle period.',approval:'A permission request is waiting for your decision.',question:'The session asked a question and is waiting for your answer.',choice:'An unanswered choice is still available from the session.',authentication:'The bridge recorded an authentication error for this task. Check the session sign-in on your Mac.','repeated-error':'Two consecutive failures have the same recorded error category.'};
     return {text:`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.`,choiceId:undefined};
   }
   /** A never-sent expired notice may be replaced; a sending, sent or uncertain one never is. */

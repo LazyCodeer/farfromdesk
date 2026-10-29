@@ -15,6 +15,9 @@ It can report:
   an offered number. It uses the original choice and task-contract checks; it
   does not grant a native permission.
 - Two consecutive recorded task failures with the same known error category.
+- A task's latest recorded failure has an authentication error. Check the
+  session's sign-in yourself on the Mac. This does not identify a login page
+  or submit credentials.
 
 Change the idle limit with `/stuck interval 20`, using 1 to 1440 minutes.
 Send `/stuck dismiss CODE` to dismiss a delivered notice within 10 minutes.
