@@ -52,6 +52,7 @@ export class TaskContracts {
   private jobContract(id:string){return this.store.db.prepare("SELECT t.* FROM task_contracts t LEFT JOIN task_contract_jobs j ON j.contract_id=t.id WHERE t.state='approved' AND (t.dispatch_id=? OR j.job_id=?) LIMIT 1").get(id,id) as ContractRow|undefined;}
   hasGuard(id:string){return !!this.store.db.prepare('SELECT 1 FROM task_contracts WHERE dispatch_id=? UNION ALL SELECT 1 FROM task_contract_jobs WHERE job_id=? LIMIT 1').get(id,id);}
   private pending(owner:string,destination:string){return this.store.db.prepare("SELECT * FROM task_contracts WHERE owner=? AND destination=? AND state='pending'").get(owner,destination) as ContractRow|undefined;}
+  hasPendingOwner(owner:string,destination:string){return !!this.pending(owner,destination);}
   private context(r:Router,m:Incoming,option=false){
     const destination=this.store.destination(),owner=this.store.ownerFor(destination),channel=this.store.controlChannel();
     if(!destination||!owner||!option&&!authenticatedOwner(r,m))return;

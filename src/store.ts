@@ -80,7 +80,17 @@ export class Store {
     }
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
-  set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  set(key: string, value: string) {
+    const authority=key==='whatsapp-owner'||key==='destination-jid'||key==='control-channel'||key.startsWith('owned-group:');
+    if(!authority){this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);return;}
+    this.db.exec('SAVEPOINT errand_authority_change');
+    try {
+      const old=this.get(key);
+      this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
+      if(old!==value)this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('errand-authority-generation',randomUUID());
+      this.db.exec('RELEASE errand_authority_change');
+    } catch(e) {this.db.exec('ROLLBACK TO errand_authority_change; RELEASE errand_authority_change');throw e;}
+  }
   captureIncomingOwner(destination:string,channel:'whatsapp'|'telegram'):IncomingOwner|undefined {
     const owner=this.ownerFor(destination);
     if(!owner||this.controlChannel()!==channel||channel==='telegram'&&owner!==destination)return;
@@ -156,7 +166,17 @@ export class Store {
     return { binding: this.binding(id)!, token };
   }
   authBinding(id: string, token: string) { const b = this.binding(id); return b?.enabled && b.token_hash === hash(token) ? b : undefined; }
-  enable(id: string, enabled: boolean) { this.db.prepare('UPDATE bindings SET enabled=? WHERE id=?').run(enabled ? 1 : 0, id); }
+  enable(id: string, enabled: boolean) {
+    if(enabled){this.db.prepare('UPDATE bindings SET enabled=1 WHERE id=?').run(id);return;}
+    // Invalidate work bound to an earlier enabled session even if it resumes
+    // before an outbox sweep gets a chance to observe the pause.
+    this.db.exec('SAVEPOINT disable_binding');
+    try {
+      const changed=this.db.prepare('UPDATE bindings SET enabled=0 WHERE id=? AND enabled=1').run(id);
+      if(changed.changes)this.set(`binding-disable-generation:${id}`,randomUUID());
+      this.db.exec('RELEASE disable_binding');
+    } catch(e) {this.db.exec('ROLLBACK TO disable_binding; RELEASE disable_binding');throw e;}
+  }
   seen(id: string) { return !!this.db.prepare('SELECT 1 FROM seen WHERE id=?').get(id); }
   remember(id: string) { this.db.prepare('INSERT OR IGNORE INTO seen VALUES(?,?)').run(id, Date.now()); }
   controlChannel(){return this.get('control-channel')==='telegram'?'telegram':'whatsapp';}

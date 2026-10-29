@@ -14,10 +14,12 @@ import { Attachments, type IncomingFile } from './attachments.js';
 import { updateRole, turnEnvelope } from './roles.js';
 import { errorCode, type ReplyContext, type RequestOutcome } from './request-events.js';
 import { OwnerReplyPolicy,replyFindings } from './owner-reply-policy.js';
+import { ErrandWorkflow } from './errand-workflow.js';
 import { namedItem, directSession, startDirect, endDirect, backToProxy } from './owner-routing.js';
 import type { MorningBrief } from './morning-brief.js';
 import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,briefDispatchGuard,briefDispatchValid,recordBriefDispatch } from './brief-dispatch-guard.js';
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
+import {randomUUID} from 'node:crypto';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -40,18 +42,24 @@ export class Router {
   contracts:TaskContracts;
   /** Optional internal prototype; no production route enables it. */
   collaboration?:ManagedCollaboration;
+  errands:ErrandWorkflow;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
   remoteControl?:(text:string)=>Promise<string|undefined>;
   morningBrief?:MorningBrief;
   busy=new Set<string>();
   channelClients=new Map<string,{id:string;seen:number}>();
-  stopped=false;
+  private paused=false;
+  get stopped(){return this.paused;}
+  set stopped(value:boolean){
+    if(value&&!this.paused){this.store.set('errand-authority-generation',randomUUID());this.errands?.pause();}
+    this.paused=value;
+  }
   // How long a session gets to answer before an uncertain hand-off is reported to the owner.
   uncertainNoticeMs=120_000;
   attachments:Attachments;
   private ownerReplyPolicy:OwnerReplyPolicy;
-  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.contracts=new TaskContracts(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);native.beforeManagedSubmission=(b,id)=>this.collaboration?.markSubmissionStarted(id,b);}
+  constructor(public store:Store,public native:NativeAgents,public approvals:Approvals) {this.brain=new MetaBrain(store);this.schedules=new Schedules(store,this.brain.secret);this.contracts=new TaskContracts(store,this.brain.secret);this.attachments=new Attachments(store);this.ownerReplyPolicy=new OwnerReplyPolicy(store);this.errands=new ErrandWorkflow(this);native.beforeDispatch=(b,id)=>this.assertDispatchAllowed(id,b);native.beforeManagedSubmission=(b,id)=>this.collaboration?.markSubmissionStarted(id,b);}
   attachmentTarget(m:Incoming) {
     let text=m.text.trim(),b:Binding|undefined;
     if(text.startsWith('/')) {
@@ -162,6 +170,12 @@ export class Router {
         this.pump();return {status:'queued',requestId:m.id};
       }
       if(contractApproved&&this.contracts.approvedBrief(m.id))throw new Error('The approved brief item is unavailable. Nothing was sent.');
+      if(this.errands.cancel(m))return {status:'handled',requestId:m.id};
+      const errandDestination=this.store.destination(),errandOwner=this.store.ownerFor(errandDestination);
+      if(!contractApproved&&errandDestination&&errandOwner&&!this.contracts.hasPendingOwner(errandOwner,errandDestination)&&this.errands.draft(m))return {status:'handled',requestId:m.id};
+      // Unsupported search input needs an explanation before task review; an
+      // existing owner review still gets the first opportunity to resolve it.
+      if(!contractApproved&&errandDestination&&errandOwner&&!this.contracts.hasPendingOwner(errandOwner,errandDestination)&&this.errands.unsupportedInput(m)&&await this.errands.start(m))return {status:'handled',requestId:m.id};
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent,contractApproved))return {status:'handled',requestId:m.id};
       if(!contractApproved&&this.contracts.shouldHandle(this,m)){
@@ -169,6 +183,7 @@ export class Router {
         if(contract.kind==='handled')return {status:'handled',requestId:m.id};
         if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
       }
+      if(await this.errands.start(m))return {status:'handled',requestId:m.id};
       // A quoted native answer is data even when it starts with a slash.
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
@@ -277,6 +292,7 @@ export class Router {
     if(id.startsWith('master:')&&master)this.coordinator?.workerReply(master,`Delegated work resolved: ${outcome}.`,id,true,'final');
   }
   requestProtected(id:string,bindingId:string) {
+    if(this.errands.isActive(id))return true;
     if(this.busy.has(bindingId)||this.store.hasDispatched(bindingId)||[...this.approvals.pending.values()].some(p=>p.binding.id===bindingId))return true;
     // A parent's tracking must remain open while delegated requests are outstanding.
     return !!this.store.db.prepare(`SELECT 1 FROM inbox i JOIN settings s ON s.key='parent:'||i.id

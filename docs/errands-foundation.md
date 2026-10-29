@@ -1,10 +1,13 @@
 # Errand mission foundation
 
-This is not a working job-search feature. Nothing here is connected to the
-router, session tools, WhatsApp, the F3 contract UI, or a document sender.
-There is no integrated production evidence verifier, public-web search provider, automatic
-browser navigation, application opener or submit action. A selected page is
-not by itself proof of a current job listing or a working query-stripped URL.
+This is an experimental WhatsApp-only Greenhouse workflow, not a general job
+search. A typed owner request can use `greenhouse jobs; board=example;
+role=Engineer; location=Bangalore`, with optional `salary=` or `avoid=` fields.
+It searches only that public board, preserves F3 review when applicable, and
+prepares an owner-only text draft after a delivered shortlist and `draft N`.
+There is no general web search, profile or resume integration, document sender,
+automatic browser navigation, application opener or submit action. A selected
+page is not by itself proof of a current job listing or a working query-stripped URL.
 
 The ledger supports a scoped approved mission, a bounded source-verifier seam,
 an immutable numbered shortlist and a local draft. It does not submit forms,
@@ -28,8 +31,8 @@ yet the tailored document required by the approved plan.
   known; use bounded
   responses/timeouts, protect against private-network targets/DNS rebinding,
   revalidate each redirect, and record source/attempt provenance. No such
-  adapter is integrated, so real shortlists must not be delivered.
-- `errand-greenhouse.ts` is an isolated, unwired source for exact Greenhouse
+  adapter has been validated live end-to-end, so do not release this workflow.
+- `errand-greenhouse.ts` is an experimental source for exact Greenhouse
   board and job IDs, plus a board-local search. It independently checks the fixed
   Greenhouse API and the matching public listing URL, and returns a distinct
   published-listing evidence type with application availability unverified.
@@ -49,8 +52,7 @@ yet the tailored document required by the approved plan.
   pins a public IPv4 DNS answer for each bounded HTTPS request. It does not
   attest workplace mode, eligibility, salary or geographic restrictions. It
   has only offline synthetic tests, has not been verified against the live
-  service and needs a trusted request-bound ID source and authority adapter
-  before use. API or page changes, redirects and links with query
+  service end-to-end. API or page changes, redirects and links with query
   parameters fail closed. The generic API and page checks are not proof that a
   job matches the owner's criteria.
   The board search sends only the board identifier and filters role and
@@ -98,9 +100,11 @@ yet the tailored document required by the approved plan.
 - Draft selection also requires a bridge-owned ingress ordering proof for the
   authenticated owner message and the exact delivered shortlist. An initial
   WhatsApp adapter captures a typed draft choice before async group checks,
-  confirms the owner afterward, and records the bound shortlist receipt in
-  the same database sequence. It is not yet wired to selection, which fails
-  closed by default. `inbox.received_at`
+  confirms the owner afterward, and records a participant-specific shortlist
+  receipt in the same database sequence. Callback order does not prove when
+  the owner authored or saw a message on another device; delayed or reordered
+  inbound messages can be interpreted against a later shortlist. Group
+  aggregate ACK is not treated as an owner receipt. `inbox.received_at`
   is set after asynchronous routing and must never be used as ingress time.
   The future adapter must durably capture order before any async work, and
   prove the selected shortlist was delivered before the owner sent the reply.

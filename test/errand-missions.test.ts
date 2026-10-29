@@ -30,7 +30,7 @@ function fixture() {
 }
 function queueShortlist(store:Store,ledger:ErrandMissions,id:string,scope:ErrandScope) {
   const text=ledger.shortlistText(id,scope),source=`errand-shortlist:${id}`;
-  store.output(undefined,text,source,scope.destination,{plain:true,requestId:scope.requestId,kind:'system',origin:'system'});
+  store.output(store.binding(scope.bindingId),text,source,scope.destination,{plain:true,requestId:scope.requestId,kind:'system',origin:'system'});
   const row=store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as {id:string};
   ledger.bindShortlistMessage(id,scope,row.id);return row.id;
 }
@@ -227,7 +227,7 @@ test('published listing deadline and unknown application availability survive sn
     let time=now;const published:Listing={...f.sources[0],verification:'public-listing-published',applicationDeadline:now+5000};
     const ledger=new ErrandMissions(f.store,()=>true,async()=>[published],async input=>input.map(x=>x.id),()=>time,syntheticOrdered);
     await ledger.gather(f.id,f.scope,{},new AbortController().signal);const rows=await ledger.shortlist(f.id,f.scope,new AbortController().signal);
-    assert.equal(rows[0].applicationAvailability,'unverified');assert.equal(rows[0].listingPageIdentity,'unverified');assert.match(ledger.shortlistText(f.id,f.scope),/identity and application availability are unverified/i);
+    assert.equal(rows[0].applicationAvailability,'unverified');assert.equal(rows[0].listingPageIdentity,'unverified');assert.match(ledger.shortlistText(f.id,f.scope),/identity, application availability, salary and eligibility are unverified/i);
     deliver(f.store,queueShortlist(f.store,ledger,f.id,f.scope));const choice=f.request('wa:choice-expired','draft 1');
     time=now+5000;assert.throws(()=>ledger.viewShortlist(f.id,choice),/stale/);assert.throws(()=>ledger.draft(f.id,choice,1),/stale/);
     assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get() as {n:number}).n,0);

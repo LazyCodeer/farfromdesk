@@ -19,7 +19,7 @@ export class ErrandOrder {
   /** Called in the same transaction as the trusted WhatsApp delivery receipt. */
   delivery(outboxId:string,destination:string){
     const owner=this.store.ownerFor(destination),row=this.store.db.prepare('SELECT status,destination,delivered_at FROM outbox WHERE id=?').get(outboxId) as {status:string;destination:string|null;delivered_at:number|null}|undefined;
-    if(!owner||!row||row.destination!==destination||row.status!=='sent'||row.delivered_at===null)return false;
+    if(!owner||!row||row.destination!==destination||!['queued','sending','sent','uncertain'].includes(row.status)||row.delivered_at===null)return false;
     // Do not retain receipt ordering for unrelated WhatsApp messages.
     if(!this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='errand_shortlist_messages'").get()||
       !this.store.db.prepare('SELECT 1 FROM errand_shortlist_messages WHERE outbox_id=? AND owner=? AND destination=?').get(outboxId,owner,destination))return false;
@@ -31,9 +31,12 @@ export class ErrandOrder {
   after(scope:ErrandScope,outboxId:string){
     if(this.store.controlChannel()!=='whatsapp'||this.store.ownerFor(scope.destination)!==scope.owner)return false;
     const job=this.store.job(scope.requestId);if(!job||job.destination!==scope.destination||job.binding_id!==scope.bindingId)return false;
-    const row=this.store.db.prepare(`SELECT 1 FROM errand_transport_order i JOIN errand_transport_order d
+    // This establishes callback arrival order, not when the owner authored or
+    // read a message on another device. The selected job is always labelled.
+    return !!this.store.db.prepare(`SELECT 1 FROM errand_transport_order i JOIN errand_transport_order d
       ON d.kind='delivery' AND d.ref=? AND d.owner=i.owner AND d.destination=i.destination AND d.verified=1
-      WHERE i.kind='ingress' AND i.ref=? AND i.owner=? AND i.destination=? AND i.body_hash=? AND i.verified=1 AND i.seq>d.seq`).get(outboxId,scope.requestId,scope.owner,scope.destination,hash(job.body));
-    return !!row;
+      WHERE i.kind='ingress' AND i.ref=? AND i.owner=? AND i.destination=? AND i.body_hash=? AND i.verified=1 AND i.seq>d.seq
+      AND NOT EXISTS(SELECT 1 FROM errand_transport_order later WHERE later.kind='delivery' AND later.verified=1
+        AND later.owner=i.owner AND later.destination=i.destination AND later.seq>d.seq AND later.seq<i.seq)`).get(outboxId,scope.requestId,scope.owner,scope.destination,hash(job.body));
   }
 }

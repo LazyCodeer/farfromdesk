@@ -8,7 +8,7 @@ import type {ErrandScope} from '../src/errand-missions.js';
 
 const scope:ErrandScope={requestId:'wa:test',owner:'owner',destination:'owner',bindingId:'test',bindingIdentity:'test'};
 const input={jobs:[{board:'example',id:'12345'}]};
-const api=()=>JSON.stringify({id:12345,title:'Flutter Engineer',absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345',application_deadline:'2099-12-31'});
+const api=()=>JSON.stringify({id:12345,title:'Flutter Engineer',location:{name:'Bangalore'},absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345',application_deadline:'2099-12-31'});
 const page=(extra='')=>`<!DOCTYPE html><html><head><title>Job Application for Flutter Engineer at Example</title><meta property="og:url" content="https://job-boards.greenhouse.io/example/jobs/12345?gh_jid=12345"/></head><body><h1 class="section-header other">Flutter Engineer</h1>${extra}<form id="application-form"></form></body></html>`;
 function transport(options:{dns?:string[];status?:number;api?:string;page?:string;onRequest?:()=>void}={}){
   const calls:{host:string;path:string;address:string}[]=[];
@@ -97,6 +97,15 @@ test('board search does not turn a transport failure into an empty result',async
     throw new Error('Synthetic network outage');
   }};
   await assert.rejects(greenhouseBoardReader(()=>true,()=>1234,fake)(scope,{board:'example',role:'Flutter',location:'Bangalore'},new AbortController().signal),/network outage/);
+});
+test('a listing whose role or location changed after board search is excluded',async()=>{
+  for(const changed of [{title:'Other Role'},{location:{name:'London'}}]){
+    const fake={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>{
+      if(path==='/v1/boards/example/jobs')return {status:200,contentType:'application/json',body:JSON.stringify({jobs:[{id:12345,title:'Flutter Engineer',location:{name:'Bangalore'}}]})};
+      return {status:200,contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html',body:JSON.stringify({...JSON.parse(api()),...changed})};
+    }};
+    assert.deepEqual(await greenhouseBoardReader(()=>true,()=>1234,fake)(scope,{board:'example',role:'Flutter',location:'Bangalore'},new AbortController().signal),[]);
+  }
 });
 test('recognizes only structural page identity, never script or error-page substrings',()=>{
   const match=(html:string)=>greenhousePageIdentity(html,'job-boards.greenhouse.io','example','12345','Flutter Engineer');

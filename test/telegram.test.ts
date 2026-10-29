@@ -74,6 +74,15 @@ test('unknown senders, bots, groups and edited updates cannot dispatch; duplicat
     f.store.set('control-channel','telegram');f.router.stopped=true;await f.tg.receive(f.message(8,'paused'));assert.equal(f.store.jobs().length,1);
   }finally{f.close();}
 });
+test('Telegram job search receives a clear response without dispatching a task',async()=>{
+  const f=fixture();try{
+    await f.pair();await f.tg.receive(f.message(25,'greenhouse jobs; board=example; role=Flutter; location=Bangalore'));
+    assert.equal(f.store.jobs().length,0);await f.tg.flush();
+    const sent=f.calls.filter(c=>c.method==='sendMessage').at(-1);
+    assert.match(sent?.body.text??'',/Job search is available in WhatsApp/);
+    assert.equal(sent?.body.chat_id,owner);
+  }finally{f.close();}
+});
 test('reply delivery and quoted follow-up stay in the exact bot chat, isolated from WhatsApp',async()=>{
   const f=fixture();try{await f.pair();const dest=telegramDestination(bot,owner);
     f.store.set('whatsapp-owner','wa@s.whatsapp.net');f.store.output(f.binding,'WA only','wa-out','wa@s.whatsapp.net');

@@ -43,6 +43,7 @@ server.on('listening',()=>{
   // Remove only this service's private scratch recordings after a crash.
   rmSync(join(stateDir,'audio-tmp'),{recursive:true,force:true});
   store.recover();
+  router.errands.recover();
   void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));
   if(power.enabled){void coordinator.refresh();void masters.discover();}
   power.apply();

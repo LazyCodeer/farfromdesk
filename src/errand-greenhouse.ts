@@ -111,6 +111,9 @@ function explicitlyClosed(html:string) {
 export function greenhouseListingReader(current:(scope:ErrandScope)=>boolean,now=()=>Date.now(),transport?:Transport):VerifiedListingReader {
   return async(scope,request,signal)=>{
     const {jobs}=parseInput(request);const result:Listing[]=[];
+    const criteria=request as {role?:unknown;location?:unknown};
+    if((criteria.role!==undefined&&(typeof criteria.role!=='string'||!criteria.role.trim()||criteria.role.length>120))||
+      (criteria.location!==undefined&&(typeof criteria.location!=='string'||!criteria.location.trim()||criteria.location.length>120)))throw new Error('Invalid job criteria.');
     for(const job of jobs){
       if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
       const apiPath=`/v1/boards/${job.board}/jobs/${job.id}`;
@@ -119,6 +122,8 @@ export function greenhouseListingReader(current:(scope:ErrandScope)=>boolean,now
       if(!/^application\/json\b/i.test(api.contentType))throw new Error('Unexpected Greenhouse response.');
       let data:any;try{data=JSON.parse(api.body);}catch{throw new Error('Unexpected Greenhouse response.');}
       if(String(data?.id)!==job.id||typeof data.title!=='string'||!data.title.trim()||data.title.length>160||typeof data.absolute_url!=='string')throw new Error('The public listing did not match the request.');
+      const norm=(s:string)=>s.replace(/\s+/g,' ').trim().toLocaleLowerCase();
+      if(typeof criteria.role==='string'&&!norm(data.title).includes(norm(criteria.role))||typeof criteria.location==='string'&&(typeof data.location?.name!=='string'||!norm(data.location.name).includes(norm(criteria.location))))throw new Error('The public listing no longer matches the requested criteria.');
       const applicationDeadline=deadline(data.application_deadline,now());
       let link:URL;try{link=new URL(data.absolute_url);}catch{throw new Error('Invalid Greenhouse listing link.');}
       if(link.protocol!=='https:'||link.username||link.password||link.port||link.search||link.hash||!['boards.greenhouse.io','job-boards.greenhouse.io'].includes(link.hostname)||link.pathname!==`/${job.board}/jobs/${job.id}`)throw new Error('Unsupported Greenhouse listing link.');
@@ -166,7 +171,7 @@ export function greenhouseBoardReader(current:(scope:ErrandScope)=>boolean,now=(
     const listings:Listing[]=[];
     for(const id of ids){
       if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
-      try{listings.push(...await exact(scope,{jobs:[{board:q.board,id}]},signal));}
+      try{listings.push(...await exact(scope,{jobs:[{board:q.board,id}],role:q.role,location:q.location},signal));}
       catch(error){
         if(signal.aborted||!current(scope))throw new Error('The owner request changed.');
         // Skip only a specifically unverifiable candidate; a transport error

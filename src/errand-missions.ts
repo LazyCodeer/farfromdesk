@@ -43,7 +43,7 @@ export function publicListingUrl(value:string):string {
   return u.href;
 }
 
-export function errandBindingIdentity(store:Store,b:Binding) {return hash(JSON.stringify([b.id,b.native_id,b.cwd,b.mode,b.provider,b.token_hash,store.get(`execution-mode:${b.id}`),store.get(`session-route:${b.id}`)]));}
+export function errandBindingIdentity(store:Store,b:Binding) {return hash(JSON.stringify([b.id,b.native_id,b.cwd,b.mode,b.provider,b.token_hash,store.get(`execution-mode:${b.id}`),store.get(`session-route:${b.id}`),store.get(`binding-disable-generation:${b.id}`),store.get('errand-authority-generation')]));}
 async function bounded<T>(signal:AbortSignal,work:(signal:AbortSignal)=>Promise<T>):Promise<T> {
   const combined=AbortSignal.any([signal,AbortSignal.timeout(30000)]);
   if(combined.aborted)throw new Error('Errand operation cancelled or timed out.');
@@ -92,8 +92,14 @@ export class ErrandMissions {
   }
   private active(scope:ErrandScope) {
     const origin=this.store.requestOwnerOrigin(scope.requestId),job=this.store.job(scope.requestId),binding=this.store.binding(scope.bindingId);
+    let completed=false;
+    if(job?.status==='completed'&&this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='errand_outbox_guards'").get()){
+      const row=this.store.db.prepare(`SELECT g.body_hash,o.body FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id
+        WHERE g.request_id=? AND g.owner=? AND g.destination=? AND g.binding_id=? AND g.binding_identity=? AND o.status='sent' LIMIT 1`).get(scope.requestId,scope.owner,scope.destination,scope.bindingId,scope.bindingIdentity) as {body_hash:string;body:string}|undefined;
+      completed=!!row&&row.body_hash===hash(row.body);
+    }
     return !!origin&&origin.owner===scope.owner&&origin.destination===scope.destination&&!!job&&job.binding_id===scope.bindingId&&job.destination===scope.destination&&
-      ['queued','dispatched','submitted'].includes(job.status)&&!!binding?.enabled&&errandBindingIdentity(this.store,binding)===scope.bindingIdentity;
+      (['queued','dispatched','submitted'].includes(job.status)||completed)&&!!binding?.enabled&&errandBindingIdentity(this.store,binding)===scope.bindingIdentity;
   }
   private mission(id:string,scope:ErrandScope):Mission {
     const row=this.store.db.prepare('SELECT * FROM errand_missions WHERE id=?').get(id) as Mission|undefined;
@@ -181,7 +187,7 @@ export class ErrandMissions {
   /** Build exactly one bounded message. This returns text; it never enqueues or sends. */
   shortlistText(id:string,scope:ErrandScope) {
     const rows=this.viewShortlist(id,scope);
-    const text=['Job shortlist. Listing page identity and application availability are unverified.',...rows.map(r=>`${r.number}. ${r.title}\n${r.url}\n${r.reason}`),'Reply draft NUMBER to prepare a draft.'].join('\n');
+    const text=['Job shortlist. Page identity, application availability, salary and eligibility are unverified.',...rows.map(r=>`${r.number}. ${r.title}\n${r.url}\n${r.reason}`),'Reply draft NUMBER to prepare a draft.'].join('\n');
     if(toWhatsApp(text).length>3500)throw new Error('The shortlist is too long to deliver as one message.');
     return text;
   }
@@ -193,7 +199,7 @@ export class ErrandMissions {
     const mission=this.mission(id,scope);if(scope.requestId!==mission.root_request)throw new Error('Only the original owner request may queue its shortlist.');
     const body=toWhatsApp(this.shortlistText(id,scope)),source=`errand-shortlist:${id}`;
     const row=this.store.db.prepare('SELECT id,source,body,destination,binding_id,request_id,reply_kind,status FROM outbox WHERE id=?').get(outboxId) as {id:string;source:string;body:string;destination:string|null;binding_id:string|null;request_id:string|null;reply_kind:string|null;status:string}|undefined;
-    if(!row||row.source!==`${source}:0`||row.body!==body||row.destination!==scope.destination||row.binding_id!==null||row.request_id!==mission.root_request||row.reply_kind!=='system'||row.status!=='queued'||this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${source}:1`))throw new Error('The queued shortlist message does not match this owner and snapshot.');
+    if(!row||row.source!==`${source}:0`||row.body!==body||row.destination!==scope.destination||row.binding_id!==scope.bindingId||row.request_id!==mission.root_request||row.reply_kind!=='system'||row.status!=='queued'||this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${source}:1`))throw new Error('The queued shortlist message does not match this owner and snapshot.');
     const existing=this.store.db.prepare('SELECT mission_id,owner,destination,root_request,body_hash FROM errand_shortlist_messages WHERE outbox_id=?').get(outboxId) as {mission_id:string;owner:string;destination:string;root_request:string;body_hash:string}|undefined;
     if(existing){if(existing.mission_id!==id||existing.owner!==scope.owner||existing.destination!==scope.destination||existing.root_request!==mission.root_request||existing.body_hash!==digest(body))throw new Error('The shortlist message identity was reused.');return;}
     this.store.db.prepare('INSERT INTO errand_shortlist_messages VALUES(?,?,?,?,?,?)').run(outboxId,id,scope.owner,scope.destination,mission.root_request,digest(body));
@@ -206,12 +212,11 @@ export class ErrandMissions {
     const delivered=this.store.db.prepare(`SELECT o.id,m.mission_id,m.body_hash,o.body,o.delivered_at,o.sent_at,o.source,o.request_id,o.binding_id,o.reply_kind,o.destination
       FROM errand_shortlist_messages m JOIN outbox o ON o.id=m.outbox_id
       WHERE m.owner=? AND m.destination=? AND o.status='sent' AND o.delivered_at IS NOT NULL AND o.sent_at IS NOT NULL
-        AND o.sent_at<=o.delivered_at
       ORDER BY o.delivered_at DESC LIMIT 2`).all(scope.owner,scope.destination) as {id:string;mission_id:string;body_hash:string;body:string;delivered_at:number;sent_at:number;source:string;request_id:string|null;binding_id:string|null;reply_kind:string|null;destination:string|null}[];
     const latest=delivered[0];
-    if(!latest||latest.mission_id!==id||delivered[1]?.delivered_at===latest.delivered_at||latest.source!==`errand-shortlist:${id}:0`||latest.request_id!==mission.root_request||latest.binding_id!==null||latest.reply_kind!=='system'||latest.destination!==scope.destination||latest.body_hash!==digest(latest.body)||latest.body!==toWhatsApp(this.shortlistText(id,scope)))throw new Error('That shortlist was not confirmed delivered or is no longer the latest.');
+    if(!latest||latest.mission_id!==id||delivered[1]?.delivered_at===latest.delivered_at||latest.source!==`errand-shortlist:${id}:0`||latest.request_id!==mission.root_request||latest.binding_id!==scope.bindingId||latest.reply_kind!=='system'||latest.destination!==scope.destination||latest.body_hash!==digest(latest.body)||latest.body!==toWhatsApp(this.shortlistText(id,scope)))throw new Error('That shortlist was not confirmed delivered or is no longer the latest.');
     // inbox.received_at is assigned after routing, so it is not ingress proof.
-    // Until a bridge-owned ordering adapter exists, every draft fails closed.
+    // Without a bridge-owned ordering adapter, every draft fails closed.
     if(!this.orderedAfter(scope,latest.id))throw new Error('Cannot verify that this request followed the delivered shortlist.');
     const row=this.store.db.prepare('SELECT * FROM errand_candidates WHERE mission_id=? AND position=?').get(id,number) as Candidate|undefined;
     if(!row||!this.fresh(row))throw new Error('That listing is unavailable or stale. Start a new errand with a new owner request.');
