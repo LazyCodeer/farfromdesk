@@ -16,9 +16,14 @@ Linux, or `script\run-tests.cmd all` on Windows. It clears inherited Node
 startup hooks before launching Node. Use `portable` instead of `all` for the
 portable suite. Both wrappers then start the tests with a new private temporary
 state directory and separate user, coordinator, Codex and Claude homes. The
-runner removes that directory when it exits. The tests do not inherit an existing
-`WSB_STATE_DIR`, bridge port, helper paths, common credential-named variables
-or `NODE_OPTIONS`. On POSIX cancellation the runner also stops its own test
+runner removes that directory when it exits. The child receives only a narrow
+allowlist of platform and explicitly opted-in test variables. It does not
+inherit an existing `WSB_STATE_DIR`, bridge port, helper paths, service URLs,
+credential/config locations or `NODE_OPTIONS`. `PATH` and the optional
+`WSB_AUDIO_TEST_*` fixture paths are inherited intentionally, so use trusted
+values. This environment filtering is not a guarantee that no secret reaches a
+test through files, allowed values or an explicitly replaced child environment.
+On POSIX cancellation the runner also stops its own test
 process group; detached descendants and forcible termination cannot be cleaned
 up reliably. On Windows cancellation stops the direct runner process only.
 Unmocked Node `fetch` calls

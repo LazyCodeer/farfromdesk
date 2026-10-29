@@ -27,6 +27,12 @@ test('the runner isolates state before imports and blocks unmocked remote fetch'
   assert.equal(process.env.GOOGLE_APPLICATION_CREDENTIALS,undefined);
   assert.equal(process.env.GIT_CONFIG_GLOBAL,undefined);
   assert.equal(process.env.AZURE_CONFIG_DIR,undefined);
+  assert.equal(process.env.DATABASE_URL,undefined);
+  assert.equal(process.env.REDIS_URL,undefined);
+  assert.equal(process.env.GH_CONFIG_DIR,undefined);
+  assert.equal(process.env.CUSTOM_CONFIG_DIR,undefined);
+  assert.equal(process.env.INNOCUOUS_RUNTIME_SETTING,undefined);
+  if(process.env.ISOLATION_EXPECT_AUDIO==='1')assert.equal(process.env.WSB_AUDIO_TEST_MODEL,'/synthetic-opt-in-model');
   assert.equal(process.env.NODE_EXTRA_CA_CERTS,undefined);
   assert.equal(process.env.NODE_PATH,undefined);
   assert.equal(process.env.NODE_V8_COVERAGE,undefined);
@@ -43,7 +49,7 @@ test('the runner isolates state before imports and blocks unmocked remote fetch'
   try{await assert.rejects(guarded(`http://127.0.0.1:${(server.address() as any).port}/`));}
   finally{await new Promise<void>(done=>server.close(()=>done()));}
   const result=spawnSync(process.execPath,['--input-type=module','-e',
-    'if(process.env.WSB_STATE_DIR!==process.argv[1]) process.exit(5); try {await fetch("https://example.invalid"); process.exit(3)} catch(e) {if (!String(e.message).includes("non-loopback")) process.exit(4)}',stateDir],{encoding:'utf8'});
+    'if(process.env.WSB_STATE_DIR!==process.argv[1]||process.env.DATABASE_URL||process.env.GH_CONFIG_DIR) process.exit(5); try {await fetch("https://example.invalid"); process.exit(3)} catch(e) {if (!String(e.message).includes("non-loopback")) process.exit(4)}',stateDir],{encoding:'utf8'});
   assert.equal(result.status,0);
   // Tests can still install a fake fetch without a network request.
   globalThis.fetch=async()=>new Response('fake');

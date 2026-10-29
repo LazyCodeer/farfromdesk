@@ -9,6 +9,20 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 
 const repo=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const portable=['test/portable.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts'];
+// Keep inherited environment narrow: credentials can appear under arbitrary
+// names such as DATABASE_URL or GH_CONFIG_DIR, not only KEY/TOKEN/SECRET.
+// These explicit test flags opt into local fixtures and never carry credentials.
+const inheritedNames=new Set([
+  'PATH','PATHEXT','SYSTEMROOT','WINDIR','COMSPEC','OS',
+  'PROCESSOR_ARCHITECTURE','PROCESSOR_IDENTIFIER','NUMBER_OF_PROCESSORS',
+  'TMPDIR','TMP','TEMP','LANG','LANGUAGE','LC_ALL','LC_CTYPE','LC_COLLATE',
+  'LC_MESSAGES','LC_NUMERIC','LC_TIME','LC_MONETARY','LC_PAPER','LC_NAME',
+  'LC_ADDRESS','LC_TELEPHONE','LC_MEASUREMENT','LC_IDENTIFICATION','TZ',
+  'TERM','COLORTERM','NO_COLOR','FORCE_COLOR','CI','GITHUB_ACTIONS',
+  'WSB_AUDIO_TEST_FFMPEG','WSB_AUDIO_TEST_WHISPER','WSB_AUDIO_TEST_MODEL',
+  'WSB_AUDIO_TEST_SAMPLE','FFD_LARGE_DOCUMENT_PROBE',
+  'ISOLATION_SENTINEL','ISOLATION_PROBE_FAIL','ISOLATION_EXPECT_AUDIO',
+]);
 
 export function selectedTests(mode,args) {
   if(mode==='files') {
@@ -31,11 +45,12 @@ export async function startTests(mode,args) {
     const state=join(root,'state'),projects=join(root,'projects'),codex=join(root,'codex'),claude=join(root,'claude'),userHome=join(root,'home'),appData=join(root,'appdata'),xdg=join(root,'xdg');
     for(const dir of [state,projects,codex,claude,userHome,appData,xdg])mkdirSync(dir,{mode:0o700});
     const preload=pathToFileURL(join(repo,'script/test_fetch_guard.mjs')).href;
-    // Never inherit account credentials, installed helper paths, the running
-    // bridge port, or arbitrary Node preload hooks into the isolated process.
-    const env={...process.env};
-    for(const key of Object.keys(env))if(/(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|WEBHOOK)(?:_|$)/i.test(key)||
-      /^(?:AWS_CONFIG_FILE|AWS_PROFILE|AWS_DEFAULT_PROFILE|BOTO_CONFIG|CLOUDSDK_CONFIG|AZURE_CONFIG_DIR|KUBECONFIG|DOCKER_CONFIG|NETRC|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|SSH_AGENT_PID|NPM_CONFIG_USERCONFIG|NODE_PATH|NODE_EXTRA_CA_CERTS|NODE_V8_COVERAGE|WSB_CODEX_BIN|WSB_CLAUDE_BIN|WSB_CLAUDE_DESKTOP_BIN|WSB_DESKTOP_SYNC_BIN|WSB_CODEX_SOCKET)$/i.test(key))delete env[key];
+    // Do not copy arbitrary inherited environment into tests or their children.
+    // In particular this excludes service URLs, credential/config locations,
+    // installed helper paths, bridge ports and inherited Node startup hooks.
+    const env={};
+    for(const [key,value] of Object.entries(process.env))
+      if(inheritedNames.has(key.toUpperCase()))env[key]=value;
     // Hold a fresh loopback port with a reject-only listener. A test that
     // accidentally uses the default bridge URL cannot reach a real service.
     for(let i=0;i<10;i++){
