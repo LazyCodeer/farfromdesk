@@ -4,6 +4,7 @@ import { selectOption, previewOption, parseMessageOptions } from './message-opti
 import { MetaBrain } from './meta-brain.js';
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { TaskContracts } from './task-contracts.js';
+import { queueReportedProof } from './proof-report.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
@@ -476,6 +477,10 @@ export class Router {
     if(kind==='final')this.store.set(`explicit-final:${b.id}`,String(Date.now()));
     if(queued&&requestId)this.coordinator?.workerReply(b,text,requestId,false,kind as 'progress'|'final',!relayOnly);
     if(queued&&requestId&&kind==='final')this.coordinator?.itemReport(b,text,requestId);
+    if(queued&&!relayOnly&&requestId&&kind==='final'&&context.outcome==='done'){
+      // Reporting is optional: it must never roll back a session's final reply.
+      try{queueReportedProof(this,b,requestId,text);}catch{}
+    }
     this.store.db.exec('COMMIT');
     }catch(e){this.store.db.exec('ROLLBACK');throw e;}
     if(queued&&this.coordinator)this.pump();return {accepted:true,newlyQueued:queued};

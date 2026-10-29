@@ -1,10 +1,12 @@
 # Proof check foundation
 
-This is an internal foundation, not a finished user-facing proof check. It is not
-wired to the router, Meta, screenshots, test runners, PR APIs, messages, or task
-contracts. With no independently verified evidence source, results are
-`unverified`. A session's completion report, claimed test output, screenshot
-URL, or PR link alone cannot produce a pass or fail.
+This is an internal foundation, not a finished proof check. The independent
+evidence engine is not wired to Meta, screenshots, test runners or PR APIs.
+An F3 root task completion can queue a user-facing report of the session's
+unverified claims and checks needing confirmation; it does not evaluate evidence.
+With no independently verified evidence source, results are `unverified`. A
+session's completion report, claimed test output, screenshot URL or PR link
+alone cannot produce a pass or fail.
 
 ## Trust boundary
 

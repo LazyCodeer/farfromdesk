@@ -1,8 +1,14 @@
 # Proof foundation
 
-This code is not yet connected to task contracts or user-visible reporting.
-Missing, stale, contradictory, untrusted or unavailable evidence remains
-unverified. A coding session's own report is not independent evidence.
+The independent evidence engine is not yet connected to production sources.
+For an approved F3 root task with an explicit completion outcome, the bridge
+can queue a short owner-facing report: it labels the session's excerpt and an
+optional mentioned GitHub PR as unverified and lists each approved check that
+needs confirmation. This uses the existing F3 owner/session/delivery guard;
+it neither captures or uploads screenshots nor starts corrections. It does not
+evaluate the content of the PR, establish whether tests ran, or mark a check
+passed or failed. Missing, stale, contradictory, untrusted or unavailable
+evidence remains unverified. A session's own report is not independent evidence.
 
 ## GitHub check evidence
 
