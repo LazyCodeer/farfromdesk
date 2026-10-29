@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,writeFileSync,readFileSync,rmSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/store.js';
@@ -36,4 +36,38 @@ test('live CLI discovery never erases a saved Desktop chat or borrows its accoun
  assert.equal(rows.length,2);const d=rows.find(s=>s.executionMode==='desktop')!,c=rows.find(s=>s.executionMode==='cli')!;
  assert.equal(d.desktopId,desktop.desktopId);assert.equal(d.available,false);assert.match(d.status,/running in CLI/);
  assert.equal(c.available,true);assert.equal(c.accountScope,undefined);assert.equal(c.desktopId,undefined);
+});
+
+
+test('saved Claude CLI catalog accepts configured API routes and blocks unknown or signed-out routes',async(t)=>{
+  const config=join(dir,'catalog-config'),project=join(config,'projects','synthetic');
+  mkdirSync(project,{recursive:true});
+  const id='22222222-2222-4222-a222-222222222222';
+  writeFileSync(join(project,id+'.jsonl'),JSON.stringify({sessionId:id,cwd:dir,type:'custom-title',customTitle:'Saved Ollama session'})+'\n');
+  const listing=join(dir,'catalog-helper');
+  writeFileSync(listing,`#!${process.execPath}\nconsole.log('[]');`,{mode:0o700});
+  t.mock.property(process,'env',{...process.env,CLAUDE_CONFIG_DIR:config,WSB_DESKTOP_SYNC_BIN:listing});
+  const store=new Store(':memory:'),native=new NativeAgents(store,new Approvals(store));
+  (native as any).desktopConfig=async()=>{};
+  try {
+    for(const state of ['configured','verified','unknown','signed-out'] as const) {
+      native.connections=new Connections(store,async()=>({state,label:'Synthetic auth state',accountKey:'opaque'}));
+      const row=(await native.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===id)!;
+      assert.ok(row,'the real history reader must return the fixture');
+      assert.equal(row.available,state==='configured'||state==='verified');
+      assert.equal(row.activation,'cli-resume');
+      assert.equal(row.liveDiscoveryComplete,true);
+      if(row.available)assert.match(row.status,/resumes automatically/);
+    }
+    let checks=0;
+    native.connections=new Connections(store,async()=>{if(++checks===1)throw new Error('Temporary native status failure');return {state:'configured',label:'Configured',accountKey:'opaque'};});
+    assert.equal((await native.connections.read('claude','cli')).state,'unknown');
+    const recovered=(await native.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===id)!;
+    assert.equal(recovered.available,true,'one explicit refresh must replace the cached authentication failure');
+    writeFileSync(listing,`#!${process.execPath}\nprocess.exit(1);`,{mode:0o700});
+    native.connections=new Connections(store,async()=>({state:'configured',label:'Configured',accountKey:'opaque'}));
+    const held=(await native.catalog('claude',undefined,{fresh:true})).sessions.find(s=>s.id===id)!;
+    assert.equal(held.available,false);assert.equal(held.activation,undefined);
+    assert.match(held.status,/automatic resume held/);
+  } finally {native.close();store.close();}
 });

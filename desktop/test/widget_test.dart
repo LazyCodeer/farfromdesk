@@ -1303,8 +1303,9 @@ void main() {
     'Connected Home, master dialog, Activity filters and Settings match the shared screen structure',
     (tester) async {
       size(tester);
+      // This test exercises Desktop choices; the default preview marks them absent.
       await tester.pumpWidget(
-        FarFromDeskApp(gateway: PreviewGateway(fixture: 'connected')),
+        FarFromDeskApp(gateway: ConnectionGateway()),
       );
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Manage coordinators'));

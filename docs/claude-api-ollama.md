@@ -35,10 +35,11 @@ Use the exact installed model/tag from `ollama list`. Keep Ollama running. The
 `ollama` token above is a placeholder for the local server, not an Ollama cloud
 credential. Cloud endpoints require their real credentials.
 
-Check the executable directly, bypassing your PowerShell function:
+Check the native Windows installation directly, bypassing your PowerShell function
+and avoiding a dependency on PATH:
 
 ```powershell
-claude.exe auth status
+& "$env:USERPROFILE\.local\bin\claude.exe" auth status
 ```
 
 Then use **Check apps** in a FarFromDesk build containing this fix. API/token
@@ -57,7 +58,7 @@ $env:ANTHROPIC_DEFAULT_OPUS_MODEL = 'gemma4'
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'gemma4'
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'gemma4'
 $env:CLAUDE_CODE_SUBAGENT_MODEL = 'gemma4'
-claude.exe auth status
+& "$env:USERPROFILE\.local\bin\claude.exe" auth status
 ```
 
 Those values reach programs launched from that PowerShell session. They do not
