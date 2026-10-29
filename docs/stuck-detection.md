@@ -5,7 +5,7 @@ the paired WhatsApp self-chat for tasks with verified owner and item origins.
 It can report:
 
 - A dispatched or submitted task with no recorded progress for 10 minutes.
-- An open native permission or question that is bound to the exact task
+- A session-reported permission or question that is bound to the exact task
   request and still awaits an answer. If a session-reported permission was delivered
   and its recorded request fits in one notice, the notice repeats it and offers
   a direct quoted reply: `1` denies and `2` allows that exact pending request.
