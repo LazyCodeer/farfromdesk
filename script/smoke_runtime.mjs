@@ -1,7 +1,8 @@
 import {spawnSync} from 'node:child_process';
 
 export function smokeFetch(url,options={},timeout=5000) {
-  return fetch(url,{...options,signal:AbortSignal.timeout(timeout)});
+  const deadline=AbortSignal.timeout(timeout);
+  return fetch(url,{...options,signal:options.signal?AbortSignal.any([options.signal,deadline]):deadline});
 }
 
 // The GUI may handle SIGTERM without quitting. Never leave its child handle
