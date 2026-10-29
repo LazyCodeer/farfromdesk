@@ -6,6 +6,7 @@ import {greenhouseBoardReader} from './errand-greenhouse.js';
 import {wonderErrandRanker} from './errand-ranker.js';
 import {ErrandOrder} from './errand-order.js';
 import {parseErrandChoice} from './errand-choice.js';
+import {readOwnedErrandProfile,type ErrandProfileSnapshot} from './errand-profile.js';
 import {hash,type Binding} from './store.js';
 import {toWhatsApp} from './whatsapp-format.js';
 import type {Incoming,Router} from './router.js';
@@ -34,14 +35,18 @@ export class ErrandWorkflow {
   pause(){for(const entry of this.activeSearch.values())entry.controller.abort();}
   /** Explicit transport disconnection revokes existing work, including after reconnect. */
   invalidateAuthority(){this.router.store.set('errand-authority-generation',randomUUID());this.pause();}
-  constructor(readonly router:Router,reader?:VerifiedListingReader,ranker?:ErrandRanker,fetcher:typeof fetch=fetch){
+  constructor(readonly router:Router,reader?:VerifiedListingReader,ranker?:ErrandRanker,fetcher:typeof fetch=fetch,profileReader:(scope:ErrandScope,contract:ErrandContract)=>ErrandProfileSnapshot|undefined=(scope,contract)=>readOwnedErrandProfile(router.store,scope,router.brain.owner.dir,contract)){
     const store=router.store;this.order=new ErrandOrder(store);
     store.db.exec(`CREATE TABLE IF NOT EXISTS errand_outbox_guards(
       outbox_id TEXT PRIMARY KEY,mission_id TEXT NOT NULL,root_request TEXT NOT NULL,request_id TEXT NOT NULL,
       owner TEXT NOT NULL,destination TEXT NOT NULL,binding_id TEXT NOT NULL,binding_identity TEXT NOT NULL,kind TEXT NOT NULL,body_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS errand_notice_guards(outbox_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,body_hash TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS errand_search_guards(root_request TEXT PRIMARY KEY,authority_generation TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS errand_search_guards(root_request TEXT PRIMARY KEY,authority_generation TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS errand_profile_inputs(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,generation TEXT NOT NULL,body_hash TEXT NOT NULL,eligible INTEGER NOT NULL DEFAULT 0);`);
     for(const table of ['errand_outbox_guards','errand_notice_guards'])if(!store.db.prepare(`PRAGMA table_info(${table})`).all().some((column:any)=>column.name==='authority_generation'))store.db.exec(`ALTER TABLE ${table} ADD COLUMN authority_generation TEXT NOT NULL DEFAULT ''`);
+    if(!store.db.prepare('PRAGMA table_info(errand_profile_inputs)').all().some((column:any)=>column.name==='eligible'))store.db.exec('ALTER TABLE errand_profile_inputs ADD COLUMN eligible INTEGER NOT NULL DEFAULT 0');
+    // Unfinished inputs retain their first classification across restarts.
+    store.db.prepare("DELETE FROM errand_profile_inputs WHERE EXISTS(SELECT 1 FROM seen WHERE id=errand_profile_inputs.request_id) AND NOT EXISTS(SELECT 1 FROM owner_memory_history WHERE path='about-me.md' AND source='brain:'||errand_profile_inputs.request_id)").run();
     const current=(scope:ErrandScope)=>{
       try{const row=store.db.prepare('SELECT root_request,contract_json,state FROM errand_missions WHERE root_request=?').get(scope.requestId) as {root_request:string;contract_json:string;state:string}|undefined;
         return !!row&&row.state==='searching'&&store.job(scope.requestId)?.status==='submitted'&&this.authorized(scope,JSON.parse(row.contract_json),row.root_request);
@@ -55,11 +60,24 @@ export class ErrandWorkflow {
         return !!row&&row.state==='gathered'&&store.job(row.root_request)?.status==='submitted'&&this.authorized(context.scope,JSON.parse(row.contract_json),row.root_request);
       }catch{return false;}};
       if(!currentRank())throw new Error('The owner request changed.');
-      const key=router.brain.secret.read();if(!key)throw new Error('Add the Meta Brain key before searching.');
+      const key=router.brain.secret.read();if(!key)throw Object.assign(new Error('Meta Brain key is unavailable.'),{code:'configuration_missing'});
       const guarded:typeof fetch=async(url,init)=>{if(!currentRank())throw new Error('The owner request changed.');return fetcher(url,init);};
       return wonderErrandRanker(key,guarded)(input,signal);
     });
-    this.ledger=new ErrandMissions(store,(scope,contract,root)=>this.authorized(scope,contract,root),source,choose,()=>Date.now(),(scope,outboxId)=>this.order.after(scope,outboxId));
+    this.ledger=new ErrandMissions(store,(scope,contract,root)=>this.authorized(scope,contract,root),source,choose,()=>Date.now(),(scope,outboxId)=>this.order.after(scope,outboxId),profileReader);
+  }
+  /** Preserve first-ingress classification before routing, including forwarded text. */
+  captureProfileInput(requestId:string,text:string,eligible:boolean){
+    const s=this.router.store,context=s.incomingOwnerContext.getStore();
+    if(!context||context.channel!=='whatsapp'||context.owner!==context.destination||!s.incomingOwnerCurrent()||!requestId.startsWith('wa:')||typeof text!=='string'||text.length>32000)return;
+    const bodyHash=hash(text),previous=s.db.prepare('SELECT owner,destination,generation,body_hash,eligible FROM errand_profile_inputs WHERE request_id=?').get(requestId) as {owner:string;destination:string;generation:string;body_hash:string;eligible:number}|undefined;
+    if(previous&&(previous.owner!==context.owner||previous.destination!==context.destination||previous.generation!==context.generation||previous.body_hash!==bodyHash||previous.eligible!==Number(eligible)))throw new Error('Owner input identity changed.');
+    s.db.prepare('INSERT OR IGNORE INTO errand_profile_inputs VALUES(?,?,?,?,?,?)').run(requestId,context.owner,context.destination,context.generation,bodyHash,Number(eligible));
+  }
+  /** Keep provenance only when the turn actually wrote About-you. */
+  pruneProfileInput(requestId:string){
+    const s=this.router.store;
+    try{if(s.seen(requestId))s.db.prepare("DELETE FROM errand_profile_inputs WHERE request_id=? AND NOT EXISTS(SELECT 1 FROM owner_memory_history WHERE path='about-me.md' AND source='brain:'||?)").run(requestId,requestId);}catch{/* Cleanup must not replay a completed message. */}
   }
   private request(root:string):Request|undefined {
     const {store,contracts}=this.router,job=store.job(root);if(!job)return;
@@ -180,6 +198,7 @@ export class ErrandWorkflow {
       const text=error instanceof ErrandSearchFailure&&error.reason==='no-evidence'?'No shortlist was found in the checked candidates. Check the board, role and location or broaden your search.'
         :error instanceof ErrandSearchFailure&&error.reason==='unsupported-exclusion'?'That exclusion is not supported. Only avoid=onsite is recognized, and it requires independently verified remote-only evidence.'
         :error instanceof ErrandSearchFailure&&error.reason==='exclusion-unverified'?'No checked listings had enough evidence to verify your exclusion. No shortlist was created.'
+        :phase==='ranking'&&error instanceof Error&&(error as Error&{code?:string}).code==='configuration_missing'?'Add a Meta Brain key in Settings, then start a new job search.'
         :phase==='ranking'&&error instanceof Error&&(error as Error&{code?:string}).code==='authentication_required'?'Meta Brain authentication failed. Check its key and start a new job search.'
         :phase==='ranking'&&error instanceof Error&&(error as Error&{code?:string}).code==='provider_unavailable'?'Meta ranking is unavailable. Start a new job search when it is working again.'
         :'Could not prepare a shortlist for this board. Check the board and criteria.';
@@ -234,12 +253,17 @@ export class ErrandWorkflow {
   draft(m:Incoming) {
     const s=this.router.store,d=s.destination(),owner=s.ownerFor(d);
     if(!d||!owner||!authenticatedOwner(this.router,m)||s.controlChannel()!=='whatsapp')return false;
+    const active=[...this.activeSearch.values()].some(v=>v.scope.owner===owner&&v.scope.destination===d);
     if(/^\s*(?:please\s+)?draft\s+\d/i.test(m.text)&&(!parseErrandChoice(m.text)||m.ownerCommand!==true||m.quotedId||m.source&&m.source!=='text')){
-      if(!s.db.prepare("SELECT 1 FROM errand_outbox_guards WHERE kind='shortlist' AND owner=? AND destination=? LIMIT 1").get(owner,d))return false;
+      if(!active&&!s.db.prepare("SELECT 1 FROM errand_outbox_guards WHERE kind='shortlist' AND owner=? AND destination=? LIMIT 1").get(owner,d))return false;
       try{this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-draft-error:${m.id}`,'Send a new text reply using the draft number and code shown on the shortlist.');}catch{}
       s.remember(m.id);return true;
     }
     if(!parseErrandChoice(m.text)||m.ownerCommand!==true||m.quotedId)return false;
+    if(active){
+      try{this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-draft-error:${m.id}`,'Wait for the shortlist to arrive before choosing a draft.');}catch{}
+      s.remember(m.id);return true;
+    }
     const generation=s.get('errand-authority-generation')??'';
     if(d!==owner){
       try{this.notice(owner,d,generation,`errand-draft-error:${m.id}`,'Send draft choices in your direct WhatsApp owner chat.');}catch{}

@@ -10,7 +10,7 @@ It searches only that public board, preserves F3 review when applicable, and
 prepares an owner-only text draft after a delivered shortlist and a reply with
 the displayed code, for example `draft 2 1a2b3c4d`. A bare `draft 2` works only
 while exactly one shortlist has been delivered in that owner chat.
-There is no general web search, automatic About-you or resume integration, document sender,
+There is no general web search, resume integration, document sender,
 automatic browser navigation, application opener or submit action. A selected
 page is not by itself proof of a current job listing or a working query-stripped URL.
 
@@ -20,10 +20,11 @@ sign in, enter a password or personal ID, contact anyone, make purchases, or
 send a message. The draft names the selected listing, shows its public location
 and page-title employer label when available, and asks the owner to choose a
 responsibility and add a verified example. Those source labels do not establish
-eligibility or independently verify the employer. It neither reads About-you nor
-copies the stated skill terms into the draft. This is not yet the profile-grounded
-document required by the approved plan. The existing bridge still persists the
-owner's typed request and its criteria, including any supplied skill terms.
+eligibility or independently verify the employer. At draft selection, it can add
+up to three verbatim, owner-attributed About-you lines with independently recorded
+direct-text provenance. It does not copy the stated skill terms into the draft.
+The existing bridge persists the owner's typed request and criteria, and the
+normal owner-only outbox and draft claim retain selected profile notes.
 
 ## Trust boundaries
 
@@ -94,9 +95,30 @@ owner's typed request and its criteria, including any supplied skill terms.
   request. These terms are not sent as a separate field to the Greenhouse
   source or ranking model, although listing text sent to the ranker can contain
   the same words. If F3 review is enabled, its existing Meta interpretation
-  receives the whole typed request, including these terms. No memory file or
-  resume is read. A literal title mention may be negated or irrelevant; it
+  receives the whole typed request, including these terms. No profile is sent
+  to the ranker. A literal title mention may be negated or irrelevant; it
   does not change candidate order or establish the owner's qualifications.
+- On an authenticated direct `draft N`, the profile reader uses a bounded,
+  no-follow file read and selects only whole lines matching owner-supplied role
+  or skill terms. Each line must trace through continuous About-you history to
+  an exact complete direct typed owner message with the current owner generation.
+  Model paraphrases, voice, forwarded content, local-editor writes, old messages
+  without ingress provenance and ambiguous duplicate lines are omitted. No new
+  owner confirmation is requested. The draft labels the notes as unverified,
+  preserves them in a code block, and never turns them into claims. It stores
+  those notes in the normal guarded owner-only draft and outbox; they are not
+  sent to Meta for ranking. Direct-text ingress records a body hash, owner
+  generation and first-ingress eligibility to prevent replay from laundering
+  forwarded or group text. Completed turns that did not write About-you have
+  this record removed, including on restart; interrupted turns and memory-writing
+  turns retain it. Deletion does not erase WAL, free pages or backups, and these
+  hashes are not a privacy boundary. A changed file, history or authorized-line set
+  invalidates a queued draft on the next delivery check. File metadata and
+  content checks are best-effort, not a guaranteed monotonic external-edit log;
+  a rapid change-and-revert on a coarse filesystem or directory swap can be
+  missed. Windows currently falls back to a generic draft. The reader considers
+  at most 64 candidate lines and 500 history entries; missing provenance also
+  produces a generic draft. These constraints need live validation and review.
 - Exclusions currently support only `onsite`, `on-site` or `on site` (with an
   optional no/avoid/exclude prefix). Only a trusted independently verified
   `remote-only` workplace attestation qualifies; onsite, hybrid and unknown
@@ -140,7 +162,7 @@ owner's typed request and its criteria, including any supplied skill terms.
   committed together and a repeated identical request recovers that result;
   a digest binds the draft to its selected listing snapshot at delivery. Older
   queued drafts without a snapshot digest fail closed and need a new request.
-  a future sender must still atomically queue delivery or make it idempotent.
+  The sender atomically queues delivery with the claim.
   A dispatched owner job marked uncertain during bridge recovery is not an
   active request here, so its saved draft cannot yet be recovered through this
   API. Design and test that recovery before connecting delivery.
@@ -155,11 +177,10 @@ owner's typed request and its criteria, including any supplied skill terms.
 The independent review of the unwired profile prototype is in
 [errand-profile-review.md](errand-profile-review.md).
 
-Implement a safe, genuinely independent search and listing verification source,
-the F3-approved contract and scoped profile adapter, Wonder's useful grounded
-fit assessment, a usable tailored document with no fabricated qualifications,
-WhatsApp shortlist and delivery, and an owner-controlled application-opening
-flow. Re-review all source ingestion, profile handling, cancellation, account
+Implement general search and a live-validated listing verification source,
+profile-grounded fit assessment, a usable tailored document with no fabricated
+qualifications, and an owner-controlled application-opening flow. Re-review
+all source ingestion, profile handling, cancellation, account
 changes, prompt injection and the prohibition on submitting or sending. A real
 shortlist with working links and a useful draft must be demonstrated before
 calling F6 complete.

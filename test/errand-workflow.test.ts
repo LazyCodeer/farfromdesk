@@ -6,7 +6,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {proto} from '@whiskeysockets/baileys';
-import {Store} from '../src/store.js';
+import {Store,hash} from '../src/store.js';
 import {Router} from '../src/router.js';
 import {Approvals} from '../src/approvals.js';
 import {WhatsApp} from '../src/whatsapp.js';
@@ -18,6 +18,8 @@ import {MetaBrain} from '../src/meta-brain.js';
 import {DEFAULT_BRAIN,MetaSecret,saveBrainConfig} from '../src/meta-brain-config.js';
 import {TaskContracts} from '../src/task-contracts.js';
 import {PowerPolicy} from '../src/power.js';
+import {OwnerMemory,ABOUT_ME} from '../src/owner-memory.js';
+import {readOwnedErrandProfile} from '../src/errand-profile.js';
 import type {Listing} from '../src/errand-missions.js';
 
 const owner='123@s.whatsapp.net';
@@ -60,9 +62,10 @@ test('a synthetic published listing without a deadline flows through search, del
     const page='<!DOCTYPE html><html><head><title>Job Application for Flutter Engineer at Example</title><meta property="og:url" content="https://job-boards.greenhouse.io/example/jobs/12345?gh_jid=12345"/></head><body><h1 class="section-header">Flutter Engineer</h1><form id="application-form"></form></body></html>';
     const job={id:12345,title:'Flutter Engineer',location:{name:'Bangalore'},absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345'};
     const transport={resolve:async()=>['8.8.8.8'],request:async(host:string,path:string)=>({status:200,contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html',body:host==='boards-api.greenhouse.io'?JSON.stringify(path.endsWith('/jobs')?{jobs:[job]}:job):page})};
-    f.router.errands=new ErrandWorkflow(f.router,greenhouseBoardReader(()=>true,()=>Date.now(),transport),async rows=>rows.map(x=>x.id));
-    let privateReads=0;f.router.brain.owner.read=()=>{privateReads++;throw new Error('Private profile access is forbidden in this test.');};
+    let privateReads=0;
+    f.router.errands=new ErrandWorkflow(f.router,greenhouseBoardReader(()=>true,()=>Date.now(),transport),async rows=>rows.map(x=>x.id),fetch,()=>{privateReads++;return undefined;});
     await f.wa.receiveMessage(f.msg('root',request+'; skills=SyntheticPrivateSkill'));await f.wa.flush();
+    assert.equal(privateReads,0);
     assert.equal(f.sent.length,1);assert.match(f.sent[0].content.text,/Deadline not provided/);assert.match(f.sent[0].content.text,/application availability.*unverified/i);assert.match(f.sent[0].content.text,/Mentions Bangalore/);
     const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
     f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
@@ -73,11 +76,130 @@ test('a synthetic published listing without a deadline flows through search, del
     assert.match(f.sent[1].content.text,/Choose one responsibility from the listing/);
     assert.doesNotMatch(f.sent[1].content.text,/SyntheticPrivateSkill|I (?:have|built|developed|worked)|years of experience|degree/i);
     const claim=f.store.db.prepare('SELECT draft_json FROM errand_draft_claims WHERE request_id=?').get('wa:choice') as {draft_json:string};
-    assert.doesNotMatch(claim.draft_json,/SyntheticPrivateSkill/);assert.equal(privateReads,0);
+    assert.doesNotMatch(claim.draft_json,/SyntheticPrivateSkill/);assert.equal(privateReads,1);
     f.store.db.prepare('UPDATE errand_candidates SET observed_at=?').run(Date.now()-3600001);
     await f.wa.receiveMessage(f.msg('expired','draft 1'));await f.wa.flush();
     assert.ok(f.sent.some(x=>/That shortlist is no longer available/.test(x.content.text)));
     assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,1);
+  }finally{f.close();}
+});
+test('an owner draft captures relevant About-you lines once and reuses the same snapshot',async()=>{
+  const f=fixture();try{
+    const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+    let profile='# Synthetic About you\n- I have not used Flutter.\n- Built a synthetic Flutter prototype.\n- Flutter **not** used in [sample](https://example.test).\n- Unrelated private detail.',reads=0;
+    const reader=()=>{reads++;return {text:profile,revision:'synthetic-revision'};};
+    f.router.errands=new ErrandWorkflow(f.router,async()=>[listing],async rows=>rows.map(x=>x.id),fetch,reader);
+    await f.wa.receiveMessage(f.msg('root',request));assert.equal(reads,0);await f.wa.flush();
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    await f.wa.receiveMessage(f.msg('early','draft 1'));assert.equal(reads,0);
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 1'));assert.equal(reads,1);
+    const saved=(f.store.db.prepare('SELECT draft_json FROM errand_draft_claims WHERE request_id=?').get('wa:choice') as {draft_json:string}).draft_json;
+    f.router.errands=new ErrandWorkflow(f.router,async()=>[listing],async rows=>rows.map(x=>x.id),fetch,reader);
+    f.router.errands.recover();await f.wa.flush();assert.ok(reads>=2);
+    const output=f.sent.find(x=>/Draft for Flutter Engineer/.test(x.content.text))?.content.text as string;
+    assert.match(output,/About-you notes captured .*owner-provided/);assert.match(output,/- I have not used Flutter\./);assert.match(output,/- Built a synthetic Flutter prototype\./);
+    assert.ok(output.includes('- Flutter **not** used in [sample](https://example.test).'));
+    assert.doesNotMatch(output,/Unrelated private detail|Different Flutter experience/);
+    assert.equal((f.store.db.prepare('SELECT draft_json FROM errand_draft_claims WHERE request_id=?').get('wa:choice') as {draft_json:string}).draft_json,saved);
+  }finally{f.close();}
+});
+test('synthetic per-line provenance excludes a forwarded note',async()=>{
+  const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-profile-ingress-'));try{
+    if(process.platform==='win32')return;
+    const text='I built a synthetic Flutter prototype.';
+    await f.wa.receiveMessage(f.msg('memory',text));
+    assert.equal(f.store.db.prepare('SELECT 1 FROM errand_profile_inputs WHERE request_id=?').get('wa:memory'),undefined);
+    f.store.db.prepare('INSERT INTO errand_profile_inputs VALUES(?,?,?,?,?,1)').run('wa:memory',owner,owner,f.store.get('incoming-owner-generation')??'',hash(text));
+    const forwarded='I built a synthetic Flutter plugin.';
+    await f.wa.receiveMessage({key:{id:'forwarded-profile',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:forwarded,contextInfo:{isForwarded:true}}}});
+    assert.equal(f.store.db.prepare('SELECT 1 FROM errand_profile_inputs WHERE request_id=?').get('wa:forwarded-profile'),undefined);
+    f.store.db.prepare('INSERT INTO errand_profile_inputs VALUES(?,?,?,?,?,0)').run('wa:forwarded-profile',owner,owner,f.store.get('incoming-owner-generation')??'',hash(forwarded));
+    f.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'answered','allowed',?)").run('wa:memory',text,'text',owner,Date.now());
+    const memory=new OwnerMemory(f.store,dir);memory.write(ABOUT_ME,`# About you\n- ${text}\n`,'brain:wa:memory');
+    f.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'answered','allowed',?)").run('wa:forwarded-profile',forwarded,'text',owner,Date.now());
+    memory.write(ABOUT_ME,`# About you\n- ${text}\n- ${forwarded}\n`,'brain:wa:forwarded-profile');
+    (f.router.brain.owner as {dir:string}).dir=memory.dir;
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 1'));await f.wa.flush();
+    assert.ok(f.sent.some(x=>String(x.content.text).includes(`- ${text}`)));
+    assert.ok(f.sent.every(x=>!String(x.content.text).includes(forwarded)));
+  }finally{f.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('revoked profile-line provenance invalidates a queued draft',async()=>{
+  const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-profile-revoked-'));try{
+    if(process.platform==='win32')return;
+    const text='I built a synthetic Flutter prototype.';await f.wa.receiveMessage(f.msg('memory',text));
+    f.store.db.prepare('INSERT INTO errand_profile_inputs VALUES(?,?,?,?,?,1)').run('wa:memory',owner,owner,f.store.get('incoming-owner-generation')??'',hash(text));
+    f.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'answered','allowed',?)").run('wa:memory',text,'text',owner,Date.now());
+    const memory=new OwnerMemory(f.store,dir);memory.write(ABOUT_ME,`# About you\n- ${text}\n`,'brain:wa:memory');(f.router.brain.owner as {dir:string}).dir=memory.dir;
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 1'));
+    f.store.db.prepare("UPDATE brain_tasks SET original='Synthetic unrelated text' WHERE id='wa:memory'").run();await f.wa.flush();
+    assert.ok(f.sent.every(x=>!String(x.content.text).includes(text)));
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source='errand-draft:wa:choice:0'").get() as {status:string}).status,'cancelled');
+  }finally{f.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('interrupted forwarded and mixed-group ingress cannot be upgraded by replay',async()=>{
+  for(const mode of ['forwarded','mixed-group'] as const){
+    const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-ingress-crash-'));try{
+      const text='I built a synthetic Flutter prototype.',id=`replay-${mode}`;
+      const memory=new OwnerMemory(f.store,dir);
+      f.router.receive=async incoming=>{
+        f.store.recordOwnerOrigin(incoming.id,owner,owner);
+        f.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run(incoming.id,text,'text',owner,Date.now());
+        memory.write(ABOUT_ME,`# About you\n- ${text}\n`,`brain:${incoming.id}`);
+        throw new Error('Synthetic interruption before completion.');
+      };
+      const first=mode==='forwarded'
+        ?{key:{id,fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text,contextInfo:{isForwarded:true}}}}
+        :{key:{id,fromMe:true,remoteJid:'123@g.us',remoteJidAlt:owner},message:{conversation:text}};
+      await assert.rejects(f.wa.receiveMessage(first),/Synthetic interruption/);
+      assert.equal((f.store.db.prepare('SELECT eligible FROM errand_profile_inputs WHERE request_id=?').get(`wa:${id}`) as {eligible:number}).eligible,0);
+      await assert.rejects(f.wa.receiveMessage(f.msg(id,text)),/Owner input identity changed/);
+      assert.equal((f.store.db.prepare('SELECT eligible FROM errand_profile_inputs WHERE request_id=?').get(`wa:${id}`) as {eligible:number}).eligible,0);
+      const scope={requestId:'wa:job',owner,destination:owner,bindingId:f.binding.id,bindingIdentity:errandBindingIdentity(f.store,f.binding)};
+      if(process.platform!=='win32')assert.equal(readOwnedErrandProfile(f.store,scope,memory.dir,{role:'Flutter',location:'Bangalore'})?.text,'');
+    }finally{f.close();rmSync(dir,{recursive:true,force:true});}
+  }
+});
+test('authenticated primary LID is eligible but unrelated completed hashes are pruned',async()=>{
+  const f=fixture();try{
+    const lid='456@lid';f.wa.owners.push(lid);
+    f.router.receive=async()=>{throw new Error('Synthetic interruption.');};
+    await assert.rejects(f.wa.receiveMessage({key:{id:'lid',fromMe:true,remoteJid:lid,remoteJidAlt:owner},message:{conversation:'Synthetic Flutter text.'}}),/Synthetic interruption/);
+    assert.equal((f.store.db.prepare('SELECT eligible FROM errand_profile_inputs WHERE request_id=?').get('wa:lid') as {eligible:number}).eligible,1);
+    f.store.remember('wa:lid');f.router.errands.pruneProfileInput('wa:lid');
+    assert.equal(f.store.db.prepare('SELECT 1 FROM errand_profile_inputs WHERE request_id=?').get('wa:lid'),undefined);
+  }finally{f.close();}
+});
+test('owner authority changing during profile capture prevents a draft',async()=>{
+  const f=fixture();try{
+    const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+    f.router.errands=new ErrandWorkflow(f.router,async()=>[listing],async rows=>rows.map(x=>x.id),fetch,()=>{f.store.set('whatsapp-owner','other@s.whatsapp.net');return {text:'- Synthetic Flutter work.',revision:'synthetic-revision'};});
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 1'));await f.wa.flush();
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get()?.n,0);
+    assert.ok(f.sent.every(x=>!/Synthetic Flutter work/.test(x.content.text)));
+  }finally{f.close();}
+});
+test('a changed profile revision cancels queued notes instead of substituting new text',async()=>{
+  const f=fixture();try{
+    const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+    let revision='profile-a';const reader=()=>({text:'- Synthetic Flutter work.',revision});
+    f.router.errands=new ErrandWorkflow(f.router,async()=>[listing],async rows=>rows.map(x=>x.id),fetch,reader);
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    f.wa.receiveMessageUpdate({id:shortlist.wa_id,remoteJid:owner,fromMe:true},proto.WebMessageInfo.Status.DELIVERY_ACK);
+    await f.wa.receiveMessage(f.msg('choice','draft 1'));revision='profile-b';await f.wa.flush();
+    assert.ok(f.sent.every(x=>!/Synthetic Flutter work/.test(x.content.text)));
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source='errand-draft:wa:choice:0'").get() as {status:string}).status,'cancelled');
   }finally{f.close();}
 });
 test('a queued draft is invalidated when its listing context changes or has no snapshot binding',async()=>{
@@ -167,6 +289,17 @@ test('quoted and malformed draft choices are kept out of session routing',async(
     await f.wa.flush();assert.equal(f.store.job('wa:quoted-choice'),undefined);assert.equal(f.store.job('wa:typo'),undefined);
     assert.equal(f.sent.filter(x=>/Send a new text reply using the draft number/.test(x.content.text)).length,2);
   }finally{f.close();}
+});
+test('draft-like replies while a search is still running never route to a session',async()=>{
+  const f=fixture();let release!:()=>void;try{
+    const pendingRead=new Promise<void>(resolve=>{release=resolve;});
+    f.router.errands=new ErrandWorkflow(f.router,async()=>{await pendingRead;return [];},async rows=>rows.map(x=>x.id));
+    const pending=f.wa.receiveMessage(f.msg('root',request));await new Promise(resolve=>setImmediate(resolve));
+    await f.wa.receiveMessage(f.msg('early','draft 1'));await f.wa.receiveMessage(f.msg('typo','draft 1 abcdefg'));
+    assert.equal(f.store.job('wa:early'),undefined);assert.equal(f.store.job('wa:typo'),undefined);
+    assert.equal((f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-draft-error:%'").get() as {n:number}).n,2);
+    release();await pending;
+  }finally{release?.();f.close();}
 });
 
 test('explicit owner skills annotate title mentions locally without changing order or sharing profile fields',async()=>{
@@ -562,6 +695,15 @@ test('ranking failures report a fixed recovery step without relaying provider de
       assert.equal(f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-shortlist:%'").get()?.n,0);
     }finally{f.close();}
   }
+});
+test('a missing Meta key gives a specific recovery step without attempting ranking',async()=>{
+  const f=fixture(),dir=mkdtempSync(join(tmpdir(),'ffd-missing-key-'));try{
+    const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+    (f.router.brain as {secret:MetaSecret}).secret=new MetaSecret(dir);
+    f.router.errands=new ErrandWorkflow(f.router,async()=>[listing]);
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    assert.equal(f.sent.length,1);assert.match(f.sent[0].content.text,/Add a Meta Brain key in Settings/);
+  }finally{f.close();rmSync(dir,{recursive:true,force:true});}
 });
 test('owner change during source search discards results and cannot send to the former owner, even after it changes back',async()=>{
   for(const switchBack of [false,true]){const f=fixture();try{

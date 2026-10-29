@@ -3,6 +3,7 @@ import {isIP} from 'node:net';
 import {hash,type Binding,type Store} from './store.js';
 import {toWhatsApp} from './whatsapp-format.js';
 import {parseErrandChoice,shortlistReference} from './errand-choice.js';
+import {selectErrandProfileNotes,type ErrandProfileSnapshot} from './errand-profile.js';
 
 /**
  * Internal F6 foundation. This module is not connected to a route, browser,
@@ -91,7 +92,7 @@ function eligible(row:Candidate,contract:ErrandContract):boolean {
 
 /** Internal ledger only. No search, browser navigation, message or submission is performed here. */
 export class ErrandMissions {
-  constructor(private store:Store,private approved:ContractAuthority,private readListings:VerifiedListingReader,private rank:ErrandRanker,private now=()=>Date.now(),private orderedAfter:ShortlistOrderProof=()=>false) {
+  constructor(private store:Store,private approved:ContractAuthority,private readListings:VerifiedListingReader,private rank:ErrandRanker,private now=()=>Date.now(),private orderedAfter:ShortlistOrderProof=()=>false,private readProfile:(scope:ErrandScope,contract:ErrandContract)=>ErrandProfileSnapshot|undefined=()=>undefined) {
     // Record every identity transition, including direct SQL changes and
     // change-away-and-back. Value snapshots alone cannot detect those races.
     for(const operation of ['INSERT','UPDATE','DELETE'] as const){
@@ -115,7 +116,7 @@ export class ErrandMissions {
       CREATE TABLE IF NOT EXISTS errand_shortlist_messages(
       outbox_id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES errand_missions(id),owner TEXT NOT NULL,destination TEXT NOT NULL,root_request TEXT NOT NULL,body_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS errand_draft_claims(
-      request_id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES errand_missions(id),candidate_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,draft_json TEXT,candidate_hash TEXT);`);
+      request_id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES errand_missions(id),candidate_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,draft_json TEXT,candidate_hash TEXT,profile_revision TEXT);`);
     // Existing local prototypes have no workplace attestation; never infer one.
     if(!store.db.prepare('PRAGMA table_info(errand_candidates)').all().some((c:any)=>c.name==='workplace'))store.db.exec("ALTER TABLE errand_candidates ADD COLUMN workplace TEXT NOT NULL DEFAULT 'unknown'");
     if(!store.db.prepare('PRAGMA table_info(errand_candidates)').all().some((c:any)=>c.name==='verification'))store.db.exec("ALTER TABLE errand_candidates ADD COLUMN verification TEXT NOT NULL DEFAULT 'unverified'");
@@ -124,6 +125,7 @@ export class ErrandMissions {
     if(!store.db.prepare('PRAGMA table_info(errand_candidates)').all().some((c:any)=>c.name==='listing_employer'))store.db.exec('ALTER TABLE errand_candidates ADD COLUMN listing_employer TEXT');
     if(!store.db.prepare('PRAGMA table_info(errand_draft_claims)').all().some((c:any)=>c.name==='draft_json'))store.db.exec('ALTER TABLE errand_draft_claims ADD COLUMN draft_json TEXT');
     if(!store.db.prepare('PRAGMA table_info(errand_draft_claims)').all().some((c:any)=>c.name==='candidate_hash'))store.db.exec('ALTER TABLE errand_draft_claims ADD COLUMN candidate_hash TEXT');
+    if(!store.db.prepare('PRAGMA table_info(errand_draft_claims)').all().some((c:any)=>c.name==='profile_revision'))store.db.exec('ALTER TABLE errand_draft_claims ADD COLUMN profile_revision TEXT');
   }
   private active(scope:ErrandScope) {
     const origin=this.store.requestOwnerOrigin(scope.requestId),job=this.store.job(scope.requestId),binding=this.store.binding(scope.bindingId);
@@ -269,21 +271,28 @@ export class ErrandMissions {
     if(!this.orderedAfter(scope,latest.id))throw new Error('Cannot verify that this request followed the delivered shortlist.');
     const row=this.store.db.prepare('SELECT * FROM errand_candidates WHERE mission_id=? AND position=?').get(id,number) as Candidate|undefined;
     if(!row||!this.fresh(row))throw new Error('That listing is unavailable or stale. Start a new errand with a new owner request.');
-    // Persist the result with the claim, so a crash after commit can recover
-    // the same result without creating another draft or repeating an effect.
-    const context=[row.listing_employer?`Listing employer (source metadata; unverified): ${row.listing_employer}`:'',row.listing_location?`Listing location (source metadata; eligibility unverified): ${row.listing_location}`:''].filter(Boolean).join('\n');
-    const interest=row.listing_employer?'this role and the named employer':'this role';
-    const result={title:row.title,url:row.url,text:`${context?context+'\n\n':''}Cover letter starter — complete the brackets before using:\n\nHello [hiring team],\n\nI am interested in the ${row.title} opportunity.\n\n[Choose one responsibility from the listing and describe a relevant project or contribution using facts you can verify.]\n\n[Explain what interests you about ${interest}.]\n\nI would welcome the opportunity to discuss the position.\n\nThank you.\n\nResume prompts:\n- Choose a responsibility from this listing and describe your own relevant contribution.\n- Add a result you can verify, or leave it out.`};
+    const contract=JSON.parse(mission.contract_json) as ErrandContract;
+    let result:{title:string;url:string;text:string};
     this.store.db.exec('SAVEPOINT errand_draft');
     try{
-      this.mission(id,scope);const existing=this.store.db.prepare('SELECT mission_id,candidate_id,owner,destination,draft_json,candidate_hash FROM errand_draft_claims WHERE request_id=?').get(scope.requestId) as {mission_id:string;candidate_id:string;owner:string;destination:string;draft_json:string|null;candidate_hash:string|null}|undefined;
+      this.mission(id,scope);const existing=this.store.db.prepare('SELECT mission_id,candidate_id,owner,destination,draft_json,candidate_hash,profile_revision FROM errand_draft_claims WHERE request_id=?').get(scope.requestId) as {mission_id:string;candidate_id:string;owner:string;destination:string;draft_json:string|null;candidate_hash:string|null;profile_revision:string|null}|undefined;
       if(existing){
         if(existing.mission_id!==id||existing.candidate_id!==row.id||existing.owner!==scope.owner||existing.destination!==scope.destination||!existing.draft_json||existing.candidate_hash!==candidateDigest(row))throw new Error('That draft request was already used or the listing changed.');
-        const saved=JSON.parse(existing.draft_json) as typeof result;
+        if(existing.profile_revision){const current=this.readProfile(scope,contract);if(!current||current.revision!==existing.profile_revision)throw new Error('The About-you profile changed. Start a new draft.');this.mission(id,scope);}
+        const saved=JSON.parse(existing.draft_json) as {title:string;url:string;text:string};
         if(!saved||saved.title!==row.title||saved.url!==row.url||typeof saved.text!=='string'||!saved.text||saved.text.length>10000)throw new Error('The saved draft is unavailable.');
         this.store.db.exec('RELEASE errand_draft');return saved;
       }
-      this.store.db.prepare('INSERT INTO errand_draft_claims(request_id,mission_id,candidate_id,owner,destination,draft_json,candidate_hash) VALUES(?,?,?,?,?,?,?)').run(scope.requestId,id,row.id,scope.owner,scope.destination,JSON.stringify(result),candidateDigest(row));this.store.db.exec('RELEASE errand_draft');
+      // Capture once; later checks compare the trusted revision but never
+      // substitute new profile text into an already queued draft.
+      const profile=this.readProfile(scope,contract);
+      const notes=profile===undefined?[]:selectErrandProfileNotes(profile.text,contract);
+      this.mission(id,scope);if(!this.fresh(row))throw new Error('That listing is unavailable or stale.');
+      const context=[row.listing_employer?`Listing employer (source metadata; unverified): ${row.listing_employer}`:'',row.listing_location?`Listing location (source metadata; eligibility unverified): ${row.listing_location}`:''].filter(Boolean).join('\n');
+      const interest=row.listing_employer?'this role and the named employer':'this role';
+      const profileNotes=notes.length?`About-you notes captured ${new Date(this.now()).toISOString()} (owner-provided; review accuracy and relevance):\n\`\`\`\n${notes.join('\n')}\n\`\`\``:profile?'No matching About-you notes were added.':'About-you was unavailable; no notes were added.';
+      result={title:row.title,url:row.url,text:`${context?context+'\n\n':''}Cover letter starter — complete the brackets before using:\n\nHello [hiring team],\n\nI am interested in the ${row.title} opportunity.\n\n[Choose one responsibility from the listing and describe a relevant project or contribution using facts you can verify.]\n\n[Explain what interests you about ${interest}.]\n\nI would welcome the opportunity to discuss the position.\n\nThank you.\n\n${profileNotes}\n\nResume prompts:\n- Choose a responsibility from this listing and describe your own relevant contribution.\n- Add a result you can verify, or leave it out.\n\nApplication answer starters — complete these yourself:\n- Why this role? [Your reason.]\n- Relevant work: [A verified example.]\n- Availability or compensation, if asked: [Your own details.]`};
+      this.store.db.prepare('INSERT INTO errand_draft_claims(request_id,mission_id,candidate_id,owner,destination,draft_json,candidate_hash,profile_revision) VALUES(?,?,?,?,?,?,?,?)').run(scope.requestId,id,row.id,scope.owner,scope.destination,JSON.stringify(result),candidateDigest(row),notes.length?profile!.revision:null);this.store.db.exec('RELEASE errand_draft');
     }catch(e){this.store.db.exec('ROLLBACK TO errand_draft; RELEASE errand_draft');throw e;}
     // No invented experience, name or recipient. This is a local draft only.
     return result;

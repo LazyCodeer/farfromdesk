@@ -237,6 +237,9 @@ export class WhatsApp {
       // Record ordering before group verification or routing can await.
       const context=msg?.extendedTextMessage?.contextInfo;
       const orderOwner=owner.owner;
+      const plainOwnerText=self&&!audio&&!media&&!msg?.pollUpdateMessage&&typeof text==='string';
+      const profileEligible=plainOwnerText&&typeof m.key.remoteJid==='string'&&!m.key.remoteJid.endsWith('@g.us')&&this.owners.includes(jidNormalizedUser(m.key.remoteJid))&&!context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore;
+      if(plainOwnerText)this.router.errands.captureProfileInput(id,text!,!!profileEligible);
       const draftIngress=!audio&&!media&&!msg?.pollUpdateMessage&&typeof text==='string'&&
         !context?.stanzaId&&!context?.quotedMessage&&!context?.isForwarded&&!context?.forwardingScore&&!!parseErrandChoice(text);
       if(draftIngress)this.errandOrder.capture(id,orderOwner,origin,text!);
@@ -318,7 +321,7 @@ export class WhatsApp {
         await this.router.receive({id,text:text!,quotedId:context?.stanzaId??undefined,ownerCommand,ownerChoice:!context?.isForwarded&&!context?.forwardingScore,activityScope});
       });
       });
-    }finally{this.receiving.delete(id);}
+    }finally{this.router.errands.pruneProfileInput(id);this.receiving.delete(id);}
   }
   async flush() {
     if(this.loggingOut||this.flushing||this.status!=='connected'||!this.sock||!this.selfJid)return;

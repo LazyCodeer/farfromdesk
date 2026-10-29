@@ -6,6 +6,13 @@ shortlist receipt, the selected listing, the mission and current profile hash.
 Those checks are useful but do not establish all of the guarantees needed for
 delivery of About-you content.
 
+The later F6 implementation is separate from that prototype. With the owner's
+authorized job request it retains selected notes in the existing owner-only
+draft/outbox, and traces each note to an exact direct typed owner input. It
+rechecks file metadata, content, history and the authorized line set before
+delivery. This is not a guaranteed monotonic external-edit history, and legacy
+or ambiguous records fail closed. See `errands-foundation.md` for limits.
+
 - `queue()` puts the selected excerpts in the normal `outbox.body`. The normal
   queue and its database journals/backups can retain plaintext independently of
   the adoption table. A future route could also retain a selection command in
