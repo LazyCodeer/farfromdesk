@@ -30,6 +30,7 @@ export class WhatsApp {
   stopAuth?:()=>void;
   authWrites=new Set<Promise<void>>();
   receiving=new Set<string>();
+  hasPendingIngress(){return this.receiving.size>0||this.audioControllers.size>0||this.mediaControllers.size>0;}
   audioBusy=0;
   audioControllers=new Set<AbortController>();
   mediaControllers=new Set<AbortController>();

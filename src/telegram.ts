@@ -41,6 +41,8 @@ export class Telegram {
   private controller?:AbortController; private timer?:NodeJS.Timeout;
   private flushing=false; private configuring=false; private generation=0;
   private media=new Set<AbortController>();
+  private receiving=0;
+  hasPendingIngress(){return this.receiving>0||this.media.size>0;}
   readonly artifacts:Artifacts;
   transcribe=transcribeAudio;
   constructor(private store:Store,private router:Router,private root=stateDir,private fetcher:typeof fetch=fetch) {
@@ -148,6 +150,10 @@ export class Telegram {
     }
   }
   async receive(update:any) {
+    this.receiving++;
+    try{return await this.receiveOnce(update);}finally{this.receiving--;}
+  }
+  private async receiveOnce(update:any) {
     const cb=update?.callback_query;
     if(cb){
       const m=cb.message;

@@ -81,6 +81,7 @@ export class Router {
     this.pump();
   }
   private receiving=new Set<string>();
+  hasPendingIngress(){return this.receiving.size>0;}
   async receive(m:Incoming):Promise<RouteResult> {
     if(!this.store.incomingOwnerContext.getStore()&&authenticatedOwner(this,m)){
       const destination=this.store.destination(),captured=destination&&this.store.captureIncomingOwner(destination,this.store.controlChannel());
