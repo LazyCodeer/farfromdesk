@@ -27,6 +27,37 @@ unverified. Evidence timestamps must come from a trusted source event, not the
 time it was fetched or a model/session claim. Contradictory or stale evidence
 cannot trigger a correction.
 
+## Project snapshot prototype
+
+`ProofProjectSnapshots` is an unwired local prototype stacked on F3. It checks
+the approved F3 contract, owner, destination, binding, item and dispatch attempt
+against the bridge database, then reads Git at the exact canonical bound project
+root. It records before and after HEAD, local origin, project and Git directory
+identity, and whether Git reports tracked or untracked changes. It rejects
+linked worktrees, submodules, non-GitHub origins and paths that cannot be
+validated. The post snapshot must match the pre snapshot's directory and origin.
+Owner or session changes during capture prevent recording. Unsupported cases
+remain unavailable, rather than stopping or rerouting the task.
+
+These snapshots do not prove an owner approved a repository or a check, link a
+GitHub check run to this attempt, or prove a commit was produced by the task.
+Git status excludes ignored files; a clean result is not a guarantee that all
+files match the commit or that a test passed. The read is not an atomic file
+system snapshot and must be revalidated when used. The local origin is not a
+verified remote identity. An attempt marked dispatched can already have been
+submitted, so calling the prototype alone does not establish that the before
+read preceded native submission. Production must capture at an awaited
+pre-submission lifecycle boundary and revalidate authorization before dispatch.
+This prototype is not called from production, does not access GitHub, and needs
+independent security review of Git execution and filesystem races before wiring.
+It currently supports macOS only. Git runs in a sandbox that denies network,
+writes and other child executables, and warnings or errors reject the capture:
+even a zero exit status may accompany a failed repository clean filter. The
+sandbox does not yet confine reads caused by Git configuration includes, so
+its read scope must also be fixed before production use.
+No unique check-run association can be derived from these snapshots alone;
+ambiguous, unavailable or unlinked checks remain unverified.
+
 ## Vision advisory
 
 The screenshot helper is advisory only. It needs existing trusted provenance
