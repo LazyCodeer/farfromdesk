@@ -216,7 +216,7 @@ test('command menu and bot suffixes preserve existing commands and reject other 
   const f=fixture();try{
     await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
     assert.deepEqual(menu.scope,{type:'all_private_chats'});
-    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','screen','back','help','sessions','status']);
+    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','screen','back','help','sessions','status','checkrun']);
     await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
     await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);
@@ -226,6 +226,19 @@ test('command menu and bot suffixes preserve existing commands and reject other 
     await f.tg.receive(f.message(96,'/cloud'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),target);
     await f.tg.receive(f.message(94,'/back'));await f.tg.receive(f.message(95,'/status@ffd_test_bot'));
     assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),'null');
+  }finally{f.close();}
+});
+
+test('public check requests from the paired Telegram owner stay bound to that chat',async()=>{
+  const f=fixture();try{
+    await f.pair();const sha='a'.repeat(40);let requests=0;
+    f.router.publicCheckFetch=async()=>{requests++;return Response.json({id:19,name:'Backend checks',head_sha:sha,status:'completed',conclusion:'success',completed_at:'2026-10-29T10:00:00Z'});};
+    await f.tg.receive(f.message(500,`/checkrun example/project 19 ${sha} Backend checks`,other));
+    await f.tg.receive(f.message(501,`/checkrun example/project 19 ${sha} Backend checks`));
+    assert.equal(requests,1);
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source=?").get(`command:${telegramMessageId(bot,owner,501)}:0`) as any;
+    assert.equal(row.destination,telegramDestination(bot,owner));assert.equal(f.store.incomingOwnerDelivery(row.id),true);
+    assert.match(row.body,/does not verify your task/);
   }finally{f.close();}
 });
 

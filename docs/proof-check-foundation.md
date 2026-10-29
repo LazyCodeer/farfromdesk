@@ -9,6 +9,16 @@ With no independently verified evidence source, results are `unverified`. A
 session's completion report, claimed test output, screenshot URL or PR link
 alone cannot produce a pass or fail.
 
+## Public check observation
+
+The paired owner can request `/checkrun OWNER/REPO CHECK_RUN_ID COMMIT_SHA CHECK_NAME`
+as a new typed message in their direct owner chat. The bridge sends the supplied
+repository and check run ID to the public GitHub API without credentials and
+reports the matching run's status at the observation time. Private checks are
+not available. This is a historical observation of one check run, not proof of
+the task, a link between a task and a commit, or an assessment of merge readiness.
+It does not send anything to Meta or start a correction.
+
 ## Trust boundary
 
 `ProofChecks` accepts an opaque evidence reference and delegates its resolution
