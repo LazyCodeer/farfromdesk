@@ -143,6 +143,31 @@ test('an errand request accepts only exact owner-supplied criteria',()=>{
   assert.throws(()=>parseGreenhouseRequest(request+'; board=other'),/Use greenhouse/);
   assert.throws(()=>parseGreenhouseRequest(request+'; send applications=yes'),/Use greenhouse/);
 });
+test('extra spaces in criteria are normalized before search and authority checks',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('spaces','greenhouse jobs; board=example; role=Senior  Flutter; location=New  York'));
+    assert.deepEqual((f.calls[0] as any).request,{board:'example',role:'Senior Flutter',location:'New York'});
+    await f.wa.flush();assert.match(f.sent[0].content.text,/Job shortlist/);
+  }finally{f.close();}
+});
+test('cancellation settles a queued shortlist and recovery does not resend it',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.receiveMessage(f.msg('cancel','cancel job search'));
+    assert.equal(f.store.job('wa:root')?.outcome,'cancelled');
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {status:string}).status,'cancelled');
+    f.router.errands.recover();await f.wa.flush();assert.equal(f.sent.length,1);assert.match(f.sent[0].content.text,/Job search cancelled/);
+  }finally{f.close();}
+});
+test('quoted and malformed draft choices are kept out of session routing',async()=>{
+  const f=fixture();try{
+    await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+    const shortlist=f.store.db.prepare("SELECT wa_id FROM outbox WHERE source LIKE 'errand-shortlist:%'").get() as {wa_id:string};
+    await f.wa.receiveMessage({key:{id:'quoted-choice',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:'draft 1',contextInfo:{stanzaId:shortlist.wa_id}}}});
+    await f.wa.receiveMessage(f.msg('typo','draft 1 abcdefg'));
+    await f.wa.flush();assert.equal(f.store.job('wa:quoted-choice'),undefined);assert.equal(f.store.job('wa:typo'),undefined);
+    assert.equal(f.sent.filter(x=>/Send a new text reply using the draft number/.test(x.content.text)).length,2);
+  }finally{f.close();}
+});
 
 test('explicit owner skills annotate title mentions locally without changing order or sharing profile fields',async()=>{
   const f=fixture();try{

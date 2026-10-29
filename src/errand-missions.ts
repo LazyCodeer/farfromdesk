@@ -57,7 +57,7 @@ async function bounded<T>(signal:AbortSignal,work:(signal:AbortSignal)=>Promise<
     return await Promise.race([work(combined),new Promise<T>((_,reject)=>{onAbort=()=>reject(new Error('Errand operation cancelled or timed out.'));combined.addEventListener('abort',onAbort,{once:true});if(combined.aborted)onAbort();})]);
   } finally {combined.removeEventListener('abort',onAbort);}
 }
-function canonicalContract(input:ErrandContract):ErrandContract {
+export function canonicalContract(input:ErrandContract):ErrandContract {
   if(!input||typeof input.role!=='string'||typeof input.location!=='string'||(input.salary!==undefined&&typeof input.salary!=='string')||(input.avoid!==undefined&&typeof input.avoid!=='string'))throw new Error('Role and location are required.');
   const role=clean(input.role,121),location=clean(input.location,121),salary=input.salary?clean(input.salary,121):'',avoid=input.avoid?clean(input.avoid,501):'';
   if(!role||role.length>120||!location||location.length>120||salary.length>120||avoid.length>500)throw new Error('Provide a concise role and location.');

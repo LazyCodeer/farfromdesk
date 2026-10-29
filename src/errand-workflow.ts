@@ -1,7 +1,7 @@
 import {authenticatedOwner} from './owner-commands.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
-import {ErrandMissions,ErrandSearchFailure,canonicalSkills,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
+import {ErrandMissions,ErrandSearchFailure,canonicalContract,canonicalSkills,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
 import {greenhouseBoardReader} from './errand-greenhouse.js';
 import {wonderErrandRanker} from './errand-ranker.js';
 import {ErrandOrder} from './errand-order.js';
@@ -20,7 +20,7 @@ export function parseGreenhouseRequest(text:string):Request|undefined {
   const parts=text.trim().split(';').map(x=>x.trim());parts.shift();const values:Record<string,string>=Object.create(null);
   for(const part of parts){const m=/^(board|role|location|salary|avoid|skills)\s*=\s*(.+)$/i.exec(part);if(!m||values[m[1].toLowerCase()])throw new Error('Use greenhouse jobs; board=NAME; role=TITLE; location=PLACE, with optional salary=, avoid= and skills=.');values[m[1].toLowerCase()]=m[2].trim();}
   if(!/^[a-z0-9][a-z0-9_-]{0,49}$/.test(values.board??'')||!values.role||!values.location||Object.values(values).some(v=>v.length>120||/[\r\n\x00-\x1f]/.test(v)))throw new Error('Provide a board, role and location in the Greenhouse request.');
-  return {board:values.board,contract:{role:values.role,location:values.location,...(values.salary?{salary:values.salary}:{}),...(values.avoid?{avoid:values.avoid}:{}),...(values.skills?{skills:canonicalSkills(values.skills.split(','))}:{})}};
+  return {board:values.board,contract:canonicalContract({role:values.role,location:values.location,...(values.salary?{salary:values.salary}:{}),...(values.avoid?{avoid:values.avoid}:{}),...(values.skills?{skills:canonicalSkills(values.skills.split(','))}:{})})};
 }
 
 /** Owner-scoped local orchestration. No application submission or contact exists. */
@@ -202,7 +202,22 @@ export class ErrandWorkflow {
     const r=this.router,s=r.store,d=s.destination(),owner=s.ownerFor(d);
     if(!/^cancel job search[.!]?$/i.test(m.text.trim())||m.ownerCommand!==true||m.quotedId||!d||!owner||!authenticatedOwner(r,m))return false;
     const matches=[...this.activeSearch.entries()].filter(([,v])=>v.scope.owner===owner&&v.scope.destination===d);
-    if(!matches.length){this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-cancel:${m.id}`,'No job search is running.');s.remember(m.id);return true;}
+    const queued=s.db.prepare(`SELECT g.outbox_id,g.mission_id,g.root_request,g.binding_id,g.binding_identity FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id JOIN errand_missions m ON m.id=g.mission_id
+      WHERE g.kind='shortlist' AND g.owner=? AND g.destination=? AND o.status='queued' AND m.state='shortlisted'`).all(owner,d) as {outbox_id:string;mission_id:string;root_request:string;binding_id:string;binding_identity:string}[];
+    if(matches.length&&queued.some(q=>!matches.some(([root])=>root===q.root_request)))throw new Error('More than one job search is pending.');
+    if(!matches.length){
+      if(queued.length>1)throw new Error('More than one job search is pending.');
+      if(queued.length===1){
+        const q=queued[0],scope:ErrandScope={requestId:q.root_request,owner,destination:d,bindingId:q.binding_id,bindingIdentity:q.binding_identity};
+        s.db.exec('SAVEPOINT cancel_queued_errand');
+        try{this.ledger.cancel(q.mission_id,scope);const changed=s.db.prepare("UPDATE outbox SET status='cancelled',error='Cancelled by owner.' WHERE id=? AND status='queued'").run(q.outbox_id);if(!changed.changes)throw new Error('Delivery already started.');s.jobState(q.root_request,'completed',null,'cancelled');s.remember(m.id);s.db.exec('RELEASE cancel_queued_errand');}
+        catch(e){s.db.exec('ROLLBACK TO cancel_queued_errand; RELEASE cancel_queued_errand');throw e;}
+        try{this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-cancel:${m.id}`,'Job search cancelled.');}catch{}
+        return true;
+      }
+      const sending=s.db.prepare(`SELECT 1 FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id WHERE g.kind='shortlist' AND g.owner=? AND g.destination=? AND o.status='sending'`).get(owner,d);
+      this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-cancel:${m.id}`,sending?'The shortlist is already being sent. Check your chat.':'No job search is running.');s.remember(m.id);return true;
+    }
     if(matches.length!==1)throw new Error('More than one job search is running. Wait for them to finish.');
     const [root,entry]=matches[0];const mission=s.db.prepare('SELECT id FROM errand_missions WHERE root_request=?').get(root) as {id:string}|undefined;
     if(!mission)throw new Error('The job search is unavailable.');
@@ -218,7 +233,13 @@ export class ErrandWorkflow {
   /** Return false only when no errand shortlist exists; otherwise fail closed. */
   draft(m:Incoming) {
     const s=this.router.store,d=s.destination(),owner=s.ownerFor(d);
-    if(!parseErrandChoice(m.text)||!d||!owner||!authenticatedOwner(this.router,m)||m.ownerCommand!==true||m.quotedId||s.controlChannel()!=='whatsapp')return false;
+    if(!d||!owner||!authenticatedOwner(this.router,m)||s.controlChannel()!=='whatsapp')return false;
+    if(/^\s*(?:please\s+)?draft\s+\d/i.test(m.text)&&(!parseErrandChoice(m.text)||m.ownerCommand!==true||m.quotedId||m.source&&m.source!=='text')){
+      if(!s.db.prepare("SELECT 1 FROM errand_outbox_guards WHERE kind='shortlist' AND owner=? AND destination=? LIMIT 1").get(owner,d))return false;
+      try{this.notice(owner,d,s.get('errand-authority-generation')??'',`errand-draft-error:${m.id}`,'Send a new text reply using the draft number and code shown on the shortlist.');}catch{}
+      s.remember(m.id);return true;
+    }
+    if(!parseErrandChoice(m.text)||m.ownerCommand!==true||m.quotedId)return false;
     const generation=s.get('errand-authority-generation')??'';
     if(d!==owner){
       try{this.notice(owner,d,generation,`errand-draft-error:${m.id}`,'Send draft choices in your direct WhatsApp owner chat.');}catch{}
@@ -333,7 +354,7 @@ export class ErrandWorkflow {
     for(const row of sent)this.sent(row.outbox_id);
     const sending=s.db.prepare("SELECT g.outbox_id FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id WHERE o.status='sending'").all() as {outbox_id:string}[];
     for(const row of sending)this.invalidate(row.outbox_id,'Job-search delivery was interrupted; check your chat.',true);
-    const invalid=s.db.prepare("SELECT g.outbox_id FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id WHERE o.status IN ('cancelled','failed','uncertain')").all() as {outbox_id:string}[];
+    const invalid=s.db.prepare("SELECT g.outbox_id FROM errand_outbox_guards g JOIN outbox o ON o.id=g.outbox_id WHERE o.status IN ('cancelled','failed','uncertain') AND NOT (o.status='cancelled' AND COALESCE(o.error,'')='Cancelled by owner.')").all() as {outbox_id:string}[];
     for(const row of invalid)this.invalidate(row.outbox_id,'The errand message was not delivered.');
     const interrupted=s.db.prepare(`SELECT m.root_request,m.owner,m.destination,sg.authority_generation FROM errand_missions m JOIN inbox i ON i.id=m.root_request LEFT JOIN errand_search_guards sg ON sg.root_request=m.root_request
       WHERE i.status='submitted' AND m.state!='cancelled' AND NOT EXISTS(SELECT 1 FROM errand_outbox_guards g WHERE g.root_request=m.root_request AND g.kind='shortlist')`).all() as {root_request:string;owner:string;destination:string;authority_generation:string|null}[];
