@@ -21,7 +21,7 @@ export type AuthorizedVisionCapture={
   artifactHash:string;capturedAt:number;selectedWindow:true;nonsensitive:true;
   consentedForMeta:true;png:Uint8Array;
 };
-type Authorization={reference:string;scopeHash:string;checkId:string;checkBindingHash:string;artifactHash:string;sanitizedArtifactHash:string;sanitization:'png-v4';capturedAt:number};
+type Authorization={reference:string;scopeHash:string;checkId:string;checkBindingHash:string;artifactHash:string;sanitizedArtifactHash:string;sanitization:'png-v5';capturedAt:number};
 export type VisionDependencies={
   current:ProofDependencies['current'];
   // Read a previously captured artifact from a bridge-owned provenance store.
@@ -74,7 +74,7 @@ export async function assessProofVision(scope:ProofScope,checks:ProofCheck[],che
     const original=Buffer.from(capture.png);if(createHash('sha256').update(original).digest('hex')!==capture.artifactHash)return;
     const png=sanitizeProofPng(original);if(!png)return;
     const sanitizedArtifactHash=createHash('sha256').update(png).digest('hex');
-    const authorization:Readonly<Authorization>=Object.freeze({reference,scopeHash:expected,checkId,checkBindingHash:capture.checkBindingHash,artifactHash:capture.artifactHash,sanitizedArtifactHash,sanitization:'png-v4',capturedAt:capture.capturedAt});
+    const authorization:Readonly<Authorization>=Object.freeze({reference,scopeHash:expected,checkId,checkBindingHash:capture.checkBindingHash,artifactHash:capture.artifactHash,sanitizedArtifactHash,sanitization:'png-v5',capturedAt:capture.capturedAt});
     const allowed=()=>!deadline.aborted&&current()&&authorization.capturedAt<=now()&&now()-authorization.capturedAt<=maxAge&&deps.authorizeUse(authorization)===true;
     if(!allowed())return;
     const guarded:typeof fetch=async(url,init)=>{

@@ -132,7 +132,7 @@ test('text and EXIF metadata are removed and consent is bound to the exact sanit
   let calls=0,authorized=false;
   const result=await assessProofVision(scope,checks,checks[0].id,'artifact:sample',new AbortController().signal,deps({
     readCapture:async()=>capture({png:source,artifactHash:sha(source)}),
-    authorizeUse:auth=>{authorized=true;return auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(canonicalPng)&&auth.sanitization==='png-v4';},
+    authorizeUse:auth=>{authorized=true;return auth.artifactHash===sha(source)&&auth.sanitizedArtifactHash===sha(canonicalPng)&&auth.sanitization==='png-v5';},
     fetcher:async(_url,init)=>{calls++;const body=JSON.parse(String(init!.body));const encoded=body.messages.find((m:any)=>m.role==='user').content[1].image_url.url.split(',')[1];assert.deepEqual(Buffer.from(encoded,'base64'),canonicalPng);return response('consistent');},
   }));
   assert.equal(authorized,true);assert.equal(calls,1);assert.equal(result?.artifactHash,sha(source));assert.equal(result?.sanitizedArtifactHash,sha(canonicalPng));

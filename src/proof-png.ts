@@ -7,6 +7,7 @@ const signature=Buffer.from([137,80,78,71,13,10,26,10]);
 const maxBytes=4*1024*1024,maxPixels=8_000_000;
 const metadata=new Set(['tEXt','zTXt','iTXt','eXIf','tIME','pHYs']);
 const rendering=new Set(['gAMA','cHRM','sRGB','sBIT','bKGD','tRNS']);
+const srgbGamma=45455,srgbChroma=[31270,32900,64000,33000,30000,60000,15000,6000];
 
 function validKeyword(value:Buffer) {
   return value.length>0&&value.length<=79&&value[0]!==32&&value[value.length-1]!==32&&
@@ -64,7 +65,7 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
   try {
     if(!(input instanceof Uint8Array)||input.byteLength<45||input.byteLength>maxBytes)return;
     const data=Buffer.from(input);if(!data.subarray(0,8).equals(signature))return;
-    let offset=8,count=0,width=0,height=0,color=-1,backgroundChunk=-1,idatChunk=-1,seenData=false,dataEnded=false,seenEnd=false,gamma:number|undefined,chroma:number[]|undefined;
+    let offset=8,count=0,width=0,height=0,color=-1,backgroundChunk=-1,idatChunk=-1,seenData=false,dataEnded=false,seenEnd=false;
     const seen=new Set<string>(),image:Buffer[]=[],compressed:Buffer[]=[ ];
     while(offset+12<=data.length&&count++<1024){
       const length=data.readUInt32BE(offset),end=offset+length+12;if(end>data.length)return;
@@ -98,13 +99,13 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
       } else if(rendering.has(type)){
         if(seen.has(type)||seenData)return;
         if(type==='gAMA'){
-          if(length!==4||body.readUInt32BE(0)===0||body.readUInt32BE(0)>1_000_000)return;
-          gamma=body.readUInt32BE(0);
+          // Arbitrary rendering values can encode data. Retain only the exact
+          // standard sRGB values; stripping a custom profile changes colors.
+          if(length!==4||body.readUInt32BE(0)!==srgbGamma)return;
         }
         if(type==='cHRM'){
           if(length!==32)return;
-          for(let i=0;i<32;i+=8)if(body.readUInt32BE(i)+body.readUInt32BE(i+4)>100_000)return;
-          chroma=Array.from({length:8},(_,i)=>body.readUInt32BE(i*4));
+          if(srgbChroma.some((value,i)=>body.readUInt32BE(i*4)!==value))return;
         }
         if(type==='sRGB'&&(length!==1||body[0]>3))return;
         if(type==='sBIT'){
@@ -130,9 +131,6 @@ export function sanitizeProofPng(input:Uint8Array):Buffer|undefined {
       offset=end;
     }
     if(!seenEnd||offset!==data.length)return;
-    // When sRGB is present, the PNG specification requires its accompanying
-    // gamma and chromaticity values to match the sRGB color space.
-    if(seen.has('sRGB')&&(gamma!==undefined&&gamma!==45455||chroma&&chroma.some((value,i)=>value!==[31270,32900,64000,33000,30000,60000,15000,6000][i])))return;
     // Bound decompression and fully undo the PNG filters. Never reuse original
     // IDAT bytes: their deflate padding and filter choices can contain hidden
     // data unrelated to the decoded image.

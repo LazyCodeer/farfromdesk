@@ -43,7 +43,10 @@ strategy instead of forwarding the source's DEFLATE padding or filter choices.
 It fails
 closed on malformed data, custom color profiles, animation, interlacing,
 indexed-color images, suggested true-color palettes, grayscale/RGB color-key
-transparency, oversized canonical output and unsupported formats. It binds authorization to both the
+transparency, oversized canonical output and unsupported formats. Gamma and
+chromaticity chunks are accepted only at the exact standard sRGB values;
+other values are rejected, not stripped, to avoid changing color interpretation.
+Accepted images without these chunks are not assigned a color profile. It binds authorization to both the
 original and sanitized image hashes and the sanitization policy. This does not
 guarantee removal of data embedded in visible pixels or rendering-related color
 values. Production must not wire this until trusted capture

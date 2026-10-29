@@ -44,6 +44,25 @@ test('color-rendering chunks are retained while zero-alpha colors are normalized
   assert.deepEqual(inflateSync(readChunk(sanitized,'IDAT')!),Buffer.from([0,0,0,0,0]));
 });
 
+test('only canonical sRGB gamma and chromaticity values are retained, even without an sRGB chunk',()=>{
+  const gamma=Buffer.alloc(4);gamma.writeUInt32BE(45455);
+  const chroma=Buffer.alloc(32);[31270,32900,64000,33000,30000,60000,15000,6000].forEach((value,i)=>chroma.writeUInt32BE(value,i*4));
+  for(const prefix of [[],[chunk('sRGB',Buffer.from([0]))]]){
+    const source=png({before:[...prefix,chunk('gAMA',gamma),chunk('cHRM',chroma)]});
+    const clean=sanitizeProofPng(source);assert.ok(clean);
+    assert.deepEqual(readChunk(clean,'gAMA'),gamma);assert.deepEqual(readChunk(clean,'cHRM'),chroma);
+    assert.deepEqual(inflateSync(readChunk(clean,'IDAT')!),Buffer.from([0,10,20,30,255]));
+    // Tiny, valid deviations could encode information while appearing visually
+    // equivalent. They must not be retained or silently recolored.
+    for(let i=0;i<8;i++){
+      const hidden=Buffer.from(chroma);hidden.writeUInt32BE(hidden.readUInt32BE(i*4)+1,i*4);
+      assert.equal(sanitizeProofPng(png({before:[...prefix,chunk('cHRM',hidden)]})),undefined);
+    }
+    const hiddenGamma=Buffer.from(gamma);hiddenGamma.writeUInt32BE(45456);
+    assert.equal(sanitizeProofPng(png({before:[...prefix,chunk('gAMA',hiddenGamma)]})),undefined);
+  }
+});
+
 test('unsupported color profiles, animation, interlacing and unknown chunks fail closed',()=>{
   for(const source of [png({before:[chunk('iCCP',Buffer.from('profile'))]}),png({before:[chunk('acTL',Buffer.alloc(8))]}),
     png({before:[chunk('vpAg',Buffer.from('unknown'))]}),png({interlace:1}),png({depth:16}),
