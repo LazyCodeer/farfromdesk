@@ -1,6 +1,6 @@
 // Run tests with a fresh state root established before any application imports.
 // Direct node/tsx test invocations bypass this runner; use npm run test:file.
-import {mkdtempSync,mkdirSync,chmodSync,readdirSync,rmSync,realpathSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,chmodSync,readdirSync,rmSync,realpathSync,statSync} from 'node:fs';
 import {tmpdir,homedir} from 'node:os';
 import {join,resolve,relative,dirname,basename,isAbsolute,sep} from 'node:path';
 import {spawn} from 'node:child_process';
@@ -37,7 +37,7 @@ function defaultAppState() {
 function canonicalPotential(path) {
   let current=resolve(path);const suffix=[];
   for(;;) {
-    try{return resolve(realpathSync(current),...suffix);}
+    try{const existing=realpathSync(current);if(!statSync(existing).isDirectory())throw new Error('Not a directory');return resolve(existing,...suffix);}
     catch(error) {
       if(error?.code!=='ENOENT')throw new Error('Cannot verify test temp isolation against app state.');
       const parent=dirname(current);if(parent===current)throw new Error('Cannot verify test temp isolation against app state.');
