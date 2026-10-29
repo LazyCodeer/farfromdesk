@@ -84,6 +84,36 @@ owner/session/contract changes, or uncertain delivery. The persistent triggers
 are cooperative protection for bridge database writes, not a fence against a
 process that modifies the database schema or starts provider work directly.
 
+## Setup and recovery boundary
+
+Provider setup is not represented by an inbox dispatch attempt. Worker create,
+recovery and automatic Desktop reconciliation in `src/workers.ts` can call
+`Masters.provisionWorker` or `Masters.recoverWorker`. Coordinator create,
+selection, recovery and automatic Desktop reconciliation in `src/masters.ts`
+can also start or reconnect a provider outside the claim. Desktop startup and
+confirmation in `src/desktop-start.ts` can submit work separately. These paths
+must not be treated as protected merely because their eventual task uses the
+inbox fence.
+
+Before enabling collaboration, setup needs a durable, cross-connection barrier
+acquired **before** any asynchronous provider boundary. Barrier acquisition and
+collaboration claim/staging must exclude each other atomically, including when
+the setup request cannot be linked to a known item or binding. Every setup,
+recovery and automatic reconciliation path must use that same boundary. A
+restart, timeout, lost response, set-aside, abandonment or Desktop `needs_action`
+must retain an uncertain barrier until a known-unsent result or exact trusted
+provider-end evidence permits reconciliation. A `ready` status, socket receipt,
+session report or Claude READY response is not such evidence. Existing setup
+records without lifecycle proof require the same conservative treatment.
+
+Offline validation must cover setup-first and claim-first races from separate
+SQLite connections, pauses during workspace approval and provider initialization,
+restart on both sides of submission, delayed Desktop Send, automatic recovery,
+and attempts to clear or replace an uncertain barrier. These are requirements
+for a future implementation, not tests the current prototype has passed. Native
+work started outside the bridge still requires a separate exclusive ownership
+boundary; a bridge-local barrier cannot prevent it.
+
 Remaining work includes a production contract and role adapter, a scoped
 owner-visible timeline and brief integration, session roles from approved
 Collaboration memory, an actual Wonder drift check grounded in the contract,
