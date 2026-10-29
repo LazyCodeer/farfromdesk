@@ -350,83 +350,198 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     ),
   );
 
-  Widget header(bool configured) {
-    final (title, detail) = !enabled
-        ? (
-            'Brain is off',
-            'Your proxy gets every message as it is. Your item list is kept.',
-          )
-        : configured
-        ? (
-            'Brain is on',
-            'Meta $model. Reads each phone message and picks which session answers.',
-          )
-        : (
-            'Brain needs a key',
-            'Until a key is saved, your messages use normal routing.',
-          );
-    return box(
+  Widget pageHeading(String title, String description) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 3),
+        Text(description, style: const TextStyle(fontSize: 12, color: muted)),
+      ],
+    ),
+  );
+
+  Widget flowStep(String number, String title, String detail) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
       Row(
         children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: accentWash,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(
-              Icons.psychology_outlined,
-              color: accent,
-              size: 22,
+          Text(
+            number,
+            style: const TextStyle(
+              fontSize: 11,
+              color: accentSoft,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: heading(
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
               title,
-              'The brain reads each phone message first, keeps your item list and picks which session should answer. It never runs commands or approves anything itself.',
-              subtitle: detail,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
-          ),
-          if (enabled && !configured) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(
-                color: warning.withValues(alpha: .15),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: const Text(
-                'Needs a key',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                  color: warning,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-          ],
-          Switch(
-            key: const Key('brain-enabled'),
-            value: enabled,
-            onChanged: saving
-                ? null
-                : (v) {
-                    // The brain's permissions are no longer separate switches: on means it may
-                    // route to your connected platforms, keep your items and answer status.
-                    setState(() {
-                      enabled = v;
-                      if (v) {
-                        routing = summaries = management = true;
-                        providers = {'codex', 'claude'};
-                      }
-                    });
-                    save();
-                  },
           ),
         ],
       ),
+      const SizedBox(height: 3),
+      Padding(
+        padding: const EdgeInsets.only(left: 16),
+        child: Text(detail, style: const TextStyle(fontSize: 11, color: muted)),
+      ),
+    ],
+  );
+
+  Widget header(bool configured) {
+    final active = enabled && configured && routing;
+    final detail = !enabled
+        ? 'Messages go straight to your proxy. Your item list is kept.'
+        : !configured
+        ? 'Add your Meta key to start routing. Until then, messages use normal routing.'
+        : !routing
+        ? 'Messages use normal routing because routing permission is off.'
+        : 'Reads each phone message and picks which session should answer.';
+    final state = !enabled
+        ? 'Off'
+        : !configured
+        ? 'Needs a key'
+        : !routing
+        ? 'Routing off'
+        : 'On';
+    final stateColor = !enabled
+        ? muted
+        : !configured
+        ? warning
+        : !routing
+        ? muted
+        : success;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        pageHeading(
+          'Message routing',
+          'Decide how phone messages reach your work.',
+        ),
+        box(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: accentWash,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.psychology_outlined,
+                      color: accent,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: heading(
+                      'Brain routing',
+                      'The brain reads each phone message first, keeps your item list and picks which session should answer. It never runs commands or approves anything itself.',
+                      subtitle: detail,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    state,
+                    style: TextStyle(
+                      color: stateColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Switch(
+                    key: const Key('brain-enabled'),
+                    value: enabled,
+                    onChanged: saving
+                        ? null
+                        : (v) {
+                            setState(() {
+                              enabled = v;
+                              if (v) {
+                                routing = summaries = management = true;
+                                providers = {'codex', 'claude'};
+                              }
+                            });
+                            save();
+                          },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Divider(height: 1),
+              const SizedBox(height: 14),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final steps = [
+                    flowStep('1', 'Your message', 'Sent from your phone'),
+                    flowStep(
+                      '2',
+                      active ? 'Brain routes it' : 'Your coordinator',
+                      active
+                          ? 'Finds the right session'
+                          : 'Receives it directly',
+                    ),
+                    flowStep(
+                      '3',
+                      'Reply in your chat',
+                      active ? 'From the selected session' : 'Normal routing',
+                    ),
+                  ];
+                  if (constraints.maxWidth < 480) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final step in steps)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: step,
+                          ),
+                      ],
+                    );
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: steps[0]),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Icon(
+                          Icons.arrow_forward_rounded,
+                          size: 14,
+                          color: faint,
+                        ),
+                      ),
+                      Expanded(child: steps[1]),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Icon(
+                          Icons.arrow_forward_rounded,
+                          size: 14,
+                          color: faint,
+                        ),
+                      ),
+                      Expanded(child: steps[2]),
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -565,7 +680,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       children: [
         toggle(
           'Learn from your messages',
-          'When you tell it something new, it saves it in the right file and tells you on WhatsApp so you can reply "undo". Session replies, quoted text and files never change it.',
+          'When you share something new, it can save it to memory and notify you so you can reply "undo". Session replies, quoted text and files never change it.',
           learn,
           (v) {
             setState(() => learn = v);
@@ -683,23 +798,48 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const Text(
+          'YOUR ASSISTANT',
+          style: TextStyle(
+            fontSize: 10,
+            letterSpacing: 1,
+            color: muted,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Brain',
+          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Help your messages reach the right session and keep useful context close.',
+          style: TextStyle(fontSize: 12, color: muted),
+        ),
+        const SizedBox(height: 24),
         header(configured),
-        if (enabled) modelTab(configured),
-        if (enabled)
+        if (enabled) ...[
+          const SizedBox(height: 12),
+          pageHeading(
+            'Routing settings',
+            'Choose the model and what happens if it can’t answer.',
+          ),
+          modelTab(configured),
           section(
             'Instructions',
             'The built-in rules every message follows',
             Icons.notes_rounded,
             instructionsTab(),
           ),
-        section(
+          saveRow('Save changes'),
+        ],
+        const SizedBox(height: 24),
+        pageHeading(
           'Memory',
-          'Memory files every session can read',
-          Icons.history_rounded,
-          memoryTab(),
-          open: true,
+          'Notes sessions can read to understand your preferences.',
         ),
-        if (enabled) saveRow('Save changes'),
+        memoryTab(),
       ],
     );
   }

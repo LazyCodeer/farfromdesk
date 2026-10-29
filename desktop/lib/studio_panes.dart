@@ -395,6 +395,44 @@ extension _Panes on _DeskState {
     );
   }
 
+  Future<void> showInboxCleanup() async {
+    changeView(() => actionError = null);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, updateDialog) => AlertDialog(
+          title: const Text('Request cleanup'),
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 520,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  requestCleanupCard(
+                    onChanged: () {
+                      if (dialogContext.mounted) updateDialog(() {});
+                    },
+                  ),
+                  if (actionError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(actionError!, style: const TextStyle(color: danger)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget inboxList(List<Map> groups, Map? current) {
     final attention = attentionRows();
     final count = attentionRows(search: false).length;
@@ -418,6 +456,13 @@ extension _Panes on _DeskState {
                         fontSize: 18,
                         fontWeight: FontWeight.w600,
                       ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      key: const ValueKey('inbox-cleanup-settings'),
+                      tooltip: 'Request cleanup',
+                      icon: const Icon(Icons.tune_rounded, size: 18),
+                      onPressed: showInboxCleanup,
                     ),
                     if (inboxTab == 'Requests')
                       PopupMenuButton<String>(
@@ -538,12 +583,16 @@ extension _Panes on _DeskState {
                                 child: Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Text(
-                                      tab,
-                                      style: TextStyle(
-                                        fontSize: 10.5,
-                                        fontWeight: FontWeight.w500,
-                                        color: inboxTab == tab ? ink : muted,
+                                    Flexible(
+                                      child: Text(
+                                        tab,
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                        style: TextStyle(
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w500,
+                                          color: inboxTab == tab ? ink : muted,
+                                        ),
                                       ),
                                     ),
                                     if (tab == 'Attention' && count > 0)
@@ -735,26 +784,35 @@ extension _Panes on _DeskState {
     contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
     leading: const Icon(Icons.error_outline, size: 16, color: warning),
     trailing: a['canReviewOrphan'] == 1 && a['destination'] is String
-        ? TextButton(
-            onPressed: busy
-                ? null
-                : () async {
-                    if (!await confirm(
-                      'Mark this voice note reviewed?',
-                      'This removes it from Attention. Its original failure and diagnostics stay saved.',
-                      actionLabel: 'Mark reviewed',
-                    )) {
-                      return;
-                    }
-                    if (!mounted) return;
-                    await post('/api/voice-attention-review', {
-                      'audioId': a['requestId'],
-                      'destination': a['destination'],
-                      'confirmed': true,
-                    });
-                    if (mounted && actionError == null) await loadInbox();
-                  },
-            child: const Text('Mark reviewed', style: TextStyle(fontSize: 11)),
+        ? SizedBox(
+            width: 92,
+            child: TextButton(
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+              ),
+              onPressed: busy
+                  ? null
+                  : () async {
+                      if (!await confirm(
+                        'Mark this voice note reviewed?',
+                        'This removes it from Attention. Its original failure and diagnostics stay saved.',
+                        actionLabel: 'Mark reviewed',
+                      )) {
+                        return;
+                      }
+                      if (!mounted) return;
+                      await post('/api/voice-attention-review', {
+                        'audioId': a['requestId'],
+                        'destination': a['destination'],
+                        'confirmed': true,
+                      });
+                      if (mounted && actionError == null) await loadInbox();
+                    },
+              child: const FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text('Mark reviewed', style: TextStyle(fontSize: 11)),
+              ),
+            ),
           )
         : null,
     title: Text(
@@ -1402,7 +1460,7 @@ extension _Panes on _DeskState {
     ];
     final brainOn = status['metaBrain']?['enabled'] == true;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+      padding: const EdgeInsets.fromLTRB(30, 28, 30, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1426,14 +1484,10 @@ extension _Panes on _DeskState {
                       ],
                     ),
                     gap(4),
-                    small(
-                      'Follow-up work your proxies track. Say "update on 6" from your phone.',
-                    ),
+                    small('Follow-up work your coordinators are tracking.'),
                   ],
                 ),
               ),
-              small('${all.length} items · $itemsNeedingYou need you'),
-              const SizedBox(width: 14),
               SizedBox(
                 width: 200,
                 height: 38,
@@ -1455,15 +1509,21 @@ extension _Panes on _DeskState {
               ),
             ],
           ),
-          gap(16),
+          gap(24),
           if (all.isEmpty)
             Expanded(
               child: Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    const Icon(
+                      Icons.grid_view_rounded,
+                      size: 36,
+                      color: accentSoft,
+                    ),
+                    gap(12),
                     const Text(
-                      'No items here',
+                      'No items yet',
                       style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                     gap(4),
@@ -1480,22 +1540,38 @@ extension _Panes on _DeskState {
                 ),
               ),
             )
+          else if (shown.isEmpty)
+            Expanded(
+              child: Center(
+                child: small('No matching items. Try another search.'),
+              ),
+            )
           else
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final (n, c) in columns.indexed) ...[
-                    if (n > 0) const SizedBox(width: 12),
-                    Expanded(
-                      child: boardColumn(
-                        c.$1,
-                        c.$2,
-                        shown.where((i) => column(i) == c.$1).toList(),
-                      ),
+              child: LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: constraints.maxWidth < 870
+                        ? 870
+                        : constraints.maxWidth,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final (n, c) in columns.indexed) ...[
+                          if (n > 0) const SizedBox(width: 12),
+                          Expanded(
+                            child: boardColumn(
+                              c.$1,
+                              c.$2,
+                              shown.where((i) => column(i) == c.$1).toList(),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                  ],
-                ],
+                  ),
+                ),
               ),
             ),
         ],
@@ -1503,58 +1579,73 @@ extension _Panes on _DeskState {
     );
   }
 
-  Widget boardColumn(String name, Color dot, List<Map> items) => Container(
-    decoration: BoxDecoration(
-      color: sidebarColor,
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: line2),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 12, 10),
-          child: Row(
-            children: [
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  name,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
+  Widget boardColumn(String name, Color dot, List<Map> items) {
+    final caption = switch (name) {
+      'Needs you' => 'Waiting for your response',
+      'In progress' => 'Work currently underway',
+      'Open' => 'Ready to get started',
+      _ => 'Completed work',
+    };
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: dot.withValues(alpha: .75), width: 2),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(0, 14, 0, 4),
+            child: Row(
+              children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: const Color(0xff1c1c1c),
-                  borderRadius: BorderRadius.circular(6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xff1c1c1c),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '${items.length}',
+                    style: const TextStyle(fontSize: 11.5, color: muted),
+                  ),
                 ),
-                child: Text(
-                  '${items.length}',
-                  style: const TextStyle(fontSize: 11.5, color: muted),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-            children: [for (final i in items) itemCard(i)],
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: small(caption),
           ),
-        ),
-      ],
-    ),
-  );
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [for (final i in items) itemCard(i)],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget itemCard(Map i) {
     final status = '${i['status']}';
@@ -1575,7 +1666,7 @@ extension _Panes on _DeskState {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xff131313),
+        color: needs ? const Color(0xff1b1913) : const Color(0xff171717),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: needs ? warning.withValues(alpha: .35) : line2,
@@ -1584,16 +1675,17 @@ extension _Panes on _DeskState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text.rich(
-            TextSpan(
-              children: [
-                TextSpan(
-                  text: '#${i['id']}  ',
-                  style: const TextStyle(color: faint, fontSize: 12.5),
-                ),
-                TextSpan(text: '${i['title']}'),
-              ],
+          Text(
+            '#${i['id']}',
+            style: const TextStyle(
+              color: muted,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
+          ),
+          gap(10),
+          Text(
+            '${i['title']}',
             style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
           ),
           gap(8),
@@ -1681,7 +1773,7 @@ extension _Panes on _DeskState {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 SizedBox(
-                  width: 220,
+                  width: 190,
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(20, 22, 0, 20),
                     children: [
