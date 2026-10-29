@@ -9,6 +9,7 @@ import 'gateway.dart';
 import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
 import 'updates.dart';
+import 'connection_status.dart';
 
 import 'bridge_theme.dart';
 part 'screens.dart';
@@ -376,6 +377,21 @@ class _DeskState extends State<Desk> {
       if (mounted) {
         setState(() {
           status = next;
+          if (!setupActive &&
+              !platforms.any(
+                (p) =>
+                    '${p['provider']}:${p['executionMode']}' == platform &&
+                    p['available'] == true,
+              )) {
+            final detected = platforms.where((p) => p['available'] == true);
+            if (detected.isNotEmpty) {
+              final first = detected.first;
+              selectCoordinatorPlatform(
+                '${first['provider']}:${first['executionMode']}',
+              );
+              selectedNativeId = '';
+            }
+          }
           if (!ready) showGroups = next['destination']?['kind'] == 'group';
           error = null;
         });

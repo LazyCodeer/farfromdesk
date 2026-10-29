@@ -7,13 +7,15 @@ import { realpathSync, existsSync } from 'node:fs';
 import { codexBin, claudeBin } from './config.js';
 import { nativeCommand } from './platform.js';
 import { CodexSession } from './codex-session.js';
+import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-provider.js';
 import type { Binding, Provider, Store } from './store.js';
 import type { ExecutionMode } from './desktop-claude.js';
 
 const exec=promisify(execFile);
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const canonical=(path:string)=>{try{return realpathSync(path);}catch{return path;}};
-export type Connection = {id:string;provider:Provider;executionMode:ExecutionMode;state:'verified'|'signed-out'|'unknown'|'native';label:string;revision:string;accountKey?:string};
+export type Connection = {id:string;provider:Provider;executionMode:ExecutionMode;state:'verified'|'configured'|'signed-out'|'unknown'|'native';label:string;revision:string;accountKey?:string};
+export const usableCLIConnection = (connection: Pick<Connection,'state'>) => connection.state==='verified'||connection.state==='configured';
 export type SessionRoute={provider:Provider;executionMode:ExecutionMode;transport:'managed-cli'|'native-session';profileId:string;accountKey?:string;accountScope?:string;label:string};
 export function connectionProfile(provider:Provider,mode:ExecutionMode,env=process.env) {
   const home=homedir();
@@ -27,26 +29,41 @@ function maskedEmail(value:unknown) {
   return `${name.slice(0,1)}***@${domain}`;
 }
 /** Only these identity fields leave the native status response; never return credentials. */
-export function accountStatus(provider:Provider,response:any,env=process.env):Pick<Connection,'state'|'label'|'accountKey'> {
+export function accountStatus(provider:Provider,response:any,env=process.env,configurationKey?:string):Pick<Connection,'state'|'label'|'accountKey'> {
   const row=provider==='codex'?response?.account:response;
+  if(provider==='claude'&&(!row||typeof row.loggedIn!=='boolean'))return {state:'unknown',label:'CLI authentication response unavailable · click Check apps to retry'};
   if(!row||(provider==='claude'&&row.loggedIn===false))return {state:'signed-out',label:'CLI signed out · sign in to this CLI'};
   const method=provider==='codex'?row.type:row.authMethod;
+  // Claude reports token/API/local-provider configuration without an email or account ID.
+  // In particular Ollama's placeholder AUTH_TOKEN appears as authMethod=oauth_token.
+  // This is native configuration evidence, not a successful model/API request.
+  if(provider==='claude'&&['api_key','api_key_helper','oauth_token','third_party'].includes(method))return {
+    state:'configured',label:'Claude API / token configured · model access not tested',
+    accountKey:digest([provider,method,row.apiProvider,configurationKey??claudeProviderEnvironment(env)])};
   const email=typeof row.email==='string'?row.email:undefined;
   const org=provider==='codex'?(row.workspaceId??row.organizationId):row.orgId;
   const identity=email||org||row.accountId;
   const key=provider==='codex'?env.OPENAI_API_KEY:(env.ANTHROPIC_AUTH_TOKEN??env.ANTHROPIC_API_KEY);
   if(!identity&&!key)return {state:'unknown',label:'CLI account could not be identified · review its sign-in'};
   return {state:'verified',label:key&&!identity?'Configured API credential · separate billing':`${maskedEmail(email)??'Verified account'} · ${method==='chatgpt'?'ChatGPT':provider==='claude'?'Claude CLI':'Codex CLI'}`,
-    accountKey:digest([provider,method,email,org,row.accountId,row.apiProvider,key?digest(key):null])};
+    accountKey:digest([provider,method,email,org,row.accountId,row.apiProvider,key?digest(key):null,...(provider==='claude'?[configurationKey]:[])])};
+}
+export async function probeClaudeAccount(binary:string,cwd:string,env:NodeJS.ProcessEnv=process.env,
+  dependencies:{execute?:typeof exec;fingerprint?:typeof claudeProviderFingerprint}={}):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
+  const directory=existsSync(cwd)?cwd:homedir();
+  const fingerprint=dependencies.fingerprint??claudeProviderFingerprint;
+  const before=await fingerprint(directory,env);
+  // JSON is the documented default; don't depend on an optional --json flag.
+  const command=nativeCommand(binary,['auth','status'],process.platform,env);
+  let stdout:string;
+  try {({stdout}=await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env,timeout:12000,maxBuffer:65536,windowsHide:true}));}
+  catch(e:any){if(e.code===1&&typeof e.stdout==='string'&&e.stdout.trim().startsWith('{'))stdout=e.stdout;else throw new Error('CLI status unavailable');}
+  const after=await fingerprint(directory,env);
+  if(before!==after)throw new Error('Claude provider configuration changed during its check. Retry.');
+  return accountStatus('claude',JSON.parse(stdout),env,after);
 }
 export async function probeAccount(provider:Provider,cwd:string):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
-  if(provider==='claude') {
-    const command=nativeCommand(claudeBin,['auth','status','--json']);
-    let stdout:string;
-    try {({stdout}=await exec(command.binary,command.args,{cwd:existsSync(cwd)?cwd:homedir(),timeout:5000,maxBuffer:65536,windowsHide:true}));}
-    catch(e:any){if(typeof e.stdout==='string'&&e.stdout.trim().startsWith('{'))stdout=e.stdout;else throw new Error('CLI status unavailable');}
-    return accountStatus(provider,JSON.parse(stdout));
-  }
+  if(provider==='claude')return probeClaudeAccount(claudeBin,cwd);
   const runtime=new CodexSession(codexBin,existsSync(cwd)?cwd:homedir(),async()=>{throw new Error('Account checks cannot approve operations.');});
   const timer=setTimeout(()=>runtime.close(),12000);
   try {
@@ -90,10 +107,10 @@ export class Connections {
   }
   async prepare(b:Pick<Binding,'provider'|'cwd'>,mode:ExecutionMode,managed:boolean,accountScope?:string,expectedRevision?:string) {
     const c=managed||expectedRevision?await this.read(b.provider,managed?'cli':mode,true,b.cwd):
-      {id:connectionProfile(b.provider,mode),state:'native',label:'Existing native session account',revision:'',accountKey:undefined};
+      {id:connectionProfile(b.provider,mode),state:'native' as const,label:'Existing native session account',revision:'',accountKey:undefined};
     // A preview made outside a project is not sufficient for project-specific CLI config.
     if(expectedRevision&&expectedRevision!==c.revision)throw new Error('Connection changed since selection. Review the account and select again.');
-    if(managed&&c.state!=='verified')throw new Error(c.label+'. Sign in or configure this CLI, then select it again.');
+    if(managed&&!usableCLIConnection(c))throw new Error(c.label+'. Sign in or configure this CLI, then select it again.');
     const route:SessionRoute={provider:b.provider,executionMode:mode,transport:managed?'managed-cli':'native-session',profileId:c.id,
       accountKey:managed?c.accountKey:undefined,accountScope,label:managed?c.label:`${b.provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'} · existing session account`};
     return route;
@@ -104,7 +121,7 @@ export class Connections {
       throw new Error('Session connection changed. Select its original platform/profile again; no fallback was used.');
     if(route.transport==='managed-cli') {
       const current=await this.read(b.provider,'cli',true,b.cwd);
-      if(current.state!=='verified'||current.accountKey!==route.accountKey)throw new Error('CLI account or provider changed. Review and reselect this session before sending more work. No other account was used.');
+      if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new Error('CLI account or provider changed. Review and reselect this session before sending more work. No other account was used.');
     }
   }
 }

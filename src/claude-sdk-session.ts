@@ -18,6 +18,9 @@ export class ClaudeSDKSession {
     const id=this.id;
     async function* input():AsyncGenerator<SDKUserMessage>{yield {type:'user',session_id:id,parent_tool_use_id:null,message:{role:'user',content:[{type:'text',text:prompt},...images]}};}
     const q=this.queryFactory({prompt:images.length?input():prompt,options:{cwd:this.cwd,pathToClaudeCodeExecutable:command.binary,
+      // Inherit the same provider/model environment used by connection discovery.
+      // Claude itself applies user/project/local settings; never invoke shell aliases.
+      env:{...process.env},
       ...(this.resume?{resume:this.id}:{sessionId:this.id}),forkSession:false,persistSession:true,
       permissionMode:'default',settingSources:['user','project','local'],mcpServers:this.mcpServers,
       // Native prompt snapshots otherwise ignore updated append text on resume.
