@@ -4,6 +4,7 @@ import { selectOption, previewOption, parseMessageOptions } from './message-opti
 import { MetaBrain } from './meta-brain.js';
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { TaskContracts } from './task-contracts.js';
+import { queueReportedProof } from './proof-report.js';
 import { queueOwnerReceipt } from './coordinator-experience.js';
 import { hash, Store, type Binding } from './store.js';
 import type { NativeAgents } from './native.js';
@@ -259,12 +260,17 @@ export class Router {
     const scheduleState=scheduleRootState(this,id);
     if(!job||!/^(wa|tg|local|master|schedule):/.test(id)||scheduleState==='invalid'||scheduleState==='hold'||id.startsWith('schedule:')&&scheduleState!=='ready'||job.binding_id!==master?.id||job.status==='replaced')throw new Error('An original request for the current master is required.');
     if(!['done','blocked','reviewed','cancelled'].includes(outcome))throw new Error('An explicit outcome is required.');
-    if(job.status==='completed'){if(job.outcome!==outcome)throw new Error('This request already has a different outcome.');return;}
+    if(job.status==='completed'){
+      if(job.outcome!==outcome)throw new Error('This request already has a different outcome.');
+      if(outcome==='done'&&master)try{queueReportedProof(this,master,id);}catch{}
+      return;
+    }
     const children=this.store.db.prepare(`SELECT i.id,i.binding_id FROM inbox i JOIN settings s ON s.key='parent:'||i.id WHERE s.value=?`).all(id) as {id:string;binding_id:string}[];
     const related=new Set([job.binding_id,...children.map(c=>c.binding_id)]);
     const pendingReports=this.store.db.prepare(`SELECT i.id FROM inbox i LEFT JOIN settings s ON s.key='report-parent:'||i.id LEFT JOIN settings legacy ON legacy.key='parent:'||substr(i.id,8) WHERE i.id LIKE 'report:%' AND COALESCE(s.value,legacy.value)=? AND i.status NOT IN ('completed','reviewed','auto_closed','replaced')`).all(id) as {id:string}[];
     if(this.hasPendingCreation?.(id)||this.unfinishedChildren(id)||pendingReports.some(r=>r.id!==acknowledgingReport)||[...this.approvals.pending.values()].some(p=>related.has(p.binding.id)))throw new Error('Finish or review delegated work, reports and pending approvals before resolving the owner request.');
     this.store.jobState(id,'completed',null,outcome);this.store.event(id,'owner_resolved',{outcome});
+    if(outcome==='done'&&master)try{queueReportedProof(this,master,id);}catch{}
     if(id.startsWith('master:')&&master)this.coordinator?.workerReply(master,`Delegated work resolved: ${outcome}.`,id,true,'final');
   }
   requestProtected(id:string,bindingId:string) {
@@ -476,6 +482,10 @@ export class Router {
     if(kind==='final')this.store.set(`explicit-final:${b.id}`,String(Date.now()));
     if(queued&&requestId)this.coordinator?.workerReply(b,text,requestId,false,kind as 'progress'|'final',!relayOnly);
     if(queued&&requestId&&kind==='final')this.coordinator?.itemReport(b,text,requestId);
+    if(!relayOnly&&requestId&&kind==='final'&&(context.outcome===undefined||context.outcome==='done')){
+      // Reporting is optional: it must never roll back a session's final reply.
+      try{queueReportedProof(this,b,requestId,queued?text:undefined);}catch{}
+    }
     this.store.db.exec('COMMIT');
     }catch(e){this.store.db.exec('ROLLBACK');throw e;}
     if(queued&&this.coordinator)this.pump();return {accepted:true,newlyQueued:queued};
