@@ -130,7 +130,12 @@ export class Router {
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
     this.morningBrief?.firstMessage(m);
-    const stuckReply=this.stuckCiWatch?.command(m)??this.stuckDetection?.dismiss(m);
+    let ciReply:string|undefined;
+    try{ciReply=this.stuckCiWatch?.command(m);}catch{
+      if(this.store.incomingOwnerCurrent()){this.store.output(undefined,'The CI watch could not be saved. Please try again.',`stuck-ci-error:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}
+      return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
+    }
+    const stuckReply=ciReply??this.stuckDetection?.dismiss(m);
     if(stuckReply!==undefined){this.store.output(undefined,stuckReply,`stuck-action:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);

@@ -61,6 +61,16 @@ test('a watch observes one failed check on the exact public head and revalidates
   }finally{f.close();}
 });
 
+test('the real router handles an owner CI watch command without dispatching a native task',async()=>{
+  const f=fixture();try{
+    const text=`/stuck ci #${f.item.id} https://github.com/example/project/pull/12`;
+    const result=await f.router.receive({id:'wa:real-command',text,ownerCommand:true,source:'text'});
+    assert.equal(result.status,'handled');assert.equal(f.store.job('wa:real-command'),undefined);
+    assert.match((f.store.db.prepare("SELECT body FROM outbox WHERE source='stuck-action:wa:real-command:0'").get() as {body:string}).body,/Watching the public PR/);
+    assert.equal(f.calls.length,0);await f.watch.tick();assert.equal(f.out().length,1);
+  }finally{f.close();}
+});
+
 test('private PRs, changed heads, successful checks and revoked owner authority fail closed',async()=>{
   for(const mode of ['private','head','success','owner-returned','item','pause','policy','removed'] as const){
     const f=fixture();try{
