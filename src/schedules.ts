@@ -314,7 +314,7 @@ export function scheduleOwnerValid(store:Store,kind:'job'|'outbox',id:string) {
   return !row||validScheduleOwner(store,row.owner,row.destination,row.channel);
 }
 /** Channel changes hold work; pairing/session changes invalidate it rather than reroute it. */
-export function scheduleJobState(router:Router,id:string):'ready'|'hold'|'invalid' {
+export function scheduleJobState(router:Router,id:string,inactive=false):'ready'|'hold'|'invalid' {
   const row=router.store.db.prepare(`SELECT j.owner,j.destination,j.channel,j.binding_id,j.binding_identity,j.occurrence_id,j.body_hash FROM schedule_jobs j
     JOIN schedule_occurrences o ON o.id=j.occurrence_id AND o.owner=j.owner AND o.destination=j.destination AND o.channel=j.channel
     JOIN schedules s ON s.id=o.schedule_id AND s.owner=j.owner AND s.destination=j.destination AND s.channel=j.channel WHERE j.job_id=?`).get(id) as (Pick<Row,'owner'|'destination'|'channel'|'binding_id'|'binding_identity'>&{occurrence_id:string;body_hash:string})|undefined;
@@ -327,18 +327,17 @@ export function scheduleJobState(router:Router,id:string):'ready'|'hold'|'invali
   }
   const job=router.store.job(id);
   if(!validScheduleOwner(router.store,row.owner,row.destination,row.channel)||!sessionAvailable(router,row)||!job||job.binding_id!==row.binding_id||job.destination!==row.destination||hash(job.body)!==row.body_hash)return 'invalid';
-  if(router.store.controlChannel()!==row.channel)return 'hold';
   const schedule=router.store.db.prepare('SELECT s.* FROM schedule_occurrences o JOIN schedules s ON s.id=o.schedule_id WHERE o.id=?').get(row.occurrence_id) as Row|undefined;
-  if(!schedule||!router.contracts.scheduleAllowed(router,schedule,false))return 'invalid';
-  if(row.occurrence_id!==id){const root=scheduleJobState(router,row.occurrence_id);if(root!=='ready')return root;if(!['queued','dispatched','submitted'].includes(router.store.job(row.occurrence_id)?.status??''))return 'invalid';}
-  return 'ready';
+  if(!schedule||!router.contracts.scheduleAllowed(router,schedule,false,true))return 'invalid';
+  if(row.occurrence_id!==id){const root=scheduleJobState(router,row.occurrence_id,inactive);if(root!=='ready')return root;if(!['queued','dispatched','submitted'].includes(router.store.job(row.occurrence_id)?.status??''))return 'invalid';}
+  return !inactive&&router.store.controlChannel()!==row.channel?'hold':'ready';
 }
 /** Follow coordinator delegation to its root; scheduled roots require a live owner-bound occurrence. */
-export function scheduleRootState(router:Router,id:string):'not-schedule'|'ready'|'hold'|'invalid' {
+export function scheduleRootState(router:Router,id:string,inactive=false):'not-schedule'|'ready'|'hold'|'invalid' {
   let root=id;const seen=new Set<string>();
   while(root.startsWith('master:')){if(seen.has(root)||seen.size>=4)return 'invalid';seen.add(root);const parent=router.store.get(`parent:${root}`);if(!parent)return 'invalid';root=parent;}
-  if(root.startsWith('schedule:')&&root!==id){if(!['queued','dispatched','submitted'].includes(router.store.job(root)?.status??''))return 'invalid';const child=router.store.db.prepare('SELECT 1 FROM schedule_jobs WHERE job_id=? AND occurrence_id=?').get(id,root);if(!child)return 'invalid';return scheduleJobState(router,id);}
-  return root.startsWith('schedule:')?scheduleJobState(router,root):'not-schedule';
+  if(root.startsWith('schedule:')&&root!==id){if(!['queued','dispatched','submitted'].includes(router.store.job(root)?.status??''))return 'invalid';const child=router.store.db.prepare('SELECT 1 FROM schedule_jobs WHERE job_id=? AND occurrence_id=?').get(id,root);if(!child)return 'invalid';return scheduleJobState(router,id,inactive);}
+  return root.startsWith('schedule:')?scheduleJobState(router,root,inactive):'not-schedule';
 }
 /** True for guarded schedule roots, descendants and their internal reports. */
 export function hasScheduleGuard(router:Router,id:string) {
@@ -364,10 +363,10 @@ export function failScheduledBeforeSubmission(router:Router,id:string,reason:str
   }catch(e){router.store.db.exec('ROLLBACK TO reject_schedule_dispatch; RELEASE reject_schedule_dispatch');throw e;}
 }
 /** Carry the immutable owner/occurrence and exact target fingerprint through delegation. */
-export function bindScheduledChild(router:Router,parentId:string,id:string,target:Binding,body:string) {
+export function bindScheduledChild(router:Router,parentId:string,id:string,target:Binding,body:string,inactive=false) {
   const parent=router.store.db.prepare('SELECT occurrence_id,owner,destination,channel FROM schedule_jobs WHERE job_id=?').get(parentId) as {occurrence_id:string;owner:string;destination:string;channel:string}|undefined;
   if(!parent){if(scheduleRootState(router,parentId)!=='not-schedule')throw new Error('Scheduled request ownership is unavailable.');return;}
-  if(scheduleJobState(router,parentId)!=='ready')throw new Error('The scheduled request owner or session changed.');
+  if(scheduleJobState(router,parentId,inactive)!=='ready')throw new Error('The scheduled request owner or session changed.');
   const identity=bindingFingerprint(router,target),bodyHash=hash(body),existing=router.store.db.prepare('SELECT binding_id,binding_identity,occurrence_id,body_hash FROM schedule_jobs WHERE job_id=?').get(id) as {binding_id:string;binding_identity:string;occurrence_id:string;body_hash:string}|undefined;
   if(existing&&(existing.binding_id!==target.id||existing.binding_identity!==identity||existing.occurrence_id!==parent.occurrence_id||existing.body_hash!==bodyHash))throw new Error('Scheduled delegation identity changed.');
   router.store.db.prepare('INSERT OR IGNORE INTO schedule_jobs(job_id,occurrence_id,owner,destination,channel,binding_id,binding_identity,body_hash) VALUES(?,?,?,?,?,?,?,?)').run(id,parent.occurrence_id,parent.owner,parent.destination,parent.channel,target.id,identity,bodyHash);

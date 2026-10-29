@@ -115,9 +115,11 @@ test('agent-authored message choices cannot bypass task-contract review',async()
     const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='legacy-offer:0'").get() as any;f.store.sent(offer.id);
     const callback=optionsMarkup(f.store,offer.id)!.inline_keyboard[0][0].callback_data;
     const result=await f.r.receive({id:'wa:choice',text:token?'Selected message option':'1',quotedId:offer.wa_id,optionToken:token?callback:undefined,ownerIntent:true,ownerChoice:true});
-    assert.equal(result.status,'blocked');assert.equal(f.store.job('wa:choice'),undefined);
+    assert.equal(result.status,'handled');assert.equal(f.store.job('wa:choice'),undefined);
     assert.equal(f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id)?.selected_id,null);
-    assert.match(f.out().at(-1).body,/reviewed|nothing was sent/i);
+    assert.match(f.out().at(-1).body,/review this task/i);f.markSent();
+    assert.equal((await f.send('approve-choice','ok')).status,'queued');assert.match(f.store.job('wa:approve-choice')!.body,/Deploy now/);
+    assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id) as any)?.selected_id,'go');
   }finally{f.close();}}
 });
 
@@ -259,4 +261,229 @@ test('contracted report rechecks its source after native readiness and never sen
     await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
     assert.equal(sent,0);assert.equal(f.store.job(reportId)?.status,'failed');assert.match(f.store.job(reportId)?.error??'',/not sent|nothing was sent/i);
   }finally{f.r.stopped=true;f.close();}
+});
+
+
+test('contracted worker final survives a channel switch and stays guarded until the original channel returns',async()=>{
+  const f=fixture();try{
+    const c=new Coordinator(f.store,f.r.native,f.r,()=>{});f.r.coordinator=c;c.registry.register(f.binding);f.store.set('master',f.binding.id);
+    f.r.brain.handle=async()=>false;
+    const worker=f.store.register('worker','codex',randomUUID(),'/tmp/worker').binding;f.store.set('selected',JSON.stringify([worker.id]));
+    await f.send('request','Add the dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');
+    const parent=f.store.job('wa:approved')!;const [childId]=c.dispatch(parent.id,[worker.id],'Inspect the requested theme.','switch-fixture');
+    f.store.jobState(parent.id,'submitted');f.store.jobState(childId,'submitted');f.store.set('telegram-owner','tg:123');f.store.set('control-channel','telegram');
+    assert.equal(f.r.channelReply(worker,'Inspection finished.','final',childId).accepted,true);
+    assert.equal(f.store.job(childId)?.status,'completed');
+    const report=f.store.job(`report:${childId}`)!;assert.equal(report.status,'queued');
+    const result=f.out().find(o=>o.request_id===childId&&o.reply_kind==='final');assert.ok(result);
+    assert.equal(contractDeliveryState(f.r,result.id),'hold');
+    f.store.set('whatsapp-owner','other@s.whatsapp.net');assert.equal(contractDeliveryState(f.r,result.id),'invalid');assert.throws(()=>f.r.assertDispatchAllowed(report.id,f.binding),/changed|not sent/i);f.store.set('whatsapp-owner','owner@s.whatsapp.net');
+    assert.throws(()=>f.r.assertDispatchAllowed(report.id,f.binding),/held/i);
+    f.store.set('control-channel','whatsapp');
+    assert.equal(contractDeliveryState(f.r,result.id),'ready');assert.equal(f.r.assertDispatchAllowed(report.id,f.binding),true);
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);
+    assert.equal(contractDeliveryState(f.r,result.id),'invalid');assert.throws(()=>f.r.assertDispatchAllowed(report.id,f.binding),/changed|not sent/i);
+  }finally{f.close();}
+});
+
+
+test('a clear agent choice is classified and queued once with contracts enabled',async()=>{
+ const f=fixture(pass);try{
+  const owner='owner@s.whatsapp.net';f.store.enqueue('wa:legacy',f.binding,'Original task',owner);
+  f.store.output(f.binding,'Choose next','choice-clear',owner,{requestId:'wa:legacy',kind:'progress',origin:'agent',options:{choices:[{id:'yes',label:'Show status'},{id:'no',label:'Skip'}],expiresInSeconds:60}});
+  const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='choice-clear:0'").get() as any;f.store.sent(offer.id);let classifications=0;f.setDecision(async()=>{classifications++;return pass;});
+  const input={id:'wa:choice',text:'1',quotedId:offer.wa_id,ownerIntent:true,ownerChoice:true};
+  assert.equal((await f.r.receive(input)).status,'queued');assert.equal(classifications,1);assert.match(f.store.job(input.id)!.body,/Show status/);
+  await f.r.receive(input);assert.equal(classifications,1);assert.equal(f.store.jobs().length,2);
+ }finally{f.close();}
+});
+
+test('a reviewed choice cannot be submitted if it expires or changes before approval',async()=>{
+ for(const change of ['expired','choice','binding','owner']){const f=fixture();try{
+  const owner='owner@s.whatsapp.net';f.store.enqueue('wa:legacy',f.binding,'Original task',owner);
+  f.store.output(f.binding,'Choose next','choice-revalidate',owner,{requestId:'wa:legacy',kind:'progress',origin:'agent',options:{choices:[{id:'go',label:'Redesign it'},{id:'no',label:'Skip'}],expiresInSeconds:60}});
+  const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='choice-revalidate:0'").get() as any;f.store.sent(offer.id);
+  assert.equal((await f.r.receive({id:'wa:choice',text:'1',quotedId:offer.wa_id,ownerIntent:true,ownerChoice:true})).status,'handled');f.markSent();
+  if(change==='expired')f.store.db.prepare('UPDATE message_options SET expires_at=0 WHERE outbox_id=?').run(offer.id);
+  if(change==='choice')f.store.db.prepare('UPDATE message_options SET choices=? WHERE outbox_id=?').run(JSON.stringify([{id:'go',label:'Publish it'},{id:'no',label:'Skip'}]),offer.id);
+  if(change==='binding')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+  if(change==='owner')f.store.set('whatsapp-owner','other@s.whatsapp.net');
+  await f.send('approve-choice','ok');assert.equal(f.store.job('wa:approve-choice'),undefined,change);
+  assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id) as any)?.selected_id,null,change);
+ }finally{f.close();}}
+});
+
+test('an approved choice resumes after interruption without claiming or submitting twice',async()=>{
+ const f=fixture();try{
+  const owner='owner@s.whatsapp.net';f.store.enqueue('wa:legacy',f.binding,'Original task',owner);
+  f.store.output(f.binding,'Choose next','choice-crash',owner,{requestId:'wa:legacy',kind:'progress',origin:'agent',options:{choices:[{id:'go',label:'Redesign it'},{id:'no',label:'Skip'}],expiresInSeconds:60}});
+  const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='choice-crash:0'").get() as any;f.store.sent(offer.id);
+  await f.r.receive({id:'wa:choice',text:'1',quotedId:offer.wa_id,ownerIntent:true,ownerChoice:true});f.markSent();
+  const approved={id:'wa:approve-choice',text:'ok',source:'text' as const,ownerIntent:true,ownerCommand:true};
+  assert.equal((await f.r.contracts.preflight(f.r,approved)).kind,'replay');assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id) as any)?.selected_id,null);
+  assert.equal((await f.r.receive(approved)).status,'queued');await f.r.receive(approved);
+  assert.equal(f.store.jobs().filter(j=>j.id===approved.id).length,1);assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id) as any)?.selected_id,'go');
+ }finally{f.close();}
+});
+
+
+test('clear choices continuing a contracted task retain its owner-approved scope',async()=>{
+ const f=fixture();try{
+  const owner='owner@s.whatsapp.net';await f.send('request','Add dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');
+  f.store.output(f.binding,'Choose next','guarded-clear',owner,{requestId:'wa:approved',kind:'progress',origin:'agent',options:{choices:[{id:'yes',label:'Show status'},{id:'no',label:'Skip'}],expiresInSeconds:60}});
+  const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='guarded-clear:0'").get() as any;f.store.sent(offer.id);f.setDecision(async()=>pass);
+  assert.equal((await f.r.receive({id:'wa:choice',text:'1',quotedId:offer.wa_id,ownerIntent:true,ownerChoice:true})).status,'queued');
+  const job=f.store.job('wa:choice')!;assert.match(job.body,/Do NOT publish/);assert.match(job.body,/Owner-approved task contract/);assert.equal(f.r.assertDispatchAllowed(job.id,f.binding),true);
+  f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+  assert.throws(()=>f.r.assertDispatchAllowed(job.id,f.store.binding(f.binding.id)!),/changed|not sent/i);
+ }finally{f.close();}
+});
+
+
+test('a Telegram callback can be reviewed and then approved by its paired owner',async()=>{
+ const f=fixture();try{
+  const owner='tg:123:777';f.store.set('telegram-owner',owner);f.store.set('control-channel','telegram');
+  f.store.enqueue('tg:123:777:1',f.binding,'Original task',owner);
+  f.store.output(f.binding,'Choose next','telegram-choice',owner,{requestId:'tg:123:777:1',kind:'progress',origin:'agent',options:{choices:[{id:'go',label:'Redesign it'},{id:'no',label:'Skip'}],expiresInSeconds:60}});
+  const offer=f.store.db.prepare("SELECT * FROM outbox WHERE source='telegram-choice:0'").get() as any;f.store.sent(offer.id);const token=optionsMarkup(f.store,offer.id)!.inline_keyboard[0][0].callback_data;
+  const callback={id:'tg-choice:123:callback',text:'Selected message option',quotedId:offer.wa_id,optionToken:token};
+  assert.equal((await f.r.receive(callback)).status,'handled');assert.equal((f.store.db.prepare('SELECT selected_id FROM message_options WHERE outbox_id=?').get(offer.id) as any)?.selected_id,null);f.markSent();
+  assert.equal((await f.r.receive({id:'tg:123:777:2',text:'ok',source:'text',ownerIntent:true,ownerCommand:true})).status,'queued');
+  assert.match(f.store.job('tg:123:777:2')!.body,/Redesign it/);
+ }finally{f.close();}
+});
+
+
+async function completedFinalChoice(f:ReturnType<typeof fixture>,token:boolean){
+ await f.send('request','Add dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');
+ const parent=f.store.job('wa:approved')!;f.store.jobState(parent.id,'submitted');
+ const result=f.r.channelReply(f.binding,'Choose a finish.','final',parent.id,undefined,{options:{choices:[{id:'red',label:'Red'},{id:'blue',label:'Blue'}],expiresInSeconds:60}});assert.equal(result.accepted,true);assert.equal(f.store.job(parent.id)?.status,'completed');
+ const out=f.out().find(o=>o.request_id===parent.id&&o.reply_kind==='final');assert.ok(out);f.store.sent(out.id);
+ const callback=optionsMarkup(f.store,out.id)!.inline_keyboard[0][0].callback_data;f.setDecision(async()=>pass);
+ const pick={id:'wa:final-choice',text:token?'Selected message option':'1',quotedId:out.wa_id,optionToken:token?callback:undefined,ownerCommand:false,ownerChoice:true};
+ assert.equal((await f.r.receive(pick)).status,'queued');return {parent,out,pick};
+}
+
+test('completed contract final choices work for quoted and button replies without reopening the parent',async()=>{
+ for(const token of [false,true]){const f=fixture();try{
+  const {parent,pick}=await completedFinalChoice(f,token);assert.equal(f.store.job(parent.id)?.status,'completed');assert.equal(f.r.assertDispatchAllowed(pick.id,f.binding),true);
+  const job=f.store.job(pick.id)!;assert.match(job.body,/Red/);assert.match(job.body,/Do NOT publish/);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM task_contract_option_proofs WHERE job_id=?').get(pick.id)?.n,1);
+ }finally{f.close();}}
+});
+
+test('completed final choice revalidates claim, expiry, account, session and contract before dispatch',async()=>{
+ for(const change of ['expired','expired-now','parent-replaced','parent-cancelled','parent-reviewed','parent-auto_closed','binding','owner','key','policy','choices','claim','reply','source','contract']){const f=fixture();try{
+  const {parent,out,pick}=await completedFinalChoice(f,false);
+  if(change==='expired')f.store.db.prepare('UPDATE message_options SET expires_at=0 WHERE outbox_id=?').run(out.id);
+  if(change==='expired-now')(f.r.contracts as any).now=()=>Date.now()+120_000;
+  if(change.startsWith('parent-'))f.store.jobState(parent.id,change.slice(7));
+  if(change==='binding')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+  if(change==='owner')f.store.set('whatsapp-owner','other@s.whatsapp.net');
+  if(change==='key')f.secret.remove();
+  if(change==='policy')saveBrainConfig(f.store,f.secret,{policy:{...brainPolicy(f.store),allowRouting:false}});
+  if(change==='choices')f.store.db.prepare('UPDATE message_options SET choices=? WHERE outbox_id=?').run('[]',out.id);
+  if(change==='claim')f.store.db.prepare("UPDATE message_options SET response_id='other' WHERE outbox_id=?").run(out.id);
+  if(change==='reply')f.store.db.prepare("UPDATE outbox SET body='changed' WHERE id=?").run(out.id);
+  if(change==='source')f.store.db.prepare('DELETE FROM task_contract_option_proofs WHERE job_id=?').run(pick.id);
+  if(change==='contract')f.store.db.prepare("UPDATE task_contracts SET state='cancelled'").run();
+  assert.throws(()=>f.r.assertDispatchAllowed(pick.id,f.store.binding(f.binding.id)!),/changed|not sent|unavailable/i,change);
+ }finally{f.close();}}
+});
+
+test('submitted choice can finish after its option expires without replaying the original task',async()=>{
+ const f=fixture();try{
+  const {pick}=await completedFinalChoice(f,false);f.store.jobState(pick.id,'submitted');
+  (f.r.contracts as any).now=()=>Date.now()+120_000;
+  assert.equal(f.r.assertDispatchAllowed(pick.id,f.binding),true);
+ }finally{f.close();}
+});
+
+
+test('completed final option accepts an authenticated Telegram callback',async()=>{
+ const f=fixture();try{
+  const owner='tg:123:777';f.store.set('telegram-owner',owner);f.store.set('control-channel','telegram');
+  const send=(id:string,text:string)=>f.r.receive({id:`${owner}:${id}`,text,source:'text',ownerIntent:true,ownerCommand:true});
+  await send('1','Add dark theme. Do NOT publish.');f.markSent();await send('2','ok');
+  const parent=f.store.job(`${owner}:2`)!;f.store.jobState(parent.id,'submitted');
+  f.r.channelReply(f.binding,'Choose a finish.','final',parent.id,undefined,{options:{choices:[{id:'red',label:'Red'},{id:'blue',label:'Blue'}],expiresInSeconds:60}});
+  const out=f.out().find(o=>o.request_id===parent.id&&o.reply_kind==='final');f.store.sent(out.id);
+  const token=optionsMarkup(f.store,out.id)!.inline_keyboard[0][0].callback_data;f.setDecision(async()=>pass);
+  const id='tg-choice:123:callback';assert.equal((await f.r.receive({id,text:'Selected message option',quotedId:out.wa_id,optionToken:token})).status,'queued');
+  assert.equal(f.r.assertDispatchAllowed(id,f.binding),true);assert.equal(f.store.job(parent.id)?.status,'completed');
+ }finally{f.close();}
+});
+
+
+test('reviewed final choice remains tied to the original approved task after queuing',async()=>{
+ for(const change of ['none','revoked','parent-cancelled','proof-missing']){const f=fixture();try{
+  await f.send('request','Add dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');const parent=f.store.job('wa:approved')!;f.store.jobState(parent.id,'submitted');
+  f.r.channelReply(f.binding,'Choose a finish.','final',parent.id,undefined,{options:{choices:[{id:'red',label:'Redesign it'},{id:'blue',label:'Skip'}],expiresInSeconds:60}});
+  const out=f.out().find(o=>o.request_id===parent.id&&o.reply_kind==='final');f.store.sent(out.id);
+  assert.equal((await f.r.receive({id:'wa:pick',text:'1',quotedId:out.wa_id,ownerCommand:false,ownerChoice:true})).status,'handled');f.markSent();
+  assert.equal((await f.send('approve-pick','ok')).status,'queued');const id='wa:approve-pick';assert.equal(f.r.assertDispatchAllowed(id,f.binding),true);
+  if(change==='revoked')f.store.db.prepare("UPDATE task_contracts SET state='cancelled' WHERE dispatch_id=?").run(parent.id);
+  if(change==='parent-cancelled')f.store.jobState(parent.id,'cancelled');
+  if(change==='proof-missing')f.store.db.prepare('DELETE FROM task_contract_option_proofs WHERE job_id=?').run(id);
+  if(change!=='none')assert.throws(()=>f.r.assertDispatchAllowed(id,f.binding),/changed|not sent|unavailable/i,change);
+ }finally{f.close();}}
+});
+
+
+async function legacyProgressChoice(f:ReturnType<typeof fixture>,review:boolean){
+ const owner='owner@s.whatsapp.net',parent='wa:legacy-progress';f.store.enqueue(parent,f.binding,'Original task',owner);f.store.jobState(parent,'submitted');
+ f.r.channelReply(f.binding,'Choose a finish.','progress',parent,undefined,{options:{choices:[{id:'red',label:'Redesign it'},{id:'blue',label:'Skip'}],expiresInSeconds:60}});
+ const out=f.out().find(o=>o.request_id===parent&&o.reply_kind==='progress');f.store.sent(out.id);if(!review)f.setDecision(async()=>pass);
+ const pick={id:'wa:legacy-pick',text:'1',quotedId:out.wa_id,ownerCommand:false,ownerChoice:true};
+ assert.equal((await f.r.receive(pick)).status,review?'handled':'queued');
+ if(review){f.markSent();assert.equal((await f.send('legacy-approve','ok')).status,'queued');}
+ return {parent,out,id:review?'wa:legacy-approve':pick.id};
+}
+
+test('legacy progress choices retain exact original request and option until dispatch',async()=>{
+ for(const review of [false,true])for(const change of ['none','expired','replaced','cancelled','reviewed','auto_closed','owner','binding','choice','claim','parent-body','output','proof-missing']){const f=fixture();try{
+  const {parent,out,id}=await legacyProgressChoice(f,review);assert.equal(f.r.assertDispatchAllowed(id,f.binding),true);
+  if(change==='expired')(f.r.contracts as any).now=()=>Date.now()+120_000;
+  if(['replaced','cancelled','reviewed','auto_closed'].includes(change))f.store.jobState(parent,change);
+  if(change==='owner')f.store.set('whatsapp-owner','other@s.whatsapp.net');
+  if(change==='binding')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+  if(change==='choice')f.store.db.prepare("UPDATE message_options SET choices='[]' WHERE outbox_id=?").run(out.id);
+  if(change==='claim')f.store.db.prepare("UPDATE message_options SET response_id='other' WHERE outbox_id=?").run(out.id);
+  if(change==='parent-body')f.store.db.prepare("UPDATE inbox SET body='changed' WHERE id=?").run(parent);
+  if(change==='output')f.store.db.prepare("UPDATE outbox SET body='changed' WHERE id=?").run(out.id);
+  if(change==='proof-missing')f.store.db.prepare('DELETE FROM task_contract_option_proofs WHERE job_id=?').run(id);
+  if(change!=='none')assert.throws(()=>f.r.assertDispatchAllowed(id,f.store.binding(f.binding.id)!),/changed|not sent|unavailable/i,`${review}:${change}`);
+ }finally{f.close();}}
+});
+
+test('an unrelated quoted reply is not swallowed by an expired contract',async()=>{
+ for(const text of ['Continue the existing work','ok']){const f=fixture();try{
+  const owner='owner@s.whatsapp.net';f.store.enqueue('wa:legacy',f.binding,'Original task',owner);f.store.jobState('wa:legacy','submitted');
+  f.r.channelReply(f.binding,'Existing work.','progress','wa:legacy');const out=f.out().find(o=>o.request_id==='wa:legacy');f.store.sent(out.id);
+  await f.send('contract','Build the dark theme');f.markSent();f.store.db.prepare('UPDATE task_contracts SET expires_at=0').run();f.setDecision(async()=>pass);
+  const result=await f.r.receive({id:'wa:unrelated',text,quotedId:out.wa_id,ownerIntent:true,ownerChoice:true});
+  assert.equal(result.status,'queued',text);assert.equal(f.store.job('wa:unrelated')?.body,text);
+ }finally{f.close();}}
+});
+
+
+test('native handoff re-reads the bound session after readiness for roots, choices, children and reports',async()=>{
+ for(const path of ['root','choice','child','report-target']){const f=fixture();try{
+  let id:string,target=f.binding;
+  if(path==='choice'){const choice=await legacyProgressChoice(f,false);id=choice.id;}
+  else if(path==='report-target'){const report=await contractedReport(f);id=report.reportId;}
+  else if(path==='child'){
+   const c=new Coordinator(f.store,f.r.native,f.r,()=>{});f.r.coordinator=c;c.registry.register(f.binding);f.store.set('master',f.binding.id);f.r.brain.handle=async()=>false;
+   const worker=f.store.register('worker','codex',randomUUID(),'/tmp/worker').binding;f.store.set('selected',JSON.stringify([worker.id]));
+   await f.send('request','Add the dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');
+   const parent=f.store.job('wa:approved')!;[id]=c.dispatch(parent.id,[worker.id],'Inspect the requested theme.','delayed-child');f.store.jobState(parent.id,'submitted');target=worker;
+  }else{await f.send('request','Add the dark theme. Do NOT publish.');f.markSent();await f.send('approved','ok');id='wa:approved';}
+  let start!:()=>void,release!:()=>void;const started=new Promise<void>(resolve=>start=resolve),waiting=new Promise<void>(resolve=>release=resolve);let sent=0;
+  const native:any={store:f.store,connections:{assert:async()=>{start();await waiting;},route:()=>({transport:'managed-cli',executionMode:'cli'})},run:NativeAgents.prototype.run,managedRun:async()=>{sent++;}};
+  native.beforeDispatch=(binding:any,jobId:string)=>f.r.assertDispatchAllowed(jobId,binding);f.r.native=native;f.r.brain.tick=()=>{};
+  Router.prototype.pump.call(f.r);await started;
+  f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),target.id);release();
+  await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(sent,0,path);assert.equal(f.store.job(id)?.status,'failed',path);
+ }finally{f.r.stopped=true;f.close();}}
 });

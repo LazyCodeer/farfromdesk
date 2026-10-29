@@ -1,6 +1,6 @@
 import { DesktopReadinessError } from './session-activation.js';
 import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel } from './owner-commands.js';
-import { selectOption, parseMessageOptions } from './message-options.js';
+import { selectOption, previewOption, parseMessageOptions } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { TaskContracts } from './task-contracts.js';
@@ -115,14 +115,24 @@ export class Router {
       ownerReply=true;const targetReply=pickOwnerTarget(this,m);ownerReply=false;
       if(targetReply!==undefined){this.store.output(undefined,targetReply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
-        const origin=this.store.db.prepare('SELECT o.request_id FROM message_options o JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,this.store.destination()??'') as {request_id:string}|undefined;
-        const selected=selectOption(this.store,{responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)},(bindingId,body)=>{
-          // A choice label is agent-authored and cannot prove that the owner approved
-          // its side effects. Ask for an ordinary message that can be reviewed.
-          if(this.contracts.enabled()||origin&&this.contracts.hasGuard(origin.request_id))throw new Error('Send your answer as a new message so it can be reviewed. Nothing was sent.');
-          this.queue(m.id,this.need(bindingId),body);
-        });
-        if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
+        const input={responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)};
+        const preview=previewOption(this.store,input);
+        if(preview){
+          const guarded=this.contracts.hasGuard(preview.row.request_id);
+          const reviewBody=guarded?this.contracts.choiceReview(this,preview.row.request_id,preview.body):preview.body;
+          if(preview.row.selected_id){if(contractApproved)throw new Error('These choices were already answered. Nothing was sent.');selectOption(this.store,input,()=>{throw new Error('Choice was already answered.');});return {status:'handled',requestId:m.id};}
+          if(!contractApproved&&(this.contracts.enabled()||guarded)){
+            // Token callbacks and polls have already been authenticated by their channel adapter.
+            // Typed choices must be direct owner replies, never forwarded data.
+            if(!m.optionToken&&(!authenticatedOwner(this,m)||m.ownerChoice!==true))throw new Error('Choose with your own direct reply. Nothing was sent.');
+            if(!this.contracts.enabled())throw new Error('Send your answer as a new message so it can be reviewed. Nothing was sent.');
+            const contract=await this.contracts.preflight(this,m,reviewBody,undefined,undefined,true,true);
+            if(contract.kind==='handled')return {status:'handled',requestId:m.id};
+            if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);
+          }
+          const selected=selectOption(this.store,input,(bindingId,body)=>{if(bindingId!==preview.row.binding_id||body!==preview.body)throw new Error('These choices changed. Nothing was sent.');const b=this.need(bindingId);if(guarded&&!contractApproved){const item=this.store.itemOf(preview.row.request_id);const guardedBody=this.contracts.bindChild(this,preview.row.request_id,m.id,b,body,item);this.store.enqueue(m.id,b,guardedBody);}else this.queue(m.id,b,contractApproved?reviewBody:body);this.contracts.bindChoice(this,preview.row.request_id,m.id,preview.row.id);});
+          if(selected){this.pump();return {status:this.store.job(m.id)?'queued':'handled',requestId:m.id};}
+        }
       }
       const answer=this.approvals.naturalReply(text,m.quotedId,m.source??'text');
       if(answer){this.store.output(answer.binding,answer.message,`decision:${m.id}`);this.store.remember(m.id);return {status:'handled',requestId:m.id};}
@@ -352,22 +362,26 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id);
-    if(!scheduled&&!guard&&!contract)return false;
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id);
+    if(!scheduled&&!guard&&!contract&&!choice)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
     if(scheduled){
       const state=job.binding_id===b.id?scheduleJobState(this,id):'invalid';
       if(state==='hold')throw new ScheduledChannelHold('Scheduled request held until its original channel is active.');
       if(state==='invalid'){const reason='The scheduled request was not sent because its owner or session changed.';this.failBeforeSubmission(id,reason);throw new DispatchNotSubmittedError(reason);}
     }
-    if(contract){try{this.contracts.assertDispatch(this,id,b,job.body);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}}
+    if(choice){try{this.contracts.assertOption(this,id,b,true);}catch{throw new DispatchNotSubmittedError('The original choice or session changed. Nothing was sent.');}if(this.contracts.optionChannel(id)!==this.store.controlChannel())throw new ScheduledChannelHold('Choice held until its original channel is active.');}
+    if(contract){const approved=this.contracts.approved(id);if(approved&&this.store.controlChannel()!==approved.channel){try{this.contracts.assertDispatch(this,id,b,job.body,new Set(),true);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}throw new ScheduledChannelHold('Task held until its original channel is active.');}try{this.contracts.assertDispatch(this,id,b,job.body);}catch{throw new DispatchNotSubmittedError('The approved task or session changed. Nothing was sent.');}}
     if(guard&&!briefDispatchValid(this,job,b)){this.rejectBriefDispatch(job);throw new BriefDispatchError();}
     return true;
   }
-  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);this.contracts.rejectDispatch(id,reason);}
+  failBeforeSubmission(id:string,reason:string){this.rejectBriefDispatch(this.store.job(id),reason);failScheduledBeforeSubmission(this,id,reason);this.contracts.rejectDispatch(id,reason);const j=this.store.job(id);if(j&&this.contracts.hasOptionGuard(id)&&['queued','dispatched'].includes(j.status))this.store.jobState(id,'failed',reason);}
   private routableJob(b:Binding) {
     for(;;){
-      const job=this.store.routableQueued(b.id,this.store.controlChannel());if(!job)return;
+      const channel=this.store.controlChannel();
+      const job=this.store.db.prepare(`SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id
+        LEFT JOIN task_contract_jobs cj ON cj.job_id=i.id LEFT JOIN task_contracts c ON c.id=cj.contract_id OR c.dispatch_id=i.id LEFT JOIN task_contract_option_proofs p ON p.job_id=i.id
+        WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) AND (c.id IS NULL OR c.channel=?) AND (p.job_id IS NULL OR p.channel=?) ORDER BY i.created_at,i.rowid LIMIT 1`).get(b.id,channel,channel,channel) as import('./store.js').Job|undefined;if(!job)return;
       const state=scheduleJobState(this,job.id);
       if(state==='hold')return;
       if(state==='invalid'){this.failBeforeSubmission(job.id,'The paired owner or session changed; scheduled request was not sent.');if(this.store.job(job.id)?.status==='queued')this.store.jobState(job.id,'failed','Request ownership is unavailable; nothing was sent.');continue;}

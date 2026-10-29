@@ -10,7 +10,7 @@ import {Router} from '../src/router.js';
 import {Approvals} from '../src/approvals.js';
 import {Coordinator} from '../src/coordinator.js';
 import {DEFAULT_BRAIN,MetaSecret} from '../src/meta-brain-config.js';
-import {TaskContracts} from '../src/task-contracts.js';
+import {contractDeliveryState,TaskContracts} from '../src/task-contracts.js';
 import {Schedules,scheduleJobState} from '../src/schedules.js';
 
 function fixture(repeat:'once'|'daily'='once') {
@@ -144,5 +144,25 @@ test('delegated scheduled work carries the approved contract and rechecks both s
     f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
     assert.throws(()=>f.router.assertDispatchAllowed(child.id,worker),/not sent|changed/i);
     assert.throws(()=>f.router.assertDispatchAllowed(report.id,f.store.binding(f.binding.id)!),/not sent|changed/i);
+  }finally{f.close();}
+});
+
+
+test('scheduled contracted worker final and report survive a channel switch',async()=>{
+  const f=fixture();try{
+    const c=f.router.coordinator!;c.registry.register(f.binding);f.store.set('master',f.binding.id);
+    const worker=f.store.register('worker','codex',randomUUID(),'/tmp/worker').binding;f.store.set('selected',JSON.stringify([worker.id]));
+    await f.send('one','At 6 PM ask site to check PR 20');f.markSent();await f.send('approve','ok');
+    f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.router.schedules.tick(f.router);const root=f.store.jobs()[0];assert.ok(root);
+    const [id]=c.dispatch(root.id,[worker.id],'Check the PR only.','switch');f.store.jobState(root.id,'submitted');f.store.jobState(id,'submitted');
+    f.store.set('telegram-owner','tg:123');f.store.set('control-channel','telegram');
+    assert.equal(f.router.channelReply(worker,'Check finished.','final',id).accepted,true);
+    assert.equal(f.store.job(id)?.status,'completed');const report=f.store.job(`report:${id}`)!;assert.equal(report.status,'queued');
+    const output=f.store.db.prepare("SELECT id FROM outbox WHERE request_id=? AND reply_kind='final'").get(id) as {id:string};assert.ok(output);
+    assert.equal(contractDeliveryState(f.router,output.id),'hold');f.store.set('whatsapp-owner','other@s.whatsapp.net');assert.equal(contractDeliveryState(f.router,output.id),'invalid');assert.throws(()=>f.router.assertDispatchAllowed(report.id,f.binding),/not sent|changed/i);f.store.set('whatsapp-owner','owner@s.whatsapp.net');assert.throws(()=>f.router.assertDispatchAllowed(report.id,f.binding),/held/i);
+    f.store.set('control-channel','whatsapp');assert.equal(contractDeliveryState(f.router,output.id),'ready');assert.equal(f.router.assertDispatchAllowed(report.id,f.binding),true);
+    const saved=f.store.db.prepare('SELECT status FROM schedules').get() as {status:string};f.store.db.prepare("UPDATE schedules SET status='cancelled'").run();assert.equal(contractDeliveryState(f.router,output.id),'invalid');f.store.db.prepare('UPDATE schedules SET status=?').run(saved.status);
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);
+    assert.equal(contractDeliveryState(f.router,output.id),'invalid');assert.throws(()=>f.router.assertDispatchAllowed(report.id,f.binding),/changed|not sent/i);
   }finally{f.close();}
 });

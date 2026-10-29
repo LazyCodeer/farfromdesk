@@ -3,6 +3,7 @@ import {brainPolicy,MetaSecret} from './meta-brain-config.js';
 import {ContractDecision,interpretContract,type ContractInterpreter} from './task-contract-model.js';
 import {authenticatedOwner} from './owner-commands.js';
 import {hash,type Binding,type Store} from './store.js';
+import {scheduleJobState} from './schedules.js';
 import type {Incoming,Router} from './router.js';
 
 type Draft={goal:string;exclusions:string[];checks:{id:string;text:string}[];question:string};
@@ -22,8 +23,9 @@ function contextValid(r:Router,row:Pick<ContractRow,'owner'|'destination'|'chann
   return !r.stopped&&r.store.destination()===row.destination&&r.store.ownerFor(row.destination)===row.owner&&r.store.controlChannel()===row.channel&&
     hash(JSON.stringify(brainPolicy(r.store)))===row.policy_hash&&routingHash(r,row.destination)===row.routing_hash;
 }
-function dispatchContextValid(r:Router,row:Pick<ContractRow,'owner'|'destination'|'channel'|'policy_hash'>){
-  return !r.stopped&&r.store.destination()===row.destination&&r.store.ownerFor(row.destination)===row.owner&&r.store.controlChannel()===row.channel&&hash(JSON.stringify(brainPolicy(r.store)))===row.policy_hash;
+function dispatchContextValid(r:Router,row:Pick<ContractRow,'owner'|'destination'|'channel'|'policy_hash'>,inactive=false){
+  const ownerValid=r.store.ownerFor(row.destination)===row.owner&&(row.channel==='telegram'?row.destination===r.store.get('telegram-owner'):row.destination===row.owner||row.destination===r.store.get('destination-jid')&&!!r.store.get(`owned-group:${row.destination}`));
+  return ownerValid&&hash(JSON.stringify(brainPolicy(r.store)))===row.policy_hash&&(inactive||!r.stopped&&r.store.destination()===row.destination&&r.store.controlChannel()===row.channel);
 }
 
 /** Owner confirmation is persisted separately from the model proposal and exact original request. */
@@ -41,16 +43,17 @@ export class TaskContracts {
       CREATE TABLE IF NOT EXISTS task_contract_brief_drafts(contract_id TEXT PRIMARY KEY,payload TEXT NOT NULL,payload_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_contract_schedules(schedule_id TEXT PRIMARY KEY,contract_id TEXT,payload TEXT NOT NULL,payload_hash TEXT NOT NULL,expected_next INTEGER NOT NULL,valid_until INTEGER NOT NULL,policy_hash TEXT NOT NULL,key_hash TEXT NOT NULL,mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_contract_jobs(job_id TEXT PRIMARY KEY,contract_id TEXT NOT NULL,parent_id TEXT,binding_id TEXT NOT NULL,binding_hash TEXT NOT NULL,raw_hash TEXT NOT NULL,body_hash TEXT NOT NULL,item_id INTEGER);
-      CREATE TABLE IF NOT EXISTS task_contract_report_sources(job_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,source_binding_id TEXT NOT NULL,source_binding_hash TEXT NOT NULL,source_body_hash TEXT NOT NULL,parent_id TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS task_contract_report_sources(job_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,source_binding_id TEXT NOT NULL,source_binding_hash TEXT NOT NULL,source_body_hash TEXT NOT NULL,parent_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS task_contract_option_proofs(job_id TEXT PRIMARY KEY,option_id TEXT NOT NULL,parent_id TEXT NOT NULL,outbox_id TEXT NOT NULL,selected_id TEXT NOT NULL,choices_hash TEXT NOT NULL,outbox_hash TEXT NOT NULL,expires_at INTEGER NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,channel TEXT NOT NULL,binding_id TEXT NOT NULL,binding_hash TEXT NOT NULL,parent_body_hash TEXT NOT NULL,job_body_hash TEXT NOT NULL,item_id INTEGER,parent_item_id INTEGER,policy_hash TEXT,key_hash TEXT);`);
   }
   enabled(){const p=brainPolicy(this.store);return p.enabled&&p.taskContracts;}
   private row(id:string){return this.store.db.prepare('SELECT * FROM task_contracts WHERE id=?').get(id) as ContractRow|undefined;}
   private jobContract(id:string){return this.store.db.prepare("SELECT t.* FROM task_contracts t LEFT JOIN task_contract_jobs j ON j.contract_id=t.id WHERE t.state='approved' AND (t.dispatch_id=? OR j.job_id=?) LIMIT 1").get(id,id) as ContractRow|undefined;}
   hasGuard(id:string){return !!this.store.db.prepare('SELECT 1 FROM task_contracts WHERE dispatch_id=? UNION ALL SELECT 1 FROM task_contract_jobs WHERE job_id=? LIMIT 1').get(id,id);}
   private pending(owner:string,destination:string){return this.store.db.prepare("SELECT * FROM task_contracts WHERE owner=? AND destination=? AND state='pending'").get(owner,destination) as ContractRow|undefined;}
-  private context(r:Router,m:Incoming){
+  private context(r:Router,m:Incoming,option=false){
     const destination=this.store.destination(),owner=this.store.ownerFor(destination),channel=this.store.controlChannel();
-    if(!destination||!owner||!authenticatedOwner(r,m))return;
+    if(!destination||!owner||!option&&!authenticatedOwner(r,m))return;
     return {destination,owner,channel,policy_hash:hash(JSON.stringify(brainPolicy(this.store))),routing_hash:routingHash(r,destination)};
   }
   private draft(decision:ReturnType<typeof ContractDecision.parse>,id:string,revision:number):Draft {
@@ -99,18 +102,19 @@ export class TaskContracts {
     if(!authenticatedOwner(r,m)||m.source==='voice'||m.quotedId||m.ownerCommand!==true||!/^(?:ok|okay)[.!]?$/i.test(m.text.trim())||!this.sent(row)||!contextValid(r,row)||hash(this.secret.read()??'')!==row.key_hash)throw new Error('The approved task or connection changed. Nothing was sent.');
     const schedule=this.store.db.prepare('SELECT payload,payload_hash FROM task_contract_schedule_drafts WHERE contract_id=?').get(row.id) as {payload:string;payload_hash:string}|undefined;
     const brief=this.store.db.prepare('SELECT payload,payload_hash FROM task_contract_brief_drafts WHERE contract_id=?').get(row.id) as {payload:string;payload_hash:string}|undefined;
-    if(schedule&&hash(schedule.payload)!==schedule.payload_hash||brief&&hash(brief.payload)!==brief.payload_hash||hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.edits,row.draft,schedule?.payload_hash??null,brief?.payload_hash??null]))!==row.approved_hash)throw new Error('The approved task changed. Nothing was sent.');
+    if(schedule&&hash(schedule.payload)!==schedule.payload_hash||brief&&hash(brief.payload)!==brief.payload_hash||hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.incoming,row.edits,row.draft,schedule?.payload_hash??null,brief?.payload_hash??null]))!==row.approved_hash)throw new Error('The approved task changed. Nothing was sent.');
     return {...JSON.parse(row.incoming) as Incoming,id:m.id};
   }
   /** Invoke only after permission/option replies have had their own chance to consume the message. */
-  async preflight(r:Router,m:Incoming,reviewText?:string,schedule?:ContractSchedule,brief?:BriefIntent):Promise<ContractResult>{
-    const context=this.context(r,m);if(!context)return {kind:'pass'};
+  async preflight(r:Router,m:Incoming,reviewText?:string,schedule?:ContractSchedule,brief?:BriefIntent,option=false,optionGuarded=false):Promise<ContractResult>{
+    const context=this.context(r,m,option);if(!context)return {kind:'pass'};
     let pending=this.pending(context.owner,context.destination);
     if(pending&&pending.expires_at<=this.now()){
-      this.store.db.prepare("UPDATE task_contracts SET state='expired' WHERE id=? AND state='pending'").run(pending.id);pending=undefined;
-      if(/^(?:ok|okay|cancel)(?:\s+contract)?[.!]?$/i.test(m.text.trim())||m.quotedId){this.answer(m,'That task contract expired. Send the task again. Nothing was sent.');return {kind:'handled'};}
+      const expired=pending;this.store.db.prepare("UPDATE task_contracts SET state='expired' WHERE id=? AND state='pending'").run(expired.id);pending=undefined;
+      if(m.quotedId?this.belongsToDraft(expired,m.quotedId):/^(?:ok|okay|cancel)(?:\s+contract)?[.!]?$/i.test(m.text.trim())){this.answer(m,'That task contract expired. Send the task again. Nothing was sent.');return {kind:'handled'};}
     }
     if(pending){
+      if(option){this.answer(m,'Finish or cancel the pending task contract before choosing another answer. Nothing was sent.');return {kind:'handled'};}
       if(!contextValid(r,pending)||hash(this.secret.read()??'')!==pending.key_hash){this.store.db.prepare("UPDATE task_contracts SET state='invalid' WHERE id=? AND state='pending'").run(pending.id);this.answer(m,'The task or connection changed. Send the task again. Nothing was sent.');return {kind:'handled'};}
       if(!this.belongsToDraft(pending,m.quotedId)){this.answer(m,'Finish or cancel the pending task contract before starting another task.');return {kind:'handled'};}
       const text=m.text.trim();
@@ -131,7 +135,7 @@ export class TaskContracts {
         const brief=this.store.db.prepare('SELECT payload,payload_hash FROM task_contract_brief_drafts WHERE contract_id=?').get(pending.id) as {payload:string;payload_hash:string}|undefined;
         if(schedule&&hash(schedule.payload)!==schedule.payload_hash)throw new Error('The scheduled task changed. Nothing was sent.');
         if(brief&&hash(brief.payload)!==brief.payload_hash)throw new Error('The brief item changed. Nothing was sent.');
-        const approvedHash=hash(JSON.stringify([pending.id,pending.origin_id,pending.owner,pending.destination,pending.revision,pending.original,pending.review_text,pending.edits,pending.draft,schedule?.payload_hash??null,brief?.payload_hash??null]));
+        const approvedHash=hash(JSON.stringify([pending.id,pending.origin_id,pending.owner,pending.destination,pending.revision,pending.original,pending.review_text,pending.incoming,pending.edits,pending.draft,schedule?.payload_hash??null,brief?.payload_hash??null]));
         const changed=this.store.db.prepare("UPDATE task_contracts SET state='approved',dispatch_id=?,approved_hash=?,approved_at=? WHERE id=? AND state='pending' AND revision=? AND expires_at>?").run(m.id,approvedHash,this.now(),pending.id,pending.revision,this.now());
         if(!changed.changes)throw new Error('This task contract is no longer available.');
         return {kind:'replay',incoming:{...original,id:m.id}};
@@ -171,7 +175,7 @@ export class TaskContracts {
     const id=randomUUID(),draft=this.draft(decision,id,1),now=this.now();
     this.store.db.exec('SAVEPOINT contract_new');
     try{
-      this.store.db.prepare('INSERT INTO task_contracts(id,origin_id,owner,destination,channel,original,review_text,incoming,edits,draft,revision,policy_hash,routing_hash,key_hash,state,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,m.id,context.owner,context.destination,context.channel,text,review,JSON.stringify(m),'[]',JSON.stringify(draft),1,context.policy_hash,context.routing_hash,hash(key),'pending',now+expiry,now);
+      this.store.db.prepare('INSERT INTO task_contracts(id,origin_id,owner,destination,channel,original,review_text,incoming,edits,draft,revision,policy_hash,routing_hash,key_hash,state,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,m.id,context.owner,context.destination,context.channel,text,review,JSON.stringify(optionGuarded?{...m,contractOption:true}:m),'[]',JSON.stringify(draft),1,context.policy_hash,context.routing_hash,hash(key),'pending',now+expiry,now);
       if(schedule){if(schedule.origin!==m.id||schedule.owner!==context.owner||schedule.destination!==context.destination||schedule.channel!==context.channel||schedule.text!==review||schedule.valid_until<=now)throw new Error('The scheduled task changed. Nothing was sent.');const payload=JSON.stringify(schedule);this.store.db.prepare('INSERT INTO task_contract_schedule_drafts VALUES(?,?,?)').run(id,payload,hash(payload));}
       if(brief){if(!Number.isSafeInteger(brief.itemId)||brief.itemId<=0||!brief.target||brief.text!==review)throw new Error('The brief item changed. Nothing was sent.');const payload=JSON.stringify(brief);this.store.db.prepare('INSERT INTO task_contract_brief_drafts VALUES(?,?,?)').run(id,payload,hash(payload));}
       this.send(this.row(id)!,draft);this.store.remember(m.id);this.store.db.exec('RELEASE contract_new');
@@ -183,7 +187,7 @@ export class TaskContracts {
     const row=this.jobContract(id);if(!row)return;
     const draft=this.store.db.prepare('SELECT payload,payload_hash FROM task_contract_schedule_drafts WHERE contract_id=?').get(row.id) as {payload:string;payload_hash:string}|undefined;
     if(!draft)return;
-    const expected=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.edits,row.draft,draft.payload_hash,null]));
+    const expected=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.incoming,row.edits,row.draft,draft.payload_hash,null]));
     if(hash(draft.payload)!==draft.payload_hash||expected!==row.approved_hash)throw new Error('The approved schedule changed. Nothing was scheduled.');
     return {contractId:row.id,schedule:JSON.parse(draft.payload) as ContractSchedule};
   }
@@ -191,7 +195,7 @@ export class TaskContracts {
     const row=this.jobContract(id);if(!row)return;
     const draft=this.store.db.prepare('SELECT payload,payload_hash FROM task_contract_brief_drafts WHERE contract_id=?').get(row.id) as {payload:string;payload_hash:string}|undefined;
     if(!draft)return;
-    const expected=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.edits,row.draft,null,draft.payload_hash]));
+    const expected=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.incoming,row.edits,row.draft,null,draft.payload_hash]));
     if(hash(draft.payload)!==draft.payload_hash||expected!==row.approved_hash)throw new Error('The approved brief item changed. Nothing was sent.');
     return JSON.parse(draft.payload) as BriefIntent;
   }
@@ -202,7 +206,7 @@ export class TaskContracts {
     const payload=JSON.stringify({...schedule,next_at:expectedNext}),policy=hash(JSON.stringify(brainPolicy(this.store))),key=hash(this.secret.read()??'');
     this.store.db.prepare('INSERT INTO task_contract_schedules VALUES(?,?,?,?,?,?,?,?,?)').run(schedule.id,contractId,payload,hash(payload),expectedNext,schedule.valid_until,policy,key,mode);
   }
-  scheduleAllowed(r:Router,row:{id:string;owner:string;destination:string;channel:string;action:string;text:string;binding_id:string|null;binding_identity:string|null;date:string;time:string;zone:string;repeat:string;next_at:number;status:string},checkNext=true){
+  scheduleAllowed(r:Router,row:{id:string;owner:string;destination:string;channel:string;action:string;text:string;binding_id:string|null;binding_identity:string|null;date:string;time:string;zone:string;repeat:string;next_at:number;status:string},checkNext=true,inactive=false){
     const g=this.store.db.prepare('SELECT * FROM task_contract_schedules WHERE schedule_id=?').get(row.id) as {contract_id:string|null;payload:string;payload_hash:string;expected_next:number;valid_until:number;policy_hash:string;key_hash:string;mode:string}|undefined;
     if(!g)return !this.enabled();
     if(hash(g.payload)!==g.payload_hash||g.valid_until<=this.now()||g.policy_hash!==hash(JSON.stringify(brainPolicy(this.store)))||g.key_hash!==hash(this.secret.read()??'')||checkNext&&g.expected_next!==row.next_at)return false;
@@ -211,7 +215,7 @@ export class TaskContracts {
     if(g.mode==='disabled')return !this.enabled();
     if(g.mode==='pass')return this.enabled();
     const contract=g.contract_id?this.row(g.contract_id):undefined;
-    if(g.mode!=='approved'||!contract||contract.state!=='approved'||!contract.dispatch_id||!dispatchContextValid(r,contract)||hash(this.secret.read()??'')!==contract.key_hash)return false;
+    if(g.mode!=='approved'||!contract||contract.state!=='approved'||!contract.dispatch_id||!dispatchContextValid(r,contract,inactive)||hash(this.secret.read()??'')!==contract.key_hash)return false;
     try{const approved=this.approvedSchedule(contract.dispatch_id)?.schedule;if(!approved)return false;return JSON.stringify({...approved,next_at:s.next_at})===JSON.stringify(s);}catch{return false;}
   }
   advanceSchedule(id:string,next:number){this.store.db.prepare('UPDATE task_contract_schedules SET expected_next=? WHERE schedule_id=?').run(next,id);}
@@ -236,17 +240,45 @@ export class TaskContracts {
     return text;
   }
   childMatches(id:string,body:string){const row=this.store.db.prepare('SELECT raw_hash FROM task_contract_jobs WHERE job_id=?').get(id) as {raw_hash:string}|undefined;return !!row&&row.raw_hash===hash(body);}
+  /** Persist the exact selected message and original task with its continuation. */
+  bindChoice(r:Router,parentId:string,id:string,optionId:string){
+    const parent=this.store.job(parentId),job=this.store.job(id),binding=parent&&this.store.binding(parent.binding_id);
+    const option=this.store.db.prepare(`SELECT o.id,o.outbox_id,o.request_id,o.binding_id,o.destination,o.owner,o.selected_id,o.response_id,o.choices,o.expires_at,
+      b.status,b.reply_kind,b.request_id AS reply_request,b.binding_id AS reply_binding,b.destination AS reply_destination,b.body
+      FROM message_options o JOIN outbox b ON b.id=o.outbox_id WHERE o.id=?`).get(optionId) as any;
+    if(!parent||!job||!binding||!option||['replaced','cancelled','reviewed','auto_closed'].includes(parent.status)||option.request_id!==parentId||option.binding_id!==parent.binding_id||job.binding_id!==binding.id||option.destination!==parent.destination||job.destination!==option.destination||option.owner!==this.store.ownerFor(option.destination)||option.response_id!==id||!option.selected_id||option.expires_at<=this.now()||option.status!=='sent'||!['progress','final'].includes(option.reply_kind)||option.reply_request!==parentId||option.reply_binding!==parent.binding_id||option.reply_destination!==parent.destination||this.store.itemOf(parentId)!==undefined&&this.store.itemOf(id)!==this.store.itemOf(parentId))throw new Error('The original choice is unavailable. Nothing was sent.');
+    const checked=this.enabled();
+    this.store.db.prepare('INSERT INTO task_contract_option_proofs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,option.id,parentId,option.outbox_id,option.selected_id,hash(option.choices),hash(option.body),option.expires_at,option.owner,option.destination,this.store.controlChannel(),binding.id,bindingHash(r,binding),hash(parent.body),hash(job.body),this.store.itemOf(id)??null,this.store.itemOf(parentId)??null,checked?hash(JSON.stringify(brainPolicy(this.store))):null,checked?hash(this.secret.read()??''):null);
+    this.store.set(`task-option:${id}`,option.id);
+  }
+  hasOptionGuard(id:string){return !!this.store.get(`task-option:${id}`)||!!this.store.db.prepare('SELECT 1 FROM task_contract_option_proofs WHERE job_id=?').get(id);}
+  optionChannel(id:string){return (this.store.db.prepare('SELECT channel FROM task_contract_option_proofs WHERE job_id=?').get(id) as {channel:string}|undefined)?.channel;}
+  assertOption(r:Router,id:string,binding:Binding,inactive=false){
+    const proof=this.store.db.prepare('SELECT * FROM task_contract_option_proofs WHERE job_id=?').get(id) as any;
+    const job=this.store.job(id),parent=proof&&this.store.job(proof.parent_id),parentBinding=parent&&this.store.binding(parent.binding_id);
+    const option=proof&&this.store.db.prepare(`SELECT o.*,b.status,b.reply_kind,b.request_id AS reply_request,b.binding_id AS reply_binding,b.destination AS reply_destination,b.body
+      FROM message_options o JOIN outbox b ON b.id=o.outbox_id WHERE o.id=?`).get(proof.option_id) as any;
+    if(!proof||this.store.get(`task-option:${id}`)!==proof.option_id||!job||!parent||!parentBinding||!option||['replaced','cancelled','reviewed','auto_closed'].includes(parent.status)||proof.binding_id!==binding.id||parent.binding_id!==binding.id||job.binding_id!==binding.id||bindingHash(r,binding)!==proof.binding_hash||bindingHash(r,parentBinding)!==proof.binding_hash||parent.destination!==proof.destination||job.destination!==proof.destination||hash(parent.body)!==proof.parent_body_hash||hash(job.body)!==proof.job_body_hash||(this.store.itemOf(id)??null)!==proof.item_id||(this.store.itemOf(parent.id)??null)!==proof.parent_item_id||this.store.ownerFor(proof.destination)!==proof.owner||(proof.channel==='telegram'?proof.destination!==this.store.get('telegram-owner'):proof.destination!==proof.owner&&(proof.destination!==this.store.get('destination-jid')||!this.store.get(`owned-group:${proof.destination}`)))||proof.policy_hash!==null&&proof.policy_hash!==hash(JSON.stringify(brainPolicy(this.store)))||proof.key_hash!==null&&proof.key_hash!==hash(this.secret.read()??'')||option.id!==proof.option_id||option.request_id!==parent.id||option.binding_id!==binding.id||option.destination!==proof.destination||option.owner!==proof.owner||option.outbox_id!==proof.outbox_id||option.response_id!==id||option.selected_id!==proof.selected_id||hash(option.choices)!==proof.choices_hash||hash(option.body)!==proof.outbox_hash||option.expires_at!==proof.expires_at||['queued','dispatched'].includes(job.status)&&proof.expires_at<=this.now()||option.status!=='sent'||!['progress','final'].includes(option.reply_kind)||option.reply_request!==parent.id||option.reply_binding!==binding.id||option.reply_destination!==proof.destination||!inactive&&(r.stopped||this.store.controlChannel()!==proof.channel)||this.store.db.prepare('SELECT 1 FROM schedule_jobs WHERE job_id=?').get(parent.id)&&scheduleJobState(r,parent.id,true)!=='ready')throw new Error('The original choice, owner or session changed. Nothing was sent.');
+    return parent;
+  }
+  /** Include the existing owner-approved scope when another choice continues that task. */
+  choiceReview(r:Router,parentId:string,body:string){
+    const row=this.jobContract(parentId);if(!row){if(this.hasGuard(parentId))throw new Error('The task contract is unavailable. Nothing was sent.');return body;}
+    const parent=this.store.job(parentId),binding=parent&&this.store.binding(parent.binding_id);
+    if(!parent||!binding)throw new Error('The original session is unavailable. Nothing was sent.');
+    this.assertDispatch(r,parentId,binding,parent.body);return this.render(row,body);
+  }
   /** Reports remain bound to the owner, parent, exact source session and task contract. */
   bindReport(r:Router,parentId:string,sourceId:string|undefined,id:string,target:Binding,body:string){
     const row=this.jobContract(parentId);
     if(!row){if(this.hasGuard(parentId)||sourceId&&this.hasGuard(sourceId))throw new Error('The task contract is unavailable. Nothing was sent.');return body;}
     const parent=this.store.job(parentId),parentBinding=parent&&this.store.binding(parent.binding_id);
     if(!parent||!parentBinding||target.id!==parentBinding.id||!row.item_id||this.store.itemOf(parentId)!==row.item_id)throw new Error('The approved task or session changed. Nothing was sent.');
-    this.assertDispatch(r,parentId,parentBinding,parent.body);
+    this.assertDispatch(r,parentId,parentBinding,parent.body,new Set(),true);
     let sourceBinding:Binding|undefined,sourceBodyHash='';
     if(sourceId){const source=this.store.job(sourceId);sourceBinding=source&&this.store.binding(source.binding_id);
       if(!source||!sourceBinding||this.store.get(`parent:${sourceId}`)!==parentId||this.store.itemOf(sourceId)!==row.item_id||source.destination!==row.destination||this.jobContract(sourceId)?.id!==row.id)throw new Error('The report source changed. Nothing was sent.');
-      this.assertDispatch(r,sourceId,sourceBinding,source.body);sourceBodyHash=hash(source.body);
+      this.assertDispatch(r,sourceId,sourceBinding,source.body,new Set(),true);sourceBodyHash=hash(source.body);
     }
     const text=this.render(row,body),identity=bindingHash(r,target),prior=this.store.db.prepare('SELECT contract_id,parent_id,binding_id,binding_hash,raw_hash,body_hash,item_id FROM task_contract_jobs WHERE job_id=?').get(id) as {contract_id:string;parent_id:string;binding_id:string;binding_hash:string;raw_hash:string;body_hash:string;item_id:number}|undefined;
     if(prior&&(prior.contract_id!==row.id||prior.parent_id!==parentId||prior.binding_id!==target.id||prior.binding_hash!==identity||prior.raw_hash!==hash(body)||prior.body_hash!==hash(text)||prior.item_id!==row.item_id))throw new Error('The report changed. Nothing was sent.');
@@ -279,24 +311,32 @@ export class TaskContracts {
   /** Bind a versioned contract to the item inside the same transaction as the job. */
   bindItem(id:string,itemId:number){const row=this.jobContract(id);if(!row)throw new Error('The approved task is unavailable.');const result=this.store.db.prepare("UPDATE task_contracts SET item_id=? WHERE id=? AND state='approved' AND (item_id IS NULL OR item_id=?)").run(itemId,row.id,itemId);if(!result.changes)throw new Error('The approved task belongs to another item. Nothing was sent.');this.store.db.prepare('UPDATE task_contract_jobs SET item_id=? WHERE job_id=? AND contract_id=? AND (item_id IS NULL OR item_id=?)').run(itemId,id,row.id,itemId);}
   byItem(itemId:number,owner:string,destination:string){return this.store.db.prepare("SELECT id,origin_id,owner,destination,revision,draft,approved_hash,approved_at,dispatch_id,item_id,binding_id,binding_hash,body_hash FROM task_contracts WHERE item_id=? AND owner=? AND destination=? AND state='approved' ORDER BY created_at DESC").all(itemId,owner,destination);}
-  assertDispatch(r:Router,id:string,binding:Binding,body:string,visited=new Set<string>()){
+  assertDispatch(r:Router,id:string,binding:Binding,body:string,visited=new Set<string>(),inactive=false){
     if(visited.has(id)||visited.size>=5)throw new Error('Task contract delegation is invalid. Nothing was sent.');visited.add(id);
     const row=this.jobContract(id);if(!row){if(this.hasGuard(id))throw new Error('The task contract is unavailable. Nothing was sent.');return;}
     const draft=this.store.db.prepare('SELECT payload_hash FROM task_contract_schedule_drafts WHERE contract_id=?').get(row.id) as {payload_hash:string}|undefined;
     const brief=this.store.db.prepare('SELECT payload_hash FROM task_contract_brief_drafts WHERE contract_id=?').get(row.id) as {payload_hash:string}|undefined;
-    const approvedHash=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.edits,row.draft,draft?.payload_hash??null,brief?.payload_hash??null]));
+    const approvedHash=hash(JSON.stringify([row.id,row.origin_id,row.owner,row.destination,row.revision,row.original,row.review_text,row.incoming,row.edits,row.draft,draft?.payload_hash??null,brief?.payload_hash??null]));
     if(approvedHash!==row.approved_hash)throw new Error('The approved task contract changed. Nothing was sent.');
     const job=this.store.job(id);if(!job||job.binding_id!==binding.id||job.destination!==row.destination||job.body!==body)throw new Error('The approved task or destination changed. Nothing was sent.');
     const link=this.store.db.prepare('SELECT * FROM task_contract_jobs WHERE job_id=? AND contract_id=?').get(id,row.id) as {parent_id:string|null;binding_id:string;binding_hash:string;body_hash:string;item_id:number|null}|undefined;
     const bound=link??{binding_id:row.binding_id,binding_hash:row.binding_hash,body_hash:row.body_hash,item_id:row.item_id};
-    if(!dispatchContextValid(r,row)||hash(this.secret.read()??'')!==row.key_hash||bound.binding_id!==binding.id||bound.binding_hash!==bindingHash(r,binding)||bound.body_hash!==hash(body)||!bound.item_id||row.item_id!==bound.item_id||this.store.itemOf(id)!==bound.item_id)throw new Error('The approved task or session changed. Nothing was sent.');
+    const currentBinding=this.store.binding(binding.id);
+    if(!currentBinding||bound.binding_hash!==bindingHash(r,currentBinding)||!dispatchContextValid(r,row,inactive)||hash(this.secret.read()??'')!==row.key_hash||bound.binding_id!==binding.id||bound.binding_hash!==bindingHash(r,binding)||bound.body_hash!==hash(body)||!bound.item_id||row.item_id!==bound.item_id||this.store.itemOf(id)!==bound.item_id)throw new Error('The approved task or session changed. Nothing was sent.');
     const report=this.store.db.prepare('SELECT * FROM task_contract_report_sources WHERE job_id=?').get(id) as {source_id:string;source_binding_id:string;source_binding_hash:string;source_body_hash:string;parent_id:string}|undefined;
     if(id.startsWith('report:')&&link&&(!report||report.parent_id!==link.parent_id))throw new Error('The report source is unavailable. Nothing was sent.');
     if(report?.source_id){const source=this.store.job(report.source_id),sourceBinding=source&&this.store.binding(source.binding_id);
       if(!source||!sourceBinding||source.binding_id!==report.source_binding_id||bindingHash(r,sourceBinding)!==report.source_binding_hash||hash(source.body)!==report.source_body_hash||source.destination!==row.destination||this.store.get(`parent:${report.source_id}`)!==report.parent_id||this.store.itemOf(report.source_id)!==row.item_id||this.jobContract(report.source_id)?.id!==row.id)throw new Error('The report source changed. Nothing was sent.');
-      this.assertDispatch(r,report.source_id,sourceBinding,source.body,new Set(visited));
+      this.assertDispatch(r,report.source_id,sourceBinding,source.body,new Set(visited),inactive);
     }
-    if(link?.parent_id){const parent=this.store.job(link.parent_id),parentBinding=parent&&this.store.binding(parent.binding_id);if(!parent||!parentBinding||!['queued','dispatched','submitted'].includes(parent.status))throw new Error('The owner request has ended. Nothing was sent.');this.assertDispatch(r,link.parent_id,parentBinding,parent.body,visited);}
+    const optionRequired=row.dispatch_id===id&&(JSON.parse(row.incoming) as {contractOption?:boolean}).contractOption;
+    if(optionRequired||this.hasOptionGuard(id)){
+      const parent=this.assertOption(r,id,binding,inactive),parentBinding=this.store.binding(parent.binding_id);
+      if(!parentBinding)throw new Error('The original session is unavailable. Nothing was sent.');
+      if(this.hasGuard(parent.id))this.assertDispatch(r,parent.id,parentBinding,parent.body,new Set(visited),inactive);
+    }
+    if(link?.parent_id){const parent=this.store.job(link.parent_id),parentBinding=parent&&this.store.binding(parent.binding_id);if(!parent||!parentBinding||!(['queued','dispatched','submitted'].includes(parent.status)||parent.status==='completed'&&this.hasOptionGuard(id)))throw new Error('The owner request has ended. Nothing was sent.');this.assertDispatch(r,link.parent_id,parentBinding,parent.body,visited,inactive);}
+
   }
   rejectDispatch(id:string,reason:string){
     const row=this.jobContract(id);
@@ -322,7 +362,18 @@ export function contractDeliveryState(router:Router,outboxId:string,now=Date.now
   const store=router.store;
   const row=store.db.prepare(`SELECT t.*,c.revision AS output_revision,c.kind AS output_kind
     FROM task_contract_outbox c JOIN task_contracts t ON t.id=c.contract_id WHERE c.outbox_id=?`).get(outboxId) as (ContractRow&{output_revision:number;output_kind:string})|undefined;
-  if(!row)return 'ready';
+  if(!row){
+    const output=store.db.prepare('SELECT request_id,destination,binding_id FROM outbox WHERE id=?').get(outboxId) as {request_id:string|null;destination:string|null;binding_id:string|null}|undefined;
+    if(!output?.request_id||!router.contracts.hasGuard(output.request_id)&&!router.contracts.hasOptionGuard(output.request_id))return 'ready';
+    const job=store.job(output.request_id),binding=job&&store.binding(job.binding_id),contract=router.contracts.approved(output.request_id);
+    if(!job||!binding||output.destination!==job.destination||output.binding_id!==binding.id)return 'invalid';
+    if(router.contracts.hasOptionGuard(job.id)){try{router.contracts.assertOption(router,job.id,binding,true);}catch{return 'invalid';}}
+    if(!contract)return router.contracts.hasGuard(job.id)?'invalid':store.controlChannel()===router.contracts.optionChannel(job.id)?'ready':'hold';
+    if(output.destination!==contract.destination)return 'invalid';
+    if(store.db.prepare('SELECT 1 FROM schedule_jobs WHERE job_id=?').get(job.id)&&scheduleJobState(router,job.id,true)!=='ready')return 'invalid';
+    try{router.contracts.assertDispatch(router,job.id,binding,job.body,new Set(),true);}catch{return 'invalid';}
+    return store.controlChannel()===contract.channel?'ready':'hold';
+  }
   if(row.revision!==row.output_revision||store.ownerFor(row.destination)!==row.owner)return 'invalid';
   if(row.channel==='telegram'&&row.destination!==store.get('telegram-owner'))return 'invalid';
   if(row.channel==='whatsapp'&&row.destination!==row.owner&&(store.get('destination-jid')!==row.destination||!store.get(`owned-group:${row.destination}`)))return 'invalid';
