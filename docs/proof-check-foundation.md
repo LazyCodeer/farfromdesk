@@ -61,6 +61,16 @@ approvals are not backfilled. This database fence does not establish the
 history of files outside SQLite, including the Meta key, and is not sufficient
 authorization for independent evidence or a correction.
 
+The unwired `ProofOwnerBindings` prototype records a direct typed owner
+approval for one public GitHub check on one completed, approved contract scope.
+The contract criterion must already say `GitHub check NAME passed`; the owner
+selects the repository and check number. The saved binding is rechecked
+against the original scope and owner generation. It is not exposed as a
+production command, is not passed to `ProofChecks`, and does not establish
+that a run or commit belongs to the task. Even after approval, every check
+remains unverified and no correction may be dispatched. In particular, the
+scope fence cannot detect external Meta key changes away and back.
+
 1. Map the approved, immutable F3 contract and check IDs to a verified task
    attempt and current target project revision. Do not infer the latter from a
    session reply or from FarFromDesk's own source commit.
