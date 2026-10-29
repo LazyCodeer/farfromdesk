@@ -116,9 +116,9 @@ test('only an exact request-bound pending approval becomes an approval alert',as
 test('a delivered permission notice lets the owner decide the exact displayed request once',async()=>{
   for(const [number,expected] of [['1','deny'],['2','approve']] as const){const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
-    const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Run the synthetic build command?','approval','wa:permission'));
+    const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Run the synthetic build command?','approval','wa:permission','session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
-    const notice=alertOut(f.store)[0];assert.match(notice.body,/Run the synthetic build command\?/);assert.match(notice.body,/1 to deny or 2 to allow this exact request/);f.store.sent(notice.id);
+    const notice=alertOut(f.store)[0];assert.match(notice.body,/Run the synthetic build command\?/);assert.match(notice.body,/1 to deny or 2 to allow this exact request/);assert.match(notice.body,/cannot verify what it does next/);f.store.sent(notice.id);
     const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:decision-${number}`,text:number,quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
     assert.equal(result.status,'handled');assert.equal(await answer,expected);assert.equal(f.approvals.pending.size,0);assert.equal(f.store.job(`wa:decision-${number}`),undefined);
     const repeat=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:repeat-${number}`,text:number,quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
@@ -129,7 +129,7 @@ test('a delivered permission notice lets the owner decide the exact displayed re
 
 test('the existing approval incident identity stays stable across the new notice format',async()=>{
   const f=fixture();try{
-    f.add('wa:permission','Synthetic task');void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Existing request','approval','wa:permission'));
+    f.add('wa:permission','Synthetic task');void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Existing request','approval','wa:permission','session'));
     const [code,pending]=[...f.approvals.pending.entries()][0];const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
     const alert=alerts(f.store)[0],expected=createHash('sha256').update(JSON.stringify(['approval','wa:permission',code,pending.expires,alert.identity])).digest('hex');
     assert.equal(alert.incident,expected);f.store.db.prepare('UPDATE stuck_alerts SET permission_code=NULL,permission_hash=NULL').run();
@@ -138,15 +138,17 @@ test('the existing approval incident identity stays stable across the new notice
 });
 
 test('permission notice decisions fail closed for stale, untrusted or altered requests',async()=>{
-  for(const change of ['original-unsent','notice-unsent','expired','owner','session','attempt','prompt','original-body','forwarded','voice','invalid-number','legacy','dismissed','long','unsafe-format'] as const){const f=fixture();try{
+  for(const change of ['original-unsent','notice-unsent','expired','owner','session','route-restored','binding-restored','attempt','prompt','original-body','other-source','forwarded','voice','invalid-number','legacy','dismissed','long','unsafe-format'] as const){const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
     const question=change==='long'?'x'.repeat(4000):change==='unsafe-format'?'Synthetic \u202epermission':'Synthetic permission question';
-    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,question,'approval','wa:permission'));
+    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,question,'approval','wa:permission',change==='other-source'?'other':'session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;if(change!=='original-unsent')f.store.sent(original.id);await f.detector.tick();
     const notice=alertOut(f.store)[0];if(change!=='notice-unsent')f.store.sent(notice.id);
     if(change==='expired')f.advance(10*60_000+1);
     if(change==='owner'){f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);}
     if(change==='session')f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);
+    if(change==='route-restored'){f.store.set(`session-route:${f.binding.id}`,'changed');f.store.db.prepare('DELETE FROM settings WHERE key=?').run(`session-route:${f.binding.id}`);}
+    if(change==='binding-restored'){f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.binding.id);f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(f.binding.native_id,f.binding.id);}
     if(change==='attempt')f.store.jobState('wa:permission','dispatched');
     if(change==='prompt')[...f.approvals.pending.values()][0].question='A different request';
     if(change==='original-body')f.store.db.prepare('UPDATE outbox SET body=? WHERE id=?').run('A different displayed request',original.id);
@@ -161,18 +163,40 @@ test('a permission created before a verifiable dispatch cannot become actionable
   const f=fixture();try{
     f.store.recordOwnerOrigin('wa:early',owner,owner);f.store.destinationContext.run(owner,()=>f.store.enqueue('wa:early',f.binding,'Synthetic task',owner));
     f.store.destinationContext.run(owner,()=>f.router.brain.memory.add('wa:early','Synthetic task'));
-    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Early request','approval','wa:early'));
+    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Early request','approval','wa:early','session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);
     f.store.jobState('wa:early','dispatched');f.store.jobState('wa:early','submitted');await f.detector.tick();
     assert.equal(alerts(f.store).filter(a=>a.kind==='approval').length,0);
   }finally{f.close();}
 });
 
+test('an unavailable optional permission identity fence does not break original permission delivery',async()=>{
+  for(const schema of ['id INTEGER PRIMARY KEY,broken TEXT','id INTEGER PRIMARY KEY,epoch INTEGER NOT NULL CHECK(epoch=0)']){
+    const store=new Store(':memory:');store.db.exec(`CREATE TABLE permission_identity_epoch(${schema})`);if(schema.includes('CHECK'))store.db.exec('INSERT INTO permission_identity_epoch VALUES(1,0)');
+    const approvals=new Approvals(store);try{
+      store.set('whatsapp-owner',owner);store.set('session-route:synthetic','changed');
+      const binding=store.register('synthetic','codex',randomUUID(),'/tmp').binding;
+      const answer=store.destinationContext.run(owner,()=>approvals.ask(binding,'Original permission','approval'));
+      assert.equal(approvals.identityEpoch(),undefined);assert.ok(store.db.prepare("SELECT 1 FROM outbox WHERE source LIKE 'permission:%:0'").get());
+      approvals.cancel();assert.equal(await answer,'deny');
+    }finally{approvals.cancel();store.close();}
+  }
+});
+
+test('a damaged epoch trigger is replaced before permitting actionable notices',()=>{
+  const store=new Store(':memory:');try{
+    new Approvals(store);
+    store.db.exec("DROP TRIGGER permission_epoch_settings_insert; CREATE TRIGGER permission_epoch_settings_insert AFTER INSERT ON settings BEGIN SELECT 1; END");
+    const approvals=new Approvals(store),before=approvals.identityEpoch();assert.notEqual(before,undefined);
+    store.set('session-route:synthetic','changed');assert.notEqual(approvals.identityEpoch(),before);approvals.cancel();
+  }finally{store.close();}
+});
+
 test('a permission notice never approves a different pending request',async()=>{
   const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
-    const first=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'First request','approval','wa:permission'));
-    const second=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Second request','approval','wa:permission'));
+    const first=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'First request','approval','wa:permission','session'));
+    const second=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Second request','approval','wa:permission','session'));
     for(const out of f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").all() as any[])f.store.sent(out.id);
     await f.detector.tick();const notice=alertOut(f.store)[0];assert.match(notice.body,/First request/);f.store.sent(notice.id);
     await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:first-decision',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
@@ -185,7 +209,7 @@ test('a permission notice never approves a different pending request',async()=>{
 test('hidden Unicode formatting or alternate line separators never become actionable permission notices',async()=>{
   for(const char of ['\u200e','\u200f','\u061c','\u200b','\u200d','\ufeff','\u2028','\u2029','\u0085','\ud800']){const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
-    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,`Before${char}after`,'approval','wa:permission'));
+    void f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,`Before${char}after`,'approval','wa:permission','session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
     const notice=alertOut(f.store)[0];assert.equal(alerts(f.store)[0].permission_code,null);f.store.sent(notice.id);
     const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:unsafe-unicode',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
@@ -196,7 +220,7 @@ test('hidden Unicode formatting or alternate line separators never become action
 test('WhatsApp self-chat can decide a permission by quoting its delivered notice',async()=>{
   const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
-    const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Synthetic permission','approval','wa:permission'));
+    const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Synthetic permission','approval','wa:permission','session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();const notice=alertOut(f.store)[0];f.store.sent(notice.id);
     const wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
     const message={key:{id:'permission-decision',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:'2',contextInfo:{stanzaId:notice.wa_id}}}};

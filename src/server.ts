@@ -223,7 +223,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const job=typeof d.requestId==='string'?store.job(d.requestId):jobs.length===1?jobs[0]:undefined;
         if(d.requestId!==undefined&&(!job||job.binding_id!==binding.id)||d.requestId===undefined&&jobs.length>1)throw new Error('Specify the exact request for this permission question.');
         const destination=job?.destination??store.destination();
-        const answer=await (destination?store.destinationContext.run(destination,()=>router.approvals.ask(binding,d.question,'approval',job?.id)):router.approvals.ask(binding,d.question,'approval',job?.id));
+        const answer=await (destination?store.destinationContext.run(destination,()=>router.approvals.ask(binding,d.question,'approval',job?.id,'session')):router.approvals.ask(binding,d.question,'approval',job?.id,'session'));
         json(res,200,{answer});return;
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}

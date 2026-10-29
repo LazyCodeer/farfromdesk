@@ -57,7 +57,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);assert.equal(store.unlinkedHooks().length,1);
     const permission=handleHook('codex',{session_id:a.binding.native_id,hook_event_name:'PermissionRequest',tool_name:'Bash',tool_input:{command:'echo test'}});
     for(let i=0;i<50&&!approvals.pending.size;i++)await new Promise(r=>setTimeout(r,10));
-    assert.equal(approvals.pending.size,1);approvals.answer([...approvals.pending.keys()][0],'deny','approval');
+    assert.equal(approvals.pending.size,1);assert.equal([...approvals.pending.values()][0].source,'session');approvals.answer([...approvals.pending.keys()][0],'deny','approval');
     assert.deepEqual(await permission,{hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'deny'}}});
     const post=(path:string,data:any,token=a.token,id=a.binding.id)=>fetch(url+path,{method:'POST',headers:{Authorization:`Bearer ${token}`,'X-Binding-Id':id,'Content-Type':'application/json'},body:JSON.stringify(data)});
     store.enqueue('review-me',b.binding,'Review test');store.jobState('review-me','submitted');

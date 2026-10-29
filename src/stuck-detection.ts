@@ -153,13 +153,13 @@ export class StuckDetection {
     for(const [code,p] of this.router.approvals.pending) {
       if(!p.requestId||p.owner!==owner||p.destination!==destination||p.expires<=now||this.store.itemOf(p.requestId)!==itemId)continue;
       const job=this.store.job(p.requestId),origin=this.store.requestOwnerOrigin(p.requestId),identity=this.identity(p.binding.id);
-      if(!job||job.binding_id!==p.binding.id||job.destination!==destination||!['dispatched','submitted'].includes(job.status)||!p.attemptId||job.attempt_id!==p.attemptId||
+      if(!job||job.binding_id!==p.binding.id||job.destination!==destination||!['dispatched','submitted'].includes(job.status)||!p.attemptId||job.attempt_id!==p.attemptId||p.identityEpoch===undefined||this.router.approvals.identityEpoch()!==p.identityEpoch||
         !this.store.db.prepare("SELECT 1 FROM request_events WHERE request_id=? AND binding_id=? AND attempt_id=? AND event='dispatched'").get(job.id,job.binding_id,p.attemptId)||
         !origin||origin.owner!==owner||origin.destination!==destination||!identity||p.targetIdentity!==identity)continue;
       const kind:Kind=p.kind==='approval'?'approval':'question';
       const original=this.store.db.prepare('SELECT body,status,destination,binding_id FROM outbox WHERE source=?').get(`permission:${code}:0`) as {body:string;status:string;destination:string|null;binding_id:string|null}|undefined;
       const single=this.store.db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE source LIKE ?').get(`permission:${code}:%`) as {n:number};
-      const actionable=kind==='approval'&&original?.status==='sent'&&original.destination===destination&&original.binding_id===job.binding_id&&single.n===1&&!!original.body;
+      const actionable=kind==='approval'&&p.source==='session'&&original?.status==='sent'&&original.destination===destination&&original.binding_id===job.binding_id&&single.n===1&&!!original.body;
       return {itemId,title:item.title,requestId:job.id,bindingId:job.binding_id,identity,kind,incident:digest([kind,job.id,code,p.expires,identity]),
         ...(actionable?{permissionCode:code,permissionText:p.question,permissionHash:digest([code,p.question,original!.body])}:{})};
     }
@@ -229,7 +229,7 @@ export class StuckDetection {
   private message(signal:Signal,token:string,opening:string) {
     if(signal.kind==='approval'&&signal.permissionCode&&signal.permissionText&&!unsafePermission.test(signal.permissionText)){
       const quoted=signal.permissionText.split('\n').map(line=>`> ${line}`).join('\n');
-      const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nA permission is waiting. Review the recorded request below.\n\n${quoted}\n\nReply to this notice with 1 to deny or 2 to allow this exact request. This responds to the request without operating the Mac UI. The notice expires in 10 minutes. Dismiss with /stuck dismiss ${token}.`;
+      const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nA session reported a permission request. Review the recorded request below.\n\n${quoted}\n\nReply to this notice with 1 to deny or 2 to allow this exact request. Your decision goes to the session; the bridge cannot verify what it does next. The notice expires in 10 minutes. Dismiss with /stuck dismiss ${token}.`;
       if(text.length<=3000)return {text,choiceId:undefined,permissionCode:signal.permissionCode};
     }
     if(signal.kind==='choice'&&signal.choiceId&&signal.choiceText&&!/[\u202a-\u202e\u2066-\u2069]/.test(signal.choiceText)){
