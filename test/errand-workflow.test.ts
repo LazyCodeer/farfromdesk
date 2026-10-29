@@ -468,6 +468,51 @@ test('a failed search sends one guarded notice only while its original owner aut
     assert.equal((f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source='command-error:wa:root:0'").get() as {n:number}).n,0);
   }finally{f.close();}}
 });
+test('empty and unverifiable searches give actionable fixed notices without forwarding source errors',async()=>{
+  for(const mode of ['empty','unsupported','unverified','source-error'] as const){
+    const f=fixture();try{
+      const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+      let ranks=0;
+      f.router.errands=new ErrandWorkflow(f.router,async()=>{
+        if(mode==='source-error')throw new Error('private source diagnostic should never be shown');
+        return mode==='empty'?[]:[listing];
+      },async rows=>{ranks++;return rows.map(x=>x.id);});
+      const suffix=mode==='unsupported'?'; avoid=night shifts':mode==='unverified'?'; avoid=onsite':'';
+      await f.wa.receiveMessage(f.msg('root',request+suffix));await f.wa.flush();
+      assert.equal(f.sent.length,1);assert.equal(f.store.job('wa:root')?.status,'failed');assert.equal(ranks,0);
+      const text=f.sent[0].content.text as string;
+      if(mode==='empty')assert.match(text,/No shortlist was found in the checked candidates/);
+      if(mode==='unsupported')assert.match(text,/exclusion is not supported/);
+      if(mode==='unverified')assert.match(text,/enough evidence to verify your exclusion/);
+      if(mode==='source-error')assert.match(text,/Could not prepare a shortlist/);
+      assert.doesNotMatch(text,/private source diagnostic/);
+      assert.equal(f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-shortlist:%'").get()?.n,0);
+    }finally{f.close();}
+  }
+});
+test('an actionable empty-search notice is withheld after owner changes and returns',async()=>{
+  const f=fixture();try{
+    f.router.errands=new ErrandWorkflow(f.router,async()=>[],async rows=>rows.map(x=>x.id));
+    await f.wa.receiveMessage(f.msg('root',request));f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner',owner);
+    await f.wa.flush();assert.equal(f.sent.length,0);
+    assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source='errand-search-error:wa:root:0'").get() as {status:string}).status,'cancelled');
+  }finally{f.close();}
+});
+test('ranking failures report a fixed recovery step without relaying provider details',async()=>{
+  for(const code of ['authentication_required','provider_unavailable','unknown'] as const){
+    const f=fixture();try{
+      const listing:Listing={sourceUrl:'https://jobs.example.com/board',url:'https://jobs.example.com/job',title:'Flutter Engineer',excerpt:'Flutter Engineer',observedAt:Date.now(),sourceHash:'a'.repeat(64),workplace:'unknown',verification:'public-listing-published',applicationDeadline:Date.now()+60000};
+      f.router.errands=new ErrandWorkflow(f.router,async()=>[listing],async()=>{throw Object.assign(new Error('private provider diagnostic'),{code});});
+      await f.wa.receiveMessage(f.msg('root',request));await f.wa.flush();
+      assert.equal(f.sent.length,1);const text=f.sent[0].content.text as string;
+      if(code==='authentication_required')assert.match(text,/Meta Brain authentication failed/);
+      if(code==='provider_unavailable')assert.match(text,/Meta ranking is unavailable/);
+      if(code==='unknown')assert.match(text,/Could not prepare a shortlist/);
+      assert.doesNotMatch(text,/private provider diagnostic/);
+      assert.equal(f.store.db.prepare("SELECT COUNT(*) n FROM outbox WHERE source LIKE 'errand-shortlist:%'").get()?.n,0);
+    }finally{f.close();}
+  }
+});
 test('owner change during source search discards results and cannot send to the former owner, even after it changes back',async()=>{
   for(const switchBack of [false,true]){const f=fixture();try{
     let release!:()=>void;const waiting=new Promise<void>(resolve=>{release=resolve;});

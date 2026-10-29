@@ -145,6 +145,9 @@ the profile-grounded document required by the approved plan.
 
 ## Work still required
 
+The independent review of the unwired profile prototype is in
+[errand-profile-review.md](errand-profile-review.md).
+
 Implement a safe, genuinely independent search and listing verification source,
 the F3-approved contract and scoped profile adapter, Wonder's useful grounded
 fit assessment, a usable tailored document with no fabricated qualifications,

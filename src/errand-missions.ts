@@ -21,6 +21,9 @@ export type ErrandRanker=(input:RankInput[],signal:AbortSignal)=>Promise<string[
 export type ContractAuthority=(scope:ErrandScope,contract:ErrandContract,rootRequest:string)=>boolean;
 /** Bridge-owned ordering proof, captured at authenticated ingress before async work. */
 export type ShortlistOrderProof=(scope:ErrandScope,outboxId:string)=>boolean;
+export class ErrandSearchFailure extends Error {
+  constructor(readonly reason:'no-evidence'|'unsupported-exclusion'|'exclusion-unverified',message:string){super(message);}
+}
 type Mission={id:string;root_request:string;owner:string;destination:string;binding_id:string;binding_identity:string;contract_json:string;contract_hash:string;state:string;version:number;created_at:number};
 type Candidate={id:string;mission_id:string;source_url:string;url:string;title:string;excerpt:string;observed_at:number;source_hash:string;workplace:Workplace;verification:string;application_deadline:number|null;position:number|null};
 const MAX_CANDIDATES=40,MAX_TITLE=160,MAX_EXCERPT=600,MAX_AGE=24*60*60*1000,NO_DEADLINE_MAX_AGE=60*60*1000;
@@ -79,7 +82,7 @@ function mentionedSkills(row:Candidate,contract:ErrandContract) {
 function eligible(row:Candidate,contract:ErrandContract):boolean {
   if(!contract.avoid)return true;
   const avoid=contract.avoid.toLowerCase().trim().replace(/\s+/g,' ');
-  if(!/^(?:(?:no|avoid|exclude)\s+)?on[ -]?site$/.test(avoid))throw new Error('This exclusion cannot be verified safely. Please refine it.');
+  if(!/^(?:(?:no|avoid|exclude)\s+)?on[ -]?site$/.test(avoid))throw new ErrandSearchFailure('unsupported-exclusion','This exclusion cannot be verified safely. Please refine it.');
   // A page excerpt can omit negation or contrary context, so text heuristics
   // and the model may never decide this. Unknown/unattested always fails closed.
   return row.workplace==='remote-only';
@@ -180,7 +183,7 @@ export class ErrandMissions {
     const fresh=()=>allRows.every(r=>this.fresh(r));
     if(!fresh())throw new Error('Listing evidence is stale. Start a new errand with a new owner request.');
     const rows=allRows.filter(r=>eligible(r,contract));
-    if(!rows.length)throw new Error('No listings have sufficient evidence to verify your exclusion.');
+    if(!rows.length)throw new ErrandSearchFailure('exclusion-unverified','No listings have sufficient evidence to verify your exclusion.');
     const proposed=await bounded(signal,s=>this.rank(rows.map(r=>({id:r.id,title:r.title,excerpt:r.excerpt,workplace:r.workplace,role:contract.role,location:contract.location,salary:contract.salary,avoid:contract.avoid})),s));
     if(signal.aborted)throw new Error('Ranking cancelled.');
     const current=this.mission(id,scope);if(current.version!==before.version||current.state!=='gathered')throw new Error('The errand changed while ranking.');

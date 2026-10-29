@@ -1,7 +1,7 @@
 import {authenticatedOwner} from './owner-commands.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
-import {ErrandMissions,canonicalSkills,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
+import {ErrandMissions,ErrandSearchFailure,canonicalSkills,errandBindingIdentity,type ErrandContract,type ErrandRanker,type ErrandScope,type VerifiedListingReader} from './errand-missions.js';
 import {greenhouseBoardReader} from './errand-greenhouse.js';
 import {wonderErrandRanker} from './errand-ranker.js';
 import {ErrandOrder} from './errand-order.js';
@@ -158,19 +158,31 @@ export class ErrandWorkflow {
     try{r.queue(m.id,b,m.text.trim());s.jobState(m.id,'submitted');mission=this.ledger.begin(scope,request.contract);s.db.prepare('INSERT INTO errand_search_guards VALUES(?,?)').run(m.id,generation);s.remember(m.id);s.db.exec('RELEASE start_errand');}
     catch(e){s.db.exec('ROLLBACK TO start_errand; RELEASE start_errand');throw e;}
     const controller=new AbortController();this.activeSearch.set(m.id,{scope,controller});
+    let phase:'search'|'ranking'|'delivery'='search';
     try{
       const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(120000)]);
-      await this.ledger.gather(mission,scope,{board:request.board,role:request.contract.role,location:request.contract.location},signal);
+      const gathered=await this.ledger.gather(mission,scope,{board:request.board,role:request.contract.role,location:request.contract.location},signal);
+      if(!gathered)throw new ErrandSearchFailure('no-evidence','No matching listings.');
+      phase='ranking';
       const items=await this.rankScope.run({scope,mission},()=>this.ledger.shortlist(mission,scope,signal));
-      if(!items.length)throw new Error('No matching listings.');
+      if(!items.length)throw new ErrandSearchFailure('no-evidence','No matching listings.');
+      phase='delivery';
       s.db.exec('SAVEPOINT queue_errand_shortlist');
       try{this.queueGuarded(mission,m.id,scope,'shortlist',this.ledger.shortlistText(mission,scope));s.db.exec('RELEASE queue_errand_shortlist');}
       catch(e){s.db.exec('ROLLBACK TO queue_errand_shortlist; RELEASE queue_errand_shortlist');throw e;}
-    }catch{
+    }catch(error){
       const state=s.db.prepare('SELECT state FROM errand_missions WHERE id=?').get(mission) as {state:string}|undefined;
       if(state?.state==='cancelled')return true;
       try{if(s.job(m.id)?.status==='submitted')s.jobState(m.id,'failed','Could not prepare the shortlist.');}catch{}
-      try{this.notice(scope.owner,scope.destination,generation,`errand-search-error:${m.id}`,'Could not prepare a shortlist for this board. Check the board and criteria.');}catch{}
+      // Only bridge-generated, fixed messages cross the boundary. Never relay
+      // source errors or listing content to the owner as diagnostic text.
+      const text=error instanceof ErrandSearchFailure&&error.reason==='no-evidence'?'No shortlist was found in the checked candidates. Check the board, role and location or broaden your search.'
+        :error instanceof ErrandSearchFailure&&error.reason==='unsupported-exclusion'?'That exclusion is not supported. Only avoid=onsite is recognized, and it requires independently verified remote-only evidence.'
+        :error instanceof ErrandSearchFailure&&error.reason==='exclusion-unverified'?'No checked listings had enough evidence to verify your exclusion. No shortlist was created.'
+        :phase==='ranking'&&error instanceof Error&&(error as Error&{code?:string}).code==='authentication_required'?'Meta Brain authentication failed. Check its key and start a new job search.'
+        :phase==='ranking'&&error instanceof Error&&(error as Error&{code?:string}).code==='provider_unavailable'?'Meta ranking is unavailable. Start a new job search when it is working again.'
+        :'Could not prepare a shortlist for this board. Check the board and criteria.';
+      try{this.notice(scope.owner,scope.destination,generation,`errand-search-error:${m.id}`,text);}catch{}
       return true;
     }finally{this.activeSearch.delete(m.id);}
     return true;
