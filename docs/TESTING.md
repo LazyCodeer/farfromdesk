@@ -29,9 +29,11 @@ subprocesses that replace their environment can still access the network.
 
 `npm test` and `npm run test:portable` also use the isolated test runner, but
 the npm process itself starts before that runner can clear `NODE_OPTIONS`.
-Therefore, a pre-existing Node startup hook may already execute in npm; clear
-or trust it before invoking npm, including for `npm ci` and `npm run check`.
-The shell or batch wrapper avoids this particular bootstrap gap for tests.
+Therefore, a pre-existing Node startup hook may already execute in npm;
+`NODE_PATH`, `NODE_EXTRA_CA_CERTS` and `NODE_V8_COVERAGE` can likewise affect
+it before the runner starts. Clear or trust these variables before invoking npm,
+including for `npm ci` and `npm run check`. The shell or batch wrapper clears
+them before starting Node for tests.
 
 For focused tests, use the same isolation instead of invoking Node or tsx
 directly:
