@@ -62,6 +62,21 @@ export class ManagedCollaboration {
     if(c.isCoordinator(target.id))return c.enabled().includes(target.provider)&&c.registry.entry(target.id)?.key===c.registry.identity(target).key;
     return c.scope.run(source.id,()=>c.selected().some(b=>b.id===target.id));
   }
+  /** A report can continue its exact coordinator ancestry after those turns
+   * have yielded. It must not ignore unrelated, busy or uncertain work. */
+  private parkedAncestor(sourceId:string,job:Pick<Job,'id'|'binding_id'|'status'>){
+    if(job.status!=='submitted')return false;
+    const source=this.store.job(sourceId),binding=this.store.binding(job.binding_id);
+    if(!source||!binding||!this.router.coordinator?.isCoordinator(binding.id)||!this.managed(binding))return false;
+    const busy=this.router.busy.has(binding.id);
+    if(busy&&!(source.status==='dispatched'&&source.binding_id===binding.id))return false;
+    const seen=new Set<string>();let cursor=sourceId;
+    while(cursor&&!seen.has(cursor)&&seen.size<8){
+      seen.add(cursor);const parent=this.store.get(`parent:${cursor}`)??this.store.get(`report-parent:${cursor}`);
+      if(!parent)return false;if(parent===job.id)return true;cursor=parent;
+    }
+    return false;
+  }
   /** Internal prototype only: called by trusted bridge code during the exact managed source turn. */
   stage(sourceId:string,targetId:string,body:string,eventId:string) {
     this.store.assertIncomingOwner();
@@ -70,23 +85,26 @@ export class ManagedCollaboration {
       !this.selected(from,target)||!this.managed(from)||!this.managed(target)||!this.router.busy.has(from.id)||source.status!=='dispatched'||!source.attempt_id)
       throw new Error('A running managed coordinator and exact managed target are required. Nothing was sent.');
     if(!/^[A-Za-z0-9._:-]{1,100}$/.test(eventId)||!body.trim()||body.length>24000)throw new Error('A bounded task and stable event ID are required.');
-    const contract=this.router.contracts.approved(sourceId),item=this.store.itemOf(sourceId),root=contract?.dispatch_id;
-    if(!contract||!item||contract.item_id!==item||!root||!contract.approved_hash||!this.store.job(root))throw new Error('An exact approved owner contract and item are required.');
+    const contract=this.router.contracts.approved(sourceId),item=this.store.itemOf(sourceId),root=contract?.dispatch_id,rootJob=root&&this.store.job(root);
+    if(!contract||!item||contract.item_id!==item||!root||!contract.approved_hash||!rootJob)throw new Error('An exact approved owner contract and item are required.');
     const ownerGeneration=this.sourceOwner(root,contract.owner,contract.destination,contract.channel);
     this.router.contracts.assertDispatch(this.router,sourceId,from,source.body);
     const scope={owner:contract.owner,destination:contract.destination,rootRequestId:root,itemId:item,contractId:contract.id,revision:contract.revision,approvedHash:contract.approved_hash};
     if(!this.authority.allows(scope,from,target,body))throw new Error('The owner did not authorize this handoff. Nothing was sent.');
     let cursor:string|undefined=sourceId;const visited=new Set<string>();
-    while(cursor){if(visited.has(cursor)||visited.size>=4)throw new Error('Collaboration delegation depth exceeded.');visited.add(cursor);if(this.store.job(cursor)?.binding_id===target.id)throw new Error('Collaboration delegation cycle refused.');cursor=this.store.get(`parent:${cursor}`);}
+    while(cursor){if(visited.has(cursor)||visited.size>=4)throw new Error('Collaboration delegation depth exceeded.');visited.add(cursor);if(this.store.job(cursor)?.binding_id===target.id)throw new Error('Collaboration delegation cycle refused.');cursor=this.store.get(`parent:${cursor}`)??this.store.get(`report-parent:${cursor}`);}
     const jobId=`master:${sourceId}:f5-${eventId}:${target.id}`,prior=this.row(jobId);
     if(prior){if(prior.source_id!==sourceId||prior.target_binding!==target.id||prior.summary!==body)throw new Error('The handoff ID was reused.');this.context(prior);return jobId;}
     this.store.db.exec('SAVEPOINT managed_collaboration_stage');
     try{
-      const live=this.store.db.prepare("SELECT id FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain') AND id<>?").all(sourceId) as {id:string}[];
-      if(live.some(j=>this.store.itemOf(j.id)===item))throw new Error('The item already has active or uncertain work.');
-      this.store.set(`parent:${jobId}`,sourceId);this.store.linkItem(jobId,item);
-      const scoped=this.router.contracts.bindChild(this.router,sourceId,jobId,target,body,item);
-      bindScheduledChild(this.router,sourceId,jobId,target,scoped);
+      const live=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain') AND id<>?").all(sourceId) as Pick<Job,'id'|'binding_id'|'status'>[];
+      if(live.some(j=>this.store.itemOf(j.id)===item&&!this.parkedAncestor(sourceId,j)))throw new Error('The item already has active or uncertain work.');
+      // A report to the original coordinator can hand off under the same
+      // approved root, while its exact source remains recorded in this row.
+      const parent=sourceId.startsWith('report:')&&source.binding_id===rootJob.binding_id?root:sourceId;
+      this.store.set(`parent:${jobId}`,parent);this.store.linkItem(jobId,item);
+      const scoped=this.router.contracts.bindChild(this.router,parent,jobId,target,body,item);
+      bindScheduledChild(this.router,parent,jobId,target,scoped);
       this.store.enqueue(jobId,target,scoped,contract.destination);
       this.store.db.prepare(`INSERT INTO managed_collaboration_handoffs(job_id,source_id,source_attempt,source_binding,source_identity,source_body,
         target_binding,target_identity,item_id,root_id,owner,destination,contract_id,revision,approved_hash,body_hash,summary,submission_started,owner_generation)
@@ -97,7 +115,7 @@ export class ManagedCollaboration {
   has(id:string){return !!this.row(id);}
   private blockers(row:Row,ignoreQueued=false) {
     const jobs=this.store.db.prepare("SELECT id,binding_id,status FROM inbox WHERE status IN ('queued','dispatched','submitted','uncertain')").all() as Pick<Job,'id'|'binding_id'|'status'>[];
-    return jobs.some(j=>this.store.itemOf(j.id)===row.item_id&&j.id!==row.job_id&&!(ignoreQueued&&j.status==='queued')&&!(j.id===row.source_id&&j.binding_id===row.source_binding&&j.status==='submitted'&&row.yielded===1&&!this.router.busy.has(row.source_binding)));
+    return jobs.some(j=>this.store.itemOf(j.id)===row.item_id&&j.id!==row.job_id&&!(ignoreQueued&&j.status==='queued')&&!this.parkedAncestor(row.source_id,j)&&!(j.id===row.source_id&&j.binding_id===row.source_binding&&j.status==='submitted'&&row.yielded===1&&!this.router.busy.has(row.source_binding)));
   }
   /** A staged handoff must not block unrelated queued jobs for the same session. */
   shouldHold(id:string){
@@ -110,7 +128,7 @@ export class ManagedCollaboration {
     return new CollaborationHarness(this.store,{
       approved:(root,item)=>{const s=scope();return s.rootRequestId===root&&s.itemId===item?s:undefined;},
       mayWork:(_s,b)=>b.id===row.target_binding&&this.identity(b)===row.target_identity&&this.managed(b)&&!!this.store.binding(b.id)?.enabled,
-      ignoreLive:(_s,j)=>j.id===row.job_id&&j.binding_id===row.target_binding||j.id===row.source_id&&row.yielded===1&&!r.busy.has(row.source_binding)&&j.status==='submitted'||
+      ignoreLive:(_s,j)=>j.id===row.job_id&&j.binding_id===row.target_binding||this.parkedAncestor(row.source_id,j)||j.id===row.source_id&&row.yielded===1&&!r.busy.has(row.source_binding)&&j.status==='submitted'||
         finishing&&j.status==='queued',
       observedFinished:(_s,b)=>finishing&&b.id===row.target_binding&&row.finished===1&&this.store.job(row.job_id)?.status==='completed',
     });
@@ -211,7 +229,7 @@ export class ManagedCollaboration {
   managedTurnEnded(id:string,b:Binding) {
     const job=this.store.job(id);if(!job||job.binding_id!==b.id||!this.managed(b))return;
     for(const row of this.store.db.prepare("SELECT * FROM managed_collaboration_handoffs WHERE source_id=? AND state='waiting'").all(id) as Row[]){
-      try{this.context(row);if(job.attempt_id===row.source_attempt&&job.status==='submitted')this.store.db.prepare('UPDATE managed_collaboration_handoffs SET yielded=1 WHERE job_id=? AND source_attempt=?').run(row.job_id,row.source_attempt);}catch{}
+      try{this.context(row);if(job.attempt_id===row.source_attempt&&(job.status==='submitted'||job.status==='completed'&&job.id.startsWith('report:')))this.store.db.prepare('UPDATE managed_collaboration_handoffs SET yielded=1 WHERE job_id=? AND source_attempt=?').run(row.job_id,row.source_attempt);}catch{}
     }
     const row=this.row(id);if(!row||row.state!=='claimed'||!row.claim_token||job.status!=='completed'||!job.attempt_id||job.attempt_id!==row.target_attempt)return;
     // Do not infer test/proof success from a final reply: only the managed turn's
@@ -226,6 +244,8 @@ export class ManagedCollaboration {
   /** This is recorded task context, never a verified outcome or a Meta drift check. */
   history(root:string,itemId:number) {
     const rows=this.store.db.prepare('SELECT * FROM managed_collaboration_handoffs WHERE root_id=? AND item_id=? ORDER BY rowid').all(root,itemId) as Row[];
-    return rows.filter(row=>{try{this.context(row);return true;}catch{return false;}}).map(row=>({sourceId:row.source_id,targetBindingId:row.target_binding,itemId:row.item_id,contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash,summary:row.summary,state:row.state,drift:'not_checked' as const}));
+    return rows.filter(row=>{try{this.context(row);return true;}catch{return false;}}).map(row=>({sourceId:row.source_id,targetBindingId:row.target_binding,itemId:row.item_id,contractId:row.contract_id,revision:row.revision,approvedHash:row.approved_hash,summary:row.summary,
+      // This is the recorded session report, not independent proof of its claims.
+      result:row.state==='complete'?this.store.get(`final-reply:${row.job_id}`)??null:null,state:row.state,drift:'not_checked' as const}));
   }
 }

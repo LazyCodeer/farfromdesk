@@ -62,6 +62,46 @@ test('managed-only handoff waits for the source turn, claims once, and carries t
   }finally{await f.close();}
 });
 
+test('synthetic managed sessions plan, build and review in sequence under one contract',async()=>{
+  const f=await fixture(),gates=new Map<string,ReturnType<typeof deferred>>();try{
+    const builder=f.store.register('builder','codex',randomUUID(),'/tmp').binding;
+    f.routes.set(builder.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${builder.id}`,'cli');
+    f.store.set('selected',JSON.stringify([f.worker.id,builder.id]));
+    const item=f.store.itemOf('wa:approve')!,allowed=new Map([['Plan the approved change.',f.worker.id],['Build the approved plan.',builder.id],['Review the approved change.',f.worker.id]]);
+    f.r.collaboration=f.collab=new ManagedCollaboration(f.r,{allows:(scope,from,to,summary)=>scope.rootRequestId==='wa:approve'&&scope.itemId===item&&from.id===f.proxy.id&&allowed.get(summary)===to.id});
+    assert.throws(()=>f.collab.stage('wa:approve',builder.id,'Unapproved task.','unauthorized'),/did not authorize/);
+    f.native.run=async(b:any,body:string,id:string)=>{
+      f.native.beforeDispatch?.(b,id);f.native.beforeManagedSubmission?.(b,id);f.starts.push({id,body});
+      const gate=deferred();gates.set(id,gate);await gate.promise;
+    };
+    const plan=f.collab.stage('wa:approve',f.worker.id,'Plan the approved change.','plan');
+    f.sourceEnd.resolve();await until(()=>gates.has(plan));
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
+    assert.match(f.starts.find(x=>x.id===plan)!.body,/Owner-approved task contract/);
+    f.r.channelReply(f.worker,'Plan recorded: implement the theme and preserve existing settings.','final',plan);gates.get(plan)!.resolve();
+    const planReport=`report:${plan}`;await until(()=>gates.has(planReport));
+    f.store.enqueue('wa:unrelated-item-work',f.worker,'Other work on this item',f.owner);f.store.linkItem('wa:unrelated-item-work',item);f.store.jobState('wa:unrelated-item-work','submitted');
+    assert.throws(()=>f.collab.stage(planReport,builder.id,'Build the approved plan.','conflict'),/active or uncertain/);
+    f.store.jobState('wa:unrelated-item-work','failed');
+    const build=f.collab.stage(planReport,builder.id,'Build the approved plan.','build');
+    f.r.channelReply(f.proxy,'Plan report acknowledged.','final',planReport);
+    gates.get(planReport)!.resolve();await until(()=>gates.has(build));
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
+    f.r.channelReply(builder,'Build reported: theme implementation prepared.','final',build);gates.get(build)!.resolve();
+    const buildReport=`report:${build}`;await until(()=>gates.has(buildReport));
+    const review=f.collab.stage(buildReport,f.worker.id,'Review the approved change.','review');
+    f.r.channelReply(f.proxy,'Build report acknowledged.','final',buildReport);
+    gates.get(buildReport)!.resolve();await until(()=>gates.has(review));
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get()?.n,1);
+    f.r.channelReply(f.worker,'Review reported: checks still require independent proof.','final',review);gates.get(review)!.resolve();
+    await until(()=>f.collab.history('wa:approve',item).filter(h=>h.state==='complete').length===3);
+    assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.summary),['Plan the approved change.','Build the approved plan.','Review the approved change.']);
+    assert.deepEqual(f.collab.history('wa:approve',item).map(h=>h.result),['Plan recorded: implement the theme and preserve existing settings.','Build reported: theme implementation prepared.','Review reported: checks still require independent proof.']);
+    assert.ok(f.collab.history('wa:approve',item).every(h=>h.drift==='not_checked'));
+    for(const id of [plan,build,review]){assert.equal(f.store.itemOf(id),item);assert.match(f.starts.find(x=>x.id===id)!.body,/Do NOT publish/);}
+  }finally{for(const gate of gates.values())gate.resolve();await f.close();}
+});
+
 test('without explicit internal activation, no collaboration guard is installed',async()=>{
   const f=await fixture();try{f.r.collaboration=undefined;assert.equal(f.r.collaboration,undefined);}finally{await f.close();}
 });
