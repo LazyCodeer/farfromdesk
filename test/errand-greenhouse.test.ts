@@ -3,50 +3,114 @@ import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import type {request as httpsRequest} from 'node:https';
 import {greenhouseGet,greenhouseListingReader,publicGreenhouseAddress,requestPinned} from '../src/errand-greenhouse.js';
+import {greenhousePageIdentity} from '../src/errand-greenhouse-page.js';
 import type {ErrandScope} from '../src/errand-missions.js';
 
 const scope:ErrandScope={requestId:'wa:test',owner:'owner',destination:'owner',bindingId:'test',bindingIdentity:'test'};
 const input={jobs:[{board:'example',id:'12345'}]};
-const api=()=>JSON.stringify({id:12345,title:'Flutter Engineer',absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345'});
+const api=()=>JSON.stringify({id:12345,title:'Flutter Engineer',absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345',application_deadline:'2099-12-31'});
+const page=(extra='')=>`<!DOCTYPE html><html><head><title>Job Application for Flutter Engineer at Example</title><meta property="og:url" content="https://job-boards.greenhouse.io/example/jobs/12345?gh_jid=12345"/></head><body><h1 class="section-header other">Flutter Engineer</h1>${extra}<form id="application-form"></form></body></html>`;
 function transport(options:{dns?:string[];status?:number;api?:string;page?:string;onRequest?:()=>void}={}){
   const calls:{host:string;path:string;address:string}[]=[];
   return {calls,resolve:async()=>options.dns??['8.8.8.8'],request:async(host:string,path:string,address:string)=>{
     calls.push({host,path,address});options.onRequest?.();
-    return {status:options.status??200,body:host==='boards-api.greenhouse.io'?options.api??api():options.page??'<html>Flutter Engineer 12345</html>',contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html'};
+    return {status:options.status??200,body:host==='boards-api.greenhouse.io'?options.api??api():options.page??page(),contentType:host==='boards-api.greenhouse.io'?'application/json':'text/html'};
   }};
 }
-test('verifies exact Greenhouse IDs against API and matching public page without sending owner data',async()=>{
+test('returns published evidence without claiming applications are open',async()=>{
   const fake=transport();const reader=greenhouseListingReader(()=>true,()=>1234,fake);
   const rows=await reader(scope,input,new AbortController().signal);
   assert.equal(rows.length,1);assert.equal(rows[0].url,'https://job-boards.greenhouse.io/example/jobs/12345');
-  assert.equal(rows[0].verification,'public-listing-verified');assert.equal(rows[0].workplace,'unknown');assert.match(rows[0].sourceHash,/^[a-f0-9]{64}$/);
+  assert.equal(rows[0].verification,'public-listing-published');assert.equal(rows[0].workplace,'unknown');assert.ok(rows[0].applicationDeadline!>1234);
+  assert.match(rows[0].sourceHash,/^[a-f0-9]{64}$/);
   assert.deepEqual(fake.calls,[{host:'boards-api.greenhouse.io',path:'/v1/boards/example/jobs/12345',address:'8.8.8.8'},{host:'job-boards.greenhouse.io',path:'/example/jobs/12345',address:'8.8.8.8'}]);
+});
+test('published metadata, a future deadline and an asserted open status do not alone prove applications remain open',async()=>{
+  for(const fields of [
+    {application_deadline:'2099-12-31',published:true},
+    {application_deadline:'2099-12-31T23:59:59Z',status:'open'},
+    {application_deadline:null,published:true},
+  ]){
+    const response=JSON.stringify({...JSON.parse(api()),...fields});
+    const fake=transport({api:response,page:page('This position is closed and no longer accepting applications')});
+    await assert.rejects(greenhouseListingReader(()=>true,()=>1234,fake)(scope,input,new AbortController().signal),/closed|deadline/);
+  }
 });
 test('blocks private, special and IPv6 addresses before connection',async()=>{
   for(const address of ['127.0.0.1','10.1.2.3','169.254.169.254','100.64.1.1','192.168.1.1','198.18.1.1','224.0.0.1','::1','::ffff:127.0.0.1']){
     assert.equal(publicGreenhouseAddress(address),false);const fake=transport({dns:[address]});
-    await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,fake),/unsafe address/);assert.equal(fake.calls.length,0);
+    await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,fake,()=>true),/unsafe address/);assert.equal(fake.calls.length,0);
   }
-  const mixed=transport({dns:['8.8.8.8','10.0.0.1']});await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,mixed),/unsafe address/);assert.equal(mixed.calls.length,0);
+  const mixed=transport({dns:['8.8.8.8','10.0.0.1']});await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,mixed,()=>true),/unsafe address/);assert.equal(mixed.calls.length,0);
 });
 test('rejects arbitrary hosts, query-bearing paths, redirects and oversized responses',async()=>{
-  const fake=transport();for(const [host,path] of [['evil.example','/a'],['boards-api.greenhouse.io','/jobs?token=abc'],['boards-api.greenhouse.io','//evil.example/a'],['boards-api.greenhouse.io','/a/../b']])await assert.rejects(greenhouseGet(host,path,new AbortController().signal,fake),/Invalid/);
+  const fake=transport();for(const [host,path] of [['evil.example','/a'],['boards-api.greenhouse.io','/jobs?token=abc'],['boards-api.greenhouse.io','//evil.example/a'],['boards-api.greenhouse.io','/a/../b']])await assert.rejects(greenhouseGet(host,path,new AbortController().signal,fake,()=>true),/Invalid/);
   assert.equal(fake.calls.length,0);
-  for(const status of [301,302,307,404,500])await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,transport({status})),/verified/);
-  await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,transport({api:'x'.repeat(512*1024+1)})),/verified/);
+  for(const status of [301,302,307,404,500])await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,transport({status}),()=>true),/verified/);
+  await assert.rejects(greenhouseGet('boards-api.greenhouse.io','/v1/boards/example/jobs/12345',new AbortController().signal,transport({api:'x'.repeat(512*1024+1)}),()=>true),/verified/);
 });
 test('rejects mismatched IDs, unsafe links, generic pages and malformed input',async()=>{
   const cases=[
     {api:JSON.stringify({id:999,title:'Flutter Engineer',absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345'})},
-    {api:JSON.stringify({id:12345,title:'Flutter Engineer',absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345?token=private'})},
-    {api:JSON.stringify({id:12345,title:'Flutter Engineer',absolute_url:'https://evil.example/example/jobs/12345'})},
-    {api:JSON.stringify({id:12345,title:'Flutter Engineer',absolute_url:'https://job-boards.greenhouse.io/another/jobs/12345'})},
+    {api:JSON.stringify({...JSON.parse(api()),absolute_url:'https://job-boards.greenhouse.io/example/jobs/12345?token=private'})},
+    {api:JSON.stringify({...JSON.parse(api()),absolute_url:'https://evil.example/example/jobs/12345'})},
+    {api:JSON.stringify({...JSON.parse(api()),absolute_url:'https://job-boards.greenhouse.io/another/jobs/12345'})},
     {page:'<html>Sorry, job not found</html>'},
+    {page:page('This position is closed and no longer accepting applications')},
+    {page:page('This position is &#99;losed')},
+    {page:page('This position is no longer available.')},
+    {page:page('This job posting has been removed.')},
+    {page:'<script>var id=12345;var title="Flutter Engineer";</script><h1>Sorry, we could not load this job.</h1>'},
   ];
   for(const value of cases)await assert.rejects(greenhouseListingReader(()=>true,()=>1234,transport(value))(scope,input,new AbortController().signal));
   const fake=transport(),reader=greenhouseListingReader(()=>true,()=>1234,fake);
-  for(const invalid of [{jobs:[{board:'../private',id:'123'}]},{jobs:[{board:'example',id:'1?token=private'}]},{jobs:Array(11).fill(input.jobs[0])}])await assert.rejects(reader(scope,invalid,new AbortController().signal));
+  for(const invalid of [{jobs:[{board:'../private',id:'123'}]},{jobs:[{board:'sk-'+ 'a'.repeat(20),id:'123'}]},{jobs:[{board:'example',id:'1?token=private'}]},{jobs:Array(11).fill(input.jobs[0])}])await assert.rejects(reader(scope,invalid,new AbortController().signal));
   assert.equal(fake.calls.length,0);
+});
+test('requires an explicit valid future deadline and rechecks it after fetching the page',async()=>{
+  for(const value of [null,'','bad','2000-02-30','2000-01-01T00:00:00','2020-01-01T00:00:00+99:99','2000-01-01']){
+    const fake=transport({api:JSON.stringify({...JSON.parse(api()),application_deadline:value})});
+    await assert.rejects(greenhouseListingReader(()=>true,()=>Date.parse('2026-01-01Z'),fake)(scope,input,new AbortController().signal),/deadline/);
+    assert.equal(fake.calls.length,1);
+  }
+  const boundary=Date.parse('2099-12-31T00:00:00Z');let time=boundary-1;
+  const fake=transport({onRequest:()=>{if(fake.calls.length===2)time=boundary;}});
+  await assert.rejects(greenhouseListingReader(()=>true,()=>time,fake)(scope,input,new AbortController().signal),/deadline/);
+});
+test('recognizes only structural page identity, never script or error-page substrings',()=>{
+  const match=(html:string)=>greenhousePageIdentity(html,'job-boards.greenhouse.io','example','12345','Flutter Engineer');
+  assert.equal(match(page()),true);
+  assert.equal(match(page().replace('gh_jid=12345','gh_jid=99999')),false);
+  assert.equal(match(page().replace('/example/jobs/12345','/another/jobs/12345')),false);
+  assert.equal(match(page().replace('Flutter Engineer</h1>','Other job</h1>')),false);
+  assert.equal(match(page().replace('<form id="application-form">','<form id="application-form" hidden>')),false);
+  assert.equal(match(page().replace('<h1 class="section-header other">','<h1 class="section-header other" style="display:none">')),false);
+  for(const attr of ['hidden','aria-hidden="true"','style="display:none"','style="visibility:hidden"']){
+    const withHiddenHeading=page().replace('<h1 class="section-header other">Flutter Engineer</h1>',`<div ${attr}><div><h1 class="section-header other">Flutter Engineer</h1></div></div><h1>Sorry, could not load this job</h1>`);
+    const withHiddenForm=page().replace('<form id="application-form"></form>',`<div ${attr}><form id="application-form"></form></div>`);
+    assert.equal(match(withHiddenHeading),false);assert.equal(match(withHiddenForm),false);
+    const hiddenText=page().replace('Flutter Engineer</h1>',`<span ${attr}>Flutter Engineer</span></h1><p>Sorry, unable to load this job.</p>`);
+    assert.equal(match(hiddenText),false);
+  }
+  assert.equal(match(page().replace('<h1 class="section-header other">','<div hidden/><h1 class="section-header other">')),false);
+  for(const inert of ['template','textarea','iframe','object'])assert.equal(match(page().replace('<h1 class="section-header other">',`<${inert}/><h1 class="section-header other">`)),false);
+  assert.equal(match(page().replace('<h1 class="section-header other">Flutter Engineer</h1>','<script>var x=`<h1 class="section-header">Flutter Engineer</h1>`</script><h1>Sorry, we could not load this job. 12345 Flutter Engineer</h1>')),false);
+  assert.equal(match(page().replace('<form id="application-form"></form>','<script>var x=`<form id="application-form"></form>`</script>')),false);
+  assert.equal(match(page().replace('</body>','<svg><g><svg><path d="M0 0"/></svg></g></svg><textarea>ignored &lt;text&gt;</textarea></body>')),true);
+  assert.equal(match(page().replace('<h1 class="section-header other">Flutter Engineer</h1>','<template><template></template><h1 class="section-header">Flutter Engineer</h1></template>')),false);
+  assert.equal(match(page().replace('<h1 class="section-header other">Flutter Engineer</h1>','<svg><text>Flutter Engineer</text></svg><h1>Sorry, could not load this job</h1>')),false);
+  assert.equal(match(page().replace('<form id="application-form"></form>','<textarea><form id="application-form"></form></textarea>')),false);
+  assert.equal(match(page().replace('</head>','<meta property="og:url" content="https://job-boards.greenhouse.io/example/jobs/12345"/></head>')),false);
+  assert.equal(match(page().replace('<h1 class="section-header other">','<h1 class="section-header" class="section-header">')),false);
+  assert.equal(match(page().replace('<h1 class="section-header other">','<div>'.repeat(129)+'<h1 class="section-header other">').replace('</h1>','</h1>'+'</div>'.repeat(129))),false);
+  assert.equal(match(page()+' '.repeat(512*1024)),false);
+});
+test('does not start outbound HTTPS if owner scope changes during DNS',async()=>{
+  let current=true,release!:(value:string[])=>void;
+  const fake=transport();fake.resolve=()=>new Promise(resolve=>{release=resolve;});
+  const pending=greenhouseListingReader(()=>current,()=>1234,fake)(scope,input,new AbortController().signal);
+  current=false;release(['8.8.8.8']);
+  await assert.rejects(pending,/owner request changed/);assert.equal(fake.calls.length,0);
 });
 test('stops after cancellation or an owner scope change',async()=>{
   let current=true;const fake=transport({onRequest:()=>{current=false;}});

@@ -213,10 +213,24 @@ test('evidence expiring during model ranking cannot be committed or returned',as
 test('evidence expiring immediately after commit is not returned to the owner',async()=>{
   const f=fixture();try{
     await f.ledger.gather(f.id,f.scope,{},new AbortController().signal);
-    let reads=0;const ledger=new ErrandMissions(f.store,()=>true,async()=>[],async input=>input.map(v=>v.id),()=>++reads<=12?now:now+86400001);
+    const ledger=new ErrandMissions(f.store,()=>true,async()=>[],async input=>input.map(v=>v.id),()=>{
+      const row=f.store.db.prepare('SELECT state FROM errand_missions WHERE id=?').get(f.id) as {state:string};
+      return row.state==='shortlisted'?now+86400001:now;
+    });
     await assert.rejects(ledger.shortlist(f.id,f.scope,new AbortController().signal),/stale/);
     assert.throws(()=>ledger.viewShortlist(f.id,f.scope),/stale.*new errand/);
     await assert.rejects(ledger.gather(f.id,f.scope,{},new AbortController().signal),/no longer searching/);
+  }finally{f.close();}
+});
+test('published listing deadline and unknown application availability survive snapshot and are enforced',async()=>{
+  const f=fixture();try{
+    let time=now;const published:Listing={...f.sources[0],verification:'public-listing-published',applicationDeadline:now+5000};
+    const ledger=new ErrandMissions(f.store,()=>true,async()=>[published],async input=>input.map(x=>x.id),()=>time,syntheticOrdered);
+    await ledger.gather(f.id,f.scope,{},new AbortController().signal);const rows=await ledger.shortlist(f.id,f.scope,new AbortController().signal);
+    assert.equal(rows[0].applicationAvailability,'unverified');assert.equal(rows[0].listingPageIdentity,'unverified');assert.match(ledger.shortlistText(f.id,f.scope),/identity and application availability are unverified/i);
+    deliver(f.store,queueShortlist(f.store,ledger,f.id,f.scope));const choice=f.request('wa:choice-expired','draft 1');
+    time=now+5000;assert.throws(()=>ledger.viewShortlist(f.id,choice),/stale/);assert.throws(()=>ledger.draft(f.id,choice,1),/stale/);
+    assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM errand_draft_claims').get() as {n:number}).n,0);
   }finally{f.close();}
 });
 test('an expired delivered shortlist cannot be selected and requires a new errand',async()=>{

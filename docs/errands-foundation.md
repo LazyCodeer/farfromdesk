@@ -24,21 +24,41 @@ yet the tailored document required by the approved plan.
   verification. A session report, user-supplied URL, model response, HTTP 200,
   matching title, or `public-listing-verified` string alone is not proof. A
   future trusted adapter must independently check the exact current public job
-  source, link, title, availability and request ownership; use bounded
+  source, link, title and request ownership and state what availability is
+  known; use bounded
   responses/timeouts, protect against private-network targets/DNS rebinding,
   revalidate each redirect, and record source/attempt provenance. No such
   adapter is integrated, so real shortlists must not be delivered.
-- `errand-greenhouse.ts` is an isolated, unwired verifier for exact Greenhouse
+- `errand-greenhouse.ts` is an isolated, unwired source for exact Greenhouse
   board and job IDs, not a search provider. It independently checks the fixed
-  Greenhouse API and the matching public listing URL. It uses no credentials,
+  Greenhouse API and the matching public listing URL, and returns a distinct
+  published-listing evidence type with application availability unverified.
+  It requires an explicit future deadline, and rejects recognizable closed
+  or removed notices. It also parses a narrow observed layout requiring a
+  matching og:url, title, heading and form metadata, ignoring script, comment
+  and inert SVG, template and textarea content. One saved public sample matched
+  offline; this observed layout is not an official contract, and the
+  recognizer uses pinned MIT-licensed parse5 and its entities dependency,
+  rejects common inline hidden markers on evidence and ancestors, and caps
+  input size, traversed nodes, nesting and captured text. Static parsing does
+  not prove visibility under CSS or scripts, or that applications remain open.
+  Unknown markup fails closed; page identity
+  remains labelled unverified until integration and live validation.
+  It uses no credentials,
   accepts no query parameters, does not follow redirects, restricts hosts and
   pins a public IPv4 DNS answer for each bounded HTTPS request. It does not
   attest workplace mode, eligibility, salary or geographic restrictions. It
   has only offline synthetic tests, has not been verified against the live
-  service and must receive a trusted request-bound ID source and authority
-  adapter before use. API or page changes, redirects and links with query
+  service and needs a trusted request-bound ID source and authority adapter
+  before use. API or page changes, redirects and links with query
   parameters fail closed. The generic API and page checks are not proof that a
   job matches the owner's criteria.
+  The Greenhouse [Job Board API documentation](https://developers.greenhouse.io/job-board.html)
+  describes published jobs and includes an `application_deadline` field. A
+  published listing or future or absent deadline does not establish that it is
+  still accepting applications, and matching HTML text cannot resolve that
+  question. Do not infer an open status from an undocumented field. The
+  documentation was not fetched during the offline tests.
 - `existingTabListingReader` only reads tabs already selected for the exact
   browser request scope. It returns `selected-page` observations, deliberately
   not `public-listing-verified` listings. BrowserTabs strips URL queries, so a
@@ -66,7 +86,9 @@ yet the tailored document required by the approved plan.
 - Every async transition rechecks the owner, destination, exact binding and
   native identity, contract authority, mission version and state. Results are
   discarded on cancellation or changed scope. Shortlist entries expire after
-  24 hours, including after ranking completes. A later `draft N` requires the
+  24 hours or at their explicit deadline, including after ranking completes.
+  Shortlists state that page identity and application availability are
+  unverified. A later `draft N` requires the
   exact text of a new top-level authenticated owner request in the same
   owner/chat and a trusted check of the original approved contract.
 - Draft selection also requires a bridge-owned ingress ordering proof for the
