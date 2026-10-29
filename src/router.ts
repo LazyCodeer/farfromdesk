@@ -177,6 +177,10 @@ export class Router {
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent,contractApproved))return {status:'handled',requestId:m.id};
       if(!contractApproved&&this.contracts.shouldHandle(this,m)){
+        // F3 may consume an unquoted owner turn without queueing a job. Record
+        // which currently delivered choices might have been answered before
+        // yielding to the contract classifier; no answer text is retained.
+        if(!m.quotedId)try{this.stuckDetection?.recordUnquotedReview(m);}catch{throw new Error('Could not process this reply. Please resend it.');}
         const contract=await this.contracts.preflight(this,m);
         if(contract.kind==='handled')return {status:'handled',requestId:m.id};
         if(contract.kind==='replay')return await this.receiveOnce(contract.incoming,true);

@@ -46,7 +46,9 @@ export class StuckDetection {
       id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,request_id TEXT NOT NULL,
       binding_id TEXT NOT NULL,identity TEXT NOT NULL,kind TEXT NOT NULL,incident TEXT NOT NULL,expires_at INTEGER NOT NULL,
       state TEXT NOT NULL,outbox_id TEXT NOT NULL UNIQUE,UNIQUE(owner,destination,item_id,kind,incident));
-      CREATE TABLE IF NOT EXISTS stuck_quoted_replies(response_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS stuck_quoted_replies(response_id TEXT PRIMARY KEY,outbox_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS stuck_ambiguous_choices(response_id TEXT NOT NULL,option_id TEXT NOT NULL,owner TEXT NOT NULL,destination TEXT NOT NULL,PRIMARY KEY(response_id,option_id));
+      CREATE TABLE IF NOT EXISTS stuck_contract_controls(response_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL);`);
     if(!store.db.prepare('PRAGMA table_info(stuck_alerts)').all().some((column:any)=>column.name==='owner_generation'))store.db.exec('ALTER TABLE stuck_alerts ADD COLUMN owner_generation TEXT');
   }
   /** Capture the exact quoted message before routing the owner's reply. */
@@ -58,6 +60,29 @@ export class StuckDetection {
     const source=out?.request_id?this.store.requestOwnerOrigin(out.request_id):undefined;
     if(!out||!source||source.owner!==owner||source.destination!==destination)return;
     this.store.db.prepare('INSERT OR IGNORE INTO stuck_quoted_replies(response_id,outbox_id,owner,destination) VALUES(?,?,?,?)').run(m.id,out.id,owner,destination);
+  }
+  /** F3 can consume an unquoted owner turn without ever creating an inbox job. */
+  recordUnquotedReview(m:Incoming){
+    if(m.quotedId||!m.text.trim()||m.text.trim().startsWith('/')||!authenticatedOwner(this.router,m))return;
+    const destination=this.store.destination(),owner=this.store.ownerFor(destination),origin=this.store.requestOwnerOrigin(m.id);
+    if(!destination||!owner||!origin||origin.owner!==owner||origin.destination!==destination||!this.context(owner,destination))return;
+    const pending=this.store.db.prepare("SELECT 1 FROM task_contracts WHERE owner=? AND destination=? AND state='pending' AND expires_at>?").get(owner,destination,this.clock());
+    const trusted=m.source==='voice'?m.ownerIntent===true:m.ownerCommand===true;
+    if(pending&&trusted&&/^(?:(?:ok|okay|cancel(?:\s+contract)?)[.!]?|edit\s*:[\s\S]*)$/i.test(m.text.trim())){
+      // These are explicit controls for the pending contract, not answers to
+      // an unrelated session choice, even if approval later queues a job.
+      this.store.db.prepare('INSERT OR IGNORE INTO stuck_contract_controls(response_id,owner,destination) VALUES(?,?,?)').run(m.id,owner,destination);return;
+    }
+    // Without a coordinator or explicit owner target, ordinary unquoted work
+    // routes to the active binding. Otherwise the eventual target is ambiguous
+    // until F3 finishes, so suppress only the choices currently in this chat.
+    const target=this.store.get(`owner-target:${destination}`);
+    const active=!this.router.coordinator&&(!target||target==='null')?this.store.binding(this.store.get('active')??''):undefined;
+    const binding=active?.enabled?active.id:null;
+    this.store.db.prepare(`INSERT OR IGNORE INTO stuck_ambiguous_choices(response_id,option_id,owner,destination)
+      SELECT ?,m.id,?,? FROM message_options m JOIN outbox o ON o.id=m.outbox_id
+      WHERE m.owner=? AND m.destination=? AND m.selected_id IS NULL AND m.response_id IS NULL AND m.expires_at>?
+      AND o.status='sent' AND o.destination=m.destination AND (? IS NULL OR m.binding_id=?)`).run(m.id,owner,destination,owner,destination,this.clock(),binding,binding);
   }
   private context(owner:string,destination:string) {
     return !this.router.stopped&&this.store.controlChannel()==='whatsapp'&&!!owner&&destination===owner&&
@@ -91,12 +116,15 @@ export class StuckDetection {
       AND COALESCE(j.outcome,'') NOT IN ('cancelled','reviewed','done')
       AND o.status='sent' AND o.sent_at IS NOT NULL AND o.destination=m.destination AND o.request_id=m.request_id AND o.binding_id=m.binding_id
       AND NOT EXISTS(SELECT 1 FROM stuck_quoted_replies exact WHERE exact.outbox_id=m.outbox_id AND exact.owner=m.owner AND exact.destination=m.destination)
+      AND NOT EXISTS(SELECT 1 FROM stuck_ambiguous_choices ambiguous WHERE ambiguous.option_id=m.id AND ambiguous.owner=m.owner AND ambiguous.destination=m.destination)
       AND NOT EXISTS(SELECT 1 FROM inbox f LEFT JOIN item_requests fi ON fi.request_id=f.id
         JOIN owner_request_origins fo ON fo.request_id=f.id AND fo.owner=m.owner AND fo.destination=m.destination
         LEFT JOIN stuck_quoted_replies q ON q.response_id=f.id AND q.owner=m.owner AND q.destination=m.destination
+        LEFT JOIN stuck_contract_controls control ON control.response_id=f.id AND control.owner=m.owner AND control.destination=m.destination
         WHERE f.id<>m.request_id AND f.binding_id=m.binding_id AND f.destination=m.destination
         AND (fi.item_id=ir.item_id OR fi.request_id IS NULL)
         AND f.status NOT IN ('cancelled','replaced','failed') AND COALESCE(f.received_at,f.created_at)>=o.sent_at
+        AND control.response_id IS NULL
         AND (q.response_id IS NULL OR q.outbox_id=m.outbox_id))
       AND target.option_id IS NULL ORDER BY o.sent_at DESC,o.rowid DESC LIMIT 100`).all(itemId,owner,destination,now) as {id:string;request_id:string;binding_id:string;expires_at:number;stuck_identity:string;stuck_attempt:string|null;choices:string;body:string}[];
     for(const choice of choices){
