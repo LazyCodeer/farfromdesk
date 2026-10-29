@@ -45,6 +45,14 @@ check and unique run to that attempt. Inode checks, local origin, a clean Git
 status or a matching GitHub head alone cannot establish those facts. Until such
 a design is independently reviewed, checks remain unverified.
 
+On the tested macOS host, Git could not traverse inherited directory handles
+through `/dev/fd`. An `fchdir` experiment kept an opened Git directory through a
+whole-directory rename, but a ref inside that directory could still be changed
+and restored without changing its directory inode. A directory handle alone
+therefore does not make the observed commit immutable. A strict Git read
+allowlist also failed to start Git in the synthetic probe; it is not yet a
+usable containment mechanism.
+
 ## Vision advisory
 
 The screenshot helper is advisory only. It needs existing trusted provenance
