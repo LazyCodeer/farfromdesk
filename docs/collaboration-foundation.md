@@ -80,3 +80,41 @@ submission. An external Desktop session may also receive work outside the
 bridge, so completion of one request alone cannot prove global exclusivity.
 Until these conditions are established, keep the managed-only gate and never
 infer completion from a socket acknowledgement, reply or elapsed time.
+
+### Candidate events and test-only protocol
+
+[Claude's hooks documentation](https://code.claude.com/docs/en/hooks.md#userpromptsubmit)
+states that `UserPromptSubmit` also runs for cross-session messages and supplies
+the prompt; common hook fields document `prompt_id`. The
+[telemetry documentation](https://code.claude.com/docs/en/monitoring-usage.md#hook-execution-complete-event)
+documents `prompt.id`, `session.id`, per-process sequence, and a
+`hook_execution_complete` event containing hook counts. This makes a future
+correlation adapter worth investigating, but the documented socket message ID
+is not tied to `prompt_id`. Matching text, a request ID in the prompt, or a
+nonce visible in the prompt does not prove which socket frame caused it.
+
+The fixture `test/fixtures/desktop-lifecycle-model.mts` explores a deliberately
+hypothetical protocol. It assumes evidence the documented interfaces do **not**
+currently provide: authenticated frame-to-prompt origin, a shared identifier
+for a particular Stop invocation and its completed hook chain, a complete
+ordered event stream, and an exclusive provider fence against new or external
+work. In that model the exact owner, destination, contract revision and hash,
+session identity, request and attempt must still match; Stop must have known
+empty background and scheduled work, and the matching hook chain must have no
+blocking, cancelled, failed or continuation feedback. These assumptions are
+test fixtures, not observations or a production authorization mechanism.
+
+In particular, `num_blocking=0` alone is insufficient: a Stop hook can return
+`additionalContext` and continue the conversation; cancelled or missing events
+and unknown background task state must remain uncertain. Some telemetry fields
+have documented minimum versions, and exports can arrive late or fail. A
+Stop hook fires before the entire hook chain has settled. Interruptions and API
+errors also need separate handling. A delayed telemetry record cannot establish
+that another prompt has not started before the handoff.
+
+Any real experiment requires explicit opt-in to hooks and telemetry, a scoped
+authenticated local collector and a privacy review. Prompt hooks receive the
+full prompt; telemetry can include account email and workspace paths, and
+optional settings can expose prompts or tool content. Do not enable verbose
+prompt/tool logging or change the user's existing Claude configuration for
+this prototype. The fixture runs entirely offline and does not alter live state.
