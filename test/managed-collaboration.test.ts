@@ -19,21 +19,21 @@ const {ManagedCollaboration}=await import('../src/managed-collaboration.js');
 const {NativeAgents}=await import('../src/native.js');
 const {DispatchNotSubmittedError}=await import('../src/brief-dispatch-guard.js');
 
-function deferred<T=void>(){let resolve!:(v:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};}
+function deferred<T=void>(){let resolve!:(v:T)=>void,reject!:(error:Error)=>void;const promise=new Promise<T>((r,j)=>{resolve=r;reject=j;});return {promise,resolve,reject};}
 const turn=()=>new Promise<void>(resolve=>setImmediate(resolve));
 async function until(predicate:()=>boolean){for(let i=0;i<100&&!predicate();i++)await turn();assert.ok(predicate(),'operation did not reach the expected state');}
 
-async function fixture(delaySource=false,beforePump?:(store:InstanceType<typeof Store>,owner:string)=>void){
+async function fixture(delaySource=false,beforePump?:(store:InstanceType<typeof Store>,owner:string)=>void,sourceProvider:'codex'|'claude'='codex'){
   const dir=mkdtempSync(join(root,'case-')),store=new Store(join(dir,'test.sqlite')),approvals=new Approvals(store),sourceEnd=deferred(),targetEnd=deferred();
   const starts:{id:string;body:string}[]=[],routes=new Map<string,{transport:string;executionMode:string}>();
   const native:any={connections:{route:(b:any)=>routes.get(b.id)},stop:()=>{},run:async(b:any,body:string,id:string)=>{native.beforeDispatch?.(b,id);native.beforeManagedSubmission?.(b,id);starts.push({id,body});if(id==='wa:approve')await sourceEnd.promise;else if(id.includes(':f5-'))await targetEnd.promise;}};
   const r=new Router(store,native,approvals),c=new Coordinator(store,native,r,()=>{});r.coordinator=c;
   const owner='owner@s.whatsapp.net';store.set('whatsapp-owner',owner);
-  const proxy=store.register('proxy','codex',randomUUID(),'/tmp').binding,worker=store.register('worker','codex',randomUUID(),'/tmp').binding;
+  const proxy=store.register('proxy',sourceProvider,randomUUID(),'/tmp').binding,worker=store.register('worker','codex',randomUUID(),'/tmp').binding;
   for(const b of [proxy,worker]){routes.set(b.id,{transport:'managed-cli',executionMode:'cli'});store.set(`execution-mode:${b.id}`,'cli');}
   c.registry.register(proxy);store.set('master',proxy.id);store.set('selected',JSON.stringify([worker.id]));
   const secret=new MetaSecret(dir);secret.save('synthetic-key-not-a-real-secret');
-  saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex'],failure:'block'}});
+  saveBrainConfig(store,secret,{policy:{...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:['codex','claude'],failure:'block'}});
   r.brain=new MetaBrain(store,secret,{interpret:async()=>{throw new Error('unused');}} as any);
   r.brain.handle=async()=>false;
   r.contracts=new TaskContracts(store,secret,async()=>({kind:'contract',goal:'Add dark theme',exclusions:['Do not publish'],checks:['Theme works','Existing theme works'],question:''}));
@@ -100,6 +100,105 @@ test('synthetic managed sessions plan, build and review in sequence under one co
     assert.ok(f.collab.history('wa:approve',item).every(h=>h.drift==='not_checked'));
     for(const id of [plan,build,review]){assert.equal(f.store.itemOf(id),item);assert.match(f.starts.find(x=>x.id===id)!.body,/Do NOT publish/);}
   }finally{for(const gate of gates.values())gate.resolve();await f.close();}
+});
+
+test('late progress after an uncertain coordinator turn cannot make it a parked ancestor',async()=>{
+  const f=await fixture(),childGate=deferred(),reportGate=deferred();try{
+    const builder=f.store.register('builder','codex',randomUUID(),'/tmp').binding;
+    f.routes.set(builder.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${builder.id}`,'cli');f.store.set('selected',JSON.stringify([f.worker.id,builder.id]));
+    const item=f.store.itemOf('wa:approve')!,child=`master:wa:approve:synthetic-child:${f.worker.id}`;
+    f.native.run=async(b:any,body:string,id:string)=>{f.native.beforeDispatch?.(b,id);f.native.beforeManagedSubmission?.(b,id);f.starts.push({id,body});if(id===child)await childGate.promise;else if(id===`report:${child}`)await reportGate.promise;};
+    f.sourceEnd.reject(new Error('Synthetic transport loss; provider may still run.'));
+    await until(()=>f.store.job('wa:approve')?.status==='uncertain'&&!f.r.busy.has(f.proxy.id));
+    f.r.channelReply(f.proxy,'Still working on the original task.','progress','wa:approve');
+    assert.equal(f.store.job('wa:approve')?.status,'submitted');
+    assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=?').get('wa:approve'),undefined);
+    f.store.set(`parent:${child}`,'wa:approve');f.store.linkItem(child,item);
+    const scoped=f.r.contracts.bindChild(f.r,'wa:approve',child,f.worker,'Existing delegated task',item);
+    f.store.enqueue(child,f.worker,scoped,f.owner);f.r.pump();await until(()=>f.starts.some(x=>x.id===child));
+    f.r.channelReply(f.worker,'Previous worker finished.','final',child);childGate.resolve();
+    const report=`report:${child}`;await until(()=>f.starts.some(x=>x.id===report)&&!f.r.busy.has(f.worker.id));
+    f.store.db.prepare("UPDATE items SET status='in progress' WHERE id=?").run(item);
+    assert.throws(()=>f.collab.stage(report,builder.id,'Continue approved work','unsafe-ancestor'),/active or uncertain/);
+    assert.equal(f.starts.some(x=>x.id.includes(':f5-unsafe-ancestor:')),false);
+  }finally{childGate.resolve();reportGate.resolve();await f.close();}
+});
+
+test('a stale managed completion cannot mark a different dispatch attempt finished',async()=>{
+  const f=await fixture();try{
+    const original=f.store.job('wa:approve')!.attempt_id!,next=f.collab.stage('wa:approve',f.worker.id,'Implement','new-attempt');
+    const replacement=randomUUID();f.store.db.prepare('UPDATE inbox SET attempt_id=? WHERE id=?').run(replacement,'wa:approve');
+    f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));
+    assert.notEqual(original,replacement);assert.equal(f.starts.some(x=>x.id===next),false);
+    assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=? AND attempt_id=?').get('wa:approve',replacement),undefined);
+  }finally{await f.close();}
+});
+
+test('Claude results cannot yield a source handoff without exact turn correlation',async()=>{
+  // Both current Claude transports lack a bridge-verified per-request turn ID.
+  for(const transport of ['stdio','sdk'] as const){const f=await fixture(false,undefined,'claude');try{
+    f.store.set(`synthetic-claude-transport:${f.proxy.id}`,transport);
+    const target=f.store.register('claude-target','claude',randomUUID(),'/tmp').binding;
+    f.routes.set(target.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${target.id}`,'cli');f.store.set('selected',JSON.stringify([target.id]));
+    const id=f.collab.stage('wa:approve',target.id,'Implement the approved theme.',`claude-${transport}`);
+    f.sourceEnd.resolve();await until(()=>!f.r.busy.has(f.proxy.id));f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id===id),false);
+    assert.equal(f.store.db.prepare('SELECT 1 FROM managed_collaboration_turn_ends WHERE request_id=?').get('wa:approve'),undefined);
+    assert.equal((f.store.db.prepare('SELECT yielded FROM managed_collaboration_handoffs WHERE job_id=?').get(id) as any).yielded,0);
+    // A legacy yielded marker from an older version is not sufficient.
+    f.store.db.prepare('UPDATE managed_collaboration_handoffs SET yielded=1 WHERE job_id=?').run(id);f.r.pump();await turn();
+    assert.equal(f.starts.some(x=>x.id===id),false);
+  }finally{await f.close();}}
+});
+
+test('a Claude target result cannot release its fenced claim without exact turn correlation',async()=>{
+  const f=await fixture();try{
+    const target=f.store.register('claude-worker','claude',randomUUID(),'/tmp').binding;
+    f.routes.set(target.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${target.id}`,'cli');f.store.set('selected',JSON.stringify([target.id]));
+    // Exercise this boundary even if platform selection later allows mixed providers.
+    f.c.registry.matches=()=>true;
+    const id=f.collab.stage('wa:approve',target.id,'Implement the approved theme.','claude-target');
+    f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===id));
+    f.r.channelReply(target,'Synthetic Claude result.','final',id);f.targetEnd.resolve();await until(()=>!f.r.busy.has(target.id));
+    const row=f.store.db.prepare('SELECT state,finished FROM managed_collaboration_handoffs WHERE job_id=?').get(id) as any;
+    assert.equal(row.state,'claimed');assert.equal(row.finished,0);
+    assert.ok(f.store.db.prepare('SELECT token FROM collaboration_claims WHERE item_id=?').get(f.store.itemOf(id)!)?.token);
+  }finally{await f.close();}
+});
+
+test('a parked ancestor requires exact recorded attempt, identity, owner and contract evidence',async()=>{
+  const f=await fixture(),reportGate=deferred();try{
+    const builder=f.store.register('builder','codex',randomUUID(),'/tmp').binding;
+    f.routes.set(builder.id,{transport:'managed-cli',executionMode:'cli'});f.store.set(`execution-mode:${builder.id}`,'cli');f.store.set('selected',JSON.stringify([f.worker.id,builder.id]));
+    const prior=f.native.run;f.native.run=async(b:any,body:string,id:string)=>{if(id.startsWith('report:')){f.native.beforeDispatch?.(b,id);f.starts.push({id,body});await reportGate.promise;}else await prior(b,body,id);};
+    const plan=f.collab.stage('wa:approve',f.worker.id,'Plan the approved change.','plan-evidence');
+    f.sourceEnd.resolve();await until(()=>f.starts.some(x=>x.id===plan));
+    f.r.channelReply(f.worker,'Plan recorded.','final',plan);f.targetEnd.resolve();
+    const report=`report:${plan}`;await until(()=>f.starts.some(x=>x.id===report)&&!f.r.busy.has(f.worker.id));
+    const row=f.store.db.prepare('SELECT * FROM managed_collaboration_turn_ends WHERE request_id=?').get('wa:approve') as Record<string,unknown>;
+    assert.ok(row);assert.equal(row.attempt_id,f.store.job('wa:approve')?.attempt_id);
+    const fields=['attempt_id','binding_id','binding_identity','body_hash','owner_generation','root_id','item_id','contract_id','revision','approved_hash'] as const;
+    for(const [index,field] of fields.entries()){
+      f.store.db.prepare(`UPDATE managed_collaboration_turn_ends SET ${field}=? WHERE request_id=?`).run(field==='item_id'||field==='revision'?999:'synthetic-mismatch','wa:approve');
+      assert.throws(()=>f.collab.stage(report,builder.id,'Build the approved plan.',`mismatch-${index}`),/active or uncertain/,field);
+      f.store.db.prepare(`UPDATE managed_collaboration_turn_ends SET ${field}=? WHERE request_id=?`).run(row[field] as any,'wa:approve');
+    }
+    f.store.db.prepare('DELETE FROM managed_collaboration_turn_ends WHERE request_id=?').run('wa:approve');
+    assert.throws(()=>f.collab.stage(report,builder.id,'Build the approved plan.','missing-evidence'),/active or uncertain/);
+    f.store.db.prepare('INSERT INTO managed_collaboration_turn_ends VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(...['request_id','attempt_id','binding_id','binding_identity','body_hash','owner_generation','root_id','item_id','contract_id','revision','approved_hash','ended_event_id'].map(key=>row[key] as any));
+    f.store.jobState('wa:approve','uncertain','Synthetic loss after earlier completion.');
+    f.r.channelReply(f.proxy,'Still working on the task.','progress','wa:approve');
+    assert.equal(f.store.job('wa:approve')?.status,'submitted');
+    f.store.db.prepare("UPDATE items SET status='in progress' WHERE id=?").run(f.store.itemOf('wa:approve'));
+    assert.throws(()=>f.collab.stage(report,builder.id,'Build the approved plan.','later-uncertainty'),/active or uncertain/);
+    // The persisted uncertainty fence remains effective after a real reopen.
+    const reopened=new Store(join(f.dir,'test.sqlite')),a=new Approvals(reopened),n:any={connections:{route:(b:any)=>f.routes.get(b.id)},stop:()=>{},run:async()=>{}};
+    try{
+      reopened.recover();const router=new Router(reopened,n,a),c=new Coordinator(reopened,n,router,()=>{});router.coordinator=c;
+      router.contracts=new TaskContracts(reopened,new MetaSecret(f.dir));const collab=new ManagedCollaboration(router,{allows:()=>true});
+      assert.equal((collab as any).parkedAncestor(report,reopened.job('wa:approve')),false);
+    }finally{a.cancel();reopened.close();}
+  }finally{reportGate.resolve();await f.close();}
 });
 
 test('without explicit internal activation, no collaboration guard is installed',async()=>{
@@ -278,8 +377,8 @@ test('an owner roundtrip after submission cannot release the claim',async()=>{
 test('a dispatch failure rolls back both the claim and the attempt',async()=>{
   const f=await fixture();try{
     const id=f.collab.stage('wa:approve',f.worker.id,'Implement','atomic');
-    f.store.jobState('wa:approve','submitted');f.r.busy.delete(f.proxy.id);
-    f.store.db.prepare('UPDATE managed_collaboration_handoffs SET yielded=1 WHERE job_id=?').run(id);
+    f.store.jobState('wa:approve','submitted');
+    f.collab.managedTurnEnded('wa:approve',f.proxy,f.store.job('wa:approve')!.attempt_id!);f.r.busy.delete(f.proxy.id);
     f.store.db.exec(`CREATE TRIGGER fail_test_dispatch BEFORE INSERT ON request_events
       WHEN NEW.event='dispatched' AND NEW.request_id LIKE '%:f5-%'
       BEGIN SELECT RAISE(ABORT,'test-atomic-failure'); END`);
@@ -355,7 +454,7 @@ test('an unsent readiness failure releases only its own claim and a new attempt 
     f.store.db.prepare("UPDATE items SET status='in progress' WHERE id=?").run(f.store.itemOf(id)!);
     f.store.jobState('wa:approve','dispatched');f.r.busy.add(f.proxy.id);
     const retry=f.collab.stage('wa:approve',f.worker.id,'Implement','retry');
-    f.store.jobState('wa:approve','submitted');f.collab.managedTurnEnded('wa:approve',f.proxy);f.r.busy.delete(f.proxy.id);
+    f.store.jobState('wa:approve','submitted');f.collab.managedTurnEnded('wa:approve',f.proxy,f.store.job('wa:approve')!.attempt_id!);f.r.busy.delete(f.proxy.id);
     f.r.pump();for(let n=0;n<10;n++)await turn();
     assert.ok(f.starts.some(x=>x.id===retry),JSON.stringify({job:f.store.job(retry),handoff:f.store.db.prepare('SELECT state,yielded FROM managed_collaboration_handoffs WHERE job_id=?').get(retry)}));
     assert.equal(f.starts.filter(x=>x.id===retry).length,1);

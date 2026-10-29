@@ -430,9 +430,11 @@ export class Router {
         if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;
       }
       this.busy.add(b.id);
+      const dispatchAttempt=this.store.job(job.id)?.attempt_id;
       const run=()=>job.destination?this.store.destinationContext.run(job.destination!,()=>this.native.run(b,job.body,job.id)):this.native.run(b,job.body,job.id);
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
-      void task.then(()=>{if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'submitted');this.collaboration?.managedTurnEnded(job.id,b);}).catch(e=>{
+      void task.then(()=>{const current=this.store.job(job.id);if(!dispatchAttempt||current?.attempt_id!==dispatchAttempt)return;if(current.status==='dispatched')this.store.jobState(job.id,'submitted');this.collaboration?.managedTurnEnded(job.id,b,dispatchAttempt);}).catch(e=>{
+        if(!dispatchAttempt||this.store.job(job.id)?.attempt_id!==dispatchAttempt)return;
         if((e instanceof ScheduledChannelHold||e instanceof CollaborationHold)&&!this.collaboration?.mayHaveSubmitted(job.id)){this.collaboration?.heldBeforeSubmission(job.id);if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
         if(e instanceof DispatchNotSubmittedError&&!this.collaboration?.mayHaveSubmitted(job.id)){this.failBeforeSubmission(job.id,e.message);return;}
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;

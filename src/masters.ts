@@ -480,31 +480,59 @@ export class Masters {
     const input=[{type:'text',text:message,text_elements:[]},...this.router.attachments.references(b,jobId,true).filter(a=>['image/jpeg','image/png','image/webp','image/gif'].includes(a.mime)&&a.bytes<=10*1024*1024).map(a=>({type:'localImage',path:a.path!}))];
     this.router.assertDispatchAllowed(jobId,b);
     await new Promise<void>((resolve,reject)=>{
-      let text='';
-      const cleanup=()=>{active.off('notification',event);active.off('closed',closed);};
-      const closed=()=>{cleanup();reject(new Error('Native master disconnected during a request; check it before resending.'));};
+      let text='',turnId:string|undefined,settled=false,earlyBytes=0;
+      const early:{method:string;payload:any}[]=[];
+      const validTurnId=(id:unknown):id is string=>typeof id==='string'&&id.length>0&&id.length<=200&&!/[\x00-\x20]/.test(id);
+      const cleanup=()=>{active.off('notification',event);active.off('closed',closed);early.length=0;};
+      const fail=(error:unknown)=>{if(settled)return;settled=true;cleanup();reject(error);};
+      const succeed=()=>{if(settled)return;settled=true;cleanup();resolve();};
+      const closed=()=>fail(new Error('Native master disconnected during a request; check it before resending.'));
+      const deliver=(method:string,p:any)=>{
+        if(settled)return;
+        const id=method==='turn/started'||method==='turn/completed'?p.turn?.id:p.turnId;
+        if(id!==turnId)return;
+        try {
+          if(method==='thread/tokenUsage/updated'&&p.tokenUsage?.last)this.store.event(jobId,'provider_usage',{provider:'codex',inputTokens:p.tokenUsage.last.inputTokens,outputTokens:p.tokenUsage.last.outputTokens},id);
+          if(method==='turn/started')this.store.event(jobId,'provider_turn_started',{provider:'codex'},id);
+          if(method==='item/completed')text=p.item.text;
+          if(method!=='turn/completed')return;
+          if(p.turn.status!=='completed')throw new Error(p.turn.error?.message??'Native master did not finish this request.');
+          if(this.store.job(jobId)?.status==='replaced'){succeed();return;}
+          if(this.store.job(jobId)?.status!=='completed') {
+            if(!text.trim()&&(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))){succeed();return;}
+            if(!text.trim())throw new Error('Native master ended without a reply. Check the session before sending again.');
+            this.router.channelReply(b,text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`,{turnId:id});
+          }
+          succeed();
+        }catch(e){fail(e);}
+      };
       const event=(method:string,p:any)=>{
-        if(p?.threadId!==b.native_id)return;
-        if(method==='thread/tokenUsage/updated'&&p.tokenUsage?.last)this.store.event(jobId,'provider_usage',{provider:'codex',inputTokens:p.tokenUsage.last.inputTokens,outputTokens:p.tokenUsage.last.outputTokens},p.turnId);
-        if(method==='turn/started'&&p.turn?.id)this.store.event(jobId,'provider_turn_started',{provider:'codex'},p.turn.id);
-        if(method==='item/completed'&&p.item?.type==='agentMessage'&&p.item.phase!=='commentary')text=p.item.text??'';
-        if(method==='turn/completed'){
-          cleanup();
-          if(p.turn?.status!=='completed'){reject(new Error(p.turn?.error?.message??'Native master did not finish this request.'));return;}
-          try {
-            if(this.store.job(jobId)?.status==='replaced'){resolve();return;}
-            if(this.store.job(jobId)?.status!=='completed') {
-              if(!text.trim()&&(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))){resolve();return;}
-              if(!text.trim())throw new Error('Native master ended without a reply. Check the session before sending again.');
-              this.router.channelReply(b,text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`,{turnId:p.turn.id});
-            }
-            resolve();
-          }catch(e){reject(e);}
-        }
+        if(settled||p?.threadId!==b.native_id)return;
+        // Retain only bounded fields needed for this turn while turn/start is
+        // pending. Events from other turns cannot prove this turn has ended.
+        let payload:any;
+        if(method==='turn/started'||method==='turn/completed'){
+          if(!validTurnId(p.turn?.id))return;
+          payload={turn:{id:p.turn.id,status:typeof p.turn.status==='string'?p.turn.status.slice(0,40):undefined,error:{message:typeof p.turn.error?.message==='string'?p.turn.error.message.slice(0,2000):undefined}}};
+        }else if(method==='item/completed'){
+          if(!validTurnId(p.turnId)||p.item?.type!=='agentMessage'||p.item.phase==='commentary'||typeof p.item.text!=='string'||p.item.text.length>100000)return;
+          payload={turnId:p.turnId,item:{text:p.item.text}};
+        }else if(method==='thread/tokenUsage/updated'){
+          if(!validTurnId(p.turnId)||!p.tokenUsage?.last)return;
+          payload={turnId:p.turnId,tokenUsage:{last:{inputTokens:typeof p.tokenUsage.last.inputTokens==='number'?p.tokenUsage.last.inputTokens:undefined,outputTokens:typeof p.tokenUsage.last.outputTokens==='number'?p.tokenUsage.last.outputTokens:undefined}}};
+        }else return;
+        if(!turnId){earlyBytes+=JSON.stringify(payload).length;if(early.length>=256||earlyBytes>1000000){fail(new Error('Managed turn events exceeded the limit. Check the session before retrying.'));return;}early.push({method,payload});return;}
+        deliver(method,payload);
       };
       active.on('notification',event);active.on('closed',closed);
       handedOff=true;
-      active.request('turn/start',{threadId:b.native_id,input}).catch(e=>{cleanup();reject(e);});
+      active.request('turn/start',{threadId:b.native_id,input}).then(result=>{
+        if(settled)return;
+        const id=result?.turn?.id;
+        if(!validTurnId(id)){fail(new Error('Managed turn identity could not be confirmed. Check the session before retrying.'));return;}
+        turnId=id;
+        const queued=early.splice(0);for(const pending of queued){deliver(pending.method,pending.payload);if(settled)break;}
+      }).catch(fail);
     });
     }catch(e){
       if(guarded&&!handedOff&&!(e instanceof DispatchNotSubmittedError)){
