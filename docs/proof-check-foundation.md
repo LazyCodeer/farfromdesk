@@ -62,7 +62,7 @@ history of files outside SQLite, including the Meta key, and is not sufficient
 authorization for independent evidence or a correction.
 
 An owner can send `/proof bind #ITEM CHECK_NUMBER OWNER/REPO` as a new
-typed message in their direct owner chat to record a public GitHub binding for
+typed message in their direct WhatsApp owner chat to record a public GitHub binding for
 one completed, approved contract scope. The contract criterion must already
 say `GitHub check NAME passed`. The saved binding is rechecked against the
 original scope and owner generation. It is not passed to `ProofChecks` and

@@ -107,6 +107,15 @@ test('a self-chat capture cannot authorize a different active destination',async
   }finally{f.close();}
 });
 
+test('Telegram does not claim support without an owner-scoped item',async()=>{
+  const f=await fixture();try{
+    const owner='tg:123:456';f.store.set('telegram-owner',owner);f.store.set('control-channel','telegram');
+    const context=f.store.captureIncomingOwner(owner,'telegram')!;
+    assert.throws(()=>f.store.incomingOwnerContext.run(context,()=>f.store.destinationContext.run(owner,()=>f.bindings.approve({id:`${owner}:1`,text:'/proof bind wa:approval 1 example/project',ownerCommand:true}))),/WhatsApp/);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM proof_owner_bindings').get()?.n,0);
+  }finally{f.close();}
+});
+
 test('owner, session or policy changes revoke the approved binding even if restored',async()=>{
   for(const change of ['owner','session','policy'] as const){
     const f=await fixture();try{
