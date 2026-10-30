@@ -371,7 +371,7 @@ export class Router {
     try{
       this.store.jobState(job.id,'failed',message);
       this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Brief action was not sent' WHERE status='queued' AND source=?").run(`native-opening:${job.id}:0`);
-      if(briefDestinationValid(this.store,guard.destination,guard.owner)&&this.store.incomingOwnerCurrent()&&(!this.store.incomingOwnerContext.getStore()||this.store.incomingOwnerContext.getStore()!.destination===guard.destination))this.store.output(undefined,message,`brief-action-error:${job.id}`,guard.destination,{requestId:job.id,kind:'system',origin:'system',plain:true});
+      if(guard.owner_generation&&guard.owner_generation===(this.store.get('incoming-owner-generation')??'')&&briefDestinationValid(this.store,guard.destination,guard.owner)&&this.store.incomingOwnerCurrent()&&(!this.store.incomingOwnerContext.getStore()||this.store.incomingOwnerContext.getStore()!.destination===guard.destination))this.store.output(undefined,message,`brief-action-error:${job.id}`,guard.destination,{requestId:job.id,kind:'system',origin:'system',plain:true});
       this.store.db.exec('RELEASE reject_brief_dispatch');
     }catch(e){this.store.db.exec('ROLLBACK TO reject_brief_dispatch; RELEASE reject_brief_dispatch');throw e;}
   }
@@ -406,7 +406,8 @@ export class Router {
     }
   }
   pump() {
-    if(this.stopped)return;
+    // A turn whose owner was revoked must not drive unrelated queued work.
+    if(this.stopped||!this.store.incomingOwnerCurrent())return;
     this.brain.tick(this);
     for(const job of this.store.db.prepare("SELECT i.* FROM inbox i JOIN brief_dispatch_guards g ON g.request_id=i.id WHERE i.status='queued'").all() as unknown as import('./store.js').Job[]){
       if(!briefDispatchValid(this,job))this.rejectBriefDispatch(job);
@@ -414,6 +415,9 @@ export class Router {
     for(const b of this.store.bindings()) {
       if(!b.enabled||b.mode==='channel'||this.busy.has(b.id))continue;
       const job=this.routableJob(b);if(!job)continue;
+      const origin=this.store.incomingOwnerContext.getStore();
+      // Wait for a neutral timer rather than inherit another chat's context.
+      if(origin&&briefDispatchGuard(this.store,job.id)&&origin.destination!==job.destination)continue;
       // The claim and attempt belong to one SQLite transaction: a failed or
       // concurrent dispatch must never leave an orphaned claim behind.
       const collaboration=this.collaboration?.has(job.id)??false;
@@ -451,11 +455,14 @@ export class Router {
   }
   channelPoll(b:Binding,client:string) {
     if(b.mode!=='channel')throw new Error('Session is not registered in channel mode.');
+    if(!this.store.incomingOwnerCurrent())return null;
     const prior=this.channelClients.get(b.id);
     if(prior&&prior.id!==client&&Date.now()-prior.seen<20000)throw new Error('Another channel client owns this binding.');
     this.channelClients.set(b.id,{id:client,seen:Date.now()});
     if(this.store.hasDispatched(b.id))return null;
     const job=this.routableJob(b);if(!job)return null;
+    const origin=this.store.incomingOwnerContext.getStore();
+    if(origin&&briefDispatchGuard(this.store,job.id)&&origin.destination!==job.destination)return null;
     try{this.assertDispatchAllowed(job.id,b);}catch(e){if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold)return null;if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;}
     const envelope=turnEnvelope(this.store,b,job.body,job.id,{tool:'whatsapp_reply'},this.attachments.references(b,job.id,true));
     this.store.jobState(job.id,'dispatched');envelope.acknowledge();return {...job,body:envelope.body};

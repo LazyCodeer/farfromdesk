@@ -19,6 +19,7 @@ const {MetaBrain}=await import('../src/meta-brain.js');
 const {DEFAULT_BRAIN,MetaSecret}=await import('../src/meta-brain-config.js');
 const {MorningBrief,canDeliverBrief}=await import('../src/morning-brief.js');
 const {Coordinator}=await import('../src/coordinator.js');
+const {WhatsApp}=await import('../src/whatsapp.js');
 test('application modules use the isolated test state',()=>assert.equal(stateDir,testState));
 function setup(file?:string){
   const dir=mkdtempSync(join(tmpdir(),'ffd-brief-')),store=new Store(file??join(dir,'test.db'));
@@ -107,6 +108,98 @@ test('a changed owner or revoked brain during the model call prevents output',as
       release();assert.equal(await pending,false);assert.equal(sourceRows(f.store).length,0);
     }finally{f.close();}
   }
+});
+test('a background brief cannot queue after its owner generation is revoked',async()=>{
+  const f=setup();try{
+    addScoped(f,'wa:task','Private synthetic task');let start!:()=>void,release!:()=>void;
+    const entered=new Promise<void>(r=>start=r),gate=new Promise<void>(r=>release=r);
+    const brief=new MorningBrief(f.store,f.router,async()=>{start();await gate;return {opening:'Hello.',priorities:[]};},()=>instant);
+    const pending=brief.request('owner@s.whatsapp.net','scheduled');await entered;f.store.set('incoming-owner-generation',randomUUID());release();
+    assert.equal(await pending,false);assert.equal(sourceRows(f.store).length,0);
+    assert.equal(f.store.db.prepare('SELECT 1 FROM morning_brief_attempts').get(),undefined);
+  }finally{f.close();}
+});
+test('a revoked background failure does not create a stale notice or exhaust retries',async()=>{
+  const f=setup();try{
+    let start!:()=>void,release!:()=>void;const entered=new Promise<void>(r=>start=r),gate=new Promise<void>(r=>release=r);
+    const brief=new MorningBrief(f.store,f.router,async()=>{start();await gate;throw Error('synthetic failure');},()=>instant);
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run('owner@s.whatsapp.net','owner@s.whatsapp.net','2026-10-29',2,instant-1);
+    const pending=brief.request('owner@s.whatsapp.net','scheduled');await entered;f.store.set('incoming-owner-generation',randomUUID());release();
+    assert.equal(await pending,false);assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source LIKE 'morning-brief-error:%'").get(),undefined);
+    assert.equal((f.store.db.prepare('SELECT attempts FROM morning_brief_attempts').get() as {attempts:number}).attempts,2);
+  }finally{f.close();}
+});
+test('explicit retry can re-arm a revoked failure notice that was never sent',async()=>{
+  const f=setup();try{
+    const owner='owner@s.whatsapp.net';let now=instant;
+    const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);f.router.morningBrief=brief;
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run(owner,owner,'2026-10-29',2,now-1);
+    assert.equal(await brief.request(owner,'scheduled'),false);
+    const first=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;assert.ok(first);
+    f.store.set('incoming-owner-generation',randomUUID());const wa=new WhatsApp(f.store,f.router,join(f.dir,'synthetic-wa'));wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+    wa.sock={sendMessage:async()=>({}),end:()=>{}} as any;await wa.flush();
+    assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(first.id) as any).status,'cancelled');
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:retry-brief',text:'/brief retry',ownerCommand:true}));await new Promise<void>(r=>setImmediate(r));
+    now+=61_000;await brief.request(owner,'scheduled');now+=301_000;await brief.request(owner,'scheduled');
+    const fresh=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%' AND status='queued'").get() as any;
+    assert.ok(fresh);assert.notEqual(fresh.id,first.id);assert.notEqual(fresh.wa_id,first.wa_id);assert.equal(f.store.incomingOwnerDelivery(fresh.id),true);wa.close();
+  }finally{f.close();}
+});
+for(const mode of ['uncertain','sending','sent','attempted-cancelled','delivered-cancelled','legacy-cancelled'] as const)test(`explicit retry never re-arms an ${mode} failure notice`,async()=>{
+  const f=setup();try{
+    const owner='owner@s.whatsapp.net';let now=instant;
+    const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);f.router.morningBrief=brief;
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run(owner,owner,'2026-10-29',2,now-1);
+    await brief.request(owner,'scheduled');const first=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
+    const status=mode.endsWith('cancelled')?'cancelled':mode,attempts=mode==='delivered-cancelled'||mode==='legacy-cancelled'?0:1,delivered=mode==='delivered-cancelled'?now:null;
+    f.store.db.prepare('UPDATE outbox SET status=?,attempts=?,delivered_at=?,error=? WHERE id=?').run(status,attempts,delivered,'Original owner connection changed.',first.id);
+    if(mode==='legacy-cancelled')f.store.db.prepare('DELETE FROM morning_brief_failure_safe WHERE outbox_id=?').run(first.id);
+    f.store.set('incoming-owner-generation',randomUUID());
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:retry-${mode}`,text:'/brief retry',ownerCommand:true}));await new Promise<void>(r=>setImmediate(r));
+    now+=61_000;await brief.request(owner,'scheduled');now+=301_000;await brief.request(owner,'scheduled');
+    const rows=f.store.db.prepare("SELECT id,status FROM outbox WHERE source LIKE 'morning-brief-error:%'").all() as {id:string;status:string}[];
+    assert.deepEqual(rows.map(r=>({...r})),[{id:first.id,status}],mode);
+  }finally{f.close();}
+});
+test('revocation during PR lookup prevents a later Meta request',async()=>{
+  const f=setup();try{
+    const item=addScoped(f,'wa:task','Synthetic task');f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.brain.memory.items.note(item.id,'https://github.com/Owner/Repo/pull/42',undefined,undefined,'wa:task'));
+    let start!:()=>void,release!:()=>void,calls=0;const entered=new Promise<void>(r=>start=r),gate=new Promise<void>(r=>release=r);
+    const brief=new MorningBrief(f.store,f.router,async()=>{calls++;return {opening:'Hello.',priorities:[]};},()=>instant,async()=>{start();await gate;return {title:'Synthetic',html_url:'https://github.com/Owner/Repo/pull/42',merged_at:null};});
+    const pending=brief.request('owner@s.whatsapp.net','scheduled');await entered;f.store.set('incoming-owner-generation',randomUUID());release();
+    assert.equal(await pending,false);assert.equal(calls,0);assert.equal(sourceRows(f.store).length,0);
+  }finally{f.close();}
+});
+for(const change of ['policy','key','time'] as const)test(`a ${change} change during PR lookup prevents a later Meta request`,async()=>{
+  const f=setup();try{
+    const item=addScoped(f,'wa:task','Synthetic task');f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.brain.memory.items.note(item.id,'https://github.com/Owner/Repo/pull/42',undefined,undefined,'wa:task'));
+    let start!:()=>void,release!:()=>void,calls=0;const entered=new Promise<void>(r=>start=r),gate=new Promise<void>(r=>release=r);
+    const brief=new MorningBrief(f.store,f.router,async()=>{calls++;return {opening:'Hello.',priorities:[]};},()=>instant,async()=>{start();await gate;return {title:'Synthetic',html_url:'https://github.com/Owner/Repo/pull/42',merged_at:null};});
+    const pending=brief.request('owner@s.whatsapp.net','scheduled');await entered;
+    if(change==='policy')f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:false,allowStatus:false}));
+    if(change==='key')f.secret.remove();if(change==='time')f.store.set('morning-brief-time','09:00');release();
+    assert.equal(await pending,false);assert.equal(calls,0);assert.equal(sourceRows(f.store).length,0);
+  }finally{f.close();}
+});
+test('a queued background brief is withheld on revocation and safely regenerated if never sent',async()=>{
+  const f=setup();try{
+    addScoped(f,'wa:task','Synthetic task');const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);
+    assert.equal(await brief.request('owner@s.whatsapp.net','scheduled'),true);const first=sourceRows(f.store)[0];
+    assert.equal(f.store.incomingOwnerDelivery(first.id),true);f.store.set('incoming-owner-generation',randomUUID());
+    const wa=new WhatsApp(f.store,f.router,join(f.dir,'synthetic-wa'));wa.status='connected';wa.selfJid='owner@s.whatsapp.net';wa.owners=[wa.selfJid];
+    let sends=0;wa.sock={sendMessage:async()=>{sends++;return {};},end:()=>{}} as any;
+    await wa.flush();assert.equal(sends,0);assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(first.id) as any).status,'cancelled');
+    assert.equal(await brief.request('owner@s.whatsapp.net','scheduled'),true);const current=sourceRows(f.store).find(row=>row.id!==first.id);
+    assert.ok(current);assert.equal(f.store.incomingOwnerDelivery(current.id),true);wa.close();
+  }finally{f.close();}
+});
+test('an unbound legacy queued brief cannot be sent',async()=>{
+  const f=setup();try{
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);
+    assert.equal(await brief.request('owner@s.whatsapp.net','scheduled'),true);const row=sourceRows(f.store)[0];
+    f.store.db.prepare('DELETE FROM incoming_owner_outbox WHERE outbox_id=?').run(row.id);
+    assert.equal(canDeliverBrief(f.store,row,'owner@s.whatsapp.net',instant),false);
+  }finally{f.close();}
 });
 test('only public GitHub PRs linked to this destination are checked; merge evidence comes from GitHub',async()=>{
   const f=setup();try{
@@ -259,6 +352,158 @@ test('a revoked inbound context settles a brief action without sending its rejec
     f.store.incomingOwnerContext.run(captured,()=>f.router.failBeforeSubmission('wa:action','Nothing was sent.'));
     assert.equal(f.store.job('wa:action')?.status,'failed');assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined);
   }finally{f.close();}
+});
+
+for(const change of ['logout-generation','owner-roundtrip','legacy'] as const)test(`queued brief actions do not run after ${change}`,async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const calls:any[]=[];(f.router.native as any).run=async(...args:any[])=>{calls.push(args);};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    if(change==='logout-generation')f.store.set('incoming-owner-generation',randomUUID());
+    if(change==='owner-roundtrip'){f.store.set('whatsapp-owner','other@s.whatsapp.net');f.store.set('whatsapp-owner','owner@s.whatsapp.net');}
+    if(change==='legacy')f.store.db.prepare('UPDATE brief_dispatch_guards SET owner_generation=NULL WHERE request_id=?').run('wa:action');
+    f.router.busy.delete(worker.id);f.router.pump();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(calls.length,0);assert.equal(f.store.job('wa:action')?.status,'failed');
+    assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined);
+  }finally{f.close();}
+});
+
+test('WhatsApp logout revokes a queued brief action before it can reach the session',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const calls:any[]=[];(f.router.native as any).run=async(...args:any[])=>{calls.push(args);};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    const wa=new WhatsApp(f.store,f.router,join(f.dir,'synthetic-wa'));wa.status='connected';wa.selfJid='owner@s.whatsapp.net';wa.owners=[wa.selfJid];
+    wa.sock={logout:async()=>{},end:()=>{}} as any;await wa.logout();
+    f.router.busy.delete(worker.id);f.router.pump();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(calls.length,0);assert.equal(f.store.job('wa:action')?.status,'failed');
+    assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined);
+  }finally{f.close();}
+});
+
+test('a revoked brief action is not delivered through channel polling',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp','channel').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    f.store.set('incoming-owner-generation',randomUUID());
+    assert.equal(f.router.channelPoll(f.store.binding(worker.id)!,'client'),null);assert.equal(f.store.job('wa:action')?.status,'failed');
+    assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined);
+  }finally{f.close();}
+});
+
+test('a background rejection and queued acknowledgment are withheld after owner revocation',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),worker.id);f.router.pump();
+    const error=f.store.db.prepare("SELECT * FROM outbox WHERE source='brief-action-error:wa:action:0'").get() as any;
+    const ack=f.store.db.prepare("SELECT * FROM outbox WHERE source='brief-action:wa:action:0'").get() as any;
+    assert.ok(error);assert.ok(ack);assert.equal(f.store.db.prepare('SELECT 1 FROM incoming_owner_outbox WHERE outbox_id=?').get(error.id),undefined);
+    assert.equal(canDeliverBrief(f.store,error,'owner@s.whatsapp.net'),true);
+    f.store.set('incoming-owner-generation',randomUUID());
+    assert.equal(canDeliverBrief(f.store,error,'owner@s.whatsapp.net'),false);assert.equal(canDeliverBrief(f.store,ack,'owner@s.whatsapp.net'),false);
+    const wa=new WhatsApp(f.store,f.router,join(f.dir,'synthetic-wa'));wa.status='connected';wa.selfJid='owner@s.whatsapp.net';wa.owners=[wa.selfJid];
+    let sends=0;wa.sock={sendMessage:async()=>{sends++;return {};},end:()=>{}} as any;
+    await wa.flush();assert.equal(sends,0);assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(error.id) as any).status,'cancelled');wa.close();
+  }finally{f.close();}
+});
+
+test('a stale unrelated inbound context cannot cancel a fresh brief action',async()=>{
+  const f=setup();try{
+    const owner='owner@s.whatsapp.net',stale=f.store.captureIncomingOwner(owner,'whatsapp')!;f.store.set('incoming-owner-generation',randomUUID());
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const calls:any[]=[];(f.router.native as any).run=async(...args:any[])=>{calls.push(args);};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request(owner,'first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:fresh',text:'go 1'}))).status,'queued');
+    f.router.busy.delete(worker.id);f.store.incomingOwnerContext.run(stale,()=>f.router.pump());
+    assert.equal(f.store.job('wa:fresh')?.status,'queued');assert.equal(calls.length,0);
+    f.router.pump();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1);
+  }finally{f.close();}
+});
+
+test('an unrelated current chat cannot cancel or dispatch a self-chat brief action',async()=>{
+  const f=setup();try{
+    const owner='owner@s.whatsapp.net',group='123@g.us';f.store.set(`owned-group:${group}`,'Owner group');f.store.set('destination-jid',group);
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const calls:any[]=[];(f.router.native as any).run=async(...args:any[])=>{calls.push(args);};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await f.store.destinationContext.run(owner,()=>brief.request(owner,'first-message'));f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:fresh',text:'go 1'}))).status,'queued');
+    const context=f.store.captureIncomingOwner(group,'whatsapp')!;f.router.busy.delete(worker.id);
+    f.store.incomingOwnerContext.run(context,()=>f.store.destinationContext.run(group,()=>f.router.pump()));
+    assert.equal(f.store.job('wa:fresh')?.status,'queued');assert.equal(calls.length,0);
+    f.router.pump();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1);
+  }finally{f.close();}
+});
+
+test('an in-flight brief handoff is rejected when the owner generation changes before submission',async()=>{
+  const f=setup();try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    let start!:()=>void,release!:()=>void,sends=0;const entered=new Promise<void>(r=>start=r),gate=new Promise<void>(r=>release=r);
+    (f.router.native as any).run=async(b:any,_body:string,id:string)=>{start();await gate;f.router.assertDispatchAllowed(id,b);sends++;};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    const captured=f.store.captureIncomingOwner('owner@s.whatsapp.net','whatsapp')!;f.router.busy.delete(worker.id);
+    f.store.incomingOwnerContext.run(captured,()=>f.router.pump());await entered;f.store.set('incoming-owner-generation',randomUUID());release();
+    for(let i=0;i<20&&f.router.busy.size;i++)await new Promise<void>(r=>setImmediate(r));
+    assert.equal(sends,0);assert.equal(f.store.job('wa:action')?.status,'failed');
+    assert.equal(f.store.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined);
+  }finally{f.close();}
+});
+
+test('brief owner generation survives restart and an old guard without it fails closed',async()=>{
+  for(const mode of ['valid','revoked','legacy'] as const){const f=setup();let reopened:InstanceType<typeof Store>|undefined;try{
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);f.router.busy.add(worker.id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:action',text:'go 1'}))).status,'queued');
+    if(mode==='revoked')f.store.set('incoming-owner-generation',randomUUID());
+    if(mode==='legacy')f.store.db.exec('ALTER TABLE brief_dispatch_guards DROP COLUMN owner_generation');
+    f.approvals.cancel();f.store.close();reopened=new Store(join(f.dir,'test.db'));
+    const calls:any[]=[],approvals=new Approvals(reopened),router=new Router(reopened,{run:async(...args:any[])=>{calls.push(args);},stop:()=>{}} as any,approvals);
+    router.brain=new MetaBrain(reopened,new MetaSecret(f.dir),{interpret:async()=>{throw Error('unused');}});router.coordinator=new Coordinator(reopened,router.native,router,()=>{});
+    router.pump();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(calls.length,mode==='valid'?1:0,mode);assert.equal(reopened.job('wa:action')?.status,mode==='valid'?'submitted':'failed',mode);
+    if(mode!=='valid')assert.equal(reopened.db.prepare("SELECT 1 FROM outbox WHERE source='brief-action-error:wa:action:0'").get(),undefined,mode);
+    approvals.cancel();reopened.close();reopened=undefined;
+  }finally{reopened?.close();try{f.close();}catch{rmSync(f.dir,{recursive:true,force:true});}}}
+});
+
+test('an existing installation without a generation can authorize new brief actions',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ffd-brief-old-owner-')),path=join(dir,'state.db'),old=new Store(path);
+  old.set('whatsapp-owner','owner@s.whatsapp.net');
+  const legacy=old.output(undefined,'Legacy queued reply','legacy-test','owner@s.whatsapp.net');assert.equal(legacy,true);
+  const legacyId=(old.db.prepare("SELECT id FROM outbox WHERE source='legacy-test:0'").get() as {id:string}).id;
+  old.db.prepare('INSERT INTO incoming_owner_outbox VALUES(?,?,?,?,?)').run(legacyId,'owner@s.whatsapp.net','owner@s.whatsapp.net','whatsapp','');
+  old.db.prepare("DELETE FROM settings WHERE key='incoming-owner-generation'").run();old.close();
+  const f=setup(path);try{
+    assert.ok(f.store.get('incoming-owner-generation'));assert.equal(f.store.incomingOwnerDelivery(legacyId),false);
+    f.router.coordinator=new Coordinator(f.store,f.router.native,f.router,()=>{});
+    const item=addScoped(f,'wa:task','Original task'),worker=f.store.register('worker','codex',randomUUID(),'/tmp').binding;f.router.brain.memory.items.setSession(item.id,worker.id);
+    const calls:any[]=[];(f.router.native as any).run=async(...args:any[])=>{calls.push(args);};
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);f.router.morningBrief=brief;
+    await brief.request('owner@s.whatsapp.net','first-message');f.store.sent(sourceRows(f.store)[0].id);
+    assert.equal((await f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.receive({id:'wa:new-action',text:'go 1'}))).status,'queued');
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.length,1);
+  }finally{f.close();rmSync(dir,{recursive:true,force:true});}
 });
 test('a queued channel action is never delivered if its saved session identity changes',async()=>{
   const f=setup();try{
