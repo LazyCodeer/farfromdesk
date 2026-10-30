@@ -74,6 +74,19 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
   const remoteDesktop=services?.remoteDesktop??new RemoteDesktopService({load:()=>{try{return JSON.parse(store.get('remote-desktop-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('remote-desktop-password',JSON.stringify(record)),loadEnabled:()=>store.get('remote-desktop-enabled')==='true',saveEnabled:value=>store.set('remote-desktop-enabled',String(value))});
+  let macAccessEpoch=0;
+  // App and browser automation are available only while macOS Accessibility is
+  // granted. Never rely on a previously saved opt-in after permission is revoked.
+  const syncMacPermission=(permission:ReturnType<MacControl['view']>)=>{
+    const allowed=permission.supported===true&&permission.trusted===true;
+    if(!allowed&&macControl.view().enabled){macAccessEpoch++;macControl.configure(false);desktopControl.stop();}
+    else if(allowed&&!macControl.view().enabled)macControl.configure(true);
+    return {...permission,enabled:allowed};
+  };
+  const requireMacPermission=async()=>{
+    const permission=syncMacPermission(await macControl.status());
+    if(!permission.enabled)throw new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow Accessibility in macOS System Settings.');
+  };
   const phoneRemote=new PhoneRemoteService({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))});
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
   const remoteControl=new RemoteControlService(new RemotePasswordAccess({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))}),undefined,text=>store.output(undefined,text,`remote-reconnect:${Date.now()}`,undefined,{plain:true}),voiceTranscriber(store));
@@ -124,7 +137,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);
           if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
+          if(input.action==='stop')macAccessEpoch++;
+          if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireMacPermission();if(epoch!==macAccessEpoch)throw new Error('MAC_CONTROL_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           let result=await macControl.run(`${binding.id}:${requestId}`,input);
+          if(input.action==='status')result=syncMacPermission(result as ReturnType<MacControl['view']>);
           router.coordinator!.ownerRequest(requestId);
           if(input.action==='capture'){const {pngBase64,...evidence}=result as any;const artifact=artifacts.prepare(binding,requestId,'mac-control-screenshot.png',pngBase64);result={...evidence,...artifact,delivery:'prepared, not sent'};}
           store.audit('mac-control-action',binding.id,input.action);
@@ -173,7 +189,9 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);
           if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
-          if(input.action==='stop')macControl.stop();
+          if(input.action==='stop'){macAccessEpoch++;macControl.stop();}
+          if(input.action==='status'){syncMacPermission(await macControl.status());router.coordinator!.ownerRequest(requestId);}
+          if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireMacPermission();if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{
             router.coordinator!.ownerRequest(requestId);
             if(router.stopped)throw new Error('Background operation is paused.');
@@ -285,8 +303,9 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/mac-control'&&req.method==='POST') {
         const d=await body(req);
         if(Object.keys(d).length!==1||!['enable','disable','check','permission','capture-permission'].includes(d.action))throw new Error('Choose enable, disable, check, permission or capture-permission.');
-        if(d.action==='disable')desktopControl.stop();
-        json(res,200,d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));return;
+        if(d.action==='disable'){macAccessEpoch++;desktopControl.stop();}
+        const result=d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):syncMacPermission(d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));
+        json(res,200,result);return;
       }
       if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/update-shutdown'&&req.method==='POST') {

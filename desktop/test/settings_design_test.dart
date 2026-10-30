@@ -20,7 +20,7 @@ void main() {
       configure(tester);
       final api = PreviewGateway(
         fixture: 'telegram-connected',
-        screen: 'settings',
+        screen: 'overview',
       );
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
@@ -28,6 +28,7 @@ void main() {
       final whatsapp = find.byKey(const ValueKey('messaging-option-whatsapp'));
       expect(telegram, findsOneWidget);
       expect(whatsapp, findsOneWidget);
+      expect(tester.getSize(telegram).height, tester.getSize(whatsapp).height);
       expect(
         tester.getTopLeft(telegram).dx,
         lessThan(tester.getTopLeft(whatsapp).dx),
@@ -36,6 +37,7 @@ void main() {
         find.descendant(of: telegram, matching: find.text('@ffd_sample_bot')),
         findsOneWidget,
       );
+      await tester.ensureVisible(telegram);
       await tester.tap(
         find.descendant(of: telegram, matching: find.text('Disconnect')),
       );
@@ -49,13 +51,13 @@ void main() {
     },
   );
 
-  testWidgets('WhatsApp keeps reply destination controls in its card', (
+  testWidgets('WhatsApp reply settings open in a dialog on Overview', (
     tester,
   ) async {
     configure(tester);
     await tester.pumpWidget(
       FarFromDeskApp(
-        gateway: PreviewGateway(fixture: 'connected', screen: 'settings'),
+        gateway: PreviewGateway(fixture: 'connected', screen: 'overview'),
       ),
     );
     await tester.pumpAndSettle();
@@ -72,6 +74,34 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Where should replies appear?'), findsOneWidget);
     expect(find.text('Private group'), findsOneWidget);
+    await tester.tap(find.text('Private group'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Your groups where only you are a member'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Messaging setup can be resumed after skipping onboarding', (
+    tester,
+  ) async {
+    configure(tester);
+    await tester.pumpWidget(
+      FarFromDeskApp(gateway: PreviewGateway(fixture: 'onboarding')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Skip for now'));
+    await tester.pumpAndSettle();
+    final connect = find.descendant(
+      of: find.byKey(const ValueKey('messaging-option-whatsapp')),
+      matching: find.text('Connect'),
+    );
+    await tester.ensureVisible(connect);
+    await tester.tap(connect);
+    await tester.pumpAndSettle();
+    expect(find.text('Connect your WhatsApp'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -88,6 +118,9 @@ void main() {
       final password = find.byKey(const Key('remote-password'));
       await tester.ensureVisible(password);
       expect(find.text('Control from anywhere'), findsOneWidget);
+      expect(find.text('Accessibility'), findsOneWidget);
+      expect(find.byKey(const Key('mac-control-enabled')), findsNothing);
+      expect(find.byKey(const Key('remote-desktop-settings')), findsNothing);
       expect(find.text('Connect from your phone'), findsOneWidget);
       expect(find.text('Same Wi-Fi preview'), findsNothing);
       final wifiStop = find.byKey(const Key('wifi-stop'));

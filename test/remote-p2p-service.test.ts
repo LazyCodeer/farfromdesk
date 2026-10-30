@@ -15,7 +15,9 @@ test('remote control chat: command, password gate, answer intake and errors',{sk
  const service=new RemoteControlService(access,(_a,onReconnect)=>{made++;reconnect=onReconnect;return fake.host as any;},t=>notes.push(t));
  assert.equal(await service.chat('hello'),undefined);
  assert.match(await service.chat('FFD-ANSWER '+'a'.repeat(30))??'',/does not match your latest link/);
- assert.match(await service.chat('control my screen')??'',/Set a remote password first/);
+ const setup=await service.chat('control my screen')??'';
+ assert.match(setup,/Settings > Remote control/);
+ assert.doesNotMatch(setup,/same Wi-Fi|Remote Desktop settings/);
  await access.setPassword('service test password 123');
  const reply=await service.chat('Control my Mac')??'';
  assert.match(reply,/https:\/\/ffd\.codecylabs\.com\/remote\/#OFFER/);

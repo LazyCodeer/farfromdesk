@@ -45,10 +45,6 @@ class _DeskState extends State<Desk> {
   bool ready = false, busy = false, polling = false, startup = false;
   // Lets the owner reach the app before linking a chat; not persisted.
   bool onboardingSkipped = false;
-  void _macUpdate(VoidCallback change) {
-    if (mounted) setState(change);
-  }
-
   int section = 0, page = 0;
   String platform = 'codex:cli',
       setupAction = 'new',
@@ -56,7 +52,7 @@ class _DeskState extends State<Desk> {
       activityFilter = 'All',
       activityQuery = '',
       itemQuery = '',
-      settingsTab = 'Messaging';
+      settingsTab = 'This Mac';
   // A stable binding identity, never a request title or session display name.
   String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
   String inboxTab = 'Requests';
@@ -99,7 +95,7 @@ class _DeskState extends State<Desk> {
   Timer? timer, updateTimer;
   DateTime macCheckedAt = DateTime(0);
   bool macChecking = false;
-  Map<String, dynamic> remoteLink = {}, phoneRemote = {};
+  Map<String, dynamic> remoteLink = {}, phoneRemote = {}, legacyRemote = {};
   List<dynamic> phoneApps = [], phoneWindows = [];
   int? phonePid, phoneWindowId;
   String? phoneAddress, remoteError;
@@ -409,9 +405,9 @@ class _DeskState extends State<Desk> {
             !remoteBusy) {
           unawaited(loadRemote());
         }
-        // macOS has no permission-change event, so re-ask while Settings is open.
-        if (section == 4 &&
-            next['macControl']?['enabled'] == true &&
+        // macOS has no permission-change event, so refresh on Overview and Settings.
+        if ((section == 0 || section == 4) &&
+            next['macControl']?['supported'] == true &&
             DateTime.now().difference(macCheckedAt).inSeconds >= 5) {
           unawaited(checkMac());
         }
@@ -526,7 +522,11 @@ class _DeskState extends State<Desk> {
     return answer?.trim();
   }
 
-  void changeView(VoidCallback update) => setState(update);
+  void changeView(VoidCallback update) {
+    setState(update);
+    modalUpdate?.call(() {});
+  }
+
   void go(int index) {
     setState(() => section = index);
     if (index == 2) unawaited(loadItems());
