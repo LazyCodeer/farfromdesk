@@ -26,7 +26,7 @@ import { masterPolicy } from './master-policy.js';
 import { roleConfig, coordinatorRoleStatus } from './roles.js';
 import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
-import { Connections } from './connections.js';
+import { Connections, usableCLIConnection } from './connections.js';
 import { projectWorkspace } from './project-workspace.js';
 import { WorkspaceScanner,type ResolvedWorkspaces } from './workspace-scanner.js';
 import { scopedBridgeCommand } from './reply-args.js';
@@ -146,11 +146,11 @@ export class Masters {
     await Promise.all(platforms.map(async platform=>{
       const {accountKey,...connection}=await this.connections.read(platform.provider,platform.executionMode,fresh);
       platform.connection=connection;
-      platform.canCreate=platform.available&&(platform.executionMode==='desktop'||connection.state==='verified');
+      platform.canCreate=platform.available&&(platform.executionMode==='desktop'||usableCLIConnection(connection));
       // CLI history can be resumed only with an explicitly selected, verified CLI account.
       if(platform.executionMode==='cli'&&(platform.provider==='codex'||portableAgents)) {
-        platform.sessions=platform.sessions.map((s:any)=>({...s,available:s.available&&connection.state==='verified',status:connection.state==='verified'?s.status:connection.label}));
-        if(connection.state!=='verified')platform.reason=connection.label;
+        platform.sessions=platform.sessions.map((s:any)=>({...s,available:s.available&&usableCLIConnection(connection),status:usableCLIConnection(connection)?s.status:connection.label}));
+        if(!usableCLIConnection(connection))platform.reason=connection.label;
       }
       if(platform.provider==='codex'&&platform.executionMode==='desktop')platform.reason='Existing chats use the native desktop queue and that chat’s account. New chats create a history record, then use Desktop for requests. CLI authentication is not used for model execution.';
       if(platform.provider==='claude'&&platform.executionMode==='desktop') {

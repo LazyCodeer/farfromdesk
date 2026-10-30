@@ -17,7 +17,7 @@ import { Attachments } from './attachments.js';
 import { sameProject, activityTime, claudeHistory, claudeDesktopHistory, type Session } from './session-catalog.js';
 import { claudeDiscoveryBinary, hasClaudeInboxes, claudeDesktopProcesses } from './desktop-claude.js';
 import { SessionActivation,DesktopReadinessError,openCodexDesktop } from './session-activation.js';
-import { Connections } from './connections.js';
+import { Connections, usableCLIConnection } from './connections.js';
 import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
 
@@ -94,7 +94,7 @@ export class NativeAgents {
       // until it settles. Retrying cannot accumulate duplicate process scans.
       let timer:ReturnType<typeof setTimeout>;
       const deadline=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Session discovery timed out. Your saved connections are unchanged; try Refresh.')),12000);});
-      const load=this.readCatalog(provider,cursor).then(page=>{
+      const load=this.readCatalog(provider,cursor,options.fresh===true).then(page=>{
         this.catalogCache.delete(key);
         this.catalogCache.set(key,{expires:Date.now()+15000,page:structuredClone(page)});
         while(this.catalogCache.size>64)this.catalogCache.delete(this.catalogCache.keys().next().value!);
@@ -109,14 +109,14 @@ export class NativeAgents {
     }
     return structuredClone(await task);
   }
-  protected async readCatalog(provider:'codex'|'claude',cursor?:string):Promise<{sessions:Session[];cursor:string|null}> {
+  protected async readCatalog(provider:'codex'|'claude',cursor?:string,fresh=false):Promise<{sessions:Session[];cursor:string|null}> {
     if(provider==='claude') {
       const [history,desktopHistory,desktopPids,,cliConnection]=await Promise.all([
         claudeHistory(join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')),
         claudeDesktopHistory(join(homedir(),'Library/Application Support/Claude/claude-code-sessions')),
         claudeDesktopProcesses().catch(()=>new Set<number>()),
         this.desktopConfig(),
-        this.connections.read('claude','cli')
+        this.connections.read('claude','cli',fresh)
       ]);
       let live:any[]=[],liveComplete=false;
       try{const {stdout}=await exec(helper(),['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
@@ -128,9 +128,9 @@ export class NativeAgents {
         all.set(key,{...existing,id:b.native_id,name:this.store.get(`name:${b.id}`)??b.alias,cwd:b.cwd,provider,executionMode:'cli',status:'bridge-managed session',available:true});
       }
       for(const [id,row] of all)if(row.activation)all.set(id,{...row,
-        available:liveComplete&&(row.activation==='desktop-open'||cliConnection.state==='verified'),
+        available:liveComplete&&(row.activation==='desktop-open'||usableCLIConnection(cliConnection)),
         activation:liveComplete?row.activation:undefined,
-        status:!liveComplete?'Live session discovery failed · automatic resume held':row.activation==='desktop-open'?'Saved Desktop chat · reopening must be verified':cliConnection.state==='verified'?'Saved CLI chat · resumes automatically when requested':cliConnection.label});
+        status:!liveComplete?'Live session discovery failed · automatic resume held':row.activation==='desktop-open'?'Saved Desktop chat · reopening must be verified':usableCLIConnection(cliConnection)?'Saved CLI chat · resumes automatically when requested':cliConnection.label});
       for(const [id,row] of all)all.set(id,{...row,liveDiscoveryComplete:liveComplete});
       return {sessions:[...all.values()].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)),cursor:null};
     }

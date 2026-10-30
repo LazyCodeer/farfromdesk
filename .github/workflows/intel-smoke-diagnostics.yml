@@ -14,6 +14,10 @@ on:
       - 'script/run_intel_diagnostic.sh'
       - 'script/intel-smoke-diagnostics.md'
       - 'script/tests/test_intel_smoke_observer.py'
+      - 'desktop/lib/main.dart'
+      - 'desktop/lib/startup_trace.dart'
+      - 'desktop/lib/native_gateway.dart'
+      - 'desktop/test/desktop_startup_test.dart'
 permissions:
   contents: read
   actions: read
