@@ -47,7 +47,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS item_owner_origins(item_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(item_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_note_origins(note_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(note_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_add_fingerprints(item_id INTEGER PRIMARY KEY,fingerprint TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS brief_dispatch_guards(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,target_id TEXT NOT NULL,target_identity TEXT NOT NULL,item_identity TEXT NOT NULL,assignment_id TEXT,body_hash TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS brief_dispatch_guards(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,target_id TEXT NOT NULL,target_identity TEXT NOT NULL,item_identity TEXT NOT NULL,assignment_id TEXT,body_hash TEXT NOT NULL,owner_generation TEXT);
       CREATE TABLE IF NOT EXISTS hook_updates(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,turn_id TEXT,at INTEGER NOT NULL,text TEXT NOT NULL);
     `);
     if(!this.db.prepare('PRAGMA table_info(inbox)').all().some((c:any)=>c.name==='updated_at')) {
@@ -59,6 +59,9 @@ export class Store {
       for(const [column,type] of Object.entries(columns))if(!this.db.prepare(`PRAGMA table_info(${table})`).all().some((c:any)=>c.name===column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
     for(const column of ['artifact_id','wa_message'])if(!this.db.prepare('PRAGMA table_info(outbox)').all().some((c:any)=>c.name===column))this.db.exec(`ALTER TABLE outbox ADD COLUMN ${column} TEXT`);
+    // A legacy queued action has no original owner generation and must not be
+    // silently authorized under the currently paired owner.
+    if(!this.db.prepare('PRAGMA table_info(brief_dispatch_guards)').all().some((c:any)=>c.name==='owner_generation'))this.db.exec('ALTER TABLE brief_dispatch_guards ADD COLUMN owner_generation TEXT');
     if(!this.db.prepare('PRAGMA table_info(artifacts)').all().some((c:any)=>c.name==='destination'))this.db.exec('ALTER TABLE artifacts ADD COLUMN destination TEXT');
     for(const table of ['inbox','outbox']) {
       if(!this.db.prepare(`PRAGMA table_info(${table})`).all().some((c:any)=>c.name==='destination'))this.db.exec(`ALTER TABLE ${table} ADD COLUMN destination TEXT`);

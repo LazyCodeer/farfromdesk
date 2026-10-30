@@ -6,7 +6,7 @@ import type { Router } from './router.js';
 /** Known before-submission failures must never be reported as uncertain delivery. */
 export class DispatchNotSubmittedError extends Error {}
 export class BriefDispatchError extends DispatchNotSubmittedError {constructor(message='The request was not sent because the owner, item or session changed. Check the item before trying again.'){super(message);}}
-type Guard={request_id:string;owner:string;destination:string;item_id:number;target_id:string;target_identity:string;item_identity:string;assignment_id:string|null;body_hash:string};
+type Guard={request_id:string;owner:string;destination:string;item_id:number;target_id:string;target_identity:string;item_identity:string;assignment_id:string|null;body_hash:string;owner_generation:string|null};
 type GuardItem={id:number;title:string;status:string;binding_id:string|null;created_at:number};
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function briefDestinationValid(store:Store,destination:string,owner:string){return store.controlChannel()==='whatsapp'&&!!owner&&store.ownerFor(destination)===owner&&
@@ -20,8 +20,9 @@ const itemIdentity=(item:GuardItem)=>digest([item.id,item.title,item.created_at]
 export function recordBriefDispatch(router:Router,job:Job,itemId:number,targetId:string){
   const store=router.store,destination=job.destination,owner=store.ownerFor(destination),item=store.db.prepare('SELECT id,title,status,binding_id,created_at FROM items WHERE id=?').get(itemId) as GuardItem|undefined;
   const target=store.binding(targetId),identity=briefTargetIdentity(store,targetId);
-  if(!destination||!owner||!item||!target||!identity||job.binding_id!==targetId||!briefDestinationValid(store,destination,owner))throw new BriefDispatchError();
-  store.db.prepare('INSERT INTO brief_dispatch_guards VALUES(?,?,?,?,?,?,?,?,?)').run(job.id,owner,destination,itemId,targetId,identity,itemIdentity(item),item.binding_id,hash(job.body));
+  const captured=store.incomingOwnerContext.getStore();
+  if(!destination||!owner||!item||!target||!identity||job.binding_id!==targetId||!briefDestinationValid(store,destination,owner)||!captured||captured.channel!=='whatsapp'||captured.owner!==owner||captured.destination!==destination||!captured.generation||!store.incomingOwnerCurrent())throw new BriefDispatchError();
+  store.db.prepare('INSERT INTO brief_dispatch_guards(request_id,owner,destination,item_id,target_id,target_identity,item_identity,assignment_id,body_hash,owner_generation) VALUES(?,?,?,?,?,?,?,?,?,?)').run(job.id,owner,destination,itemId,targetId,identity,itemIdentity(item),item.binding_id,hash(job.body),captured.generation);
   if(!briefDispatchValid(router,job,target))throw new BriefDispatchError();
 }
 export function briefDispatchGuard(store:Store,id:string){return store.db.prepare('SELECT * FROM brief_dispatch_guards WHERE request_id=?').get(id) as Guard|undefined;}
@@ -29,7 +30,9 @@ export function briefDispatchGuard(store:Store,id:string){return store.db.prepar
 export function briefDispatchValid(router:Router,job:Job,passedBinding?:Binding){
   const store=router.store,g=briefDispatchGuard(store,job.id);if(!g)return true;
   const current=store.job(job.id),target=store.binding(g.target_id),item=store.db.prepare('SELECT id,title,status,binding_id,created_at FROM items WHERE id=?').get(g.item_id) as GuardItem|undefined;
+  const captured=store.incomingOwnerContext.getStore();
   if(router.stopped||!current||!['queued','dispatched'].includes(current.status)||current.binding_id!==g.target_id||current.destination!==g.destination||hash(current.body)!==g.body_hash||store.itemOf(job.id)!==g.item_id||
+     !g.owner_generation||g.owner_generation!==(store.get('incoming-owner-generation')??'')||captured&&(!store.incomingOwnerCurrent()||captured.owner!==g.owner||captured.destination!==g.destination||captured.channel!=='whatsapp')||
      !briefDestinationValid(store,g.destination,g.owner)||!target?.enabled||briefTargetIdentity(store,g.target_id)!==g.target_identity||
      passedBinding&&(passedBinding.id!==g.target_id||identityForBinding(store,passedBinding)!==g.target_identity)||
      !item||item.status==='done'||item.binding_id!==g.assignment_id||itemIdentity(item)!==g.item_identity||
