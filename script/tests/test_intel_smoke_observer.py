@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -70,23 +71,51 @@ class IntelSmokeObserverTests(unittest.TestCase):
                          'POSIX and Node.js are required')
     def test_running_and_blocked_event_loop_produce_distinct_heartbeat_age(self):
         with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ, FFD_DIAGNOSTIC_DIR=directory, FFD_DIAGNOSTIC_HEARTBEAT_MS='100')
-            script = "setTimeout(()=>{const end=Date.now()+1800;while(Date.now()<end){}},500);setTimeout(()=>{},2400)"
+            hold = pathlib.Path(directory) / 'hold-loop'
+            done = pathlib.Path(directory) / 'loop-finished'
+            hold.touch()
+            env = dict(os.environ, FFD_DIAGNOSTIC_DIR=directory, FFD_DIAGNOSTIC_HEARTBEAT_MS='100', FFD_TEST_HOLD=str(hold), FFD_TEST_DONE=str(done))
+            script = "const fs=require('node:fs');process.stdin.once('data',()=>{console.log('blocking');const end=Date.now()+10000;while(fs.existsSync(process.env.FFD_TEST_HOLD)&&Date.now()<end){};fs.writeFileSync(process.env.FFD_TEST_DONE,'done')});process.stdin.resume()"
             node = subprocess.Popen(['node', '--import', str(ROOT / 'script/intel_diagnostic_heartbeat.mjs'),
-                                     '-e', script], env=env)
+                                     '-e', script], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    text=True, bufsize=1)
             try:
                 heartbeat = pathlib.Path(directory) / 'supervisor-heartbeat'
-                deadline = time.monotonic() + 1.5
-                while not heartbeat.exists() and time.monotonic() < deadline:
+                deadline = time.monotonic() + 4
+                fresh = set()
+                while time.monotonic() < deadline and node.poll() is None:
+                    try:
+                        match = re.fullmatch(r'(\d+) (\d+)', heartbeat.read_text(encoding='ascii').strip())
+                        if match and int(match.group(1)) == node.pid and abs(time.time() * 1000 - int(match.group(2))) < 500:
+                            fresh.add(int(match.group(2)))
+                            if len(fresh) >= 2:
+                                break
+                    except (OSError, UnicodeError):
+                        pass
                     time.sleep(.05)
-                self.assertTrue(heartbeat.exists())
-                time.sleep(1.2)
-                age = observer.heartbeat_age(heartbeat, node.pid, time.time())
-                self.assertIsNotNone(age)
+                self.assertGreaterEqual(len(fresh), 2, 'heartbeat did not advance while the event loop was running')
+                node.stdin.write('block\n')
+                node.stdin.flush()
+                readable, _, _ = select.select([node.stdout], [], [], 3)
+                self.assertTrue(readable, 'child did not enter the busy loop')
+                self.assertEqual(node.stdout.readline().strip(), 'blocking')
+                deadline = time.monotonic() + 2
+                age = None
+                while time.monotonic() < deadline and node.poll() is None:
+                    sample = observer.heartbeat_age(heartbeat, node.pid, time.time())
+                    if sample is not None and sample > 500:
+                        age = sample
+                        break
+                    time.sleep(.05)
+                self.assertIsNotNone(age, 'no stale heartbeat observed while the event loop was blocked')
                 self.assertGreater(age, 500)
+                self.assertFalse(done.exists(), 'busy loop ended before the stale sample')
             finally:
+                hold.unlink(missing_ok=True)
                 node.kill()
                 node.wait(timeout=2)
+                node.stdin.close()
+                node.stdout.close()
 
     @unittest.skipUnless(os.name == 'posix' and shutil.which('node'),
                          'POSIX and Node.js are required')
