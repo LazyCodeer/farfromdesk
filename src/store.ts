@@ -78,6 +78,25 @@ export class Store {
         WHEN (${row}.key IN ('whatsapp-owner','telegram-owner','telegram-bot-id','control-channel','destination-jid','background-enabled') OR ${row}.key LIKE 'owned-group:%')${changed}
         BEGIN INSERT INTO settings(key,value) VALUES('incoming-owner-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
     }
+    // A paused/re-enabled coordinator must invalidate an in-flight research call
+    // even if it is enabled again before the next asynchronous check.
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS reach_binding_update AFTER UPDATE ON bindings
+      WHEN OLD.enabled IS NOT NEW.enabled OR OLD.token_hash IS NOT NEW.token_hash OR OLD.native_id IS NOT NEW.native_id OR OLD.cwd IS NOT NEW.cwd OR OLD.provider IS NOT NEW.provider OR OLD.mode IS NOT NEW.mode
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-binding-generation:'||NEW.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;
+      CREATE TRIGGER IF NOT EXISTS reach_binding_delete AFTER DELETE ON bindings
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-binding-generation:'||OLD.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;`);
+    for(const operation of ['INSERT','UPDATE','DELETE'] as const){
+      const row=operation==='DELETE'?'OLD':'NEW';
+      const changed=operation==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS reach_authority_${operation.toLowerCase()} AFTER ${operation} ON settings
+        WHEN (${row}.key IN ('enabled-apps','coordinator-registry','master') OR ${row}.key LIKE 'coordinator-retired:%' OR ${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'execution-mode:%' OR ${row}.key LIKE 'parent:%' OR ${row}.key LIKE 'report-parent:%')${changed}
+        BEGIN INSERT INTO settings(key,value) VALUES('reach-authority-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
+    }
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS reach_request_update AFTER UPDATE ON inbox
+      WHEN (OLD.status IN ('queued','dispatched','submitted') AND NEW.status NOT IN ('queued','dispatched','submitted')) OR OLD.body IS NOT NEW.body OR OLD.binding_id IS NOT NEW.binding_id OR OLD.destination IS NOT NEW.destination
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-request-generation:'||NEW.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;
+      CREATE TRIGGER IF NOT EXISTS reach_request_delete AFTER DELETE ON inbox
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-request-generation:'||OLD.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;`);
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }

@@ -1,4 +1,5 @@
 import { reviewOrphanVoice } from './voice-attention.js';
+import {ownerResearchRequest} from './agent-reach-request.js';
 import { inboxSessions, inboxThread } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
 import { metaTimelineView,metaTimelineRevision } from './meta-timeline.js';
@@ -133,6 +134,12 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path.startsWith('/api/master/')) {
         if(!binding||!router.coordinator?.isCoordinator(binding.id)){json(res,403,{error:'Only the WhatsApp master can use this endpoint'});return;}
         return await router.coordinator!.scope.run(binding.id,async()=>{
+        if(path==='/api/master/reach'&&req.method==='POST') {
+          const input=await body(req,4096);
+          if(!input||typeof input!=='object'||Object.keys(input).some(k=>k!=='requestId'))throw new Error('Only the exact owner request ID is accepted.');
+          const result=await ownerResearchRequest(store,router,binding,input.requestId);
+          json(res,200,{untrustedSourceText:true,result});return;
+        }
         if(path==='/api/master/mac-control'&&req.method==='POST') {
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);
