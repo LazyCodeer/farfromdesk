@@ -81,6 +81,9 @@ export class Store {
         WHEN (${row}.key IN ('whatsapp-owner','telegram-owner','telegram-bot-id','control-channel','destination-jid','background-enabled') OR ${row}.key LIKE 'owned-group:%')${changed}
         BEGIN INSERT INTO settings(key,value) VALUES('incoming-owner-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
     }
+    // Existing installations may already have an owner but no generation.
+    // Seed a fresh epoch; records without one cannot be silently revived.
+    this.db.exec("INSERT OR IGNORE INTO settings(key,value) VALUES('incoming-owner-generation',lower(hex(randomblob(16))))");
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }

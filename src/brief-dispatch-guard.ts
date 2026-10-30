@@ -30,9 +30,8 @@ export function briefDispatchGuard(store:Store,id:string){return store.db.prepar
 export function briefDispatchValid(router:Router,job:Job,passedBinding?:Binding){
   const store=router.store,g=briefDispatchGuard(store,job.id);if(!g)return true;
   const current=store.job(job.id),target=store.binding(g.target_id),item=store.db.prepare('SELECT id,title,status,binding_id,created_at FROM items WHERE id=?').get(g.item_id) as GuardItem|undefined;
-  const captured=store.incomingOwnerContext.getStore();
   if(router.stopped||!current||!['queued','dispatched'].includes(current.status)||current.binding_id!==g.target_id||current.destination!==g.destination||hash(current.body)!==g.body_hash||store.itemOf(job.id)!==g.item_id||
-     !g.owner_generation||g.owner_generation!==(store.get('incoming-owner-generation')??'')||captured&&(!store.incomingOwnerCurrent()||captured.owner!==g.owner||captured.destination!==g.destination||captured.channel!=='whatsapp')||
+     !g.owner_generation||g.owner_generation!==(store.get('incoming-owner-generation')??'')||
      !briefDestinationValid(store,g.destination,g.owner)||!target?.enabled||briefTargetIdentity(store,g.target_id)!==g.target_identity||
      passedBinding&&(passedBinding.id!==g.target_id||identityForBinding(store,passedBinding)!==g.target_identity)||
      !item||item.status==='done'||item.binding_id!==g.assignment_id||itemIdentity(item)!==g.item_identity||
