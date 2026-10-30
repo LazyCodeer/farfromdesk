@@ -129,6 +129,37 @@ test('a revoked background failure does not create a stale notice or exhaust ret
     assert.equal((f.store.db.prepare('SELECT attempts FROM morning_brief_attempts').get() as {attempts:number}).attempts,2);
   }finally{f.close();}
 });
+test('explicit retry can re-arm a revoked failure notice that was never sent',async()=>{
+  const f=setup();try{
+    const owner='owner@s.whatsapp.net';let now=instant;
+    const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);f.router.morningBrief=brief;
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run(owner,owner,'2026-10-29',2,now-1);
+    assert.equal(await brief.request(owner,'scheduled'),false);
+    const first=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;assert.ok(first);
+    f.store.set('incoming-owner-generation',randomUUID());const wa=new WhatsApp(f.store,f.router,join(f.dir,'synthetic-wa'));wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
+    wa.sock={sendMessage:async()=>({}),end:()=>{}} as any;await wa.flush();
+    assert.equal((f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(first.id) as any).status,'cancelled');
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:retry-brief',text:'/brief retry',ownerCommand:true}));await new Promise<void>(r=>setImmediate(r));
+    now+=61_000;await brief.request(owner,'scheduled');now+=301_000;await brief.request(owner,'scheduled');
+    const fresh=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%' AND status='queued'").get() as any;
+    assert.ok(fresh);assert.notEqual(fresh.id,first.id);assert.notEqual(fresh.wa_id,first.wa_id);assert.equal(f.store.incomingOwnerDelivery(fresh.id),true);wa.close();
+  }finally{f.close();}
+});
+for(const mode of ['uncertain','sending','sent','attempted-cancelled','delivered-cancelled'] as const)test(`explicit retry never re-arms an ${mode} failure notice`,async()=>{
+  const f=setup();try{
+    const owner='owner@s.whatsapp.net';let now=instant;
+    const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);f.router.morningBrief=brief;
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run(owner,owner,'2026-10-29',2,now-1);
+    await brief.request(owner,'scheduled');const first=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
+    const status=mode.endsWith('cancelled')?'cancelled':mode,attempts=mode==='delivered-cancelled'?0:1,delivered=mode==='delivered-cancelled'?now:null;
+    f.store.db.prepare('UPDATE outbox SET status=?,attempts=?,delivered_at=?,error=? WHERE id=?').run(status,attempts,delivered,'Original owner connection changed.',first.id);
+    f.store.set('incoming-owner-generation',randomUUID());
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:retry-${mode}`,text:'/brief retry',ownerCommand:true}));await new Promise<void>(r=>setImmediate(r));
+    now+=61_000;await brief.request(owner,'scheduled');now+=301_000;await brief.request(owner,'scheduled');
+    const rows=f.store.db.prepare("SELECT id,status FROM outbox WHERE source LIKE 'morning-brief-error:%'").all() as {id:string;status:string}[];
+    assert.deepEqual(rows.map(r=>({...r})),[{id:first.id,status}],mode);
+  }finally{f.close();}
+});
 test('revocation during PR lookup prevents a later Meta request',async()=>{
   const f=setup();try{
     const item=addScoped(f,'wa:task','Synthetic task');f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.brain.memory.items.note(item.id,'https://github.com/Owner/Repo/pull/42',undefined,undefined,'wa:task'));

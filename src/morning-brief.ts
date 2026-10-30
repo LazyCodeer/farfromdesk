@@ -77,6 +77,20 @@ export class MorningBrief {
     if(!validDestination(this.store,destination,owner)||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return;
     this.store.incomingOwnerContext.run(origin,()=>this.store.output(undefined,'The morning brief could not be prepared after several tries. Check Brain settings, then send /brief retry.',`morning-brief-error:${source(destination,owner,day)}`,destination,{kind:'system',origin:'system',plain:true}));
   }
+  /** Only an explicit retry can re-arm a cancellation known never to have been sent. */
+  private rearmFailureNotice(destination:string,owner:string,day:string){
+    const notice=`morning-brief-error:${source(destination,owner,day)}`;
+    this.store.db.exec('SAVEPOINT brief_failure_rearm');
+    try{
+      const row=this.store.db.prepare('SELECT id,status,attempts,sent_at,delivered_at,read_at,wa_message,error FROM outbox WHERE source=? AND destination=?').get(`${notice}:0`,destination) as {id:string;status:string;attempts:number;sent_at:number|null;delivered_at:number|null;read_at:number|null;wa_message:string|null;error:string|null}|undefined;
+      if(row&&row.status==='cancelled'&&row.attempts===0&&row.sent_at===null&&row.delivered_at===null&&row.read_at===null&&row.wa_message===null&&
+        ['Morning brief owner or destination changed','Original owner connection changed.'].includes(row.error??'')&&!this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${notice}:1`)){
+        const removed=this.store.db.prepare("DELETE FROM outbox WHERE id=? AND status='cancelled' AND attempts=0 AND sent_at IS NULL AND delivered_at IS NULL AND read_at IS NULL AND wa_message IS NULL").run(row.id);
+        if(removed.changes){this.store.db.prepare('DELETE FROM incoming_owner_outbox WHERE outbox_id=?').run(row.id);this.store.db.prepare('DELETE FROM reply_receipts WHERE source=?').run(notice);}
+      }
+      this.store.db.exec('RELEASE brief_failure_rearm');
+    }catch(e){this.store.db.exec('ROLLBACK TO brief_failure_rearm; RELEASE brief_failure_rearm');throw e;}
+  }
   private recoverUnsent(destination:string,owner:string,day:string){
     this.store.db.exec('SAVEPOINT brief_recover_unsent');
     try{
@@ -214,6 +228,7 @@ export class MorningBrief {
       if(/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination()!,owner=this.store.ownerFor(destination)!,day=localTime(this.clock(),this.config().zone).date;
         if(!validDestination(this.store,destination,owner))return {reply:'The morning brief is unavailable in this chat.'};
         if(this.store.db.prepare('SELECT 1 FROM morning_briefs WHERE destination=? AND owner=? AND day=?').get(destination,owner,day)&&!this.recoverUnsent(destination,owner,day))return {reply:'Today’s brief was already queued or its delivery cannot be confirmed. Check the chat before retrying.'};
+        this.rearmFailureNotice(destination,owner,day);
         this.store.db.prepare('DELETE FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').run(destination,owner,day);
         void this.request(destination,'first-message').catch(()=>{});return {reply:'I will retry today’s morning brief.'};}
       const time=/^\/brief\s+time\s+(\d{2}):(\d{2})$/i.exec(m.text.trim());
