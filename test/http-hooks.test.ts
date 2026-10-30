@@ -18,9 +18,11 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
   let logoutCalls=0,pauseCalls=0;
   const wa={status:'not paired',logout:async()=>{logoutCalls++;}} as any;
   const browser={run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);assert.equal(input.action,'discover');return {matches:0};}};
-  const macControl={configure:()=>({enabled:false}),view:()=>({enabled:false}),run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='capture')return {captured:true,pngBase64:Buffer.from([137,80,78,71,13,10,26,10]).toString('base64'),frame:[-1920,125,800,600]};assert.equal(input.action,'discover');return {apps:[]};},stop:()=>{}};
+  let macTrusted=true,macEnabled=false,macCalls=0;
+  let permissionGate:Promise<void>|undefined,permissionEntered:(()=>void)|undefined;
+  const macControl={configure:(enabled:boolean)=>{macEnabled=enabled;return {enabled};},view:()=>({enabled:macEnabled}),status:async()=>{if(permissionGate){const gate=permissionGate;permissionGate=undefined;permissionEntered?.();await gate;}return {supported:true,trusted:macTrusted};},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,trusted:macTrusted,enabled:macEnabled};if(input.action==='stop')return {stopped:true};macCalls++;if(input.action==='capture')return {captured:true,pngBase64:Buffer.from([137,80,78,71,13,10,26,10]).toString('base64'),frame:[-1920,125,800,600]};assert.equal(input.action,'discover');return {apps:[]};},stop:()=>{}};
   let desktopCalls=0,desktopStops=0;
-  const desktopControl={view:()=>({supported:true}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{desktopCalls++;assert.equal(scope,`${a.binding.id}:wa:connect-owner`);assert.equal(input.action,'list_apps');return {apps:[]};}};
+  const desktopControl={view:()=>({supported:true}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,enabled:macEnabled};if(input.action==='stop'){desktopStops++;return {stopped:true};}desktopCalls++;assert.equal(input.action,'list_apps');return {apps:[]};}};
   const services={desktopControl,browser,macControl,masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
   const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
   const url=`http://127.0.0.1:${port}`;
@@ -104,15 +106,44 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     router.coordinator=new Coordinator(store,router.native,router,()=>{});
     // Browser commands remain coordinator/request-scoped, never admin or cross-session shortcuts.
     // This fixture injects the adapter at server creation; actual browser access stays out of tests.
+    // A stop received while a permission check is pending must cancel that request,
+    // for both the Mac and desktop control entry points.
+    for(const [endpoint,action] of [['/api/master/mac-control','discover'],['/api/master/desktop-control','list_apps']]){
+      let release!:()=>void,entered!:()=>void;
+      permissionGate=new Promise<void>(r=>{release=r;});
+      const started=new Promise<void>(r=>{entered=r;});permissionEntered=entered;
+      const pending=post(endpoint,{requestId:'wa:connect-owner',action});
+      await started;
+      assert.equal((await post(endpoint,{requestId:'wa:connect-owner',action:'stop'})).status,200);
+      release();assert.equal((await pending).status,400);
+      assert.equal(macCalls,0);assert.equal(desktopCalls,0);
+    }
+    // Status and actions derive their availability from the same native grant.
+    const statusRequest={requestId:'wa:connect-owner',action:'status'};
+    for(const endpoint of ['/api/master/mac-control','/api/master/desktop-control']){
+      macEnabled=false;macTrusted=true;
+      const allowed=await post(endpoint,statusRequest);assert.equal(allowed.status,200);assert.equal((await allowed.json()).enabled,true);
+      macTrusted=false;
+      const denied=await post(endpoint,statusRequest);assert.equal(denied.status,200);assert.equal((await denied.json()).enabled,false);
+    }
+    const statusStops=desktopStops;
     const desktopRequest={requestId:'wa:connect-owner',action:'list_apps'};
     assert.equal((await post('/api/master/desktop-control',desktopRequest,b.token,b.binding.id)).status,403);
     assert.equal((await post('/api/master/desktop-control',desktopRequest,'test-admin-token')).status,403);
     assert.equal((await post('/api/master/desktop-control',{...desktopRequest,requestId:'report:fake'})).status,400);
     assert.equal(desktopCalls,0);
+    macTrusted=false;
+    assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,400);
+    assert.equal(desktopCalls,0);
+    macTrusted=true;
     assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,200);
     assert.equal(desktopCalls,1);
+    macTrusted=false;
+    assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,400);
+    assert.equal(desktopCalls,1);assert.equal(macEnabled,false);assert.equal(desktopStops,statusStops+1);
+    macTrusted=true;
     assert.equal((await post('/api/mac-control',{action:'disable'},'test-admin-token')).status,200);
-    assert.equal(desktopStops,1);
+    assert.equal(desktopStops,statusStops+2);
     const connect={requestId:'wa:connect-owner',targets:[`codex:${ownWorker.binding.native_id}`]};
     assert.equal((await post('/api/master/connect',connect,b.token,b.binding.id)).status,403);
     for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);
@@ -126,6 +157,9 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     assert.equal((await post('/api/master/mac-control',browserRequest,b.token,b.binding.id)).status,403);
     assert.equal((await post('/api/master/mac-control',browserRequest,'test-admin-token')).status,403);
     assert.equal((await post('/api/master/mac-control',{...browserRequest,requestId:'report:fake'})).status,400);
+    macTrusted=false;
+    assert.equal((await post('/api/master/mac-control',browserRequest)).status,400);
+    macTrusted=true;
     assert.equal((await post('/api/master/mac-control',browserRequest)).status,200);
     const captureRequest={requestId:'wa:connect-owner',action:'capture',windowRef:'11111111-1111-4111-a111-111111111111'};
     assert.equal((await post('/api/master/mac-control',captureRequest,b.token,b.binding.id)).status,403);

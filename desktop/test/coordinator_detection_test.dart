@@ -64,6 +64,9 @@ void main() {
       final api = DetectionGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Set up a coordinator'));
+      await tester.tap(find.text('Set up a coordinator'));
+      await tester.pumpAndSettle();
       expect(
         find.byKey(const ValueKey('coordinator-platform-claude:cli')),
         findsOneWidget,
@@ -95,6 +98,9 @@ void main() {
       final api = DetectionGateway(found: false);
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Set up a coordinator'));
+      await tester.tap(find.text('Set up a coordinator'));
+      await tester.pumpAndSettle();
       expect(find.textContaining('No coding apps detected.'), findsOneWidget);
       expect(find.text('Create Codex CLI coordinator'), findsNothing);
       await tester.ensureVisible(find.text('Check apps'));
@@ -112,7 +118,7 @@ void main() {
   );
 
   testWidgets(
-    'Coordinator form and actions remain inside their Overview card at wide and scaled sizes',
+    'Coordinator setup action remains inside its Overview card at wide and scaled sizes',
     (tester) async {
       viewport(tester, const Size(1572, 954));
       for (final width in [1572.0, 1100.0]) {
@@ -127,9 +133,7 @@ void main() {
         final card = tester.getRect(
           find.byKey(const ValueKey('overview-coordinator-card')),
         );
-        final action = tester.getRect(
-          find.text('Create Claude CLI coordinator'),
-        );
+        final action = tester.getRect(find.text('Set up a coordinator'));
         final voice = tester.getRect(find.text('Voice notes ready'));
         expect(action.bottom, lessThanOrEqualTo(card.bottom));
         expect(action.right, lessThanOrEqualTo(card.right));

@@ -73,7 +73,7 @@ export class DesktopControl {
     if(q.action==='stop')return this.stop();
     if(q.action==='status')return this.view();
     if(this.platform!=='darwin')throw new Error('DESKTOP_MACOS_ONLY');
-    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Enable Mac control in Settings.');
+    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Check Accessibility permission in Settings > Remote control.');
     if(this.pending)throw new Error('DESKTOP_BUSY');
     const abort=new AbortController(),generation=this.generation;this.pending=abort;
     const live=()=>{authorize();if(abort.signal.aborted||generation!==this.generation||!this.view().enabled)throw new Error('DESKTOP_STOPPED');};

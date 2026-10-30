@@ -1,6 +1,6 @@
 # Desktop control preview
 
-The next FarFromDesk release adds optional macOS desktop functions through the existing authenticated coordinator connection. Enable **Settings > Mac control**, then use the owner-initiated permission button to grant Accessibility. Browser tab commands can separately require Automation access. Screen Recording remains separate. Polling never prompts.
+The next FarFromDesk release adds optional macOS desktop functions through the existing authenticated coordinator connection. In **Settings > Remote control**, use the permission button to grant Accessibility. Coordinator app control becomes available when Accessibility is granted. Browser tab commands can separately require Automation access. Screen Recording is required for phone screen control and is optional for coordinator screenshots. Polling never prompts.
 
 The installed app bundles its native helper and the pinned Cua driver. It does not depend on Mac Control Lab, Python, a development checkout, browser extensions or remote debugging. Windows and Linux report the feature as unsupported.
 
@@ -40,7 +40,7 @@ Comet tab creation/navigation/read/cleanup was verified in the lab, alongside ea
 
 The MIT Cua driver is pinned at 0.38.0. Packaging checks archive/executable SHA-256, and the helper rechecks the executable before launch. Vendor signature, license and dependency notices are retained. Telemetry/update checks are disabled. OpenBot application code and optional model detectors are not bundled.
 
-The native app helper is the driver's actual parent. Embedded mode uses an owner-only random socket directory and parent-liveness input. Stop/disable aborts pending work and terminates the owned chain. Connections stay warm for 60 idle seconds; restarts invalidate cached tokens. No arbitrary raw-driver tool is exposed.
+The native app helper is the driver's actual parent. Embedded mode uses an owner-only random socket directory and parent-liveness input. Stop aborts pending work and terminates the owned chain. Connections stay warm for 60 idle seconds; restarts invalidate cached tokens. No arbitrary raw-driver tool is exposed.
 
 Request scope is an application boundary, not an OS sandbox against hostile same-user code. Global input retains a focus-change race. UI text is untrusted, and credentials, security prompts and unrelated private content remain outside the supported workflow.
 
