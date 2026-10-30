@@ -33,22 +33,39 @@ export class MacControl {
   private capturePermission:boolean|null=null;
   private captureSupported:boolean|null=null;
   private lastError:string|null=null;
-  constructor(private prefs:Prefs,private native:MacNative=macNative,private platform=process.platform,private now=Date.now){}
+  private nextCaptureProbeAt=0;
+  constructor(private prefs:Prefs,private native:MacNative=macNative,private platform=process.platform,private now=Date.now,private freshNative?:()=>MacNative){
+    if(!this.freshNative&&native===macNative)this.freshNative=()=>createMacNative(helper,errors);
+  }
   view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',trusted:this.permission,error:this.lastError,screenRecordingRequired:false,capture:{supported:this.platform==='darwin'?this.captureSupported:false,trusted:this.capturePermission,screenRecordingRequired:true}};}
   async status(prompt=false){
     if(this.platform!=='darwin')return this.view();
     try{let r=await this.native({action:prompt?'requestPermission':'status'});
       // macOS applies a new grant only to processes started after it, so a long-lived helper keeps
       // answering "not allowed". Re-ask on a fresh helper, never while an action is in flight.
-      if(!prompt&&!this.pending&&this.native.stop&&(r.trusted!==true||r.captureTrusted===false)){this.native.stop();r=await this.native({action:'status'});}
+      const hasLiveTargets=[...this.refs.values()].some(ref=>ref.expires>this.now());
+      if(!prompt&&!this.pending&&this.native.stop&&(r.trusted!==true||(r.captureTrusted===false&&!hasLiveTargets))){this.native.stop();r=await this.native({action:'status'});}
+      // A separate fresh process can observe a new Screen Recording grant without
+      // invalidating live targets on every status check. Once a grant is observed,
+      // restart the old helper and explicitly invalidate its native identities.
+      else if(!prompt&&!this.pending&&hasLiveTargets&&r.captureTrusted===false&&this.freshNative&&this.now()>=this.nextCaptureProbeAt){
+        this.nextCaptureProbeAt=this.now()+5000;
+        const generation=this.generation,probe=this.freshNative();
+        try{
+          const fresh=await probe({action:'status'});
+          if(generation===this.generation&&!this.pending&&fresh.captureTrusted===true){this.stop();r=await this.native({action:'status'});}
+        }catch{/* Keep the existing helper's status if the independent probe fails. */}
+        finally{probe.stop?.();}
+        if(generation!==this.generation&&r.captureTrusted!==true)return this.view();
+      }
       this.permission=r.trusted===true;this.capturePermission=typeof r.captureTrusted==='boolean'?r.captureTrusted:null;this.captureSupported=typeof r.captureSupported==='boolean'?r.captureSupported:null;this.lastError=null;}
     catch(e){this.permission=null;this.lastError=(e as Error).message;}
     return this.view();
   }
   configure(enabled:boolean){this.prefs.set('mac-control-enabled',String(enabled));if(!enabled)this.stop();return this.view();}
   async capturePermissionRequest(){
-    if(this.platform!=='darwin'||!this.view().enabled)throw new Error('Enable Mac control on macOS first.');
-    await this.native({action:'requestScreenRecording'});return this.status();
+    if(this.platform!=='darwin')throw new Error('Mac control is available on macOS only.');
+    await this.native({action:'requestScreenRecording'});this.nextCaptureProbeAt=0;return this.status();
   }
   stop(){this.generation++;this.refs.clear();this.pending?.abort();this.native.stop?.();return {stopped:true,next:'Any interaction already delivered may have taken effect. Inspect before retrying.'};}
   private ref(scope:string,id?:string){const r=id?this.refs.get(id):undefined;if(!r||r.scope!==scope||r.expires<=this.now())throw new Error('MAC_TARGET_STALE: Discover and select a target for this request.');return r;}
@@ -59,7 +76,7 @@ export class MacControl {
     if(q.action==='stop')return this.stop();
     if(q.action==='status')return this.status();
     if(this.platform!=='darwin')throw new Error('Mac Accessibility control is supported on macOS only.');
-    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Enable Mac control in FarFromDesk Settings first.');
+    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Check Accessibility permission in Settings > Remote control.');
     if(this.pending)throw new Error('A Mac operation is in progress. Wait for its result or stop it.');
     const controller=new AbortController(),generation=this.generation;this.pending=controller;
     const call=async(input:Record<string,unknown>)=>{const r=await this.native(input,controller.signal);if(generation!==this.generation||!this.view().enabled)throw new Error('MAC_CONTROL_STOPPED');return r;};

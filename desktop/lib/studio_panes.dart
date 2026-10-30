@@ -1767,13 +1767,13 @@ extension _Panes on _DeskState {
       ),
     );
     return LayoutBuilder(
-      builder: (context, box) => box.maxWidth < 860
+      builder: (context, box) => box.maxWidth < 700
           ? body
           : Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 SizedBox(
-                  width: 190,
+                  width: 160,
                   child: ListView(
                     padding: const EdgeInsets.fromLTRB(20, 22, 0, 20),
                     children: [
@@ -1795,7 +1795,9 @@ extension _Panes on _DeskState {
   }
 
   Widget settingsNavItem(String title, IconData icon) {
-    final on = settingsTab == title;
+    final on =
+        settingsTab == title ||
+        (settingsTab == 'This Mac' && title == 'This $computer');
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: Material(

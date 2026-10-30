@@ -415,7 +415,7 @@ extension _BridgeScreens on _DeskState {
 
   Widget sidebar(List<String> titles, int count) => Container(
     key: const ValueKey('navigation-rail'),
-    width: 168,
+    width: 202,
     decoration: const BoxDecoration(
       color: sidebarColor,
       border: Border(right: BorderSide(color: hairline)),
@@ -645,6 +645,68 @@ extension _BridgeScreens on _DeskState {
     ...(connected ? overviewScreen() : welcomeOverview()),
   ];
 
+  Widget macControlOverview() {
+    final info = status['macControl'] ?? {};
+    final trusted = info['trusted'];
+    final failed = info['error'] != null;
+    final capture = info['capture'] ?? {};
+    return panel(
+      'Mac app control',
+      Row(
+        children: [
+          const Icon(Icons.desktop_mac_outlined, color: accent),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  failed
+                      ? 'Could not check permissions'
+                      : trusted == true
+                      ? 'Accessibility allowed'
+                      : trusted == false
+                      ? 'Accessibility permission needed'
+                      : 'Checking permissions…',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                gap(3),
+                small(
+                  capture['trusted'] == true
+                      ? 'Screen Recording allowed for screenshots.'
+                      : 'Screen Recording is required for phone control and optional for proxy screenshots.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          button('View settings', () {
+            changeView(() {
+              section = 4;
+              settingsTab = 'Remote control';
+            });
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              final target = settingsKeys['Remote control']?.currentContext;
+              if (target != null) {
+                Scrollable.ensureVisible(
+                  target,
+                  duration: const Duration(milliseconds: 250),
+                );
+              }
+            });
+          }, compact: true),
+        ],
+      ),
+      trailing: failed
+          ? tag('Check failed', tint: warning)
+          : trusted == true
+          ? tag('Allowed', good: true)
+          : trusted == false
+          ? tag('Needs permission', tint: warning)
+          : tag('Checking…'),
+    );
+  }
+
   Widget previewFlows() => Padding(
     padding: const EdgeInsets.only(bottom: 16),
     child: Row(
@@ -745,6 +807,11 @@ extension _BridgeScreens on _DeskState {
     ),
   );
 
+  void resumeOnboarding() => changeView(() {
+    onboardingSkipped = false;
+    section = 0;
+  });
+
   Future<void> chooseMessagingApp(String next) =>
       post('/api/control-channel', {'channel': next});
 
@@ -828,10 +895,6 @@ extension _BridgeScreens on _DeskState {
               small(
                 'Private bot · only your confirmed account can control it.',
               ),
-              gap(8),
-              small(
-                'Replies return to the chat that requested the work. Telegram bots use cloud chats, not end-to-end encrypted Secret Chats.',
-              ),
             ] else if (selected && connected && id == 'whatsapp') ...[
               Text(
                 '${wa['phoneNumber'] ?? 'Your WhatsApp account'}',
@@ -845,36 +908,31 @@ extension _BridgeScreens on _DeskState {
               ),
             gap(14),
             if (selected && connected)
-              button('Disconnect', disconnectMessagingApp, compact: true)
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (id == 'whatsapp')
+                    button(
+                      'Reply settings',
+                      showReplySettings,
+                      compact: true,
+                      key: const ValueKey('whatsapp-destination-settings'),
+                    ),
+                  button('Disconnect', disconnectMessagingApp, compact: true),
+                ],
+              )
             else if (selected)
-              button('Connect', () => go(0), compact: true)
+              button('Connect', resumeOnboarding, compact: true)
             else
               button('Use $name', () async {
                 if (!hasChannelChoice) {
                   await chooseMessagingApp(id);
-                  if (mounted && actionError == null) go(0);
+                  if (mounted && actionError == null) resumeOnboarding();
                 } else {
                   await switchMessagingApp();
                 }
               }, compact: true),
-            if (selected && connected && id == 'whatsapp') ...[
-              gap(12),
-              ExpansionTile(
-                key: const ValueKey('whatsapp-destination-settings'),
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: EdgeInsets.zero,
-                title: const Text(
-                  'Reply destination',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-                subtitle: small(
-                  status['destination']?['kind'] == 'group'
-                      ? 'Private group'
-                      : 'Message yourself',
-                ),
-                children: [destinationCard()],
-              ),
-            ],
           ],
         ),
       );
@@ -896,19 +954,78 @@ extension _BridgeScreens on _DeskState {
               if (constraints.maxWidth < 560) {
                 return Column(children: [telegram, gap(12), whatsapp]);
               }
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: telegram),
-                  const SizedBox(width: 12),
-                  Expanded(child: whatsapp),
-                ],
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: telegram),
+                    const SizedBox(width: 12),
+                    Expanded(child: whatsapp),
+                  ],
+                ),
               );
             },
           ),
         ],
       ),
     );
+  }
+
+  Future<void> showReplySettings() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, update) {
+          modalContext = dialogContext;
+          modalSetter = update;
+          return Dialog(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 560,
+                maxHeight: MediaQuery.sizeOf(context).height - 48,
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Reply settings',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    if (actionError != null) ...[
+                      gap(12),
+                      Text(
+                        actionError!,
+                        style: const TextStyle(color: warning),
+                      ),
+                    ],
+                    gap(12),
+                    destinationCard(),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    modalSetter = null;
+    modalContext = null;
   }
 
   Future<void> switchMessagingApp() async {
@@ -953,7 +1070,7 @@ extension _BridgeScreens on _DeskState {
       });
       telegramToken.clear();
       groupsLoaded = false;
-      if (mounted) go(0);
+      if (mounted) resumeOnboarding();
     });
   }
 
@@ -1836,13 +1953,15 @@ extension _BridgeScreens on _DeskState {
           segmented(
             ['Message yourself', 'Private group'],
             showGroups ? 'Private group' : 'Message yourself',
-            (value) {
+            (value) async {
               if (value == 'Private group') {
                 changeView(() => showGroups = true);
                 loadGroups();
-              } else {
-                changeView(() => showGroups = false);
-                post('/api/destination');
+              } else if (showGroups && !busy) {
+                await post('/api/destination');
+                if (mounted && actionError == null) {
+                  changeView(() => showGroups = false);
+                }
               }
             },
           ),
@@ -2258,22 +2377,24 @@ extension _BridgeScreens on _DeskState {
             children: [
               Expanded(
                 child: Text(
-                  'Set up a coordinator',
+                  'Coordinators',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-              tag('Not set up'),
+              small('0 set up'),
             ],
           ),
-          gap(4),
-          small(
-            'It reads your messages and starts or checks coding sessions for you.',
+          overviewEmpty(
+            Icons.hub_outlined,
+            'No coordinator yet',
+            'A coordinator reads your messages and starts or checks coding sessions.',
+            action: button(
+              'Set up a coordinator',
+              () => openManage(adding: true),
+              primary: true,
+              compact: true,
+            ),
           ),
-          ...setupOperation(),
-          gap(16),
-          masterForm(),
-          gap(16),
-          masterActions(),
         ],
       );
     }
@@ -3381,12 +3502,6 @@ extension _BridgeScreens on _DeskState {
   List<(String, String, IconData, List<Widget>)> settingsSections() {
     return [
       (
-        'Messaging',
-        'Where your tasks come from and replies go.',
-        Icons.chat_bubble_outline_rounded,
-        [messagingAppSettings()],
-      ),
-      (
         'This $computer',
         'Decide when FarFromDesk runs and how this $computer stays available.',
         Icons.laptop_mac_rounded,
@@ -3475,19 +3590,14 @@ extension _BridgeScreens on _DeskState {
           ),
         ],
       ),
-      if (status['macControl']?['supported'] == true)
-        (
-          'Mac control',
-          'Let your proxy use apps in the window you pick from your phone.',
-          Icons.desktop_mac_outlined,
-          [macControlPanel()],
-        ),
-      if (remoteSupported)
+      if (remoteSupported || status['macControl']?['supported'] == true)
         (
           'Remote control',
-          'See and use this $computer from your phone.',
+          'Manage phone access and permissions for your selected app.',
           Icons.phone_iphone_rounded,
-          remoteControlPanels(),
+          remoteSupported
+              ? remoteControlPanels()
+              : [panel('Mac permissions', macControlPanel())],
         ),
       (
         'Updates',
@@ -3703,60 +3813,102 @@ extension _Overview on _DeskState {
     String? chip,
   }) => studioCard(
     padding: const EdgeInsets.all(16),
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 26,
-              height: 26,
+    SizedBox(
+      height: 130,
+      child: Stack(
+        children: [
+          Positioned(
+            right: 0,
+            top: 15,
+            child: Container(
+              width: 64,
+              height: 64,
               decoration: BoxDecoration(
-                color: const Color(0xff1a1a1a),
-                borderRadius: BorderRadius.circular(7),
-              ),
-              child: Icon(icon, size: 14, color: ink2),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(fontSize: 13, color: muted),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 24,
-            height: 30 / 24,
-            fontWeight: FontWeight.w600,
-            letterSpacing: -.48,
-            fontFeatures: [FontFeature.tabularFigures()],
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: 22,
-          child: Row(
-            children: [
-              if (chip != null) ...[
-                tag(chip, tint: noteTint ?? muted),
-                const SizedBox(width: 8),
-              ],
-              Expanded(
-                child: Text(
-                  note,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: faint),
+                shape: BoxShape.circle,
+                color: (noteTint ?? accent).withValues(alpha: .07),
+                border: Border.all(
+                  color: (noteTint ?? accent).withValues(alpha: .22),
                 ),
+              ),
+              child: Icon(
+                icon,
+                size: 30,
+                color: (noteTint ?? accent).withValues(alpha: .75),
+              ),
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 13, color: muted)),
+              const SizedBox(height: 10),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+              const Spacer(),
+              Row(
+                children: [
+                  if (chip != null) ...[
+                    tag(chip, tint: noteTint ?? muted),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      note,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: faint),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-        ),
-      ],
+        ],
+      ),
+    ),
+  );
+
+  Widget overviewEmpty(
+    IconData icon,
+    String title,
+    String detail, {
+    Widget? action,
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+    child: Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 58,
+            height: 58,
+            decoration: BoxDecoration(
+              color: const Color(0xff201712),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: accent.withValues(alpha: .25)),
+            ),
+            child: Icon(icon, size: 28, color: accentSoft),
+          ),
+          gap(12),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          gap(4),
+          Text(
+            detail,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: muted),
+          ),
+          if (action != null) ...[gap(14), action],
+        ],
+      ),
     ),
   );
 
@@ -4193,34 +4345,33 @@ extension _Overview on _DeskState {
               ),
             ),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: hairline)),
-            ),
-            child: Row(
-              children: [
-                head('Request', flex: 5),
-                head('Session', flex: 3),
-                head('Status', flex: 2),
-                const SizedBox(
-                  width: 48,
-                  child: Text(
-                    'Time',
-                    textAlign: TextAlign.right,
-                    style: TextStyle(fontSize: 12, color: faint),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (jobs.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(22),
-              child: Text(
-                'Send a task from your phone and it shows up here.',
-                style: TextStyle(fontSize: 12.5, color: faint),
+          if (jobs.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: hairline)),
               ),
+              child: Row(
+                children: [
+                  head('Request', flex: 5),
+                  head('Session', flex: 3),
+                  head('Status', flex: 2),
+                  const SizedBox(
+                    width: 48,
+                    child: Text(
+                      'Time',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 12, color: faint),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (jobs.isEmpty)
+            overviewEmpty(
+              Icons.mark_chat_unread_outlined,
+              'No requests yet',
+              'Send a task from your phone and it will appear here.',
             ),
           for (final j in jobs.take(5))
             InkWell(
@@ -4338,46 +4489,6 @@ extension _Overview on _DeskState {
       gap(4),
       Text(sub, style: const TextStyle(fontSize: 13.5, color: muted)),
       gap(16),
-      if (needs > 0) ...[
-        Container(
-          height: 42,
-          padding: const EdgeInsets.only(left: 14, right: 6),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xff2a1207), Color(0xff1a0b05)],
-              stops: [0, .8],
-            ),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0x59ff6b2c)),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.auto_awesome_outlined, size: 15, color: accent),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  '$needs request${needs == 1 ? ' is' : 's are'} waiting on a permission or a review.',
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Color(0xffe5e5e5),
-                  ),
-                ),
-              ),
-              OutlinedButton(
-                onPressed: () => go(1),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(0, 30),
-                  backgroundColor: windowColor,
-                  side: const BorderSide(color: line),
-                ),
-                child: const Text('View requests'),
-              ),
-            ],
-          ),
-        ),
-        gap(16),
-      ],
       LayoutBuilder(
         builder: (context, box) {
           final tiles = [
@@ -4425,6 +4536,12 @@ extension _Overview on _DeskState {
         },
       ),
       gap(12),
+      messagingAppSettings(),
+      if (status['macControl']?['supported'] == true) ...[
+        gap(12),
+        macControlOverview(),
+      ],
+      gap(12),
       twoUp(livePipeline(), needsYouCard(approvals, reviews)),
       gap(12),
       twoUp(
@@ -4433,7 +4550,6 @@ extension _Overview on _DeskState {
           coordinatorSummary(),
           key: const ValueKey('overview-coordinator-card'),
         ),
-        stretch: false,
       ),
       gap(12),
       voiceCard(),
@@ -4748,7 +4864,7 @@ extension _Onboarding on _DeskState {
                 children: [
                   const Expanded(
                     child: Text(
-                      'Change your messaging app later in Settings. Your coordinators stay with you.',
+                      'Change your messaging app later in Overview. Your coordinators stay with you.',
                       style: TextStyle(
                         fontSize: 12,
                         height: 1.5,
@@ -4992,6 +5108,12 @@ extension _Welcome on _DeskState {
         style: TextStyle(fontSize: 13.5, color: muted),
       ),
       gap(20),
+      messagingAppSettings(),
+      if (status['macControl']?['supported'] == true) ...[
+        gap(12),
+        macControlOverview(),
+      ],
+      gap(12),
       LayoutBuilder(
         builder: (context, box) => box.maxWidth >= 860
             ? Row(

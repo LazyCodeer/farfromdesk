@@ -375,7 +375,7 @@ export class Router {
     try{
       this.store.jobState(job.id,'failed',message);
       this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Brief action was not sent' WHERE status='queued' AND source=?").run(`native-opening:${job.id}:0`);
-      if(briefDestinationValid(this.store,guard.destination,guard.owner))this.store.output(undefined,message,`brief-action-error:${job.id}`,guard.destination,{requestId:job.id,kind:'system',origin:'system',plain:true});
+      if(briefDestinationValid(this.store,guard.destination,guard.owner)&&this.store.incomingOwnerCurrent()&&(!this.store.incomingOwnerContext.getStore()||this.store.incomingOwnerContext.getStore()!.destination===guard.destination))this.store.output(undefined,message,`brief-action-error:${job.id}`,guard.destination,{requestId:job.id,kind:'system',origin:'system',plain:true});
       this.store.db.exec('RELEASE reject_brief_dispatch');
     }catch(e){this.store.db.exec('ROLLBACK TO reject_brief_dispatch; RELEASE reject_brief_dispatch');throw e;}
   }
