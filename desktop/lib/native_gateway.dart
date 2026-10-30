@@ -9,6 +9,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:path/path.dart' as p;
 
 import 'gateway.dart';
+import 'startup_trace.dart';
 import 'updates.dart';
 import 'document_preparation.dart';
 
@@ -360,6 +361,7 @@ class NativeGateway extends Gateway {
   /// so it is ours. It refuses while a request is running and says so.
   Future<void> _stopOlderBackend() async {
     await post('/api/update-shutdown', {});
+    traceStartup('waiting for older backend shutdown');
     for (var i = 0; i < 60; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
       try {
@@ -407,6 +409,7 @@ class NativeGateway extends Gateway {
         (Platform.isMacOS
             ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend'))
             : p.join(executableDir, 'backend'));
+    traceStartup('reading backend build metadata');
     final buildFile = File(p.join(root, 'build.json'));
     final expectedBuild = await buildFile.exists()
         ? jsonDecode(await buildFile.readAsString()) as Map<String, dynamic>
@@ -451,6 +454,7 @@ class NativeGateway extends Gateway {
       }
     }
 
+    traceStartup('checking existing backend');
     if (await connected()) return;
     final node =
         Platform.environment['FFD_NODE_BIN'] ??
@@ -461,6 +465,7 @@ class NativeGateway extends Gateway {
         'The bundled backend is missing. Reinstall the FarFromDesk desktop package. Development builds need FFD_BACKEND_ROOT and FFD_NODE_BIN.',
       );
     }
+    traceStartup('launching bundled backend');
     // Arguments are passed directly, never interpolated into a shell command.
     await Process.start(
       node,
@@ -475,6 +480,7 @@ class NativeGateway extends Gateway {
       },
       mode: ProcessStartMode.detached,
     );
+    traceStartup('waiting for backend health');
     for (var i = 0; i < 60; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
       if (await connected()) return;
