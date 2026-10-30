@@ -3,20 +3,10 @@ part of 'app.dart';
 extension _MacControlPanel on _DeskState {
   Widget macControlPanel() {
     final info = status['macControl'] ?? {};
-    final enabled = info['enabled'] == true;
     final trusted = info['trusted'];
     final capture = Map<String, dynamic>.from(info['capture'] ?? {});
-    final failed = enabled && info['error'] != null;
+    final failed = info['error'] != null;
     const bad = Color(0xffff9d92);
-    final state = !enabled
-        ? tag('Off')
-        : failed
-        ? tag('Check failed', tint: bad)
-        : trusted == true
-        ? tag('Ready', good: true)
-        : trusted == null
-        ? tag('Checking…')
-        : tag('Needs permission', tint: warning);
     Widget permission(
       String name,
       String detail,
@@ -92,83 +82,33 @@ extension _MacControlPanel on _DeskState {
         ],
       ),
     );
-    return panel(
-      'Mac control',
-      trailing: state,
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          settingRow(
-            'Let your proxy use apps on this Mac',
-            'It only works in the app window you pick from your phone.',
-            Switch(
-              key: const Key('mac-control-enabled'),
-              value: enabled,
-              onChanged: (v) async {
-                if (v) {
-                  if (!busy) {
-                    await post('/api/mac-control', {'action': 'enable'});
-                  }
-                  return;
-                }
-                // Turning off is the emergency stop: it must work while another action is busy.
-                try {
-                  await api.post('/api/mac-control', {'action': 'disable'});
-                  if (mounted) {
-                    _macUpdate(() {
-                      status['macControl'] = {...info, 'enabled': false};
-                    });
-                  }
-                } catch (e) {
-                  if (mounted) _macUpdate(() => actionError = clean(e));
-                }
-              },
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        small(
+          'App control uses these Mac permissions for the window you select.',
+        ),
+        permission(
+          'Accessibility',
+          'Required. Lets your proxy read and press things in the window you pick.',
+          trusted as bool?,
+          'permission',
+          required: true,
+        ),
+        if (capture['supported'] != false)
+          permission(
+            'Screen Recording',
+            'Required for phone screen control. Optional for proxy screenshots of the selected window.',
+            capture['trusted'] as bool?,
+            'capture-permission',
           ),
-          gap(10),
-          button(
-            'Remote Desktop settings',
-            () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => RemoteDesktopPage(gateway: api),
-              ),
-            ),
-            compact: true,
-            key: const Key('remote-desktop-settings'),
+        if (failed) ...[
+          gap(12),
+          small(
+            "Couldn't check the permissions. Nothing was changed. Refresh, or restart FarFromDesk if it keeps failing.",
           ),
-          if (!enabled) ...[
-            gap(8),
-            small(
-              'It can read the buttons and fields in that window, press buttons, fill text fields, scroll, and take a screenshot of that window if you allow it. It never touches passwords, payments, deleting data, sending messages, accepting terms, or system dialogs and settings.',
-            ),
-          ] else ...[
-            permission(
-              'Accessibility',
-              trusted == true
-                  ? 'Your proxy can read and press things in the window you pick.'
-                  : 'Required. Lets your proxy read and press things in the window you pick.',
-              trusted as bool?,
-              'permission',
-              required: true,
-            ),
-            if (capture['supported'] != false)
-              permission(
-                'Screen Recording',
-                capture['trusted'] == true
-                    ? 'Your proxy can send screenshots of the window you pick. Never the whole screen.'
-                    : 'Optional. Only for screenshots of that window. Everything else works without it.',
-                capture['trusted'] as bool?,
-                'capture-permission',
-              ),
-            if (failed) ...[
-              gap(12),
-              small(
-                "Couldn't check the permissions. Nothing was changed. Refresh, or restart FarFromDesk if it keeps failing.",
-              ),
-            ],
-          ],
         ],
-      ),
+      ],
     );
   }
 }

@@ -94,7 +94,8 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   @override
   void didUpdateWidget(covariant MetaBrainPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.activityScope != widget.activityScope || oldWidget.gateway != widget.gateway) {
+    if (oldWidget.activityScope != widget.activityScope ||
+        oldWidget.gateway != widget.gateway) {
       activityGeneration++;
       metaActivity = [];
       activityBusy = false;
@@ -120,7 +121,9 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     try {
       final data = await widget.gateway.get('/api/meta-timeline');
       if (!mounted || generation != activityGeneration) return;
-      if (data['scope'] != requestScope) throw const FormatException('Activity scope changed');
+      if (data['scope'] != requestScope) {
+        throw const FormatException('Activity scope changed');
+      }
       final rows = data['events'];
       if (rows is! List) throw const FormatException('Invalid activity');
       final parsed = rows
@@ -205,7 +208,9 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                 ),
               ),
               TextButton(
-                onPressed: activityBusy || widget.activityScope == null ? null : loadActivity,
+                onPressed: activityBusy || widget.activityScope == null
+                    ? null
+                    : loadActivity,
                 child: const Text('Refresh'),
               ),
             ],
@@ -230,7 +235,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           else if (widget.activityScope == null)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('Connect a chat to view Meta activity.', style: TextStyle(color: muted)),
+              child: Text(
+                'Connect a chat to view Meta activity.',
+                style: TextStyle(color: muted),
+              ),
             )
           else if (metaActivity.isEmpty)
             const Padding(
@@ -1050,26 +1058,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'YOUR ASSISTANT',
-          style: TextStyle(
-            fontSize: 10,
-            letterSpacing: 1,
-            color: muted,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Brain',
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'Help your messages reach the right session and keep useful context close.',
-          style: TextStyle(fontSize: 12, color: muted),
-        ),
-        const SizedBox(height: 24),
         header(configured),
         if (enabled) ...[
           const SizedBox(height: 12),
@@ -1098,7 +1086,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           ),
           saveRow('Save changes'),
         ],
-        KeyedSubtree(key: ValueKey('meta-activity-${widget.activityScope}'), child: activityTab()),
+        KeyedSubtree(
+          key: ValueKey('meta-activity-${widget.activityScope}'),
+          child: activityTab(),
+        ),
         const SizedBox(height: 24),
         pageHeading(
           'Memory',

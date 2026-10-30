@@ -44,7 +44,7 @@ export class RemoteControlService {
   }
   if(!command.test(text))return;
   if(process.platform!=='darwin')return 'Screen control works on a Mac for now.';
-  if(!this.access.status.passwordSet)return 'Set a remote password first. On your Mac, open FarFromDesk, then Settings, Mac control, Remote Desktop settings, and choose Try phone access on the same Wi-Fi.';
+  if(!this.access.status.passwordSet)return 'Set a remote password first. On your Mac, open FarFromDesk, then Settings > Remote control, and set your remote password.';
   // One host for the whole time, so a login kept after a dropped connection survives a new link.
   this.access.enable(true);this.host??=this.make(this.access,(link,password)=>this.notify?.(`Your phone lost the connection. Open this link in the next 5 minutes to continue, ${password?'then enter your remote password':'no password needed'}:\n${link}\n\nThen send back the code it shows.`));
   const offer=await this.host.createOffer();

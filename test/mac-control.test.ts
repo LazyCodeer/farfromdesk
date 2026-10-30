@@ -104,3 +104,42 @@ test('status re-asks a fresh helper so a grant made after it started shows up',a
   assert.equal((await service.status()).trusted,true);assert.equal(launches,1);
   await service.status();assert.equal(launches,1);
 });
+
+
+test('permission checks do not restart the helper while a selected target is live',async()=>{
+  let stops=0;
+  const native=(async(q:any)=>{
+    if(q.action==='status')return {trusted:true,captureTrusted:false,captureSupported:true};
+    if(q.action==='discover')return {apps:[{pid:42,bundleId:'test.app',name:'Test App',launched:123}]};
+    if(q.action==='windows')return {windows:[{index:0,title:'Test window',identifier:'one',frame:[0,0,800,600],windowHash:h}]};
+    return {selected:true,focused:true,window:{index:0,title:'Test window',identifier:'one',frame:[0,0,800,600],windowHash:h}};
+  }) as MacNative;
+  native.stop=()=>{stops++;};
+  const service=new MacControl({get:()=> 'true',set:()=>{}},native,'darwin');
+  const a=await service.run('owner',{action:'discover'}) as any;
+  await service.status();
+  const w=await service.run('owner',{action:'windows',appRef:a.apps[0].appRef}) as any;
+  await service.status();
+  await service.run('owner',{action:'select',windowRef:w.windows[0].windowRef});
+  assert.equal(stops,0);
+});
+
+
+test('new screen recording grant restarts the stale helper and invalidates old targets',async()=>{
+  let granted=false,helperGranted=false,stops=0,probeStops=0;
+  const native=(async(q:any)=>{
+    if(q.action==='status')return {trusted:true,captureTrusted:helperGranted,captureSupported:true};
+    if(q.action==='requestScreenRecording')return {};
+    if(q.action==='discover')return {apps:[{pid:42,bundleId:'test.app',name:'Test App',launched:123}]};
+    return {};
+  }) as MacNative;
+  native.stop=()=>{stops++;helperGranted=granted;};
+  const probe=()=>{const n=(async()=>({trusted:true,captureTrusted:granted,captureSupported:true})) as MacNative;n.stop=()=>{probeStops++;};return n;};
+  const service=new MacControl({get:()=> 'true',set:()=>{}},native,'darwin',()=>1000,probe);
+  const apps=await service.run('owner',{action:'discover'}) as any;
+  await service.status();assert.equal(stops,0);assert.equal(service.view().capture.trusted,false);
+  granted=true;
+  const permission=await service.capturePermissionRequest();
+  assert.equal(permission.capture.trusted,true);assert.equal(stops,1);assert.equal(probeStops,2);
+  await assert.rejects(service.run('owner',{action:'windows',appRef:apps.apps[0].appRef}),/STALE/);
+});

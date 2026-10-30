@@ -12,10 +12,17 @@ extension _RemoteControl on _DeskState {
     try {
       final link = await api.get('/api/remote-control');
       final phone = await api.get('/api/phone-remote');
+      Map<String, dynamic> legacy = {};
+      try {
+        legacy = await api.get('/api/remote-desktop');
+      } catch (_) {
+        /* Older backends may not have it. */
+      }
       if (!mounted || epoch != remoteEpoch) return;
       changeView(() {
         remoteLink = link;
         phoneRemote = phone;
+        legacyRemote = legacy;
         final addresses = phone['addresses'] as List? ?? [];
         if (phoneAddress != null &&
             !addresses.any((a) => a['address'] == phoneAddress)) {
@@ -122,6 +129,27 @@ extension _RemoteControl on _DeskState {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (legacyRemote['enabled'] == true) ...[
+            settingRow(
+              'Earlier Remote Desktop access is enabled',
+              'Review or turn off the earlier Remote Desktop connection.',
+              button(
+                'Manage',
+                () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => RemoteDesktopPage(gateway: api),
+                  ),
+                ),
+                compact: true,
+                key: const Key('remote-desktop-settings'),
+              ),
+            ),
+            const Divider(height: 32),
+          ],
+          if (status['macControl']?['supported'] == true) ...[
+            macControlPanel(),
+            const Divider(height: 32),
+          ],
           LayoutBuilder(
             builder: (context, constraints) {
               if (constraints.maxWidth < 600) {
