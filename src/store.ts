@@ -224,7 +224,7 @@ export class Store {
   hookUpdate(id:string){return this.db.prepare('SELECT text FROM hook_updates WHERE id=?').get(id);}
   recover() {
     this.db.prepare("UPDATE outbox SET status='uncertain',error='Telegram delivery was interrupted; check the bot before resending' WHERE status='sending' AND destination LIKE 'tg:%'").run();
-    this.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery was interrupted; check your chat before retrying' WHERE status='sending' AND source LIKE 'morning-brief:%'").run();
+    this.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery was interrupted; check your chat before retrying' WHERE status='sending' AND (source LIKE 'morning-brief:%' OR source LIKE 'morning-brief-error:%')").run();
     for(const row of this.db.prepare("SELECT id,destination FROM inbox WHERE status='dispatched'").all() as {id:string;destination:string|null}[]) {
       // The opening receipt survives native submission, so a restart here cannot
       // prove the message was unsent. Never ask the owner to resend blindly.

@@ -145,14 +145,15 @@ test('explicit retry can re-arm a revoked failure notice that was never sent',as
     assert.ok(fresh);assert.notEqual(fresh.id,first.id);assert.notEqual(fresh.wa_id,first.wa_id);assert.equal(f.store.incomingOwnerDelivery(fresh.id),true);wa.close();
   }finally{f.close();}
 });
-for(const mode of ['uncertain','sending','sent','attempted-cancelled','delivered-cancelled'] as const)test(`explicit retry never re-arms an ${mode} failure notice`,async()=>{
+for(const mode of ['uncertain','sending','sent','attempted-cancelled','delivered-cancelled','legacy-cancelled'] as const)test(`explicit retry never re-arms an ${mode} failure notice`,async()=>{
   const f=setup();try{
     const owner='owner@s.whatsapp.net';let now=instant;
     const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);f.router.morningBrief=brief;
     f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run(owner,owner,'2026-10-29',2,now-1);
     await brief.request(owner,'scheduled');const first=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
-    const status=mode.endsWith('cancelled')?'cancelled':mode,attempts=mode==='delivered-cancelled'?0:1,delivered=mode==='delivered-cancelled'?now:null;
+    const status=mode.endsWith('cancelled')?'cancelled':mode,attempts=mode==='delivered-cancelled'||mode==='legacy-cancelled'?0:1,delivered=mode==='delivered-cancelled'?now:null;
     f.store.db.prepare('UPDATE outbox SET status=?,attempts=?,delivered_at=?,error=? WHERE id=?').run(status,attempts,delivered,'Original owner connection changed.',first.id);
+    if(mode==='legacy-cancelled')f.store.db.prepare('DELETE FROM morning_brief_failure_safe WHERE outbox_id=?').run(first.id);
     f.store.set('incoming-owner-generation',randomUUID());
     await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:retry-${mode}`,text:'/brief retry',ownerCommand:true}));await new Promise<void>(r=>setImmediate(r));
     now+=61_000;await brief.request(owner,'scheduled');now+=301_000;await brief.request(owner,'scheduled');

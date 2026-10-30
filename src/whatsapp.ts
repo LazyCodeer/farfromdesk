@@ -336,7 +336,7 @@ export class WhatsApp {
             }else content={document:Buffer.from(a.data),fileName:a.filename,mimetype:a.mime,caption:m.body};
           }
           if(!sent){
-            if(m.source.startsWith('morning-brief:')){const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claimed.changes)continue;briefSending=true;}
+            if(m.source.startsWith('morning-brief:')||m.source.startsWith('morning-brief-error:')){const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claimed.changes)continue;briefSending=true;}
             sent=await sock.sendMessage(destination,content,{messageId:m.wa_id});
           }
           if(sent?.message)this.store.db.prepare('UPDATE outbox SET wa_message=? WHERE id=?').run(JSON.stringify(sent.message,BufferJSON.replacer),m.id);

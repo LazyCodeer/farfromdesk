@@ -39,6 +39,17 @@ test('a restart preserves an interrupted brief send as uncertain',async()=>{
     assert.equal(await f.brief.request('owner@s.whatsapp.net','first-message'),false);
   }finally{f.close();}
 });
+test('failure notices are claimed before I/O and interrupted delivery is uncertain',async()=>{
+  const f=fixture();try{
+    const now=Date.now(),day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run('owner@s.whatsapp.net','owner@s.whatsapp.net',day,2,now-1);
+    const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);await brief.request('owner@s.whatsapp.net','scheduled');
+    let calls=0;f.wa.sock={sendMessage:async()=>{calls++;const row=f.store.db.prepare("SELECT status,attempts FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
+      assert.equal(row.status,'sending');assert.equal(row.attempts,1);f.store.recover();throw Error('simulated interrupted send');},end:()=>{}} as any;
+    await f.wa.flush();const row=f.store.db.prepare("SELECT status,attempts FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
+    assert.equal(row.status,'uncertain');assert.equal(row.attempts,1);await f.wa.flush();assert.equal(calls,1);
+  }finally{f.close();}
+});
 test('owner changes during group verification cancel the queued brief before any send',async()=>{
   const f=fixture();try{
     const group='team@g.us';f.store.set('destination-jid',group);f.store.set('owned-group:'+group,'true');

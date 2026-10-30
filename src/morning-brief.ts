@@ -64,7 +64,8 @@ export class MorningBrief {
   constructor(private store:Store,private router:Router,private writer:Writer=writeBrief,private clock:()=>number=Date.now,private prReader:PrReader=readPr){
     store.db.exec(`CREATE TABLE IF NOT EXISTS morning_briefs(destination TEXT NOT NULL,owner TEXT NOT NULL,day TEXT NOT NULL,source TEXT UNIQUE NOT NULL,entries TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(destination,owner,day));
       CREATE TABLE IF NOT EXISTS morning_brief_deferrals(destination TEXT NOT NULL,owner TEXT NOT NULL,item_id INTEGER NOT NULL,until_day TEXT NOT NULL,PRIMARY KEY(destination,owner,item_id));
-      CREATE TABLE IF NOT EXISTS morning_brief_attempts(destination TEXT NOT NULL,owner TEXT NOT NULL,day TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,PRIMARY KEY(destination,owner,day));`);
+      CREATE TABLE IF NOT EXISTS morning_brief_attempts(destination TEXT NOT NULL,owner TEXT NOT NULL,day TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,PRIMARY KEY(destination,owner,day));
+      CREATE TABLE IF NOT EXISTS morning_brief_failure_safe(outbox_id TEXT PRIMARY KEY);`);
   }
   private config(){return {zone:this.store.get('morning-brief-zone')??'Asia/Kolkata',time:this.store.get('morning-brief-time')??'08:00'};}
   private scopedBoard(destination:string,owner:string,only?:number){
@@ -75,7 +76,13 @@ export class MorningBrief {
   }
   private failureNotice(destination:string,owner:string,day:string,origin:IncomingOwner){
     if(!validDestination(this.store,destination,owner)||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return;
-    this.store.incomingOwnerContext.run(origin,()=>this.store.output(undefined,'The morning brief could not be prepared after several tries. Check Brain settings, then send /brief retry.',`morning-brief-error:${source(destination,owner,day)}`,destination,{kind:'system',origin:'system',plain:true}));
+    const notice=`morning-brief-error:${source(destination,owner,day)}`;
+    this.store.db.exec('SAVEPOINT brief_failure_notice');
+    try{
+      const created=this.store.incomingOwnerContext.run(origin,()=>this.store.output(undefined,'The morning brief could not be prepared after several tries. Check Brain settings, then send /brief retry.',notice,destination,{kind:'system',origin:'system',plain:true}));
+      if(created)this.store.db.prepare('INSERT INTO morning_brief_failure_safe SELECT id FROM outbox WHERE source=?').run(`${notice}:0`);
+      this.store.db.exec('RELEASE brief_failure_notice');
+    }catch(e){this.store.db.exec('ROLLBACK TO brief_failure_notice; RELEASE brief_failure_notice');throw e;}
   }
   /** Only an explicit retry can re-arm a cancellation known never to have been sent. */
   private rearmFailureNotice(destination:string,owner:string,day:string){
@@ -83,10 +90,10 @@ export class MorningBrief {
     this.store.db.exec('SAVEPOINT brief_failure_rearm');
     try{
       const row=this.store.db.prepare('SELECT id,status,attempts,sent_at,delivered_at,read_at,wa_message,error FROM outbox WHERE source=? AND destination=?').get(`${notice}:0`,destination) as {id:string;status:string;attempts:number;sent_at:number|null;delivered_at:number|null;read_at:number|null;wa_message:string|null;error:string|null}|undefined;
-      if(row&&row.status==='cancelled'&&row.attempts===0&&row.sent_at===null&&row.delivered_at===null&&row.read_at===null&&row.wa_message===null&&
+      if(row&&this.store.db.prepare('SELECT 1 FROM morning_brief_failure_safe WHERE outbox_id=?').get(row.id)&&row.status==='cancelled'&&row.attempts===0&&row.sent_at===null&&row.delivered_at===null&&row.read_at===null&&row.wa_message===null&&
         ['Morning brief owner or destination changed','Original owner connection changed.'].includes(row.error??'')&&!this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${notice}:1`)){
         const removed=this.store.db.prepare("DELETE FROM outbox WHERE id=? AND status='cancelled' AND attempts=0 AND sent_at IS NULL AND delivered_at IS NULL AND read_at IS NULL AND wa_message IS NULL").run(row.id);
-        if(removed.changes){this.store.db.prepare('DELETE FROM incoming_owner_outbox WHERE outbox_id=?').run(row.id);this.store.db.prepare('DELETE FROM reply_receipts WHERE source=?').run(notice);}
+        if(removed.changes){this.store.db.prepare('DELETE FROM morning_brief_failure_safe WHERE outbox_id=?').run(row.id);this.store.db.prepare('DELETE FROM incoming_owner_outbox WHERE outbox_id=?').run(row.id);this.store.db.prepare('DELETE FROM reply_receipts WHERE source=?').run(notice);}
       }
       this.store.db.exec('RELEASE brief_failure_rearm');
     }catch(e){this.store.db.exec('ROLLBACK TO brief_failure_rearm; RELEASE brief_failure_rearm');throw e;}
