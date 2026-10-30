@@ -313,7 +313,9 @@ export class WhatsApp {
           const sock:GuardedSocket=this.sock;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           if(destination!==this.selfJid)await this.verifyGroup(destination);
-          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock||!this.store.incomingOwnerDelivery(m.id)||scheduleDeliveryState(this.store,m.id)!=='ready'||contractDeliveryState(this.router,m.id)!=='ready')return;
+          if(this.closed||this.loggingOut||this.status!=='connected'||this.sock!==sock)return;
+          if(!this.store.incomingOwnerDelivery(m.id)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Original owner connection changed.' WHERE id=? AND status='queued'").run(m.id);continue;}
+          if(scheduleDeliveryState(this.store,m.id)!=='ready'||contractDeliveryState(this.router,m.id)!=='ready')return;
           if(!canDeliverBrief(this.store,m,this.selfJid)){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Morning brief owner or destination changed' WHERE id=? AND status='queued'").run(m.id);continue;}
           const poll=this.polls.message(m.id);
           if(poll){

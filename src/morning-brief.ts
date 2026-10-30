@@ -156,7 +156,8 @@ export class MorningBrief {
     try {
       let entries=this.snapshot(destination,owner,local.date,now);const prs=await this.mergedPrs(destination,local.date,cfg.zone);
       // A revoked owner cannot authorize a new model request after PR lookup.
-      if(!ownerCurrent()||this.router.stopped||canSend&&!canSend()){undoAttempt();return false;}
+      const beforeModel=this.config(),modelPolicy=brainPolicy(this.store);
+      if(!ownerCurrent()||this.router.stopped||!modelPolicy.enabled||!modelPolicy.allowStatus||this.router.brain.secret.read()!==key||beforeModel.zone!==cfg.zone||beforeModel.time!==cfg.time||localTime(this.clock(),cfg.zone).date!==local.date||canSend&&!canSend()){undoAttempt();return false;}
       entries.push(...prs.entries.slice(0,3));
       // Prompts and item text can contain secrets. Only controlled classifications and
       // numeric item IDs leave this process; owner-facing text is assembled locally.

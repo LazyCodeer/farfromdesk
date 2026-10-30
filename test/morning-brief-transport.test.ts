@@ -1,6 +1,7 @@
 import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync,rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -44,6 +45,15 @@ test('owner changes during group verification cancel the queued brief before any
     assert.equal(await f.brief.request(group,'first-message'),true);
     let sends=0;f.wa.sock={sendMessage:async()=>{sends++;return {};},end:()=>{}} as any;
     f.wa.verifyGroup=async()=>{f.store.set('whatsapp-owner','new-owner@s.whatsapp.net');f.wa.selfJid='new-owner@s.whatsapp.net';};
+    await f.wa.flush();assert.equal(sends,0);assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'morning-brief:%'").get() as any).status,'cancelled');
+  }finally{f.close();}
+});
+test('owner generation revoked during group verification cancels before sending',async()=>{
+  const f=fixture();try{
+    const group='team@g.us';f.store.set('destination-jid',group);f.store.set('owned-group:'+group,'true');
+    assert.equal(await f.brief.request(group,'first-message'),true);
+    let sends=0;f.wa.sock={sendMessage:async()=>{sends++;return {};},end:()=>{}} as any;
+    f.wa.verifyGroup=async()=>{f.store.set('incoming-owner-generation',randomUUID());};
     await f.wa.flush();assert.equal(sends,0);assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'morning-brief:%'").get() as any).status,'cancelled');
   }finally{f.close();}
 });

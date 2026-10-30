@@ -138,6 +138,17 @@ test('revocation during PR lookup prevents a later Meta request',async()=>{
     assert.equal(await pending,false);assert.equal(calls,0);assert.equal(sourceRows(f.store).length,0);
   }finally{f.close();}
 });
+for(const change of ['policy','key','time'] as const)test(`a ${change} change during PR lookup prevents a later Meta request`,async()=>{
+  const f=setup();try{
+    const item=addScoped(f,'wa:task','Synthetic task');f.store.destinationContext.run('owner@s.whatsapp.net',()=>f.router.brain.memory.items.note(item.id,'https://github.com/Owner/Repo/pull/42',undefined,undefined,'wa:task'));
+    let start!:()=>void,release!:()=>void,calls=0;const entered=new Promise<void>(r=>start=r),gate=new Promise<void>(r=>release=r);
+    const brief=new MorningBrief(f.store,f.router,async()=>{calls++;return {opening:'Hello.',priorities:[]};},()=>instant,async()=>{start();await gate;return {title:'Synthetic',html_url:'https://github.com/Owner/Repo/pull/42',merged_at:null};});
+    const pending=brief.request('owner@s.whatsapp.net','scheduled');await entered;
+    if(change==='policy')f.store.set('meta-brain-policy',JSON.stringify({...DEFAULT_BRAIN,enabled:false,allowStatus:false}));
+    if(change==='key')f.secret.remove();if(change==='time')f.store.set('morning-brief-time','09:00');release();
+    assert.equal(await pending,false);assert.equal(calls,0);assert.equal(sourceRows(f.store).length,0);
+  }finally{f.close();}
+});
 test('a queued background brief is withheld on revocation and safely regenerated if never sent',async()=>{
   const f=setup();try{
     addScoped(f,'wa:task','Synthetic task');const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);
