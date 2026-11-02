@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import 'gateway.dart';
+import 'native_gateway.dart';
 import 'local_email_screen.dart';
 import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
@@ -102,23 +103,37 @@ class _DeskState extends State<Desk> {
           selectedWorkspaceId =
           '',
       selectedNativeId = '',
-      activityFilter = 'All',
-      activityQuery = '',
       itemQuery = '',
           // Stable Settings tab id, not a display title: the title carries the
           // machine name and would drift.
           settingsTab =
           'this-mac';
-  // A stable binding identity, never a request title or session display name.
-  String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
-  String inboxTab = 'Requests';
-  List<Map> inboxAttention = [];
-  bool inboxAttentionLoaded = false;
-  List<Map>? inboxGroups;
-  final inboxThreads = <String, Map<String, dynamic>>{};
-  final inboxScrolls = <String, ScrollController>{};
-  bool inboxLoading = false, inboxOlderLoading = false, inboxShowThread = false;
-  int inboxEpoch = 0;
+  // The Inbox is one conversation per view, all of it read from
+  // /api/inbox-feed. Nothing here is derived from the status poll.
+  String? inboxError, inboxRequestSelected;
+  String inboxViewId = 'all', inboxQuery = '';
+  List<Map> inboxViews = [], inboxFilters = [];
+  Map<String, dynamic> inboxView = {}, inboxStats = {};
+  List<Map> inboxMessages = [];
+  Map<String, dynamic>? inboxNext;
+  ScrollController? inboxScroll;
+  final inboxReply = TextEditingController();
+  // Which messages have their details panel open. Collapsed by default.
+  final inboxExpanded = <String>{};
+  bool inboxLoading = false,
+      inboxOlderLoading = false,
+      inboxShowConversation = false,
+      // True once a feed request finished, so a failure is reported once instead
+      // of the pane re-asking for a conversation it cannot load.
+      inboxAttempted = false,
+      // True once an earlier page was pulled in. Until then the newest page IS
+      // the whole history, so a refresh replaces it and a reviewed entry that
+      // the feed no longer returns really disappears.
+      inboxLoadedOlder = false,
+      inboxSending = false;
+  // The epoch of the page request that is in flight, so the poll cannot stack a
+  // second request while a view switch is still allowed to replace it.
+  int inboxEpoch = 0, inboxLoadingEpoch = -1;
   Timer? inboxSearchTimer;
   final socialKey = GlobalKey<SocialScreenState>();
   bool editingVoice = false;
@@ -148,7 +163,17 @@ class _DeskState extends State<Desk> {
   String? voicePathChoice, voiceProviderChoice;
   bool replacingVoiceKey = false;
   final voiceKey = TextEditingController();
-  Timer? timer, updateTimer;
+  Timer? timer, updateTimer, bootRetryTimer;
+  /// Started, not stuck. A busy launch can outrun the gateway's own health wait,
+  /// and the app used to show a permanent "the local backend did not start"
+  /// banner for that, because the status poll was only armed after a successful
+  /// boot. The first attempts now keep the spinner, and the poll runs either way,
+  /// so a slow start resolves itself instead of needing a tab switch to clear it.
+  int bootAttempts = 0;
+  bool booting = false;
+  static const _bootRetryDelay = Duration(seconds: 3);
+  static const _bootGraceAttempts = 5;
+  static const _bootMaxAttempts = 40;
 
   /// How long a manual "Check now" keeps its spinner up even when the check
   /// answers instantly, so pressing the button visibly does something.
@@ -204,6 +229,13 @@ class _DeskState extends State<Desk> {
   }
 
   Future<void> boot() async {
+    // "Try again" already proved this is safe to call repeatedly; the guard only
+    // stops two starts from overlapping while one is still waiting on health.
+    if (booting) {
+      scheduleBootRetry();
+      return;
+    }
+    booting = true;
     try {
       await widget.initialize?.call();
       traceStartup('reading login registration');
@@ -228,7 +260,8 @@ class _DeskState extends State<Desk> {
         }
       }
       unawaited(loadItems());
-      timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
+      bootAttempts = 0;
+      armStatusTimer();
       await WidgetsBinding.instance.endOfFrame;
       if (mounted && error == null) {
         await api.reportReady();
@@ -237,8 +270,48 @@ class _DeskState extends State<Desk> {
       unawaited(showUpdateOutcome());
     } catch (e) {
       traceStartup('startup failed');
-      if (mounted) setState(() => error = clean(e));
+      bootAttempts++;
+      if (!mounted) return;
+      // A backend that is merely slow is a state to recover from, so it keeps the
+      // spinner, retries by itself, and starts the status poll. Any other failure
+      // (a refused window call, a broken install) is reported at once, exactly as
+      // before: retrying those would only hide a real error.
+      final retryable = e is BackendNotReady;
+      setState(
+        () => error = !retryable || showStartupError ? clean(e) : null,
+      );
+      if (retryable) {
+        armStatusTimer();
+        scheduleBootRetry();
+      }
+    } finally {
+      booting = false;
     }
+  }
+
+  /// A slow launch and a broken install look identical for the first seconds, so
+  /// neither the start nor a failed status poll claims failure until the retries
+  /// have had their chance. One rule, read by both.
+  bool get showStartupError => bootAttempts >= _bootGraceAttempts;
+  /// True while a retryable start is still being retried, so a status poll that
+  /// lands in that window does not put a startup error over the spinner.
+  bool get startupRetrying => bootRetryTimer?.isActive == true;
+
+  /// Bounded, so a genuinely broken install does not spin forever, but long
+  /// enough that a busy launch recovers without the owner touching anything.
+  void scheduleBootRetry() {
+    if (bootAttempts >= _bootMaxAttempts) return;
+    bootRetryTimer?.cancel();
+    bootRetryTimer = Timer(_bootRetryDelay, () {
+      if (mounted && !ready) unawaited(boot());
+    });
+  }
+
+  /// Startup must never be the only thing that can arm the poll: it is what turns
+  /// a slow or refused launch into a working app instead of an unclearable banner.
+  void armStatusTimer() {
+    if (timer != null) return;
+    timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
   }
 
   Future<void> showUpdateOutcome() async {
@@ -278,9 +351,8 @@ class _DeskState extends State<Desk> {
     widget.closeGuard?.detach(allowClose);
     timer?.cancel();
     inboxSearchTimer?.cancel();
-    for (final controller in inboxScrolls.values) {
-      controller.dispose();
-    }
+    inboxScroll?.dispose();
+    inboxReply.dispose();
     updateTimer?.cancel();
     unawaited(ServerModeActivity.setActive(false));
     api.closeUpdates();
@@ -495,9 +567,14 @@ class _DeskState extends State<Desk> {
     polling = true;
     try {
       final next = await api.get('/api/status');
+      // A status that arrives without a completed startup still means the backend
+      // is there, so finish starting rather than leaving a spinner or a banner no
+      // later event would clear. This is what a tab switch used to do by hand.
+      final recovering = !ready && !booting;
       if (mounted) {
         setState(() {
           status = next;
+          if (recovering) ready = true;
           if (!setupActive &&
               !platforms.any(
                 (p) =>
@@ -516,6 +593,10 @@ class _DeskState extends State<Desk> {
           if (!ready) showGroups = next['destination']?['kind'] == 'group';
           error = null;
         });
+        if (recovering) {
+          unawaited(loadItems());
+          unawaited(api.reportReady());
+        }
         // A hidden or lid-closed app can be App Napped; opt out only while
         // server mode is actually keeping sleep off.
         final serverMode = Map<String, dynamic>.from(
@@ -523,7 +604,7 @@ class _DeskState extends State<Desk> {
         );
         unawaited(ServerModeActivity.setActive(serverMode['active'] == true));
         modalUpdate?.call(() {});
-        if (section == 1) unawaited(loadInbox());
+        if (section == 1) unawaited(loadInboxFeed());
         if (section == 6) unawaited(socialKey.currentState?.refreshQuietly());
         if (section == 4 &&
             next['macControl']?['supported'] == true &&
@@ -548,7 +629,16 @@ class _DeskState extends State<Desk> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => error = clean(e));
+        // While the app has never started, the error is the whole state and must be
+        // shown. Once it is running, one slow or refused poll keeps the last good
+        // status instead of putting a startup error over a working screen; the
+        // retry two seconds later clears it anyway.
+        // Silent while a retryable start is still being retried, including during
+        // the retry's own status read: that window is exactly the slow launch this
+        // is meant to ride out. Once the retries stop, a failure is reported.
+        if (!ready && !booting && !startupRetrying) {
+          setState(() => error = clean(e));
+        }
         modalUpdate?.call(() {});
       }
     } finally {
@@ -695,7 +785,7 @@ class _DeskState extends State<Desk> {
     if (!mounted) return false;
     setState(() => section = index);
     if (index == 2) unawaited(loadItems());
-    if (index == 1) unawaited(loadInbox());
+    if (index == 1) unawaited(loadInboxFeed());
     return true;
   }
 

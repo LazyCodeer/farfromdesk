@@ -117,9 +117,10 @@ async function main() {
   }
   else if(command==='install-hooks') {
     initializeState();
-    const reports=installAllProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url)),stateDir,port});
+    const takeOver=args.includes('--take-over');
+    const reports=installAllProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url)),stateDir,port,takeOver});
     for(const report of reports)console.log(`${report.provider}: ${report.state}${report.detail?` (${report.detail})`:''}${report.backup?` backup ${report.backup}`:''} ${report.file}`);
-    console.log('Installed session-scoped Stop and PermissionRequest hooks. Existing hooks preserved. Native apps may require their normal hook trust/reload step.');
+    console.log(takeOver?'Installed session-scoped Stop and PermissionRequest hooks for this install, taking them over from any other FarFromDesk install.':'Installed session-scoped Stop and PermissionRequest hooks. A hook owned by another FarFromDesk install is reported, never replaced. Existing hooks preserved. Native apps may require their normal hook trust/reload step.');
   }
   else if(command==='command'){console.log(await api('/api/action',{command:args.join(' ')}));}
   else if(command==='master-setup'){const s=await api('/api/status'),b=s.bindings.find((b:any)=>b.alias===args[0]);if(!b)throw new Error('Master binding not found');console.log(await api('/api/master-setup',{bindingId:b.id}));}

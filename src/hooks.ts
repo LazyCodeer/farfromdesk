@@ -16,15 +16,17 @@ export function hookMessage(provider:string,input:any) {
 export async function handleHook(provider:string,input:any) {
   const c=hookMessage(provider,input);if(!c)return;
   if(input.hook_event_name==='PermissionRequest') {
-    let answer='deny';
+    let answer:string|undefined;
     try {
       const r=await fetch(baseUrl+'/api/session/permission',{method:'POST',headers:{Authorization:`Bearer ${c.token}`,'X-Binding-Id':c.id,'Content-Type':'application/json'},body:JSON.stringify({question:`${input.tool_name}\n${JSON.stringify(input.tool_input,null,2)}`,tool:typeof input.tool_name==='string'?input.tool_name:undefined}),signal:AbortSignal.timeout(15*60_000+5000)});
       if(r.ok)answer=((await r.json()) as any).answer;
-      else if(r.status===401)return; // Paused or unregistered: native permission UI continues.
     } catch{}
-    // "native" hands the prompt back to the app's own dialog: the owner decided to
-    // do it there, or a question arrived that a yes or no could never answer.
-    if(answer==='native')return;
+    // Only an explicit answer from the bridge decides. A bridge that is stopped,
+    // paused, unreachable or does not know this session must never deny on the
+    // owner's behalf: it defers and the app's own prompt takes over. "native" means
+    // the same thing by the owner's choice, or when a question could not be asked
+    // here as a yes or no.
+    if(answer==='native'||!answer)return;
     return {hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:answer==='approve'?'allow':'deny'}}};
   }
   if(input.hook_event_name!=='Stop'||input.stop_hook_active||typeof input.last_assistant_message!=='string'||!input.last_assistant_message.trim())return;

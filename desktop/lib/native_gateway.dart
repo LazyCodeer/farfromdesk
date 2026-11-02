@@ -73,6 +73,15 @@ Future<String> readSocialBrainKey(String state) async {
   }
 }
 
+/// The backend is not answering yet. Retryable, and never a reason to claim the
+/// installation is broken until the retries have had their chance.
+class BackendNotReady implements Exception {
+  BackendNotReady(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 class NativeGateway extends Gateway {
   final String state;
   final int port;
@@ -688,7 +697,10 @@ class NativeGateway extends Gateway {
       await Future<void>.delayed(const Duration(milliseconds: 250));
       if (await connected()) return;
     }
-    throw StateError(
+    // Typed, because this one is worth retrying from the UI: a busy launch, a
+    // service-lock race or a backend still settling all look like this and clear
+    // themselves, unlike a refused permission or a broken window call.
+    throw BackendNotReady(
       'The local backend did not start. Check that port $port is free and the installation is complete.',
     );
   }

@@ -292,7 +292,7 @@ export class StuckDetection {
   /** Scans a rotating page so old or blocked tasks cannot permanently starve newer ones. */
   async tick():Promise<void> {
     if(this.ticking||this.router.stopped)return;
-    const owner=this.store.get('whatsapp-owner'),destination=this.store.destination(),policy=brainPolicy(this.store);
+    const destination=this.store.destination(),owner=this.store.ownerFor(destination),policy=brainPolicy(this.store);
     if(!owner||!destination||!this.context(owner,destination)||!policy.enabled||!policy.allowStatus)return;
     const generation=this.store.get('incoming-owner-generation')??'';
     this.ticking=true;
@@ -335,7 +335,7 @@ export class StuckDetection {
   deliveryState(row:{id:string;source:string;destination?:string|null},selfJid?:string):'ready'|'hold'|'invalid' {
     if(!row.source.startsWith('stuck-alert:'))return 'ready';
     const alert=this.store.db.prepare('SELECT * FROM stuck_alerts WHERE outbox_id=?').get(row.id) as Alert|undefined;
-    if(!alert||alert.owner_generation===null||alert.owner_generation!==(this.store.get('incoming-owner-generation')??'')||row.destination!==alert.destination||row.source!==`stuck-alert:${digest([alert.owner,alert.destination,alert.item_id,alert.kind,alert.incident])}:0`||alert.state!=='open'||alert.expires_at<=this.clock()||!selfJid||selfJid!==alert.owner||this.store.get('whatsapp-owner')!==alert.owner)return 'invalid';
+    if(!alert||alert.owner_generation===null||alert.owner_generation!==(this.store.get('incoming-owner-generation')??'')||row.destination!==alert.destination||row.source!==`stuck-alert:${digest([alert.owner,alert.destination,alert.item_id,alert.kind,alert.incident])}:0`||alert.state!=='open'||alert.expires_at<=this.clock()||!selfJid||selfJid!==alert.owner||this.store.ownerFor(alert.destination)!==alert.owner)return 'invalid';
     if(this.store.controlChannel()!=='whatsapp'||this.store.destination()!==alert.destination||this.router.stopped||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus)return 'hold';
     if(alert.kind==='choice'&&this.unsettledAlert(alert,this.clock()))return 'hold';
     const fresh=this.signal(alert.item_id,alert.owner,alert.destination,this.clock());
@@ -392,8 +392,8 @@ export class StuckDetection {
     const text=m.text.trim(),match=/^\/stuck\s+dismiss\s+([A-Za-z0-9_-]{24})$/i.exec(text),interval=/^\/stuck\s+interval\s+(\d{1,4})$/i.exec(text);
     if(/^\/done$/i.test(text))return this.checkHandover(m);
     if(!match&&!interval)return;
-    if(m.quotedId||m.ownerCommand===false||m.source==='voice'||!authenticatedOwner(this.router,m))return 'Send this command as a new text message in your own WhatsApp chat.';
-    const owner=this.store.get('whatsapp-owner'),destination=this.store.destination(),now=this.clock();
+    if(m.quotedId||m.ownerCommand===false||m.source==='voice'||!authenticatedOwner(this.router,m))return 'Send this command as a new text message in your own chat.';
+    const destination=this.store.destination(),owner=this.store.ownerFor(destination),now=this.clock();
     if(!owner||!destination||!this.context(owner,destination))return 'This notice is unavailable in this chat.';
     if(interval){const minutes=Number(interval[1]);if(minutes<1||minutes>1440)return 'Choose an idle limit between 1 and 1440 minutes.';this.store.set('stuck-idle-minutes',String(minutes));return `Idle notices will use ${minutes} minutes. This does not change running work.`;}
     const alert=this.store.db.prepare(`SELECT a.* FROM stuck_alerts a JOIN outbox o ON o.id=a.outbox_id

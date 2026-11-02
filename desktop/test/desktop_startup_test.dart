@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:farfromdesk/main.dart' as desktop;
 import 'package:farfromdesk/app.dart';
+import 'package:farfromdesk/native_gateway.dart';
 import 'package:farfromdesk/preview.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -20,6 +21,23 @@ class StartupGateway extends PreviewGateway {
   @override
   Future<void> reportReady() async {
     stages.add('ready');
+  }
+}
+
+/// A backend that answers only once [down] is cleared, so a launch can be made to
+/// fail and then recover exactly as a busy or half-started backend does.
+class OutageGateway extends StartupGateway {
+  bool down = true;
+  @override
+  Future<Map<String, dynamic>> get(String path) async {
+    // Only the status/health path fails, so the assertions below see the startup
+    // error alone and not a pane loader reporting the same outage.
+    if (down && path == '/api/status') {
+      throw BackendNotReady(
+        'The local backend did not start. Check that port 47961 is free and the installation is complete.',
+      );
+    }
+    return super.get(path);
   }
 }
 
@@ -92,6 +110,103 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets('a slow launch recovers by itself instead of leaving a backend banner', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1160, 900);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final api = OutageGateway();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async => false);
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      );
+      for (final listener in windowManager.listeners) {
+        windowManager.removeListener(listener);
+      }
+    });
+    await desktop.launchDesktop(
+      gateway: api,
+      initializeBackend: () async {
+        if (api.down) {
+          throw BackendNotReady(
+            'The local backend did not start. Check that port 47961 is free and the installation is complete.',
+          );
+        }
+        api.stages.add('backend');
+      },
+    );
+    // First attempts fail. Inside the grace window this is a starting app, not a
+    // broken install, so no error is claimed yet.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(find.textContaining('did not start'), findsNothing);
+    expect(api.stages, isNot(contains('ready')));
+    // The backend comes up. Nothing is tapped and no tab is switched.
+    api.down = false;
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(find.textContaining('did not start'), findsNothing);
+    expect(api.stages, contains('ready'));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a backend that stays down is reported, then clears itself when it answers', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1160, 900);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final api = OutageGateway();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async => false);
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      );
+      for (final listener in windowManager.listeners) {
+        windowManager.removeListener(listener);
+      }
+    });
+    await desktop.launchDesktop(
+      gateway: api,
+      initializeBackend: () async {
+        if (api.down) {
+          throw BackendNotReady(
+            'The local backend did not start. Check that port 47961 is free and the installation is complete.',
+          );
+        }
+        api.stages.add('backend');
+      },
+    );
+    // Retries exhausted the grace window, so the real failure is shown.
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(seconds: 3));
+    }
+    expect(find.textContaining('did not start'), findsWidgets);
+    // The backend answers later. The retry clears it with no owner action.
+    api.down = false;
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(find.textContaining('did not start'), findsNothing);
+    expect(api.stages, contains('ready'));
+    await tester.pumpWidget(const SizedBox());
+  });
+
   for (final failure in ['ensureInitialized', 'focus']) {
     testWidgets(
       'a $failure error is rendered and cannot claim startup success',

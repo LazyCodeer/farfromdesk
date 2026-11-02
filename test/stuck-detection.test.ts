@@ -114,11 +114,11 @@ test('only an exact request-bound pending approval becomes an approval alert',as
 });
 
 test('a delivered permission notice lets the owner decide the exact displayed request once',async()=>{
-  for(const [number,expected] of [['1','deny'],['2','approve']] as const){const f=fixture();try{
+  for(const [number,expected] of [['1','approve'],['2','deny']] as const){const f=fixture();try{
     f.add('wa:permission','Synthetic task');f.router.pump=()=>{};
     const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Run the synthetic build command?','approval','wa:permission','session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();
-    const notice=alertOut(f.store)[0];assert.match(notice.body,/Run the synthetic build command\?/);assert.match(notice.body,/1 to deny or 2 to allow this exact request/);assert.match(notice.body,/cannot verify what it does next/);f.store.sent(notice.id);
+    const notice=alertOut(f.store)[0];assert.match(notice.body,/Run the synthetic build command\?/);assert.match(notice.body,/1 to allow, 2 to deny, or 3 to do it on the Mac yourself/);assert.match(notice.body,/cannot verify what it does next/);f.store.sent(notice.id);
     const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:decision-${number}`,text:number,quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
     assert.equal(result.status,'handled');assert.equal(await answer,expected);assert.equal(f.approvals.pending.size,0);assert.equal(f.store.job(`wa:decision-${number}`),undefined);
     const repeat=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:repeat-${number}`,text:number,quotedId:notice.wa_id,ownerCommand:false,ownerChoice:true,source:'text'}));
@@ -154,7 +154,7 @@ test('permission notice decisions fail closed for stale, untrusted or altered re
     if(change==='original-body')f.store.db.prepare('UPDATE outbox SET body=? WHERE id=?').run('A different displayed request',original.id);
     if(change==='legacy')f.store.db.prepare('UPDATE stuck_alerts SET permission_code=NULL').run();
     if(change==='dismissed')f.store.db.prepare("UPDATE stuck_alerts SET state='dismissed'").run();
-    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:reject-${change}`,text:change==='invalid-number'?'3':'2',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:change!=='forwarded',source:change==='voice'?'voice':'text'}));
+    const result=await f.store.destinationContext.run(owner,()=>f.router.receive({id:`wa:reject-${change}`,text:change==='invalid-number'?'9':'2',quotedId:notice.wa_id,ownerCommand:false,ownerChoice:change!=='forwarded',source:change==='voice'?'voice':'text'}));
     assert.equal(result.status,'blocked',change);assert.equal(f.approvals.pending.size,1,change);assert.equal(f.store.job(`wa:reject-${change}`),undefined,change);
   }finally{f.close();}}
 });
@@ -199,9 +199,9 @@ test('a permission notice never approves a different pending request',async()=>{
     const second=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Second request','approval','wa:permission','session'));
     for(const out of f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").all() as any[])f.store.sent(out.id);
     await f.detector.tick();const notice=alertOut(f.store)[0];assert.match(notice.body,/First request/);f.store.sent(notice.id);
-    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:first-decision',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
+    await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:first-decision',text:'1',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
     assert.equal(await first,'approve');assert.equal(f.approvals.pending.size,1);assert.equal([...f.approvals.pending.values()][0].question,'Second request');
-    const again=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:second-decision',text:'2',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
+    const again=await f.store.destinationContext.run(owner,()=>f.router.receive({id:'wa:second-decision',text:'1',quotedId:notice.wa_id,ownerChoice:true,source:'text'}));
     assert.equal(again.status,'blocked');assert.equal(f.approvals.pending.size,1);f.approvals.cancel();assert.equal(await second,'deny');
   }finally{f.close();}
 });
@@ -223,7 +223,7 @@ test('WhatsApp self-chat can decide a permission by quoting its delivered notice
     const answer=f.store.destinationContext.run(owner,()=>f.approvals.ask(f.binding,'Synthetic permission','approval','wa:permission','session'));
     const original=f.store.db.prepare("SELECT * FROM outbox WHERE source LIKE 'permission:%:0'").get() as any;f.store.sent(original.id);await f.detector.tick();const notice=alertOut(f.store)[0];f.store.sent(notice.id);
     const wa=new WhatsApp(f.store,f.router);wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
-    const message={key:{id:'permission-decision',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:'2',contextInfo:{stanzaId:notice.wa_id}}}};
+    const message={key:{id:'permission-decision',fromMe:true,remoteJid:owner},message:{extendedTextMessage:{text:'1',contextInfo:{stanzaId:notice.wa_id}}}};
     await wa.receiveMessage(message);await wa.receiveMessage(message);assert.equal(await answer,'approve');assert.equal(f.approvals.pending.size,0);wa.close();
   }finally{f.close();}
 });

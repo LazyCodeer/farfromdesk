@@ -40,7 +40,7 @@ export function describeTool(question:string):{kind:BlockKind;plain:string;detai
     Read:'read a file',Glob:'list files',Grep:'search file contents',WebFetch:'fetch a web page',WebSearch:'search the web',
     TodoWrite:'update its task list',Task:'delegate part of the work to a subagent',KillShell:'stop a background command',
   };
-  if(tool==='AskUserQuestion')return {kind:'question',plain:'asks you a question that has to be answered in the app',detail};
+  if(tool==='AskUserQuestion')return {kind:'question',plain:'is asking you a question',detail};
   const plain=named[tool]??(tool.startsWith('mcp__')?`use the ${clean(tool.split('__').filter(Boolean).at(-1),60)} tool`:`use ${clean(tool,60)||'a tool'}`);
   return {kind:'unknown',plain,detail};
 }
@@ -78,7 +78,7 @@ export function blockCard(o:{store:Store;binding:Binding;question:string;expires
     const lines=choices.map((choice,index)=>`${index+1}. ${choice.header}: ${choice.question}${choice.options.length?`\n   ${choice.options.join(' | ')}${choice.multi?' (pick more than one)':''}`:''}`);
     const text=[
       `⚠️ *${session.label} is asking you something*`,
-      `- ${session.name} ${described.plain}${session.where?` in ${session.where}`:''}.`,
+      `- ${session.name} ${described.plain}${session.where?`, in ${session.where}`:''}.`,
       '- I cannot answer this one from here, so it will stay open in the app.',
       ...(lines.length?['',...lines]:[]),
       '',

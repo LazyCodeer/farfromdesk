@@ -15,6 +15,8 @@ export type Provider = 'codex' | 'claude' | 'muse';
 export type Binding = { id: string; alias: string; provider: Provider; native_id: string; cwd: string; enabled: number; mode: 'desktop' | 'channel'; token_hash: string; created_at: number };
 export type Job = { id: string; binding_id: string; body: string; status: string; created_at: number; error: string | null; destination?:string|null; updated_at?:number; outcome?:RequestOutcome|null; received_at?:number|null; submitted_at?:number|null; first_reply_at?:number|null; final_reply_at?:number|null; last_error?:string|null; last_error_at?:number|null; attempt_id?:string|null };
 export type IncomingOwner={owner:string;destination:string;channel:'whatsapp'|'telegram';generation:string};
+/** One app-composer request, claimed by the route before it is handed to the router. */
+export type AppOriginClaim={at:number;destination:string;channel:'whatsapp'|'telegram';generation:string};
 export const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 export class Store {
   db: DatabaseSync;
@@ -139,6 +141,19 @@ export class Store {
       (this.get('incoming-owner-generation')??'')===captured.generation;
   }
   assertIncomingOwner(){if(!this.incomingOwnerCurrent())throw new Error('The owner connection changed.');}
+  /** Single use: the first claim for an id wins, and later ones are refused. */
+  claimAppOrigin(id:string,destination:string,channel:'whatsapp'|'telegram',generation:string):boolean {
+    const claimed=this.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(`app-origin:${id}`,JSON.stringify({at:Date.now(),destination,channel,generation}));
+    return !!claimed.changes;
+  }
+  appOriginClaim(id:string):AppOriginClaim|undefined {
+    const raw=this.get(`app-origin:${id}`);if(!raw)return undefined;
+    try {
+      const claim=JSON.parse(raw) as AppOriginClaim;
+      if(!claim||typeof claim!=='object'||!Number.isFinite(claim.at)||typeof claim.destination!=='string'||(claim.channel!=='whatsapp'&&claim.channel!=='telegram')||typeof claim.generation!=='string')return undefined;
+      return claim;
+    }catch{return undefined;}
+  }
   recordIncomingInput(id:string){
     this.assertIncomingOwner();const owner=this.incomingOwnerContext.getStore();
     if(owner)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_inputs VALUES(?,?,?,?,?)').run(id,owner.owner,owner.destination,owner.channel,owner.generation);
@@ -191,7 +206,13 @@ export class Store {
         if(!guarded||!job||guarded.channel!=='whatsapp'||this.controlChannel()!=='whatsapp'||guarded.destination!==guarded.owner||this.ownerFor(guarded.destination)!==guarded.owner||job.binding_id!==guarded.binding_id||hash(job.body)!==guarded.body_hash||destinations.some(d=>d!==guarded.destination))return undefined;
         return {owner:guarded.owner,destination:guarded.destination};
       }
-      if(!id.startsWith('wa:'))return undefined;
+      // Request provenance follows the owner's live channels: a Telegram owner
+      // message carries its chat prefix and a WhatsApp one carries wa:. Which
+      // channel is currently selected must not erase an existing owner's
+      // provenance, so both shapes are accepted here and the owner/destination
+      // checks below still decide whether the request is really theirs.
+      const telegramPrefix=`${this.get('telegram-owner')??'tg:unpaired'}:`;
+      if(!id.startsWith('wa:')&&!id.startsWith(telegramPrefix))return undefined;
       const origin=this.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(id) as {owner:string;destination:string}|undefined;
       if(!origin||destinations.some(d=>d!==origin.destination)||this.ownerFor(origin.destination)!==origin.owner)return undefined;
       if(origin.destination!==origin.owner&&!this.get(`owned-group:${origin.destination}`))return undefined;

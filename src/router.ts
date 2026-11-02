@@ -173,7 +173,9 @@ export class Router {
       }
       if(choice?.kind==='mapped')m={...m,quotedId:choice.quotedId,text:choice.text??m.text};
     }
-    if(this.store.controlChannel()==='whatsapp'&&authenticatedOwner(this,m)){
+    // Owner provenance follows the live channel. It is what the proactive watch
+      // and the item list are built on, so a Telegram owner request needs it too.
+      if(authenticatedOwner(this,m)){
       const destination=this.store.destination(),owner=this.store.ownerFor(destination);
       try{if(destination&&owner)this.store.recordOwnerOrigin(m.id,destination,owner);}catch{return {status:'blocked',requestId:m.id,code:'routing_unavailable'};}
       // Capture a reply to the exact message before task-review or other

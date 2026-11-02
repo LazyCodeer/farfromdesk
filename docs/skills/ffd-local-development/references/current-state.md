@@ -786,3 +786,143 @@ returns `osascript is not allowed assistive access (-25211)`, and macOS then rai
 grant **Accessibility** to the agent app as well; Screen Recording alone is not enough. Until then,
 capture only the tab that is already open and use the golden render harness for the others, or ask the
 owner to click through while capturing.
+
+## Companion handover: block cards, takeover guide, hook repair (2 November 2026)
+
+The owner asked for the bridge to behave like a companion: when a session blocks on a permission,
+say so at once, offer allow or deny, and when the remote answer cannot finish the job, hand the Mac
+back with exact steps. Backend only; source is the shared snapshot above.
+
+Evidence read from both apps' own databases before changing anything:
+
+- Production has 6 permission messages ever. On 29 Oct a Claude Desktop `AskUserQuestion` (4
+  questions, 2 multi-select) was sent as `Permission needed ... Reply Yes, allow it or No, deny it`,
+  which cannot answer it. The owner allows, the session still shows its own dialog, nothing says so.
+- No code checked whether an allow actually unblocked a session.
+- `~/.claude/settings.json` had no FarFromDesk hook (only Superset and Budge), so Claude prompts never
+  reached the bridge at all. The Codex hook pointed at the parent checkout's `dist` with the default
+  state and port, so a Local session's prompt posted where that session is not registered.
+- The proactive watch ran only on the paired WhatsApp self-chat and only with the Meta brain on.
+  `stuck_alerts` was empty in Local and absent in production.
+
+What changed:
+
+- `src/provider-hooks.ts` (new): installs or repairs exactly one namespaced hook per provider, pinned
+  to this build's `WSB_STATE_DIR` and `WSB_PORT`, keeps every other tool's groups, writes only when
+  the file really changed, backs it up first, and refuses to touch unparseable JSON. Called at startup
+  from `main.ts` and reused by `cli.ts install-hooks`.
+- `src/companion.ts` (new): the block card, the question card, the takeover guide, and the handover and
+  decision records that let a later check use real state.
+- `src/approvals.ts`: a session prompt now sends a card (plain words for what the tool does, the exact
+  request, `1 Allow it`, `2 Deny it`, `3 I do it on the Mac myself`). A number counts only when it
+  quotes the card it answers. Option 3 resolves as `native` and sends the guide. Every decision is
+  recorded, so a stall can be seen.
+- `src/hooks.ts`, `src/server.ts`: a `native` decision prints no hook decision, which returns the
+  prompt to the app's own dialog. `AskUserQuestion` is never offered as a yes or no: the real questions
+  and options are sent and the prompt goes back to the app.
+- `src/stuck-detection.ts`: the watch follows the owner's live channel, Telegram included; the approval
+  notice uses the same 1-allow, 2-deny, 3-take-over order; a new `stalled` signal sends the takeover
+  guide when an allow produced no move after three minutes; `/done` checks the session and never
+  resends work.
+- `src/router.ts`, `src/store.ts`: owner provenance is recorded and resolved for the live channel
+  instead of only `wa:` ids. This is what the watch and the item list are built on for Telegram; the
+  other origin consumers (guided jobs, morning brief, proof scope) already gate on the channel
+  themselves. A WhatsApp id keeps resolving when Telegram is selected, which one existing
+  morning-brief test checks.
+
+Validation: `tsc --noEmit` clean, `npm run build` clean. Full suite **1653 pass / 12 fail**, all in the
+known baseline families (coordinator role wording, staged handoff, workspace discovery, approval
+provenance). The two `/api/status` failures are the concurrently editing session's in-flight
+`desktopControl.permissionReport` change: its test stubs do not provide that method yet, which the
+failure message states verbatim. New `test/companion-handover.test.ts` (8 tests) covers the card, the
+numbered take-over with a checkable handover, the question handover, the stall guide, the Telegram
+watch and the hook installer (idempotency, repair of an older command, backups, unreadable files left
+alone). `test/stuck-detection.test.ts` was updated to the 1-allow order and passes 68.
+
+One real bug the new tests caught: `installProviderHooks` threw ENOENT on a machine with no provider
+config directory yet; it now creates it.
+
+Not done: nothing was packaged or installed, so Local remained at the other session's build. Not
+exercised: a live permission prompt through the repaired hook, and a real WhatsApp or Telegram block.
+Next: package the backend over the installed Local app with a build number above the installed one,
+then trigger one real Claude permission prompt and one real Telegram block.
+
+### Installed: companion handover, Local 2352-2353
+
+Build 2352 (`local-companion-hook-guard-2352`) then 2353 (`local-companion-handover-2353`) installed the
+companion work over 2347. Backend-only packaging: the previous stage was cloned on the same volume, the
+fresh `dist/` and `skills/` overlaid, and the diff against the installed backend was exactly the files
+this change touches (2352: `provider-hooks.js`; 2353: `companion.js`).
+
+Three real faults were found only by installing and looking, and each is fixed:
+
+1. **The hooks went to the wrong home.** The isolated Local backend runs with a private `HOME`
+   (`<state>/home`) and sets `CLAUDE_CONFIG_DIR` to its own private profile, while Claude Desktop and
+   the Codex app read the owner's real profiles. The first install therefore wrote hooks that no
+   provider would ever load, and `provider-hooks-status` reported them as installed. `ownerHome()` now
+   detects a private home from the state relationship (the isolated flag is not always exported) and
+   `providerConfigDir()` ignores a `CLAUDE_CONFIG_DIR`/`CODEX_HOME` that points inside our own state.
+2. **A packaged smoke could write into the owner's real profile.** The smoke sets `FFD_ISOLATED_LOCAL`
+   plus a temp state, which is exactly the shape that resolves to the real home, so it added a hook
+   pointing at its own dead temp state to `~/.claude/settings.json`. Proven by diffing the file before
+   and after a smoke, then repaired byte-perfect from the automatic backup (hash matched the 03:33
+   original). `installProviderHooks` now refuses a test context or a scratch state directory and says so.
+3. **A stopped bridge used to deny permissions.** `hooks.ts` started from `answer='deny'`, so an
+   unreachable, stopped or paused bridge silently denied the owner's prompt. Only an explicit answer
+   from the bridge now produces a decision; anything else defers and the app's own prompt takes over.
+   This also removed the double-ask: previously a prompt arriving before the dispatch window could be
+   asked twice.
+
+Verified live on 2353: `~/.claude/settings.json` carries exactly one bridge hook per event pinned to
+`WSB_STATE_DIR='.../FarFromDesk Local'` and `WSB_PORT=47961` with the installed app's own node and
+`dist/cli.js`, and the other 8 hooks (Superset, Budge, graft) are untouched. `~/.codex/hooks.json` is
+byte-identical to before the install: a Codex hook owned by the production install is reported
+`owned-by-other` and never replaced, so the owner's production permission approvals keep working.
+A live `AskUserQuestion` through the installed hook returned `{"answer":"native"}` (no hook decision,
+prompt handed back to the app) and its card was delivered to the owner's Telegram at 15:37:56.
+
+Known local condition, unchanged by this build: the installed Local backend stops answering `/health`
+about a minute after launch (health 401 at first, then 000, process alive at 0% CPU). 2349, 2350, 2352
+and 2353 all show it, as 2337 and 2339 did. While it is wedged the hook defers rather than denying.
+
+Not verified: a real Claude Code or Codex permission prompt raised by the provider app itself, and a
+real owner reply of 1/2/3 to a card. Next: trigger a genuine prompt from Claude Desktop with the Local
+app in its working window, and confirm the three-option card and the takeover guide on the phone.
+
+## 2354 — startup recovers by itself (`local-startup-recovery-2354`)
+
+The owner reported the Overview showing "The local backend did not start. Check that port 47961 is free and
+the installation is complete." while switching tabs and back showed a perfect app. It was a state bug, not a
+dead backend.
+
+Cause: `boot()` in `desktop/lib/app.dart` armed the 3 second status poll **only after** a successful start.
+One slow or refused start (the gateway waits 15s for backend health, and a busy launch, a service-lock race or
+a still-settling backend all look the same) threw, set `error`, and left `ready == false` with no timer to
+clear it. Nothing retried, so only a manual "Try again" or some later rebuild recovered it.
+
+Fix, all in `app.dart` plus one typed failure in `native_gateway.dart`:
+
+- `BackendNotReady` marks the health-wait failure as retryable. Every other failure is still reported at once,
+  so the window-manager error tests keep their behaviour.
+- A retryable start keeps the spinner instead of claiming failure, retries itself every 3s (bounded at 40
+  attempts), and arms the status poll immediately. A poll that lands while a retry is running stays quiet.
+- A status that arrives without a completed startup finishes it: `ready`, items loaded, readiness reported. So
+  the app heals through the poll alone.
+- Once the app is running, one failed poll no longer replaces a working screen with a startup error.
+- `boot()` no longer overlaps itself; the new `bootRetryTimer` is cancelled in `dispose`.
+
+Validation: `flutter analyze` clean apart from the one pre-existing info. Desktop suite **213 pass / 2 fail**
+(the known `social_preview_test.dart` pair). Two new tests in `desktop/test/desktop_startup_test.dart`
+("a slow launch recovers by itself instead of leaving a backend banner", "a backend that stays down is
+reported, then clears itself when it answers"), with the two existing window-failure tests still green.
+
+Reproduced live on the installed build: a refusing listener held 47961 while the app launched. It showed
+"Starting FarFromDesk…" with a spinner and no false banner; the listener was then killed and, with no click and
+no tab switch, the app recovered by itself into the full Overview while `/health` came back 401. Screenshots in
+`/tmp/outage2-s.png` and `/tmp/recovered-s.png` at the time of the test.
+
+Concurrent-session note: another session had installed their `channel-mark-2348` over 2353, so this install
+found 2348 as the previous version and left `startup-recovery-2354/local-2348-rollback.bundle`. 2354 was built
+from the shared source as of 16:05, which includes their `studio_panes.dart` work (15:43), so nothing of theirs
+was dropped by the replacement. Build numbers are now racing between sessions: take the installed version at
+build time, as this file already warns.
