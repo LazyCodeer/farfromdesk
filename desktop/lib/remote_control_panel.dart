@@ -146,20 +146,6 @@ extension _RemoteControl on _DeskState {
         ),
         gap(12),
         macControlPanel(),
-        gap(24),
-        settingsSubheading(
-          'Desktop control',
-          'What FarFromDesk needs to drive another app, and which sessions may.',
-        ),
-        gap(12),
-        desktopDriverPanel(),
-        gap(24),
-        settingsSubheading(
-          'Sessions allowed to control this Mac',
-          'A session can only act on a request it was given; this decides which sessions may try.',
-        ),
-        gap(12),
-        desktopControlSessionsPanel(),
       ],
       gap(26),
       remoteColumns(),
@@ -363,6 +349,10 @@ extension _RemoteControl on _DeskState {
     },
   );
 
+  /// One card, two states. The form is the whole card while there is no password
+  /// (that is the only thing to do), and one stored-password row with a single
+  /// action once there is, so the page never shows fields that would overwrite a
+  /// working password by accident.
   Widget remotePasswordColumn() {
     final editing = !remotePasswordSet || changingRemotePassword;
     return Column(
@@ -384,8 +374,10 @@ extension _RemoteControl on _DeskState {
         gap(8),
         if (editing) ...[
           Text(
-            'Use a separate password, not your $computer login. Your phone asks '
-            'for it on each new connection.',
+            remotePasswordSet
+                ? 'Setting a new one ends any phone session that is open now.'
+                : 'Use a separate password, not your $computer login. Your phone '
+                      'asks for it on each new connection.',
             style: const TextStyle(fontSize: 13, height: 1.5, color: muted),
           ),
           gap(14),
@@ -444,7 +436,7 @@ extension _RemoteControl on _DeskState {
             spacing: 8,
             children: [
               button(
-                'Save password',
+                remotePasswordSet ? 'Save new password' : 'Set password',
                 saveRemotePassword,
                 enabled: !remoteBusy,
                 primary: true,
@@ -463,20 +455,61 @@ extension _RemoteControl on _DeskState {
             ],
           ),
         ] else ...[
+          remotePasswordStoredRow(),
+          gap(10),
           Text(
             'Changing it ends any phone session that is open now.',
             style: const TextStyle(fontSize: 13, height: 1.5, color: muted),
           ),
           gap(14),
           button(
-            'Change',
+            'Change password',
             () => changeView(() => changingRemotePassword = true),
             compact: true,
+            key: const Key('remote-password-change'),
           ),
         ],
       ],
     );
   }
+
+  /// The stored password, as the only thing about it that can be shown: a lock
+  /// and a fixed mask. The backend keeps a salt and a scrypt hash and does not
+  /// store the length, so this is a fixed twelve dots and never a character
+  /// count, and the row says plainly where the password lives.
+  ///
+  /// A [Wrap], not a [Row]: this column is about 277 px wide in the owner's
+  /// window and the label carries the computer's name, so a long name drops the
+  /// label onto its own line instead of overflowing the row.
+  Widget remotePasswordStoredRow() => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+    decoration: BoxDecoration(
+      color: toneCharcoal,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: line2),
+    ),
+    child: Wrap(
+      spacing: 12,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.lock_outline_rounded, size: 18, color: muted),
+            const SizedBox(width: 12),
+            const Text(
+              '••••••••••••',
+              maxLines: 1,
+              style: TextStyle(fontSize: 14, letterSpacing: 2, color: ink),
+            ),
+          ],
+        ),
+        small('Stored on this $computer'),
+      ],
+    ),
+  );
 
   Widget remoteConnectColumn() {
     final state = remoteLink['state'] ?? 'idle';

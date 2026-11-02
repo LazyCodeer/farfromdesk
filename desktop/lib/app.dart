@@ -22,7 +22,6 @@ import 'chat_message_text.dart';
 import 'bridge_theme.dart';
 part 'screens.dart';
 part 'mac_control_panel.dart';
-part 'desktop_control_panel.dart';
 part 'remote_control_panel.dart';
 part 'studio_panes.dart';
 part 'overview_metric_art.dart';

@@ -278,13 +278,91 @@ void main() {
     await tester.tap(find.byKey(const Key('remote-password-save')));
     await tester.pumpAndSettle();
     expect(api.remoteActions, ['password']);
-    expect(find.text('Change'), findsOneWidget);
+    expect(find.text('Change password'), findsOneWidget);
     final stop = find.byKey(const Key('remote-link-stop'));
     await tester.ensureVisible(stop);
     await tester.tap(stop);
     await tester.pumpAndSettle();
     expect(api.remoteActions.last, 'link-stop');
     expect(stop, findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    "Remote control lists the driver's grants in the one Permissions list",
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway()
+        ..trusted = true
+        ..captureTrusted = true
+        ..driverAccessibility = false
+        ..driverScreenRecording = true;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
+      await tester.ensureVisible(find.text('Desktop driver access'));
+      expect(find.text('Desktop driver access'), findsOneWidget);
+      expect(find.text('Desktop driver screen access'), findsOneWidget);
+      // One list, so the driver's grants cannot disagree with a second section
+      // three headings away, and there is no per-session allowlist to explain.
+      expect(find.text('Desktop control'), findsNothing);
+      expect(find.text('Sessions allowed to control this Mac'), findsNothing);
+      expect(find.text('Allowed'), findsNWidgets(3));
+      expect(find.text('Not allowed'), findsOneWidget);
+      expect(
+        find.byKey(const Key('mac-refresh-driver-access')),
+        findsOneWidget,
+      );
+      // Only the helper's grants can open a System Settings pane.
+      expect(find.byKey(const Key('mac-open-driver-access')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('Remote password shows one state at a time', (tester) async {
+    size(tester);
+    final api = MacControlGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    await openSettingsTab(tester, 'remote');
+    // Not set: the form is the whole card, and nothing offers to change a
+    // password that does not exist yet.
+    final field = find.byKey(const Key('remote-password'));
+    await tester.ensureVisible(field);
+    expect(find.text('Not set'), findsOneWidget);
+    expect(find.text('Set password'), findsOneWidget);
+    expect(find.text('Change password'), findsNothing);
+
+    await tester.enterText(field, 'a long remote pass');
+    await tester.enterText(
+      find.byKey(const Key('remote-password-confirm')),
+      'a long remote pass',
+    );
+    await tester.tap(find.byKey(const Key('remote-password-save')));
+    await tester.pumpAndSettle();
+
+    // Set: the fields are gone, replaced by one stored-password row and one
+    // action, so a working password cannot be typed over by accident.
+    await tester.ensureVisible(find.text('Change password'));
+    expect(find.text('Set'), findsOneWidget);
+    expect(find.byKey(const Key('remote-password')), findsNothing);
+    expect(find.textContaining('Stored on this'), findsOneWidget);
+
+    // Changing it brings the same form back, with a way out.
+    await tester.tap(find.text('Change password'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('remote-password')), findsOneWidget);
+    expect(find.text('Save new password'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('Change password'), findsOneWidget);
+    expect(find.byKey(const Key('remote-password')), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -2171,9 +2249,16 @@ class MacControlGateway extends PreviewGateway {
   bool? trusted;
   bool? captureTrusted;
   String? macError;
+  /// Null means the driver has not been probed yet, which is the state the
+  /// backend reports until its status call has read the driver's grants.
+  bool? driverAccessibility;
+  bool? driverScreenRecording;
   Future<Map<String, dynamic>> status(String path) async {
     final data = await super.get(path);
-    if (path == '/api/status') data['macControl'] = view;
+    if (path == '/api/status') {
+      data['macControl'] = view;
+      data['desktopControl'] = driverView;
+    }
     return data;
   }
 
@@ -2200,6 +2285,21 @@ class MacControlGateway extends PreviewGateway {
     'trusted': trusted,
     'error': macError,
     'capture': {'supported': true, 'trusted': captureTrusted},
+  };
+
+  /// `permission` is null until something has read the driver, exactly like the
+  /// backend, which returns null there until the probe has run.
+  Map<String, dynamic> get driverView => {
+    'supported': true,
+    'enabled': enabled,
+    'permission': driverAccessibility == null && driverScreenRecording == null
+        ? null
+        : {
+            'accessibility': driverAccessibility == true,
+            'screenRecording': driverScreenRecording == true,
+            'source': 'synthetic test fixture',
+            'checkedAt': 0,
+          },
   };
 
   @override

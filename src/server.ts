@@ -108,9 +108,6 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     const permission=await desktopControl.permissionReport();
     if(!permission?.accessibility)throw new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow FarFromDesk under Privacy & Security > Accessibility, then retry. This grant belongs to the desktop driver, not the Remote control helper.');
   };
-  const desktopControlSessions=():string[]=>{
-    try{const v=JSON.parse(store.get('desktop-control-sessions')??'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string').slice(0,50):[];}catch{return [];}
-  };
   const phoneRemote=new PhoneRemoteService({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))});
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
   const remoteControl=new RemoteControlService(new RemotePasswordAccess({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))}),undefined,text=>store.output(undefined,text,`remote-reconnect:${Date.now()}`,undefined,{plain:true}),voiceTranscriber(store));
@@ -339,15 +336,16 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{answer});return;
       }
       // Desktop control for a named coding session, not only the WhatsApp master.
-      // The owner keeps an explicit allowlist, and the request ID must be a job this
-      // exact session was given, so a session cannot reach outside the work it was
-      // handed. The permission gate is the driver's own, same as the master route.
+      // The request ID must be a job this exact session was given, so a session
+      // cannot reach outside the work it was handed, and the macOS grant belongs to
+      // the driver itself, same as the master route. There is no separate per-session
+      // allowlist: the owner grants it once to the driver, in System Settings, and
+      // then any session may drive the Mac on a request it was actually given.
       if(path==='/api/session/desktop-control'&&req.method==='POST'&&binding) {
         const {requestId,...input}=await body(req);
         if(typeof requestId!=='string')throw new Error('An exact owner request ID is required.');
         const job=store.job(requestId);
         if(!job||job.binding_id!==binding.id)throw new Error('This request does not belong to this session.');
-        if(input.action!=='status'&&input.action!=='check_permissions'&&!desktopControlSessions().includes(binding.id))throw new Error('DESKTOP_CONTROL_NOT_ALLOWED: The owner has not allowed this session to control the Mac. Ask the owner to enable it in Settings > Remote control.');
         if(router.stopped&&input.action!=='stop'&&input.action!=='status'&&input.action!=='check_permissions')throw new Error('Background operation is paused.');
         if(input.action==='stop')macAccessEpoch++;
         if(input.action==='stop'&&desktopControl.view().enabled)desktopControl.stop();
@@ -480,17 +478,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const result=d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):syncMacPermission(d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));
         json(res,200,result);return;
       }
-      // Which named sessions may drive the Mac, and the driver's own grant status.
-      if(path==='/api/desktop-control-sessions'&&req.method==='GET'){json(res,200,{sessions:desktopControlSessions(),connected:store.bindings().filter(b=>b.enabled).map(b=>({id:b.id,name:store.get(`name:${b.id}`)??b.alias})),permission:desktopControl.view().permission??null});return;}
-      if(path==='/api/desktop-control-sessions'&&req.method==='POST') {
-        const d=await body(req);
-        if(!Array.isArray(d.sessions)||d.sessions.length>50||d.sessions.some((x:unknown)=>typeof x!=='string'))throw new Error('Send sessions as a list of binding IDs.');
-        const known=new Set(store.bindings().map(b=>b.id));
-        const wanted=(d.sessions as string[]).filter(id=>known.has(id));
-        if(wanted.length!==d.sessions.length)throw new Error('One of those sessions is not a registered session.');
-        store.set('desktop-control-sessions',JSON.stringify(wanted));
-        json(res,200,{sessions:wanted});return;
-      }
+      // The driver's own grant status. Which sessions may drive the Mac is decided
+      // by macOS permission alone, so there is no allowlist to read or write here.
       if(path==='/api/desktop-control-permission'&&req.method==='POST'){json(res,200,{permission:await desktopControl.permissionReport()});return;}
       if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/update-shutdown'&&req.method==='POST') {
@@ -594,7 +583,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/status'&&req.method==='GET') {
         const c=router.coordinator;
         await desktopControl.permissionReport(15000);
-        json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),desktopControlSessions:desktopControlSessions(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');
