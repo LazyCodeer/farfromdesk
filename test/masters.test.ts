@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,writeFileSync,rmSync,readFileSync,realpathSync,symlinkSync,existsSync,mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
@@ -544,4 +544,16 @@ test('Desktop open failure cannot mark a saved coordinator ready; recovery opens
   f.masters.openCodex=async id=>{opened.push(id);};
   await f.masters.recover();await settled(f);
   assert.equal(f.masters.operation().status,'ready');assert.equal(f.store.bindings().length,1);assert.deepEqual(opened,[nativeId,nativeId]);
+});
+
+test('a workspace list is built without probing the disk on the bridge thread',()=>{
+  // Project metadata can block inside an OS permission prompt. The scanner child owns that work;
+  // this function runs on the bridge's own thread, where a blocked call freezes the port and every
+  // permission prompt with it. A folder that does not exist is the observable difference: a disk
+  // probe could never resolve it, and the folder is still offered instead of the list coming back
+  // empty. The scanner's own error is published beside the list, so the owner is told why it is flat.
+  const missing=join(homedir(),'ffd-missing-project-'+Date.now().toString(36));
+  const rows=masterWorkspaces('codex','cli',[{id:'gone',cwd:missing,available:true,updatedAt:1}]);
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].cwd,missing);
 });

@@ -28,6 +28,7 @@ import { ProofScopeFence } from './proof-contract-scope.js';
 import { StuckDetection } from './stuck-detection.js';
 import { StuckCiWatch } from './stuck-ci-watch.js';
 import { repairProviderHooks } from './hook-install.js';
+import { clearStage,recordStage } from './startup-stage.js';
 
 const token=initializeState();
 const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
@@ -73,7 +74,9 @@ server.on('listening',()=>{
   // In a separate process: these files can live on an external volume, and a read
   // that waits on a sleeping disk used to freeze the port that had just started
   // answering. A child that never answers is killed and reported, never waited on.
+  recordStage(stateDir,'repairing the permission hook');
   void repairProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url))})
+    .finally(()=>clearStage(stateDir))
     .then(reports=>store.set('provider-hooks-status',JSON.stringify(reports??[{provider:'claude',file:'',state:'unreadable',detail:'The Claude or Codex config did not answer in time. Its folder may be on an external disk that is asleep.'}])));
   // Remove only this service's private scratch recordings after a crash.
   rmSync(join(stateDir,'audio-tmp'),{recursive:true,force:true});
@@ -83,7 +86,15 @@ server.on('listening',()=>{
   void serverMode.initialize().catch(e=>console.error(`Server mode could not be initialized: ${(e as Error).message}`));
   void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));
   if(power.enabled){void router.stuckDetection?.tick().catch(()=>console.error('Stuck tasks could not be checked.'));void router.stuckCiWatch?.tick().catch(()=>console.error('CI watches could not be checked.'));}
-  if(power.enabled){void coordinator.refresh();void masters.discover();}
+  // Listing session folders is the slowest thing startup does, and the folders belong to other
+  // apps, so the step is on disk while it runs: if the bridge stops answering, the last step
+  // written is the one that never finished and the app can say which.
+  if(power.enabled){
+    recordStage(stateDir,'listing your session folders');
+    void Promise.allSettled([coordinator.refresh(),masters.discover()])
+      .then(()=>clearStage(stateDir))
+      .catch(()=>clearStage(stateDir));
+  }
   power.apply();
   console.log(`FarFromDesk listening at ${baseUrl}. Open FarFromDesk to manage it.`);
   if(power.enabled&&store.controlChannel()==='telegram')void telegram.resume().catch(()=>{});

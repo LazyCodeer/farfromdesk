@@ -123,6 +123,17 @@ Future<PortState> _waitOrThrow({
   );
 }
 
+/// Adds the startup step a stuck copy had reached, when it left one behind.
+///
+/// A backend that stops answering cannot report anything afterwards, so the step it
+/// wrote before it stalled is the only thing that tells the owner what it was doing:
+/// "it stopped while listing your session folders" is actionable, "it is not
+/// answering" is not.
+String withStuckStage(String message, String? stage) {
+  if (stage == null || stage.trim().isEmpty) return message;
+  return '$message It stopped while ${stage.trim()}.';
+}
+
 String _message(PortHolder? who, String port) {
   if (who == null) {
     return 'Port $port is already in use by something that is not answering. It may still be starting, and this window keeps trying on its own, so press Try again in a moment.';

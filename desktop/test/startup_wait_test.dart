@@ -120,6 +120,18 @@ void main() {
     expect(state, PortState.free);
   });
 
+  test('a stuck copy says which startup step it was in', () {
+    // A backend that has stopped answering cannot report anything afterwards, so the
+    // step it wrote before it stalled is the only thing the owner can act on.
+    const message = 'FarFromDesk is still running in the background (pid 4).';
+    expect(
+      withStuckStage(message, 'listing your session folders'),
+      '$message It stopped while listing your session folders.',
+    );
+    expect(withStuckStage(message, null), message);
+    expect(withStuckStage(message, '   '), message);
+  });
+
   test('an unidentified holder is still reported as a busy port', () async {
     final clock = _Clock();
     await expectLater(

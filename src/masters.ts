@@ -5,7 +5,7 @@ import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
-import { join, basename, dirname, sep } from 'node:path';
+import { join, basename, dirname, resolve, sep } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
@@ -28,7 +28,6 @@ import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js
 import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections, usableCLIConnection } from './connections.js';
-import { projectWorkspace } from './project-workspace.js';
 import { WorkspaceScanner,type ResolvedWorkspaces } from './workspace-scanner.js';
 import { scopedBridgeCommand } from './reply-args.js';
 import { openCodexDesktop } from './session-activation.js';
@@ -75,11 +74,14 @@ export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:a
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
     if(typeof s.cwd!=='string'||!s.cwd)continue;
     try {
-      // The scanner canonicalises folders and maps a worktree to its root project. When it cannot
-      // run (file access not granted yet) fall back to the folder the CLI itself reported, which is
-      // still a real project, rather than offering the owner an empty list.
+      // The scanner canonicalises folders and maps a worktree to its root project, and it does that
+      // in its own process because project metadata can block inside an OS permission prompt. This
+      // loop runs on the bridge's own thread, where one blocked call freezes the port and every
+      // permission prompt with it, so nothing here may touch the disk: when the scanner could not
+      // run, the folder the CLI itself reported is offered as its own project. The owner still sees
+      // why the list is flat, because the caller publishes the scanner's error beside the workspaces.
       const location=resolved?.get(s.cwd);
-      const sessionCwd=location?.sessionCwd??realpathSync(s.cwd),cwd=location?.cwd??projectWorkspace(sessionCwd);
+      const sessionCwd=location?.sessionCwd??resolve(s.cwd),cwd=location?.cwd??sessionCwd;
       // A coordinator's own folder is bridge scaffolding, not a project to run in. Match any home:
       // the backend runs with an isolated one, so folders made earlier sit under the owner's.
       if(isCoordinatorFolder(cwd)||isScratchFolder(cwd))continue;

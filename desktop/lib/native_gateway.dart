@@ -655,13 +655,22 @@ class NativeGateway extends Gateway {
     // folder lock and the owner is left with a banner blaming the installation
     // while an older copy is what is actually in the way.
     traceStartup('checking the app port');
-    final outcome = await awaitPortOrAdopt(
-      healthy: _healthy,
-      listening: _listening,
-      holder: _portHolder,
-      lockHolder: _lockHolder,
-      port: '$port',
-    );
+    final PortState outcome;
+    try {
+      outcome = await awaitPortOrAdopt(
+        healthy: _healthy,
+        listening: _listening,
+        holder: _portHolder,
+        lockHolder: _lockHolder,
+        port: '$port',
+      );
+    } on BackendNotReady catch (error) {
+      throw BackendNotReady(
+        withStuckStage(error.message, await _stuckStage()),
+        holderPid: error.holderPid,
+        holderIsOurs: error.holderIsOurs,
+      );
+    }
     if (outcome == PortState.adopted) {
       // Adoption is only real once the full check has passed, which is also what
       // stops an older build for us.
@@ -825,6 +834,22 @@ class NativeGateway extends Gateway {
         return PortHolder(pid, isOurs: true, onPort: false);
       }
       return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The startup step the stuck copy had reached, when it left one behind.
+  Future<String?> _stuckStage() async {
+    try {
+      final file = File(p.join(state, 'startup-stage.json'));
+      if (!await file.exists()) return null;
+      final data = jsonDecode(await file.readAsString());
+      final stage = data is Map ? data['stage'] : null;
+      if (stage is! String || stage.trim().isEmpty || stage.length > 80) {
+        return null;
+      }
+      return stage;
     } catch (_) {
       return null;
     }
