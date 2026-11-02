@@ -119,6 +119,9 @@ async function main() {
     initializeState();
     const takeOver=args.includes('--take-over');
     const reports=installAllProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url)),stateDir,port,takeOver});
+    // --json is how the running bridge collects this report without doing the read
+    // on its own thread, where a stalled disk would freeze the whole app.
+    if(args.includes('--json')){console.log(JSON.stringify(reports));return;}
     for(const report of reports)console.log(`${report.provider}: ${report.state}${report.detail?` (${report.detail})`:''}${report.backup?` backup ${report.backup}`:''} ${report.file}`);
     console.log(takeOver?'Installed session-scoped Stop and PermissionRequest hooks for this install, taking them over from any other FarFromDesk install.':'Installed session-scoped Stop and PermissionRequest hooks. A hook owned by another FarFromDesk install is reported, never replaced. Existing hooks preserved. Native apps may require their normal hook trust/reload step.');
   }

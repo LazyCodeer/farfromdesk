@@ -16,7 +16,13 @@ test('isolated backend starts the real broker and exposes email status without u
  let log='';child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x);
  try{
   const started=Date.now();while(!log.includes('FarFromDesk listening')&&child.exitCode===null&&Date.now()-started<20000)await new Promise(r=>setTimeout(r,100));
-  assert.match(log,/FarFromDesk listening/);const token=readFileSync(join(state,'admin-token'),'utf8').trim();const response=await fetch(`http://127.0.0.1:${port}/api/local-email`,{headers:{authorization:`Bearer ${token}`}});assert.equal(response.status,200);const result=await response.json() as any;
+  assert.match(log,/FarFromDesk listening/);const token=readFileSync(join(state,'admin-token'),'utf8').trim();
+  // The port answers before the mail runtime attaches: the broker talks to a macOS
+  // keychain helper, and while it ran first a slow keychain made the whole backend
+  // look dead. So this waits for the attach instead of assuming it is already done.
+  const email=async()=>{const r=await fetch(`http://127.0.0.1:${port}/api/local-email`,{headers:{authorization:`Bearer ${token}`}});assert.equal(r.status,200);return await r.json() as any;};
+  let result=await email();const attachStarted=Date.now();
+  while(result.available!==true&&Date.now()-attachStarted<15000)await new Promise(r=>setTimeout(r,200)),result=await email();
   assert.equal(result.available,true);assert.equal(result.state,'not_configured');assert.deepEqual(result.accounts,[]);assert.equal(result.cloudConsent,false);
  }finally{const alive=()=>child.exitCode===null&&child.signalCode===null;if(alive()){const exited=once(child,'exit');child.kill('SIGTERM');await Promise.race([exited,new Promise(r=>setTimeout(r,4000))]);if(alive()){child.kill('SIGKILL');await exited;}}rmSync(root,{recursive:true,force:true});}
 });

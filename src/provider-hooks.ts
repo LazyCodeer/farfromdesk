@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { constants } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { codexProfileHome } from './codex-profile.js';
@@ -80,9 +81,37 @@ export function hookStateDir(command:string) {
   const match=/WSB_STATE_DIR=(?:'((?:[^']|'\\'')*)'|"([^"]*)"|(\S+))/.exec(command);
   return match?.[1]?.replaceAll("'\\''","'")??match?.[2]??match?.[3];
 }
+/** Provider config files are JSON documents; anything larger is not one. */
+const MAX_CONFIG_BYTES = 4 * 1024 * 1024;
+/**
+ * Reads a provider config file without ever letting the bridge hang on it.
+ *
+ * The read is synchronous by design (the installer is synchronous), so a path
+ * that blocks in `open` takes the whole bridge with it: the HTTP port stops
+ * answering, no permission prompt is ever reported, and the only way out is to
+ * kill the process. A FIFO, socket or device sitting at `hooks.json` does exactly
+ * that, so only a regular file is opened, and `O_NONBLOCK` is set as well.
+ */
+function readText(file:string):string {
+  const info=statSync(file,{throwIfNoEntry:false});
+  if(!info)throw new Error('missing');
+  if(!info.isFile())throw new Error('not a regular file');
+  if(info.size>MAX_CONFIG_BYTES)throw new Error('too large to be a provider config');
+  const handle=openSync(file,constants.O_RDONLY|constants.O_NONBLOCK);
+  try {
+    const size=fstatSync(handle).size;
+    const buffer=Buffer.allocUnsafe(size);
+    const read=readSync(handle,buffer,0,buffer.length,0);
+    return buffer.subarray(0,read).toString('utf8');
+  } finally { closeSync(handle); }
+}
 function readConfig(file:string):{config:any}|{state:'unreadable';detail:string} {
   if(!existsSync(file))return {config:{}};
-  let raw='';try{raw=readFileSync(file,'utf8');}catch(e){return {state:'unreadable',detail:`Could not read ${file}.`};}
+  let raw='';try{raw=readText(file);}catch(e){
+    const why=e instanceof Error?e.message:'unreadable';
+    if(why==='missing')return {config:{}};
+    return {state:'unreadable',detail:why==='not a regular file'?`${file} is not a regular file; it was left untouched.`:`Could not read ${file}.`};
+  }
   if(!raw.trim())return {config:{}};
   try {
     const config=JSON.parse(raw);
@@ -135,7 +164,7 @@ export function installProviderHooks(o:HookTarget):ProviderHookReport {
     config.hooks[event]=[...existing,group];
   }
   const next=JSON.stringify(config,null,2)+'\n';
-  const previous=existsSync(file)?readFileSync(file,'utf8'):null;
+  const previous=existsSync(file)?readText(file):null;
   // The rendered file already carries exactly one bridge command per event.
   if(previous===next)return {provider:o.provider,file,state:'current'};
   let backup:string|undefined;

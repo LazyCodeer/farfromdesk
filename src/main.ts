@@ -27,7 +27,7 @@ import { MorningBrief } from './morning-brief.js';
 import { ProofScopeFence } from './proof-contract-scope.js';
 import { StuckDetection } from './stuck-detection.js';
 import { StuckCiWatch } from './stuck-ci-watch.js';
-import { installAllProviderHooks } from './provider-hooks.js';
+import { repairProviderHooks } from './hook-install.js';
 
 const token=initializeState();
 const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
@@ -62,13 +62,19 @@ let emailRuntime:Awaited<ReturnType<typeof startLocalMail>>|undefined;
 // reported in the Email pane instead of holding the whole app down.
 const services={masters,power,workers,telegram,localMail:undefined as LocalMailHost|undefined};
 const server=serve(store,router,wa,token,services);
-// The permission hook is the only way a native prompt reaches this app, so it is
-// installed and repaired at startup against this build's own state and port.
-// Idempotent: it writes only when the file really changed, and backs it up first.
-try{store.set('provider-hooks-status',JSON.stringify(installAllProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url)),stateDir,port})));}
-catch(e){store.set('provider-hooks-status',JSON.stringify([{state:'unreadable',detail:e instanceof Error?e.message:'the hook files could not be checked'}]));}
 server.on('listening',()=>{
   agentInstaller.start();
+  // The permission hook is the only way a native prompt reaches this app, so it is
+  // installed and repaired against this build's own state and port. Idempotent: it
+  // writes only when the file really changed, and backs it up first. It runs after
+  // the port answers, because reading the owner's provider config is the one step
+  // here that can be slow, and a healthy bridge must never look like a dead one
+  // because of a provider file.
+  // In a separate process: these files can live on an external volume, and a read
+  // that waits on a sleeping disk used to freeze the port that had just started
+  // answering. A child that never answers is killed and reported, never waited on.
+  void repairProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url))})
+    .then(reports=>store.set('provider-hooks-status',JSON.stringify(reports??[{provider:'claude',file:'',state:'unreadable',detail:'The Claude or Codex config did not answer in time. Its folder may be on an external disk that is asleep.'}])));
   // Remove only this service's private scratch recordings after a crash.
   rmSync(join(stateDir,'audio-tmp'),{recursive:true,force:true});
   store.recover();
