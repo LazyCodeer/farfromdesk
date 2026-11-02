@@ -259,6 +259,12 @@ cmd_render() {
   done
   [ "$scenario" = "--list" ] && { list_scenarios; return 0; }
   case "$scenario" in --*) list_scenarios; return 0;; esac
+  # Fail before paying for a flutter run: the template knows which scenarios exist.
+  if ! list_scenarios | grep -qx "  $scenario"; then
+    step "render: no scenario named '$scenario'"
+    list_scenarios
+    die "unknown scenario '$scenario'"
+  fi
 
   need_flutter; need_source
   out="${out:-/tmp/ffd-renders/$(installed_version)-$scenario}"
@@ -503,7 +509,24 @@ cmd_rollback() {
 # ---------------------------------------------------------------- dispatcher
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Written out rather than sliced from the header comment: a fixed line range
+  # breaks the moment the comment above changes.
+  cat <<'USAGE'
+ffd: one entry point for FarFromDesk Local work.
+
+  ffd status                                   installed version, source, running state, next build
+  ffd test backend [--baseline]                npm test, diffed against baseline/
+  ffd test backend --update-baseline           refresh the baseline (needs FFD_I_MEAN_IT=1)
+  ffd test desktop [--all | <test files...>]   flutter analyze + widget tests
+  ffd render --list                            the scenarios the template can render
+  ffd render <scenario> [--out DIR]            render one screen to a PNG, harness cleaned up
+  ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
+                                               build, stage, sign, smoke, install, report
+  ffd rollback [bundle]                        put a saved bundle back into ~/Applications
+
+Paths come from scripts/ffd.conf; an environment variable of the same name wins.
+See references/tooling.md for what each step encodes and the traps it avoids.
+USAGE
 }
 
 case "${1:-}" in
