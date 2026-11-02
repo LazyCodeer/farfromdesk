@@ -6,7 +6,41 @@ description: Continue FarFromDesk Local development, including Social UI, native
 
 Start by reading [current-state.md](references/current-state.md). It identifies the actual source snapshot and installed baseline; verify these before editing because they can become stale. Follow the task's current AGENTS.md and RTK instructions.
 
-Keep the main FarFromDesk app and one testing app named **FarFromDesk Local**. Update Local in place. Preserve production data, the original Codex profile, and other sessions' changes. The Local source is an ignored copied snapshot, not an independent Git worktree; a Git command there can report the parent repository. Never reset it or infer that its edits are committed.
+Then run `scripts/ffd status`. It answers, in one call, what used to take a dozen greps: which version is installed, from which checkout, what is running, whether another session has uncommitted work or a build in flight, and what the next build number is.
+
+Keep the main FarFromDesk app and one testing app named **FarFromDesk Local**. Update Local in place. Preserve production data, the original Codex profile, and other sessions' changes. Check `ffd status` for the source: it is a real shared git checkout now, not the ignored snapshot older notes describe, so a commit there is visible to other sessions and uncommitted work may belong to one. Never reset it or assume its edits are committed.
+
+## Tooling
+
+`scripts/ffd` is the entry point for Local work. See [tooling.md](references/tooling.md)
+for the commands and for the traps that cost a session about an hour of avoidable
+wall clock on 3 November.
+
+```sh
+ffd status                                  # installed version, source, running state, next build
+ffd test backend [--baseline]               # npm test, diffed against a stored baseline
+ffd test desktop [--all | <test files...>]  # flutter analyze + tests
+ffd render <scenario>                       # one Settings screen to a PNG, harness cleaned up
+ffd ship [--build N] [--note NAME]          # build, stage, sign, smoke, install, report
+ffd rollback [bundle]
+```
+
+Do not hand-write a stage or install script; `ffd ship` is the one that carries the
+accumulated fixes (SIGKILL escalation for an orphaned backend, the `cp -R -P` copy
+that works where `ditto` is denied, a report that always prints).
+
+## Standing defaults for Local work
+
+- **Install into the FarFromDesk Local testing app without asking**, at the next
+  build number above the installed bundle. That app exists to be replaced and the
+  previous bundle is saved as a rollback first. This remains out of scope:
+  production, public releases, credentials and macOS permission grants.
+- **Ask the owner, as one question with a recommendation**, for anything they own:
+  what to remove from a page, how a new state should look, anything that changes a
+  capability rather than its presentation. State the consequence of each option
+  honestly, including when a "simplification" removes a real gate.
+- **Never run the SDK's `dart format` over existing files**: it rewrites unrelated
+  code and the diff has to be reverted by hand.
 
 Choose the relevant reference:
 - **Code changes or debugging:** [architecture.md](references/architecture.md).

@@ -1,0 +1,24 @@
+# Known-failing backend tests, so one suite run answers 'did I break this?'
+# Snapshot taken 2026-11-03 from build 2356 (/private/tmp/ffd-pr ce2f100).
+# Two of these are test stubs that omit desktopControl.permissionReport (http-hooks,
+# inbox-session-label-http); the rest are the documented baseline families.
+# Refresh: ffd test backend --update-baseline with FFD_I_MEAN_IT=1, after confirming
+# every failure is genuinely not yours.
+# These are FLAKY, not deterministic: on 3 November the backend run passed 13
+# of the 14 and the desktop run passed both of the 2. A baseline entry that
+# passes is reported as "baseline entries that passed this run", never as an error.
+# Only a failure NOT in this list is a new failure.
+Claude workspace creation chooses the matching account and folder without asking for a session
+Codex creates in the chosen real workspace without replacing project instructions
+changed owner or target before source turn end fails closed without sending
+coordinator role version sends once, keeps the receipt state and renews on revision or session change
+failure notices are claimed before I/O and interrupted delivery is uncertain
+fresh coordinator role and local HTTP replies suppress repeats without hiding new findings
+local HTTP boundary, scoped replies and native hook contract
+macOS extraction is confined even when an archive traverses a symlink
+missing durable approval provenance remains unverified
+owner and channel changes away and back invalidate a staged handoff
+project picker groups Git worktrees and prefers the root launcher without mixing accounts
+status publishes the exact saved session execution mode without exposing connection secrets
+workspace discovery deduplicates real paths and keeps separate accounts
+worktree-like folder names and broken Git pointers never invent a parent project

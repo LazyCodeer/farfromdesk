@@ -15,8 +15,8 @@ This is an ignored copied snapshot under the parent repository, not a Git worktr
 
 Installed testing app: `/Users/sagar/Applications/FarFromDesk Local.app`
 Bundle ID: `com.codecylabs.farfromdesk.localtest`
-Last installed version: **2356**
-Backend build ID: `local-settings-remote-2356`
+Last installed version: **2357** (another session's `local-delivery-choice-2357`, built on top of this change and carrying it; 2356 was the Settings change described at the end of this file)
+Backend build ID: `local-delivery-choice-2357`
 The UI/backend/helpers were observed running from that path. Unauthenticated loopback health returned 401 as expected; this alone does not verify authenticated owner features. The isolated package smoke did verify authenticated startup.
 
 Main app: `/Users/sagar/Applications/FarFromDesk.app`, untouched by this work.
@@ -999,3 +999,46 @@ run from a coding session under the new policy. Both need the owner.
 Rollback: `settings-remote-2356/local-2355-rollback.bundle`. Source `/private/tmp/ffd-pr`
 at `0be1765`; the commit before it (`293c766`, the `/muse` command gate) is another
 session's, and the checkout is shared, so re-check `git log` before building the next one.
+
+**Superseded within the hour by 2357** (`local-delivery-choice-2357`, another
+session's close-app delivery-choice build), which was built on top of this commit.
+Verified in the installed 2357 bundle: the Dart AOT still carries "Desktop driver
+screen access", "Change password" and "Save new password", still contains none of
+"Sessions allowed to control this Mac" or "No connected session to choose from
+yet.", and its `dist/server.js` has no `desktop-control-sessions` or
+`DESKTOP_CONTROL_NOT_ALLOWED` while keeping the `/api/session/desktop-control`
+route. So the change is live in the app on disk now, not only in 2356.
+
+## Tooling: one `ffd` command for Local work (3 November 2026)
+
+The 2356 change cost about 100 minutes of wall clock, of which roughly 7 minutes was
+real compute. The rest was stale context (this file's own header still pointed at the
+31 October snapshot and version 2323), two hand-written stage and install scripts, a
+second full test-suite run purely to attribute the failures, a render harness
+rewritten from scratch, and seven sandbox approval prompts because Flutter's SDK
+lives outside the session workspace. That work is now one command:
+
+- `ffd status` — installed version and buildId, which checkout the source is and its
+  HEAD, uncommitted files (another session's work), whether a build is in flight,
+  what is running, the health code, and the next build number.
+- `ffd test backend [--baseline]` and `ffd test desktop [--all|files]` — run and diff
+  against `baseline/`, which holds the failures that were already there. They are
+  flaky, not deterministic: on 3 November 13 of the 14 backend entries and both
+  desktop entries passed on a later run, so a baseline entry that passes is reported,
+  never treated as an error.
+- `ffd render <scenario>` — copies `templates/render_scenarios.dart` in, renders one
+  screen at the owner's 1156x814, copies the PNG out, and deletes the harness and its
+  goldens even on failure. Verified byte-identical to the hand-written harness used
+  for 2356.
+- `ffd ship [--build N] [--note NAME]` — backend build, flutter release build, stage,
+  sign, packaged smoke, install, report. It derives the build number from the
+  installed bundle and refuses to build while another `flutter build` is running.
+- `ffd rollback [bundle]`.
+- On PATH as `~/.local/bin/ffd`; paths are in `scripts/ffd.conf`. The traps it
+  encodes (SDK `dart format` rewrites this repo, Flutter's cache is outside the
+  workspace, assets render blank in a single-scenario golden, the old install script's
+  `set -e` + `pipefail` swallowed its own report) are in [tooling.md](tooling.md).
+
+`ffd status` caught the other session installing 2357 over 2356 while this was being
+written, which is what it is for. Run it before building: the installed bundle is the
+only reliable base for the next build number.

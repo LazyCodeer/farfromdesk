@@ -1,0 +1,522 @@
+#!/usr/bin/env bash
+# ffd: one entry point for FarFromDesk Local work.
+#
+#   ffd status                                   what is installed, from which source, what is running
+#   ffd test backend [--baseline|--update-baseline]
+#   ffd test desktop [--all | <test files...>]
+#   ffd render --list
+#   ffd render <scenario> [--out DIR]            render one screen to a PNG and clean up after itself
+#   ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
+#   ffd rollback [bundle]                        put a saved bundle back into ~/Applications
+#
+# Deliberately NOT `set -e`: the failure this script exists to prevent was an
+# install that aborted before printing its own report because `set -e` plus
+# `pipefail` turned an empty `pgrep` into a fatal error. Every step here checks
+# its own status and the report always prints.
+set -uo pipefail
+
+# Resolve symlinks, because this is usually reached through ~/.local/bin/ffd and
+# everything else (config, baselines, templates) lives beside the real file.
+FFD_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+FFD_DIR="$(cd "$(dirname "$FFD_SELF")" && pwd)"
+# shellcheck source=/dev/null
+[ -f "$FFD_DIR/ffd.conf" ] && source "$FFD_DIR/ffd.conf"
+
+FFD_SOURCE="${FFD_SOURCE:-/private/tmp/ffd-pr}"
+FFD_FLUTTER="${FFD_FLUTTER:-/Volumes/Personal/DevTools/flutter/bin/flutter}"
+FFD_INSTALLED="${FFD_INSTALLED:-$HOME/Applications/FarFromDesk Local.app}"
+FFD_BUILDS="${FFD_BUILDS:-/Volumes/Personal/Developer/FarFromDesk/Builds}"
+FFD_STATE="${FFD_STATE:-$HOME/Library/Application Support/FarFromDesk Local}"
+FFD_BOUNDLE_ID="com.codecylabs.farfromdesk.localtest"
+FFD_PORT="${FFD_PORT:-47961}"
+FFD_SKILL="${FFD_SKILL:-$HOME/.codex/skills/ffd-local-development}"
+FFD_SMOKE="${FFD_SMOKE:-$FFD_SKILL/scripts/packaged_smoke.mjs}"
+FFD_BASELINE="$FFD_DIR/../baseline"
+FFD_TEMPLATES="$FFD_DIR/../templates"
+FFD_NOTE="${FFD_NOTE:-settings}"   # used in the stage folder and buildId
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n== %s ==\n' "$*"; }
+note() { printf '   %s\n' "$*"; }
+die()  { printf 'ffd: %s\n' "$*" >&2; exit 1; }
+
+need_source() {
+  [ -d "$FFD_SOURCE/desktop" ] || die "no source at $FFD_SOURCE (set FFD_SOURCE)"
+  [ -d "$FFD_SOURCE/dist" ] || die "$FFD_SOURCE/dist is missing; run: (cd $FFD_SOURCE && npm run build)"
+}
+need_flutter() { [ -x "$FFD_FLUTTER" ] || die "no flutter at $FFD_FLUTTER (set FFD_FLUTTER)"; }
+need_installed() { [ -d "$FFD_INSTALLED" ] || die "no installed Local app at $FFD_INSTALLED"; }
+
+installed_version() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$FFD_INSTALLED/Contents/Info.plist" 2>/dev/null || echo none
+}
+installed_build_id() {
+  grep -o '"buildId"[^,]*' "$FFD_INSTALLED/Contents/Resources/backend/build.json" 2>/dev/null | cut -d'"' -f4 || true
+}
+health_code() {
+  # curl prints 000 itself when it cannot connect, so do not append another one.
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$FFD_PORT/health" 2>/dev/null)" || true
+  if [ -n "$code" ]; then printf '%s' "$code"; else printf '000'; fi
+}
+# A second `flutter build macos` in the same checkout writes the same output
+# directory, so builds must be serialised across sessions.
+builders_running() {
+  pgrep -fl 'flutter_tools|xcodebuild|frontend_server' 2>/dev/null || true
+}
+local_pids() {
+  pgrep -f "$FFD_INSTALLED/Contents" 2>/dev/null || true
+}
+# `ps` is blocked in some session sandboxes; say so rather than printing a bare pid.
+proc_cmd() {
+  local out
+  out="$(ps -p "$1" -o command= 2>/dev/null | cut -c1-110)"
+  if [ -n "$out" ]; then printf '%s' "$out"; else printf 'command not readable from this sandbox'; fi
+}
+# Highest build number documented in the handoff note, so a stale note is visible.
+# The header line wins: it is the one field the note keeps current.
+documented_version() {
+  local h
+  h="$(grep -m1 -oE 'Last installed version: \*\*[0-9]{4}' "$FFD_SKILL/references/current-state.md" 2>/dev/null | grep -oE '[0-9]{4}')"
+  if [ -n "$h" ]; then printf '%s' "$h"; return; fi
+  grep -oE '^## [0-9]{4} ' "$FFD_SKILL/references/current-state.md" 2>/dev/null | grep -oE '[0-9]{4}' | sort -n | tail -1
+}
+next_build_after() {
+  case "$1" in ''|none|unknown|*[!0-9]*) echo 1;; *) echo $(( $1 + 1 ));; esac
+}
+
+# ---------------------------------------------------------------- status
+
+cmd_status() {
+  local ver build_id src_head src_branch dirty doc
+  ver="$(installed_version)"
+  build_id="$(installed_build_id)"
+  doc="$(documented_version)"
+
+  step "installed Local"
+  say "  version    $ver"
+  say "  buildId    ${build_id:-unknown}"
+  [ -n "$doc" ] && [ "$ver" != "$doc" ] && note "handoff note documents $doc; installed is $ver (another session may have moved it)"
+
+  local pids; pids="$(local_pids)"
+  if [ -n "$pids" ]; then
+    say "  running    yes"
+    echo "$pids" | head -3 | while read -r pid; do
+      printf '             %s %s\n' "$pid" "$(proc_cmd "$pid")"
+    done
+    say "  health     $(health_code)  (401 means reachable; 000 means not answering)"
+  else
+    say "  running    no"
+  fi
+
+  step "source"
+  if [ -d "$FFD_SOURCE" ]; then
+    say "  path       $FFD_SOURCE"
+    src_branch="$(git -C "$FFD_SOURCE" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    src_head="$(git -C "$FFD_SOURCE" log -1 --format='%h %ad %s' --date=format:'%H:%M' 2>/dev/null)"
+    dirty="$(git -C "$FFD_SOURCE" status --porcelain 2>/dev/null | grep -v node_modules | wc -l | tr -d ' ')"
+    say "  branch     ${src_branch:-unknown}"
+    say "  HEAD       ${src_head:-unknown}"
+    say "  uncommitted files: ${dirty}"
+    [ "$dirty" != "0" ] && note "another session may be mid-edit; commit or check before you reset anything"
+  else
+    say "  path       $FFD_SOURCE (MISSING)"
+  fi
+
+  step "build environment"
+  say "  flutter    $( [ -x "$FFD_FLUTTER" ] && echo "$FFD_FLUTTER" || echo "MISSING at $FFD_FLUTTER")"
+  local running; running="$(builders_running)"
+  if [ -n "$running" ]; then
+    say "  busy       a build looks in progress:"
+    echo "$running" | head -3 | sed 's/^/             /'
+    note "wait for it: two flutter builds share one output directory"
+  else
+    say "  busy       no flutter/xcodebuild process seen"
+  fi
+  say "  next build $(next_build_after "$ver") (override with: ffd ship --build N)"
+  say "  stage dir  $FFD_BUILDS/<note>-<build>"
+  note "writing to $FFD_BUILDS and \$HOME/Applications needs the file sandbox widened"
+}
+
+# ---------------------------------------------------------------- tests
+
+# Compare the failures a run produced against the stored baseline. The point is
+# to never need two full suite runs to answer "did I break this?".
+compare_baseline() {
+  local baseline_file="$1" actual_file="$2" label="$3"
+  if [ ! -f "$baseline_file" ]; then
+    say "  no baseline at $baseline_file: treating every failure as new"
+    sed 's/^/    /' "$actual_file"
+    return
+  fi
+  grep -v '^#' "$baseline_file" | sed '/^$/d' | sort > /tmp/ffd-base.txt
+  sort "$actual_file" -o "$actual_file"
+  local added removed
+  added="$(comm -13 /tmp/ffd-base.txt "$actual_file")"
+  removed="$(comm -23 /tmp/ffd-base.txt "$actual_file")"
+  say "  $label: $(wc -l < "$actual_file" | tr -d ' ') failed, $(wc -l < /tmp/ffd-base.txt | tr -d ' ') known"
+  if [ -n "$added" ]; then
+    say "  NEW FAILURES (not in the baseline):"
+    echo "$added" | sed 's/^/    /'
+  else
+    say "  new failures: none"
+  fi
+  [ -n "$removed" ] && { say "  baseline entries that passed this run:"; echo "$removed" | sed 's/^/    /'; }
+  [ -n "$added" ] && return 1
+  return 0
+}
+
+cmd_test_backend() {
+  need_source
+  local update=0 diff=1
+  for arg in "$@"; do
+    case "$arg" in
+      --update-baseline) update=1; diff=0;;
+      --baseline|--diff) diff=1;;
+      --no-baseline) diff=0;;
+      *) die "unknown option for 'ffd test backend': $arg";;
+    esac
+  done
+  step "backend suite"
+  ( cd "$FFD_SOURCE" && npm test ) > /tmp/ffd-backend.log 2>&1
+  local status=$?
+  grep '^not ok' /tmp/ffd-backend.log | sed -E 's/^not ok [0-9]+ - //' | sort > /tmp/ffd-backend-fails.txt
+  grep -E '^# (pass|fail|skipped)' /tmp/ffd-backend.log | sed 's/^/  /'
+  say "  exit status $status, log /tmp/ffd-backend.log"
+  if [ "$update" = "1" ]; then
+    [ "${FFD_I_MEAN_IT:-}" = "1" ] || die "refusing to overwrite the baseline; re-run with FFD_I_MEAN_IT=1 once every listed failure is confirmed not yours"
+    { echo "# Known-failing backend tests. Refresh only after confirming each entry is not your change."
+      echo "# Refreshed $(date '+%Y-%m-%d %H:%M') from build $(installed_version)."
+      cat /tmp/ffd-backend-fails.txt; } > "$FFD_BASELINE/backend-known-failures.txt"
+    say "  baseline updated: $FFD_BASELINE/backend-known-failures.txt"
+    return 0
+  fi
+  [ "$diff" = "1" ] || return 0
+  compare_baseline "$FFD_BASELINE/backend-known-failures.txt" /tmp/ffd-backend-fails.txt "backend"
+}
+
+cmd_test_desktop() {
+  need_flutter
+  local all=0 files=()
+  for arg in "$@"; do
+    case "$arg" in
+      --all) all=1;;
+      *) files+=("$arg");;
+    esac
+  done
+  [ "$all" = "1" ] || [ ${#files[@]} -gt 0 ] || { all=1; }
+
+  step "flutter analyze"
+  ( cd "$FFD_SOURCE/desktop" && "$FFD_FLUTTER" analyze ) > /tmp/ffd-analyze.log 2>&1
+  local analyze_status=$?
+  # The analyzer reports pre-existing infos and exits 1 for them, so only errors
+  # and issues that are not in the stored list count against this run.
+  grep -E '^ *error •' /tmp/ffd-analyze.log | sed 's/^/  /' > /tmp/ffd-analyze-errors.txt
+  grep -E '^ *(info|warning) •' /tmp/ffd-analyze.log > /tmp/ffd-analyze-other.txt
+  if [ -f "$FFD_BASELINE/analyze-known-issues.txt" ]; then
+    grep -v -F -f <(grep -v '^#' "$FFD_BASELINE/analyze-known-issues.txt") /tmp/ffd-analyze-other.txt > /tmp/ffd-analyze-new.txt || true
+  else
+    cp /tmp/ffd-analyze-other.txt /tmp/ffd-analyze-new.txt
+  fi
+  local nerr nnew
+  nerr="$(wc -l < /tmp/ffd-analyze-errors.txt | tr -d ' ')"
+  nnew="$(wc -l < /tmp/ffd-analyze-new.txt | tr -d ' ')"
+  say "  errors: $nerr, issues not in the known list: $nnew (analyzer exit $analyze_status, log /tmp/ffd-analyze.log)"
+  [ "$nerr" != "0" ] && sed 's/^/  /' /tmp/ffd-analyze-errors.txt
+  [ "$nnew" != "0" ] && { say "  new analyzer issues:"; sed 's/^/  /' /tmp/ffd-analyze-new.txt; }
+
+  step "desktop tests"
+  local args=()
+  [ "$all" = "1" ] && args=() || args=("${files[@]}")
+  ( cd "$FFD_SOURCE/desktop" && "$FFD_FLUTTER" test "${args[@]}" ) > /tmp/ffd-desktop-tests.log 2>&1
+  local test_status=$?
+  tail -20 /tmp/ffd-desktop-tests.log | grep -E 'passed|failed|Failing tests' | sed 's/^/  /'
+  awk '/^Failing tests:/{f=1;next} f' /tmp/ffd-desktop-tests.log \
+    | sed -E 's#^ *[^ ]*/desktop/test/##' | sed '/^$/d' | sort > /tmp/ffd-desktop-fails.txt
+  sed -n 's/^ *\(.*\)$/\1/p' /tmp/ffd-desktop-fails.txt | sed 's/^/  /' | head -20
+  if [ "$all" = "1" ]; then
+    compare_baseline "$FFD_BASELINE/desktop-known-failures.txt" /tmp/ffd-desktop-fails.txt "desktop"
+    local compared=$?
+  else
+    say "  (subset run: not compared against the full-suite baseline, exit $test_status)"
+    local compared=0
+  fi
+  [ "$nerr" = "0" ] && [ "$nnew" = "0" ] || return 1
+  return $compared
+}
+
+# ---------------------------------------------------------------- render
+
+cmd_render() {
+  local scenario="${1:-}" out=""
+  [ -n "$scenario" ] || die "usage: ffd render <scenario>   (ffd render --list)"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --out) out="$2"; shift 2;;
+      *) die "unknown option for 'ffd render': $1";;
+    esac
+  done
+  [ "$scenario" = "--list" ] && { list_scenarios; return 0; }
+  case "$scenario" in --*) list_scenarios; return 0;; esac
+
+  need_flutter; need_source
+  out="${out:-/tmp/ffd-renders/$(installed_version)-$scenario}"
+  mkdir -p "$out"
+  local harness="$FFD_SOURCE/desktop/test/zz_ffd_render_test.dart"
+  local goldens="$FFD_SOURCE/desktop/test/goldens"
+
+  # The repo keeps no goldens: they break on every unrelated UI change, and with
+  # another session editing the same tree they fail for reasons that are not
+  # yours. The harness is copied in, used, and removed even if the run fails.
+  cp "$FFD_TEMPLATES/render_scenarios.dart" "$harness"
+  cleanup_render() { rm -f "$harness"; rm -rf "$goldens"; }
+  trap cleanup_render EXIT
+
+  step "render $scenario"
+  ( cd "$FFD_SOURCE/desktop" && FFD_RENDER_SCENARIO="$scenario" "$FFD_FLUTTER" test test/zz_ffd_render_test.dart --update-goldens ) > /tmp/ffd-render.log 2>&1
+  local status=$?
+  if [ $status -ne 0 ]; then
+    tail -30 /tmp/ffd-render.log
+    die "render failed; log /tmp/ffd-render.log"
+  fi
+  [ -f "$goldens/$scenario.png" ] || { tail -20 /tmp/ffd-render.log; die "no PNG produced for '$scenario'"; }
+  cp "$goldens/$scenario.png" "$out/$scenario.png"
+  local size; size=$(stat -f%z "$out/$scenario.png" 2>/dev/null || echo 0)
+  say "  $out/$scenario.png  ${size} bytes"
+  # Real glyphs roughly triple the file size; a sudden drop means font
+  # registration stopped working and every glyph is a box.
+  [ "$size" -lt 60000 ] && note "suspiciously small: check that the system font still loads (text renders as boxes otherwise)"
+  say "  harness removed"
+  cleanup_render
+  trap - EXIT
+}
+
+list_scenarios() {
+  step "render scenarios"
+  grep -oE "^  '[a-z0-9-]+':" "$FFD_TEMPLATES/render_scenarios.dart" | tr -d " ':" | sed 's/^/  /'
+}
+
+# ---------------------------------------------------------------- ship
+
+cmd_ship() {
+  local build="" note="$FFD_NOTE" dry=0 install=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --build) build="$2"; shift 2;;
+      --note) note="$2"; shift 2;;
+      --dry-run) dry=1; shift;;
+      --no-install) install=0; shift;;
+      *) die "unknown option for 'ffd ship': $1";;
+    esac
+  done
+  need_source; need_flutter; need_installed
+  local ver; ver="$(installed_version)"
+  [ -n "$build" ] || build="$(next_build_after "$ver")"
+  case "$ver" in ''|none|unknown|*[!0-9]*) die "no readable installed version; pass --build N explicitly";; esac
+  [ "$build" -gt "$ver" ] || die "build $build is not above the installed $ver"
+  local stage="$FFD_BUILDS/$note-$build"
+  local app="$stage/FarFromDesk Local.app"
+  local busy; busy="$(builders_running)"
+  [ -n "$busy" ] && die "a build is already running; wait for it (two flutter builds share one output directory): $(echo "$busy" | head -1)"
+
+  step "plan"
+  say "  installed   $ver"
+  say "  building    $build  (buildId local-$note-$build)"
+  say "  source      $FFD_SOURCE"
+  say "  stage       $stage"
+  say "  install     $([ "$install" = 1 ] && echo "yes, replacing $FFD_INSTALLED" || echo no)"
+
+  if [ "$dry" = 1 ]; then
+    say "  dry run: nothing built or replaced"
+    [ -e "$stage" ] && note "stage dir already exists and would be deleted"
+    return 0
+  fi
+
+  step "backend build"
+  ( cd "$FFD_SOURCE" && npm run build ) > /tmp/ffd-backend-build.log 2>&1 \
+    || { tail -20 /tmp/ffd-backend-build.log; die "backend build failed"; }
+  say "  tsc + package ok"
+
+  step "flutter release build"
+  ( cd "$FFD_SOURCE/desktop" && "$FFD_FLUTTER" build macos --release --no-pub --build-number="$build" \
+      --dart-define=FFD_ISOLATED_LOCAL=true \
+      "--dart-define=FFD_LOCAL_STATE=$FFD_STATE" \
+      --dart-define=FFD_LOCAL_PORT="$FFD_PORT" \
+      --dart-define=FFD_LOCAL_CODEX_HOME="$HOME/.codex" ) > /tmp/ffd-flutter-build.log 2>&1 \
+    || { tail -30 /tmp/ffd-flutter-build.log; die "flutter build failed"; }
+  grep -E '✓ Built|Built ' /tmp/ffd-flutter-build.log | tail -1 | sed 's/^/  /'
+
+  step "stage"
+  local built="$FFD_SOURCE/desktop/build/macos/Build/Products/Release/FarFromDesk Local.app"
+  [ -d "$built" ] || die "no release build at $built"
+  rm -rf "$stage"; mkdir -p "$stage"
+  # The Flutter build does not produce the runtime, native helpers or skills, so
+  # they are carried forward from the installed bundle.
+  cp -R -c "$built" "$app" || die "copying the Flutter app into the stage failed"
+  rm -rf "$app/Contents/Resources/backend" "$app/Contents/Resources/speech"
+  cp -R -c "$FFD_INSTALLED/Contents/Resources/backend" "$app/Contents/Resources/backend" || die "copying the backend in failed"
+  [ -d "$FFD_INSTALLED/Contents/Resources/speech" ] && cp -R -c "$FFD_INSTALLED/Contents/Resources/speech" "$app/Contents/Resources/speech"
+  rm -rf "$app/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/skills"
+  ditto "$FFD_SOURCE/dist" "$app/Contents/Resources/backend/dist" || die "overlaying dist failed"
+  ditto "$FFD_SOURCE/skills" "$app/Contents/Resources/backend/skills" || die "overlaying skills failed"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$app/Contents/Info.plist"
+  python3 - "$app/Contents/Resources/backend/build.json" "$FFD_SOURCE" "local-$note-$build" "$FFD_SOURCE" <<'PY'
+import json,sys
+path,src,build_id,local_source=sys.argv[1:5]
+meta=json.load(open(path))
+meta['buildId']=build_id
+meta['localSource']=local_source
+meta['localChanges']=True
+json.dump(meta,open(path,'w'),indent=2)
+PY
+  grep -o '"buildId"[^,]*' "$app/Contents/Resources/backend/build.json" | sed 's/^/  /'
+  # Say exactly what this ships: every compiled file that differs from what is installed.
+  local changed; changed="$(diff -rq "$FFD_INSTALLED/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/dist" 2>/dev/null | wc -l | tr -d ' ')"
+  say "  compiled files differing from the installed backend: $changed"
+  diff -rq "$FFD_INSTALLED/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/dist" 2>/dev/null \
+    | sed -E 's#.*/dist/([^ ]+).*#    \1#' | head -20
+
+  step "sign"
+  /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$app" >/dev/null 2>&1 \
+    && say "  signed (ad-hoc)" || note "ad-hoc signing refused; keeping the staged signature"
+  /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
+    && say "  signature verified" || die "signature does not verify"
+
+  step "packaged smoke"
+  node "$FFD_SMOKE" "$app" || die "packaged smoke failed"
+  say "  $stage" > "$stage/RESULTS.md"
+  say "  build $build, buildId local-$note-$build" >> "$stage/RESULTS.md"
+  say "  staged $(date '+%Y-%m-%d %H:%M')" >> "$stage/RESULTS.md"
+
+  if [ "$install" = 0 ]; then
+    say "  --no-install: leaving the installed app at $ver"
+    return 0
+  fi
+
+  step "install"
+  [ -d "$app" ] || die "stage vanished"
+  rm -rf "$stage/local-$ver-rollback.bundle"
+  ditto "$FFD_INSTALLED" "$stage/local-$ver-rollback.bundle" || die "could not save the rollback bundle"
+  osascript -e 'quit app "FarFromDesk Local"' >/dev/null 2>&1 || true
+  local waited=0
+  while [ "$waited" -lt 20 ] && pgrep -f "$FFD_INSTALLED/Contents" >/dev/null 2>&1; do sleep 1; waited=$((waited+1)); done
+  # An orphaned backend (ppid 1) survives SIGTERM, keeps the sqlite service lock
+  # and the port, and the relaunched app's backend then crash-loops on the lock.
+  # Escalate to SIGKILL, and only ever for processes inside this exact bundle.
+  local round
+  for round in $(seq 1 10); do
+    local stragglers; stragglers="$(pgrep -f "$FFD_INSTALLED/Contents" 2>/dev/null || true)"
+    [ -z "$stragglers" ] && break
+    local pid cmd
+    for pid in $stragglers; do
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      case "$cmd" in
+        "$FFD_INSTALLED/"*) kill -KILL "$pid" 2>/dev/null || true;;
+        *) note "not killing pid $pid (outside this bundle): ${cmd:-unknown}" ;;
+      esac
+    done
+    sleep 1
+  done
+  for round in $(seq 1 10); do
+    lsof -nP -iTCP:"$FFD_PORT" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if lsof -nP -iTCP:"$FFD_PORT" >/dev/null 2>&1; then
+    die "something still holds port $FFD_PORT; the new app was not installed"
+  fi
+  rm -rf "$FFD_INSTALLED"
+  for round in $(seq 1 10); do [ ! -e "$FFD_INSTALLED" ] && break; sleep 2; rm -rf "$FFD_INSTALLED"; done
+  [ -e "$FFD_INSTALLED" ] && die "could not remove the installed app; nothing was replaced"
+  # ditto is denied writing into ~/Applications on this machine while cp -R -P
+  # copies the same bundle completely, so retry and never accept a partial copy.
+  local copied=0
+  for round in 1 2 3; do
+    rm -rf "$FFD_INSTALLED"
+    if cp -R -P "$app" "$FFD_INSTALLED" 2>/dev/null \
+        && [ -e "$FFD_INSTALLED/Contents/Info.plist" ] \
+        && [ -d "$FFD_INSTALLED/Contents/Frameworks" ] \
+        && [ -d "$FFD_INSTALLED/Contents/Resources/backend/node_modules" ]; then
+      copied=1; break
+    fi
+    sleep 3
+  done
+  [ "$copied" = "1" ] || die "copy into ~/Applications was incomplete; the staged build is intact at $stage"
+  /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 \
+    || note "ad-hoc re-sign skipped; keeping the staged signature"
+  /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1 || die "signature invalid after copy"
+  open -a "$FFD_INSTALLED"
+
+  # The report always prints, whatever happened above. The backend can take
+  # longer than a minute to come up on a busy launch.
+  local report="$stage/RESULTS.md"
+  say "" >> "$report"
+  say "Installed $(date '+%Y-%m-%d %H:%M')" >> "$report"
+  say "version $(installed_version)  buildId $(installed_build_id)" >> "$report"
+  local code=000 waited2=0
+  while [ "$waited2" -lt 120 ]; do
+    code="$(health_code)"
+    [ "$code" = "401" ] && break
+    sleep 2; waited2=$((waited2+2))
+  done
+  say "health $code after ${waited2}s" >> "$report"
+  local pids; pids="$(local_pids)"
+  say "processes:" >> "$report"
+  for pid in $pids; do say "  $pid $(proc_cmd "$pid")" >> "$report"; done
+  if [ "$code" = "401" ]; then
+    note "reachable. A 401 only proves the port answers: check again 90 seconds after launch before calling it healthy."
+  else
+    note "the backend is not answering yet; the app shows its own startup state and retries itself."
+  fi
+  say "rollback $stage/local-$ver-rollback.bundle" >> "$report"
+  step "report"
+  cat "$report"
+}
+
+# ---------------------------------------------------------------- rollback
+
+cmd_rollback() {
+  local bundle="${1:-}"
+  if [ -z "$bundle" ]; then
+    bundle="$(ls -dt "$FFD_BUILDS"/*/local-*-rollback.bundle 2>/dev/null | head -1)"
+    [ -n "$bundle" ] || die "no rollback bundle found under $FFD_BUILDS"
+  fi
+  [ -d "$bundle" ] || die "no bundle at $bundle"
+  local ver; ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$bundle/Contents/Info.plist" 2>/dev/null || echo unknown)"
+  step "rollback to $ver"
+  say "  from $bundle"
+  osascript -e 'quit app "FarFromDesk Local"' >/dev/null 2>&1 || true
+  sleep 3
+  local pid cmd
+  for pid in $(pgrep -f "$FFD_INSTALLED/Contents" 2>/dev/null || true); do
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$cmd" in "$FFD_INSTALLED/"*) kill -KILL "$pid" 2>/dev/null || true;; esac
+  done
+  sleep 2
+  rm -rf "$FFD_INSTALLED"
+  cp -R -P "$bundle" "$FFD_INSTALLED" || die "copying the bundle back failed"
+  /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 || true
+  open -a "$FFD_INSTALLED"
+  say "  installed $(installed_version); health $(health_code)"
+}
+
+# ---------------------------------------------------------------- dispatcher
+
+usage() {
+  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-}" in
+  status) shift; cmd_status "$@";;
+  test) shift
+    case "${1:-}" in
+      backend) shift; cmd_test_backend "$@";;
+      desktop) shift; cmd_test_desktop "$@";;
+      *) die "usage: ffd test backend|desktop";;
+    esac;;
+  render) shift; cmd_render "$@";;
+  ship) shift; cmd_ship "$@";;
+  rollback) shift; cmd_rollback "$@";;
+  -h|--help|help|"") usage;;
+  *) die "unknown subcommand '${1}'; try: ffd --help";;
+esac
