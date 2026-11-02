@@ -171,6 +171,10 @@ class _DeskState extends State<Desk> {
   /// so a slow start resolves itself instead of needing a tab switch to clear it.
   int bootAttempts = 0;
   bool booting = false;
+  /// Set when a start was refused because an older copy of this app is still
+  /// holding the backend port, so the banner can offer to end it in one press
+  /// instead of asking the owner to go find the process.
+  int? stuckHolderPid;
   static const _bootRetryDelay = Duration(seconds: 3);
   static const _bootGraceAttempts = 5;
   static const _bootMaxAttempts = 40;
@@ -273,13 +277,23 @@ class _DeskState extends State<Desk> {
       bootAttempts++;
       if (!mounted) return;
       // A backend that is merely slow is a state to recover from, so it keeps the
-      // spinner, retries by itself, and starts the status poll. Any other failure
-      // (a refused window call, a broken install) is reported at once, exactly as
-      // before: retrying those would only hide a real error.
-      final retryable = e is BackendNotReady;
-      setState(
-        () => error = !retryable || showStartupError ? clean(e) : null,
-      );
+      // spinner, retries by itself, and starts the status poll. A Local state
+      // problem is named at once, because the message says which file or path is
+      // wrong and the owner can act on it, but it still retries: those causes are
+      // often a leftover temporary file that a running session removes by itself.
+      // Any other failure (a refused window call, a broken install) is reported at
+      // once, exactly as before: retrying those would only hide a real error.
+      final retryable = e is BackendNotReady || e is LocalStateUnsafe;
+      final stuck = e is BackendNotReady && e.holderIsOurs ? e.holderPid : null;
+      // A blocker we can name is information, so it is shown at once with the way
+      // out. Only an unnamed slow launch keeps the spinner, because there is
+      // nothing to report yet and a busy start usually clears itself.
+      final silentGrace =
+          retryable && e is! LocalStateUnsafe && stuck == null && !showStartupError;
+      setState(() {
+        stuckHolderPid = stuck;
+        error = silentGrace ? null : clean(e);
+      });
       if (retryable) {
         armStatusTimer();
         scheduleBootRetry();
@@ -287,6 +301,23 @@ class _DeskState extends State<Desk> {
     } finally {
       booting = false;
     }
+  }
+
+  /// Ends the older copy that is still holding the app port, then starts again.
+  /// The gateway refuses unless the process is confirmed to be our own backend,
+  /// so a shared port never turns this press into killing someone else's work.
+  Future<void> stopStuckCopy() async {
+    final pid = stuckHolderPid;
+    if (pid == null) return;
+    setState(() {
+      stuckHolderPid = null;
+      error = null;
+    });
+    await api.stopStuckBackend(pid);
+    // The pending retry belongs to the copy that was just ended.
+    bootRetryTimer?.cancel();
+    bootAttempts = 0;
+    await boot();
   }
 
   /// A slow launch and a broken install look identical for the first seconds, so

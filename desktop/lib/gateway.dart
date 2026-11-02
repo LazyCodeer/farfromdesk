@@ -33,6 +33,9 @@ abstract class Gateway {
   Future<void> setStartup(bool enabled);
   Future<void> previewFlow(String flow) async {}
   Future<void> reportReady() async {}
+  /// Ends an older copy of this app that is still holding the backend port,
+  /// after confirming the process is ours. False when it is not ours or gone.
+  Future<bool> stopStuckBackend(int pid) async => false;
   Future<Map<String, dynamic>?> updateOutcome() async => null;
   Future<UpdateCheck> checkUpdates({bool manual = false}) async =>
       const UpdateCheck();

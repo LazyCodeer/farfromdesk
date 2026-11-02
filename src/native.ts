@@ -305,7 +305,12 @@ export class NativeAgents {
       this.store.event(jobId,'delivery_accepted',{transport:b.provider==='codex'?'codex-queue':'claude-socket',appRunning:this.store.get(`app-running:${b.provider}`)!=='false'});
       if(b.provider==='codex') {
         try{await this.wakeCodex(b.native_id);}
-        catch{throw new Error('Message is saved in the Codex queue, but Desktop could not be opened. Open this exact chat to continue; do not resend the message.');}
+        catch(e){
+          // Say which part failed. "Could not be opened" hid the case where Codex
+          // launched but never really started, which is indistinguishable from a
+          // silent success for the owner.
+          throw new Error(`Message is saved in the Codex queue, so do not resend it. Desktop did not open the chat: ${e instanceof Error?e.message:'unknown error'}`);
+        }
       }
     } catch(e:any) {
       if(e instanceof DispatchNotSubmittedError)throw e;

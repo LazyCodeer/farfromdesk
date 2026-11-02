@@ -20,6 +20,11 @@ import 'document_preparation.dart';
 import 'local_backend_environment.dart';
 import 'local_state_guard.dart';
 import 'social_meta_client.dart';
+import 'startup_wait.dart';
+
+export 'local_state_guard.dart' show LocalStateUnsafe;
+export 'startup_wait.dart' show BackendNotReady, PortHolder, PortState;
+
 
 const _isolatedLocal = bool.fromEnvironment('FFD_ISOLATED_LOCAL');
 const _localState = String.fromEnvironment('FFD_LOCAL_STATE');
@@ -71,15 +76,6 @@ Future<String> readSocialBrainKey(String state) async {
       /* No credential data in errors. */
     }
   }
-}
-
-/// The backend is not answering yet. Retryable, and never a reason to claim the
-/// installation is broken until the retries have had their chance.
-class BackendNotReady implements Exception {
-  BackendNotReady(this.message);
-  final String message;
-  @override
-  String toString() => message;
 }
 
 class NativeGateway extends Gateway {
@@ -654,6 +650,23 @@ class NativeGateway extends Gateway {
 
     traceStartup('checking existing backend');
     if (await connected()) return;
+    // Someone already on the port, or holding this app's data folder, is waited
+    // for and adopted, never raced with a second backend: that one dies on the
+    // folder lock and the owner is left with a banner blaming the installation
+    // while an older copy is what is actually in the way.
+    traceStartup('checking the app port');
+    final outcome = await awaitPortOrAdopt(
+      healthy: _healthy,
+      listening: _listening,
+      holder: _portHolder,
+      lockHolder: _lockHolder,
+      port: '$port',
+    );
+    if (outcome == PortState.adopted) {
+      // Adoption is only real once the full check has passed, which is also what
+      // stops an older build for us.
+      if (await connected()) return;
+    }
     final node =
         (_isolatedLocal ? null : Platform.environment['FFD_NODE_BIN']) ??
         p.join(root, 'runtime', Platform.isWindows ? 'node.exe' : 'node');
@@ -697,12 +710,166 @@ class NativeGateway extends Gateway {
       await Future<void>.delayed(const Duration(milliseconds: 250));
       if (await connected()) return;
     }
-    // Typed, because this one is worth retrying from the UI: a busy launch, a
-    // service-lock race or a backend still settling all look like this and clear
-    // themselves, unlike a refused permission or a broken window call.
+    // Typed, because this one is worth retrying from the UI: a backend that is
+    // still settling looks like this and clears itself, unlike a refused
+    // permission or a broken window call. The port was ours to start on, so the
+    // wording no longer sends the owner looking for something else holding it.
     throw BackendNotReady(
-      'The local backend did not start. Check that port $port is free and the installation is complete.',
+      'The local backend was started but is not answering yet. This window keeps trying on its own, so press Try again in a moment.',
     );
+  }
+
+  /// A bounded health check for the port policy: a backend that is listening but
+  /// wedged must not hold a start hostage through the 30 second request timeout.
+  Future<bool> _healthy() async {
+    final file = File(p.join(state, 'admin-token'));
+    if (!await file.exists()) return false;
+    try {
+      _token = (await file.readAsString()).trim();
+      final client = http.Client();
+      try {
+        final response = await client
+            .get(
+              Uri.parse('http://127.0.0.1:$port/api/health'),
+              headers: {'Authorization': 'Bearer ${_token ?? ''}'},
+            )
+            .timeout(const Duration(seconds: 2));
+        return response.statusCode == 200;
+      } finally {
+        client.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Is anything bound to the app port at all. A stopped or wedged process still
+  /// accepts the connection in the kernel, which is exactly the case that needs
+  /// to be told apart from a free port.
+  Future<bool> _listening() async {
+    for (final address in [InternetAddress.loopbackIPv4]) {
+      try {
+        final socket = await Socket.connect(
+          address,
+          port,
+          timeout: const Duration(milliseconds: 800),
+        );
+        socket.destroy();
+        return true;
+      } catch (_) {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  /// This app's own bundle. A process running from it is ours to end; anything
+  /// else on our port never is. Matching the whole bundle path is what the
+  /// installer uses too, and it covers both the app binary and the backend node
+  /// process inside the same bundle, which a path fragment like "MacOS" does not.
+  String get _bundle {
+    return p.dirname(p.dirname(p.dirname(Platform.resolvedExecutable)));
+  }
+
+  bool _isOurs(String command) => command.trim().startsWith(_bundle);
+
+  /// Names the process holding the port, and says whether it is this app's own
+  /// backend, which is the only process the UI may offer to end.
+  Future<PortHolder?> _portHolder() async {
+    if (!Platform.isMacOS) return null;
+    try {
+      final found = await Process.run('/usr/sbin/lsof', [
+        '-nP',
+        '-iTCP:$port',
+        '-sTCP:LISTEN',
+        '-t',
+      ]).timeout(const Duration(seconds: 3));
+      final pid = int.tryParse(found.stdout.toString().trim().split('\n').first);
+      if (pid == null) return null;
+      final command = await Process.run('/bin/ps', [
+        '-p',
+        '$pid',
+        '-o',
+        'command=',
+      ]).timeout(const Duration(seconds: 3));
+      final line = command.stdout.toString();
+      return PortHolder(pid, isOurs: _isOurs(line));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Names the process holding this app's data folder, and says whether it is
+  /// this app's own backend. A copy that wedged before binding its port answers
+  /// nothing, so the folder lock is the only thing that gives it away.
+  Future<PortHolder?> _lockHolder() async {
+    if (!Platform.isMacOS) return null;
+    try {
+      final found = await Process.run('/usr/sbin/lsof', [
+        '-nP',
+        '--',
+        p.join(state, 'service-lock.sqlite'),
+      ]).timeout(const Duration(seconds: 3));
+      for (final line in found.stdout.toString().split('\n').skip(1)) {
+        final fields = line.trim().split(RegExp(r'\s+'));
+        if (fields.length < 2) continue;
+        final pid = int.tryParse(fields[1]);
+        if (pid == null) continue;
+        final command = await Process.run('/bin/ps', [
+          '-p',
+          '$pid',
+          '-o',
+          'command=',
+        ]).timeout(const Duration(seconds: 3));
+        if (!_isOurs(command.stdout.toString())) continue;
+        return PortHolder(pid, isOurs: true, onPort: false);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _commandOf(int pid) async {
+    try {
+      final command = await Process.run('/bin/ps', [
+        '-p',
+        '$pid',
+        '-o',
+        'command=',
+      ]).timeout(const Duration(seconds: 3));
+      return command.stdout.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _alive(int pid) async {
+    final command = await _commandOf(pid);
+    return command != null && command.trim().isNotEmpty;
+  }
+
+  /// Ends an older copy that is still holding the port or the data folder, after
+  /// confirming it is ours. Only ever called from an explicit press in the UI.
+  @override
+  Future<bool> stopStuckBackend(int pid) async {
+    for (final who in [await _portHolder(), await _lockHolder()]) {
+      if (who == null || who.pid != pid || !who.isOurs) continue;
+      final signalled = Process.killPid(pid, ProcessSignal.sigterm);
+      // A process wedged inside a blocking file call cannot run its own shutdown
+      // handler, which is exactly the case this press exists for. It gets a
+      // moment, and only a process still there and still ours is ended outright.
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 4), () async {
+          if (!await _alive(pid)) return;
+          final command = await _commandOf(pid);
+          if (command == null || !_isOurs(command)) return;
+          Process.killPid(pid, ProcessSignal.sigkill);
+        }),
+      );
+      return signalled;
+    }
+    return false;
   }
 
   Future<Map<String, dynamic>> _request(

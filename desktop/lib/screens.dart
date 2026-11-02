@@ -296,8 +296,16 @@ extension _BridgeScreens on _DeskState {
                                   const Center(
                                     child: CircularProgressIndicator(),
                                   )
-                                else
+                                else ...[
                                   button('Try again', boot),
+                                  if (stuckHolderPid != null) ...[
+                                    const SizedBox(height: 10),
+                                    button(
+                                      'Quit the older copy and start',
+                                      stopStuckCopy,
+                                    ),
+                                  ],
+                                ],
                               ] else if (section == 0)
                                 ...homeScreen()
                               else if (section == 1)

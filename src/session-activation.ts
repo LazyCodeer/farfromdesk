@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { realpathSync } from 'node:fs';
 import type { Session } from './session-catalog.js';
 import type { Store } from './store.js';
+import { probeDesktopApps } from './app-liveness.js';
 
 const exec=promisify(execFile);
 export function codexDesktopUrl(id:string,wakeOnly=false) {
@@ -10,12 +11,32 @@ export function codexDesktopUrl(id:string,wakeOnly=false) {
   return `codex://threads/${wakeOnly?'wake/':''}${id}`;
 }
 /** Codex Desktop's wake route resumes queued work without resubmitting it or
- * navigating the current window. New setup uses the normal visible chat route. */
+ * navigating the current window. New setup uses the normal visible chat route.
+ *
+ * `-g` leaves the app in the background, which is right for a wake while Codex is
+ * already running: the owner is doing something else and the queued turn resumes
+ * by itself. It is wrong when Codex is closed, because that starts the app with
+ * no window and the queued turn never runs, which reads as "it opened in the
+ * background but nothing happened". The flag is chosen from real app liveness,
+ * and a launch that never appears is reported instead of being passed off as a
+ * wake. */
+export function codexOpenArguments(wakeOnly:boolean,running:boolean,url:string) {
+  return [...(wakeOnly&&running?['-g']:[]),'-b','com.openai.codex',url];
+}
 export async function openCodexDesktop(id:string,wakeOnly=false) {
   const url=codexDesktopUrl(id,wakeOnly);
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Codex Desktop from a test run.');
   if(process.platform!=='darwin')throw new Error('Automatic Codex Desktop opening is not supported by this OS adapter.');
-  await exec('/usr/bin/open',[...(wakeOnly?['-g']:[]),'-b','com.openai.codex',url],{timeout:10000,maxBuffer:65536});
+  const running=(await probeDesktopApps()).codex;
+  await exec('/usr/bin/open',codexOpenArguments(wakeOnly,running,url),{timeout:10000,maxBuffer:65536});
+  if(running)return;
+  // A closed app takes a moment to appear, and only a running Codex can process
+  // the wake route. Wait briefly, then say what is actually true.
+  for(let i=0;i<16;i++){
+    if((await probeDesktopApps()).codex)return;
+    await new Promise(resolve=>setTimeout(resolve,500));
+  }
+  throw new Error('Codex Desktop was asked to open but is still not running, so the queued message has not been picked up. Open Codex to continue; do not resend the message.');
 }
 /** Open the exact native Desktop identity without creating a CLI runtime. */
 export async function openClaudeDesktop(session:Session) {

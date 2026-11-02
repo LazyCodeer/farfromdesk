@@ -4,7 +4,7 @@ import { mkdtempSync,rmSync,realpathSync,symlinkSync,mkdirSync,unlinkSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { SessionActivation,codexDesktopUrl,CLAUDE_DESKTOP_READY_TIMEOUT_MS,DesktopReadinessError } from '../src/session-activation.js';
+import { SessionActivation,codexDesktopUrl,codexOpenArguments,CLAUDE_DESKTOP_READY_TIMEOUT_MS,DesktopReadinessError } from '../src/session-activation.js';
 import type { Session } from '../src/session-catalog.js';
 
 test('Codex opening and queue wake target only the exact existing thread',()=>{
@@ -12,6 +12,17 @@ test('Codex opening and queue wake target only the exact existing thread',()=>{
   assert.equal(codexDesktopUrl(id),`codex://threads/${id}`);
   assert.equal(codexDesktopUrl(id,true),`codex://threads/wake/${id}`);
   for(const bad of ['new',`${id}?prompt=other`,'../new',''])assert.throws(()=>codexDesktopUrl(bad,true),/exact Codex/);
+});
+
+test('a wake only backgrounds Codex when it is already running',()=>{
+  const url=`codex://threads/wake/11111111-1111-4111-a111-111111111111`;
+  // Running: the wake resumes the queue without taking the screen from the owner.
+  assert.deepEqual(codexOpenArguments(true,true,url),['-g','-b','com.openai.codex',url]);
+  // Closed: a background launch starts Codex with no window and the queued turn
+  // never runs, which is what "it opened in the background but nothing happened"
+  // was. A closed app is opened visibly instead.
+  assert.deepEqual(codexOpenArguments(true,false,url),['-b','com.openai.codex',url]);
+  assert.deepEqual(codexOpenArguments(false,true,url),['-b','com.openai.codex',url]);
 });
 
 function fixture() {

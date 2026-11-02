@@ -1,4 +1,5 @@
 import { startLocalMail } from './local-email/local-runtime.js';
+import type { LocalMailHost } from './local-email/host.js';
 import { queueCoordinatorUpdates, initializeCoordinatorUpdates } from './coordinator-updates.js';
 import { AgentInstaller } from './agent-installer.js';
 import { join } from 'node:path';
@@ -53,8 +54,14 @@ native.beforeRun=b=>{if(store.get(`managed-worker:${b.id}`)==='true')workers.ens
 native.managedActive=b=>!!(masters.runtimes.get(b.id)?.alive||masters.claudeRuntimes.get(b.id)?.alive);
 native.managedRun=(b,message,jobId)=>{if(store.get(`managed-worker:${b.id}`)==='true')workers.ensureRun(b);return masters.run(b,message,jobId);};
 let emailRuntime:Awaited<ReturnType<typeof startLocalMail>>|undefined;
-if(process.env.FFD_ISOLATED_LOCAL==='1'){try{emailRuntime=await startLocalMail(stateDir,store,process.env.FFD_MAIL_KEYCHAIN_HELPER??'',process.env.FFD_MAIL_APPROVAL_HELPER??'');}catch{console.error('Local email is unavailable.');}}
-const server=serve(store,router,wa,token,{masters,power,workers,telegram,localMail:emailRuntime?.host});
+// The port is opened before the optional local-mail runtime starts. That runtime
+// talks to a macOS keychain helper, which can sit behind a keychain prompt, and
+// while it ran first the backend answered nothing at all: the app then reported
+// "the local backend did not start" for a healthy installation. Mail attaches to
+// the same services object once it is genuinely ready, and a failure there is
+// reported in the Email pane instead of holding the whole app down.
+const services={masters,power,workers,telegram,localMail:undefined as LocalMailHost|undefined};
+const server=serve(store,router,wa,token,services);
 // The permission hook is the only way a native prompt reaches this app, so it is
 // installed and repaired at startup against this build's own state and port.
 // Idempotent: it writes only when the file really changed, and backs it up first.
@@ -79,6 +86,11 @@ server.on('listening',()=>{
     void wa.connect().catch(e=>{wa.error=(e as Error).message;});
 });
 server.on('error',e=>{console.error(`Bridge could not start: ${e.message}`);process.exit(1);});
+if(process.env.FFD_ISOLATED_LOCAL==='1'){
+  void startLocalMail(stateDir,store,process.env.FFD_MAIL_KEYCHAIN_HELPER??'',process.env.FFD_MAIL_APPROVAL_HELPER??'')
+    .then(runtime=>{if(shutting){void runtime.close();return;}emailRuntime=runtime;services.localMail=runtime.host;})
+    .catch(()=>console.error('Local email is unavailable.'));
+}
 const worker=setInterval(()=>{drainHooks(store);router.pump();},2000);
 // App liveness feeds the receipt text and the silence notices; probe once before the first request.
 router.probeApps();
