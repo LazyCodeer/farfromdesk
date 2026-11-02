@@ -277,6 +277,11 @@ export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
   return b;
 }
 
-export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|screen|back|help|reach|research|jobs|social)(?:\s|$)/i.test(text.trim());
+/**
+ * Every command the owner may type. `/help` advertises these, and a command missing from this
+ * list is not merely unknown: it skips its own handler and falls through to the generic
+ * slash-command reply, so it looks like the bridge did not understand ordinary words.
+ */
+export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|muse|screen|back|help|reach|research|jobs|social)(?:\s|$)/i.test(text.trim());
 
 export function brainSelected(r:Router):boolean {try{return JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='brain';}catch{return false;}}
