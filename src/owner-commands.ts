@@ -35,9 +35,24 @@ type Target={kind:'session';id:string;identity:string}|{kind:'brain'};
 type Choice={provider:string;targets:Extract<Target,{kind:'session'}>[];expires:number;requestId:string;names:string[]};
 const routeKey=(r:Router)=>`owner-target:${r.store.destination()}`;
 const choiceKey=(r:Router)=>`owner-target-choice:${r.store.destination()}`;
+/** How long an app-minted claim stays usable: one composer send, then never again. */
+export const APP_ORIGIN_WINDOW_MS=120_000;
 export function authenticatedOwner(r:Router,m:Incoming) {
   const d=r.store.destination();
   if(!d||r.store.get(`parent:${m.id}`)||r.store.get(`report-parent:${m.id}`))return false;
+  // Exactly one added origin: the app's own composer. It is authenticated only
+  // by a single-use claim this bridge minted for this id, still inside its
+  // window, for this destination and this owner generation. A transported
+  // wa:/tg: id can never satisfy this, and nothing here is reachable without
+  // the claim the admin route writes.
+  if(m.id.startsWith('app:')){
+    const claim=r.store.appOriginClaim(m.id);
+    // The channel is re-checked as well as the destination: a claim minted while the owner
+    // was on one channel must not authenticate a message once the owner moved to the other.
+    return !!claim&&Date.now()-claim.at<APP_ORIGIN_WINDOW_MS&&claim.destination===d
+      &&claim.channel===r.store.controlChannel()
+      &&claim.generation===(r.store.get('incoming-owner-generation')??'');
+  }
   if(r.store.controlChannel()==='telegram')return d===r.store.get('telegram-owner')&&m.id.startsWith(d+':')&&/^\d+$/.test(m.id.slice(d.length+1));
   const owner=r.store.get('whatsapp-owner');
   return !!owner&&m.id.startsWith('wa:')&&m.id.length>3&&r.store.ownerFor(d)===owner&&(d===owner||d===r.store.get('destination-jid')&&!!r.store.get(`owned-group:${d}`));

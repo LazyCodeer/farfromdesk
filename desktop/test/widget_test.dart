@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:farfromdesk/app.dart';
 import 'package:farfromdesk/bridge_theme.dart';
+import 'package:farfromdesk/ffd_select.dart';
 import 'package:farfromdesk/preview.dart';
 import 'package:farfromdesk/updates.dart';
 
@@ -166,19 +167,15 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Inbox shows command failures even without native jobs', (
-    tester,
-  ) async {
+  testWidgets('Inbox shows command failures from the feed', (tester) async {
     size(tester);
     await tester.pumpWidget(FarFromDeskApp(gateway: CommandHistoryGateway()));
     await tester.pumpAndSettle();
     expect(find.text('Recent commands'), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('inbox-tab-Commands')));
+    await tester.tap(find.byKey(const ValueKey('inbox-chip-commands')));
     await tester.pumpAndSettle();
     expect(find.text('/claude'), findsWidgets);
-    expect(find.text('Failed'), findsWidgets);
-    expect(find.text('No connected Claude session.'), findsWidgets);
-    expect(find.byKey(const ValueKey('activity-filter-group')), findsNothing);
+    expect(find.textContaining('No connected Claude session.'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -258,6 +255,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
+    // Settings is tabbed, so the remote section must be selected first.
     await openSettingsTab(tester, 'remote');
     final field = find.byKey(const Key('remote-password'));
     await tester.ensureVisible(field);
@@ -300,6 +298,7 @@ void main() {
         ..captureTrusted = true;
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
+      // Settings is tabbed, so the remote section must be selected first.
       await openSettingsTab(tester, 'remote');
       await tester.ensureVisible(find.text('Screen Recording'));
       expect(find.text('Allowed'), findsNWidgets(2));
@@ -542,6 +541,8 @@ void main() {
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
       expect(find.text('Set up voice notes'), findsOneWidget);
+      // Home carries its own Advanced section for a custom FFmpeg/whisper setup.
+      expect(find.text('Advanced'), findsOneWidget);
       await tester.ensureVisible(find.text('Download voice model · 141 MB'));
       await tester.tap(find.text('Download voice model · 141 MB'));
       await tester.pumpAndSettle();
@@ -555,12 +556,15 @@ void main() {
         tester.getTopLeft(find.text('Meta')).dx,
         lessThan(tester.getTopLeft(find.text('Deepgram')).dx),
       );
+      await tester.ensureVisible(find.text('Deepgram'));
       await tester.tap(find.text('Deepgram'));
       await tester.pumpAndSettle();
       expect(find.text('console.deepgram.com'), findsOneWidget);
+      await tester.ensureVisible(find.text('AssemblyAI'));
       await tester.tap(find.text('AssemblyAI'));
       await tester.pumpAndSettle();
       expect(find.text('www.assemblyai.com/dashboard'), findsOneWidget);
+      await tester.ensureVisible(find.text('Deepgram'));
       await tester.tap(find.text('Deepgram'));
       await tester.pumpAndSettle();
       await tester.enterText(
@@ -717,13 +721,18 @@ void main() {
       final dialog = find.byType(Dialog);
       Finder inDialogOnly(String text) =>
           find.descendant(of: dialog, matching: find.text(text));
+      // The add flow opens on Select type; the folder preview is on Configure,
+      // and the final create control is on Review.
       expect(inDialogOnly('Add coordinator'), findsOneWidget);
-      expect(
-        inDialog('Reuse a previous coding session · 63 available'),
-        findsOneWidget,
-      );
-      expect(inDialog('Continue'), findsOneWidget);
-      expect(find.byKey(const ValueKey('coordinator-folder')), findsNothing);
+      expect(inDialog('Use existing session'), findsOneWidget);
+      await tester.ensureVisible(inDialog('Continue'));
+      await tester.tap(inDialog('Continue'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('coordinator-folder')), findsOneWidget);
+      await tester.ensureVisible(inDialog('Continue'));
+      await tester.tap(inDialog('Continue'));
+      await tester.pumpAndSettle();
+      expect(inDialog('Add coordinator'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -858,6 +867,7 @@ void main() {
       await tester.tap(find.byTooltip('Close'));
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsNothing);
+      expect(find.byType(Dialog), findsNothing);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -871,23 +881,22 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('FarFromDesk'), findsOneWidget);
       expect(find.byTooltip('Refresh'), findsNothing);
+      expect(find.text('Review the website changes'), findsWidgets);
       expect(find.text('Check delivery after reconnecting'), findsWidgets);
-      expect(find.byTooltip('How recovery works'), findsOneWidget);
-      if (Platform.environment['FFD_CAPTURE_ACTIVITY'] == '1') {
-        await expectLater(
-          find.byType(Scaffold),
-          matchesGoldenFile('../../.local/activity-redesign.png'),
-        );
-      }
+      // Search re-queries the feed rather than filtering what is on screen.
       await tester.enterText(
-        find.widgetWithText(TextField, 'Search sessions'),
+        find.byKey(const ValueKey('inbox-search')),
         'reconnecting',
       );
+      await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
+      expect(api.feedQueries.last, contains('q=reconnecting'));
       expect(find.text('Check delivery after reconnecting'), findsWidgets);
-      // Search selects the whole matching session, retaining its other requests.
-      expect(find.text('Review the website changes'), findsWidgets);
-      await tester.tap(find.byTooltip('How recovery works'));
+      expect(find.text('Review the website changes'), findsNothing);
+      // Recovery guidance stays available in the pane's own menu.
+      await tester.tap(find.byKey(const ValueKey('inbox-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('How recovery works'));
       await tester.pumpAndSettle();
       expect(find.text('Your requests stay saved'), findsOneWidget);
       await tester.tap(find.text('Done'));
@@ -897,80 +906,27 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
-  testWidgets('Inbox tabs separate session history, commands and attention', (
+  testWidgets('Inbox menus offer only actions the app can honour', (
     tester,
   ) async {
     size(tester);
     final api = SessionInboxGateway();
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    final a = find.byKey(const ValueKey('inbox-session-alpha'));
-    final b = find.byKey(const ValueKey('inbox-session-beta'));
-    expect(a, findsOneWidget);
-    expect(b, findsOneWidget);
-    expect(tester.getTopLeft(a).dy, lessThan(tester.getTopLeft(b).dy));
-    expect(find.text('Shared session'), findsWidgets);
-    expect(find.text('A full current request'), findsWidgets);
-    expect(find.text('No speech was found.'), findsOneWidget);
-    expect(find.text('Voice transcript'), findsOneWidget);
-    expect(find.textContaining('Progress · Telegram'), findsOneWidget);
-    expect(find.textContaining('Final · Telegram'), findsOneWidget);
-    expect(
-      find.textContaining('Worker report for owner request'),
-      findsNothing,
-    );
-    expect(find.byType(Checkbox), findsNothing);
-    expect(find.text('Mark reviewed'), findsNothing);
-    expect(find.text('Request status'), findsNothing);
-    if (Platform.environment['FFD_CAPTURE_SESSION_INBOX'] == '1') {
-      await tester.runAsync(() async {
-        for (final brand in ['claude', 'openai', 'whatsapp']) {
-          await precacheImage(
-            AssetImage('assets/logo-$brand.png'),
-            tester.element(find.byType(Scaffold)),
-          );
-        }
-      });
-      await tester.pumpAndSettle();
-      await expectLater(
-        find.byType(Scaffold),
-        matchesGoldenFile('../../../inbox2308-session.png'),
-      );
+    for (final id in ['all', 'alpha', 'beta']) {
+      expect(find.byKey(ValueKey('inbox-view-$id')), findsOneWidget);
     }
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Search sessions'),
-      'needle reply',
-    );
-    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.text('3 conversations · Newest first'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('inbox-more')));
     await tester.pumpAndSettle();
-    expect(a, findsOneWidget);
-    expect(b, findsNothing);
-    expect(find.text('A full current request'), findsWidgets);
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Search sessions'),
-      '',
-    );
-    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.text('Reload'), findsOneWidget);
+    expect(find.text('Request cleanup'), findsOneWidget);
+    expect(find.text('How recovery works'), findsOneWidget);
+    // Nothing this build cannot honour.
+    expect(find.text('New conversation'), findsNothing);
+    expect(find.text('Mark all reviewed'), findsNothing);
+    await tester.tapAt(const Offset(20, 20));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('inbox-tab-Commands')));
-    await tester.pumpAndSettle();
-    expect(a, findsNothing);
-    expect(find.byKey(const ValueKey('activity-filter-group')), findsNothing);
-    expect(find.text('Ready for your next message.'), findsWidgets);
-    expect(find.textContaining('💬'), findsNothing);
-    expect(find.textContaining('*Reply*'), findsNothing);
-    expect(find.textContaining('— FarFromDesk'), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('inbox-attention-request:tg:old')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-delivery:failed')),
-      findsOneWidget,
-    );
-    expect(find.byKey(const ValueKey('activity-filter-group')), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -982,12 +938,23 @@ void main() {
       final api = SessionInboxGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Load earlier messages'));
+      await tester.tap(find.byKey(const ValueKey('inbox-view-alpha')));
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byKey(const PageStorageKey('inbox-timeline')),
+        const Offset(0, 2000),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('inbox-earlier')));
       await tester.pumpAndSettle();
       expect(api.olderCalls, 1);
-      expect(find.text('Earlier owner request to review'), findsOneWidget);
-      expect(find.text('Load earlier messages'), findsNothing);
-      await tester.tap(find.text('Session info'));
+      await tester.drag(
+        find.byKey(const PageStorageKey('inbox-timeline')),
+        const Offset(0, 2000),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Earlier owner request to review'), findsWidgets);
+      await tester.tap(find.byKey(const ValueKey('inbox-details')));
       await tester.pumpAndSettle();
       expect(find.text('/sample/alpha'), findsOneWidget);
       expect(find.text('alpha-native-id'), findsOneWidget);
@@ -1030,22 +997,28 @@ void main() {
     },
   );
 
-  testWidgets('Late session loads never replace the selected conversation', (
+  testWidgets('A late feed response never replaces the selected view', (
     tester,
   ) async {
     size(tester);
     final api = SessionInboxGateway();
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    api.holdBeta = true;
-    await tester.tap(find.byKey(const ValueKey('inbox-session-beta')));
+    api.holdAlpha = true;
+    await tester.tap(find.byKey(const ValueKey('inbox-view-alpha')));
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('inbox-session-alpha')));
+    await tester.tap(find.byKey(const ValueKey('inbox-view-beta')));
     await tester.pumpAndSettle();
-    api.betaPending.complete(api.thread('beta'));
+    Finder header(String text) => find.descendant(
+      of: find.byKey(const ValueKey('inbox-header')),
+      matching: find.text(text),
+    );
+    expect(header('Other session'), findsOneWidget);
+    expect(find.text('Only in the other session'), findsWidgets);
+    api.alphaPending.complete(api.feed('/api/inbox-feed?view=alpha'));
     await tester.pumpAndSettle();
-    expect(find.text('A full current request'), findsWidgets);
-    expect(find.text('Only in the other session'), findsNothing);
+    expect(header('Other session'), findsOneWidget);
+    expect(find.text('Found the needle reply.'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -1057,38 +1030,26 @@ void main() {
     final api = SameTimestampInboxGateway();
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    expect(find.text('Load earlier messages'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('inbox-view-alpha')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('inbox-earlier')), findsNothing);
     api.newPage = true;
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
-    final threadScroll = find
-        .descendant(
-          of: find.byKey(const PageStorageKey('inbox-thread-alpha')),
-          matching: find.byType(Scrollable),
-        )
-        .first;
-    await tester.scrollUntilVisible(
-      find.text('Load earlier messages'),
-      -500,
-      scrollable: threadScroll,
-      maxScrolls: 50,
-    );
+    final timeline = find.byKey(const PageStorageKey('inbox-timeline'));
+    await tester.drag(timeline, const Offset(0, 20000));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Load earlier messages'));
+    await tester.tap(find.byKey(const ValueKey('inbox-earlier')));
     await tester.pumpAndSettle();
     expect(api.olderCalls, 1);
-    await tester.scrollUntilVisible(
-      find.text('Recovered middle message'),
-      -500,
-      scrollable: threadScroll,
-      maxScrolls: 50,
-    );
+    await tester.drag(timeline, const Offset(0, 20000));
+    await tester.pumpAndSettle();
     expect(find.text('Recovered middle message'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Compact Inbox opens session info without overflow', (
+  testWidgets('Compact Inbox opens a view and its session info without overflow', (
     tester,
   ) async {
     size(tester);
@@ -1096,61 +1057,32 @@ void main() {
     final api = SessionInboxGateway();
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('inbox-session-alpha')));
+    // At this width the view column comes first, and the conversation follows.
+    expect(find.byKey(const ValueKey('inbox-view-alpha')), findsOneWidget);
+    expect(find.byKey(const ValueKey('inbox-header')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('inbox-view-alpha')));
     await tester.pumpAndSettle();
-    expect(find.byTooltip('Back to sessions'), findsOneWidget);
-    await tester.tap(find.text('Session info'));
+    expect(find.byKey(const ValueKey('inbox-back')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('inbox-details')));
     await tester.pumpAndSettle();
     expect(find.text('/sample/alpha'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-    'Compact Inbox restores its list when the selected session no longer matches',
-    (tester) async {
-      size(tester);
-      tester.view.physicalSize = const Size(760, 720);
-      final api = SessionInboxGateway();
-      await tester.pumpWidget(FarFromDeskApp(gateway: api));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('activity-filter-group')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Needs review').last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('inbox-session-alpha')));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('Back to sessions'), findsOneWidget);
-      api.oldReviewed = true;
-      await tester.pump(const Duration(seconds: 3));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('inbox-tab-Requests')), findsOneWidget);
-      expect(find.widgetWithText(TextField, 'Search sessions'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('activity-filter-group')),
-        findsOneWidget,
-      );
-      expect(find.text('No matching sessions.'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets('Inbox groups requests and keeps details in session info', (
-    tester,
-  ) async {
+  testWidgets('Inbox keeps request details in session info', (tester) async {
     size(tester);
     final api = ActivityDesignGateway();
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    final row = find.byKey(const ValueKey('inbox-session-sample-worker'));
-    expect(row, findsOneWidget);
     expect(find.byType(Checkbox), findsNothing);
     expect(find.text('Select all'), findsNothing);
     expect(find.textContaining('Close selected'), findsNothing);
     expect(find.text('Review the website changes'), findsWidgets);
     expect(find.text('Mark reviewed'), findsNothing);
-    await tester.tap(find.text('Session info'));
+    await tester.tap(find.byKey(const ValueKey('inbox-view-sample-worker')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('inbox-details')));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('Timing and delivery'),
@@ -1175,7 +1107,7 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
-  testWidgets('Header filters sessions without bulk request selection', (
+  testWidgets('Header keeps the design and the inbox has no bulk selection', (
     tester,
   ) async {
     size(tester);
@@ -1192,15 +1124,12 @@ void main() {
       tester.getTopLeft(find.byKey(const ValueKey('navigation-rail'))).dy,
       lessThan(80),
     );
-    await tester.tap(find.byKey(const ValueKey('activity-filter-group')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Waiting').last);
+    await tester.tap(find.byKey(const ValueKey('inbox-chip-coordinators')));
     await tester.pumpAndSettle();
     expect(
-      find.byKey(const ValueKey('inbox-session-sample-worker')),
+      find.byKey(const ValueKey('inbox-view-sample-worker')),
       findsOneWidget,
     );
-    // One waiting request keeps all of that session's history visible.
     expect(find.text('Check delivery after reconnecting'), findsWidgets);
     expect(find.byKey(const ValueKey('select-visible-requests')), findsNothing);
     expect(find.byType(Checkbox), findsNothing);
@@ -1259,30 +1188,30 @@ void main() {
       final api = AuditGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      expect(find.text('Voice notes needing attention'), findsNothing);
       expect(api.diagnosticCalls, isEmpty);
-      await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
+      await tester.tap(find.byKey(const ValueKey('inbox-chip-attention')));
       await tester.pumpAndSettle();
-      expect(find.text('Voice note · routing blocked'), findsOneWidget);
-      await tester.tap(
-        find.byKey(const ValueKey('inbox-attention-voice:wa:voice')),
+      final card = find.byKey(
+        const ValueKey('inbox-message-attention:voice:wa:voice'),
       );
-      await tester.pumpAndSettle();
-      final orphanThread = find.byKey(
-        const PageStorageKey('inbox-thread-unassigned-voice'),
-      );
-      expect(orphanThread, findsOneWidget);
+      expect(card, findsOneWidget);
       expect(
         find.descendant(
-          of: orphanThread,
-          matching: find.text(AuditGateway.orphanError),
+          of: card,
+          matching: find.textContaining('could not be routed'),
         ),
         findsOneWidget,
+      );
+      // The request id may belong to another chat, so no diagnostics are read
+      // and no per-session thread is fetched for it.
+      expect(
+        find.descendant(of: card, matching: find.text('Timing and delivery')),
+        findsNothing,
       );
       expect(find.text('Request timing and delivery'), findsNothing);
       expect(find.textContaining('PRIVATE OTHER DESTINATION'), findsNothing);
       expect(api.diagnosticCalls, isEmpty);
-      expect(api.threadCalls, contains('unassigned-voice'));
+      expect(api.threadCalls, isEmpty);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1341,6 +1270,8 @@ void main() {
       await tester.ensureVisible(find.text('Use existing session'));
       await tester.tap(find.text('Use existing session'));
       await tester.pumpAndSettle();
+      // The picker lives on the flow's second step now, after Select type.
+      await tester.ensureVisible(find.text('Continue'));
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
       expect(find.text('63 saved sessions'), findsOneWidget);
@@ -1349,11 +1280,17 @@ void main() {
       expect(find.text('1 saved sessions'), findsOneWidget);
       await tester.tap(find.text('Website redesign').last);
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Continue'));
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
+      // Nothing is written until the confirm dialog is accepted.
       await tester.ensureVisible(find.text('Add coordinator'));
       await tester.tap(find.text('Add coordinator'));
       await tester.pumpAndSettle();
+      expect(
+        find.text('Use the selected session as your coordinator?'),
+        findsOneWidget,
+      );
       expect(find.textContaining('codex-sample-0'), findsOneWidget);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
@@ -1380,6 +1317,7 @@ void main() {
       expect(find.text('Use existing session'), findsOneWidget);
       expect(find.text('Edit'), findsNothing);
       expect(find.text('Use automatic'), findsNothing);
+      await tester.ensureVisible(find.text('Continue'));
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
       final nameField = find.byKey(const ValueKey('coordinator-name'));
@@ -1387,7 +1325,10 @@ void main() {
         tester.widget<TextField>(nameField).controller!.text,
         'FarFromDesk Orbit · Codex CLI',
       );
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      // One coding app picker replaced the row per platform.
+      final codingApp = find.byKey(const ValueKey('coordinator-coding-app'));
+      await tester.ensureVisible(codingApp);
+      await tester.tap(codingApp);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Codex Desktop').last);
       await tester.pumpAndSettle();
@@ -1396,7 +1337,7 @@ void main() {
         'FarFromDesk Orbit · Codex Desktop',
       );
       await tester.enterText(nameField, 'Mission Control');
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.tap(codingApp);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
@@ -1408,21 +1349,16 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Inbox'));
       await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('activity-filter-group')),
-        findsOneWidget,
-      );
+      // The Inbox is one conversation per view: the view list and its chips.
+      expect(find.byKey(const ValueKey('inbox-views')), findsOneWidget);
+      expect(find.byKey(const ValueKey('inbox-chip-all')), findsOneWidget);
       expect(find.text('Select all'), findsNothing);
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       expect(find.text('Run in the background'), findsOneWidget);
       expect(find.text('Open at login'), findsOneWidget);
       expect(find.text('Coding apps'), findsNothing);
-      // Sections are tabs now, so a section that is not selected is not in the
-      // tree at all, which is the point of the change.
-      expect(find.text('Update schedule'), findsNothing);
-      await openSettingsTab(tester, 'updates');
-      expect(find.text('Update schedule'), findsOneWidget);
+      expect(find.text('Updates'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1459,23 +1395,28 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('+ Add coordinator'));
       await tester.pumpAndSettle();
+      final codingApp = find.byKey(const ValueKey('coordinator-coding-app'));
+      await tester.ensureVisible(codingApp);
+      // The selected coding app carries its own account status.
       expect(find.text('Test CLI account'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.tap(codingApp);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Claude CLI').last);
       await tester.pumpAndSettle();
       expect(find.text('CLI signed out · sign in to this CLI'), findsWidgets);
-      // A platform that is not ready cannot be added, so the flow stops at Configure.
+      // Signed out, so the flow cannot advance past Configure.
+      await tester.ensureVisible(find.text('Continue'));
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('coordinator-name')), findsOneWidget);
       expect(
         tester
-            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Continue'))
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Continue'),
+            )
             .onPressed,
         isNull,
       );
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.tap(codingApp);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
@@ -1494,6 +1435,7 @@ void main() {
       api.reversePlatforms = true;
       await tester.pump(const Duration(seconds: 4));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Continue'));
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Add coordinator'));
@@ -1505,71 +1447,14 @@ void main() {
       expect(api.submitted!.containsKey('workspaceId'), isFalse);
       expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
+      // The dialog returns to the coordinator list, so the submit control is gone.
       expect(find.text('Add coordinator'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
-  Future<void> openAppPreferences(WidgetTester tester) async {
-    await tester.ensureVisible(find.text('Manage coordinators'));
-    await tester.tap(find.text('Manage coordinators'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
-    await tester.pumpAndSettle();
-  }
-
   testWidgets(
-    'Coding app preferences stage every choice, save once and keep Muse CLI-only',
-    (tester) async {
-      size(tester);
-      final api = PreferenceGateway();
-      await tester.pumpWidget(FarFromDeskApp(gateway: api));
-      await tester.pumpAndSettle();
-      await openAppPreferences(tester);
-      final codex = find.byKey(const ValueKey('platform-runtime-codex'));
-      final claude = find.byKey(const ValueKey('platform-runtime-claude'));
-      // The panel counts the same runtimes the coding app picker lists, and states each app's
-      // own runtimes in the picker's words.
-      expect(find.text('Detected 5 coding runtimes'), findsOneWidget);
-      expect(find.text('CLI ready · Desktop app ready'), findsOneWidget);
-      expect(find.text('CLI needs setup · Desktop app ready'), findsOneWidget);
-      expect(find.byKey(const ValueKey('platform-runtime-muse')), findsNothing);
-      expect(find.text('Always CLI'), findsOneWidget);
-      // Nothing is written while the panel is open: choices wait for Save.
-      await tester.tap(codex);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Codex CLI').last);
-      await tester.pumpAndSettle();
-      expect(api.calls, isEmpty);
-      await tester.tap(claude);
-      await tester.pumpAndSettle();
-      // A mode that is not detected says so instead of being silently selectable.
-      expect(find.text('Terminal · Sign in required'), findsWidgets);
-      await tester.tap(find.text('Claude Desktop').last);
-      await tester.pumpAndSettle();
-      expect(find.byType(AlertDialog), findsNothing);
-      expect(find.text('Choose Claude Desktop launcher'), findsNothing);
-      expect(api.calls, isEmpty);
-      await tester.tap(find.text('Save changes'));
-      await tester.pumpAndSettle();
-      expect(api.saved['codex']?['executionMode'], 'cli');
-      expect(api.saved['claude']?['executionMode'], 'desktop');
-      expect(api.saved['claude']!.containsKey('desktopParentId'), false);
-      expect(api.saved['claude']?['connectionRevision'], 'desktop-revision');
-      expect(api.calls, everyElement('/api/platform-preference'));
-      expect(api.calls.length, 2);
-      // Reopening shows what was stored, and the panel closes on save.
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
-      await tester.pumpAndSettle();
-      expect(find.text('Codex CLI'), findsOneWidget);
-      expect(find.text('Claude Desktop'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'Coding app preferences sits beside Add coordinator on the right',
+    'Coordinator app preferences save Desktop without a launcher or session picker',
     (tester) async {
       size(tester);
       final api = PreferenceGateway();
@@ -1578,105 +1463,62 @@ void main() {
       await tester.ensureVisible(find.text('Manage coordinators'));
       await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
-      final prefsButton = find.widgetWithText(
-        OutlinedButton,
-        'Coding app preferences',
-      );
-      final addButton = find.widgetWithText(FilledButton, '+ Add coordinator');
-      final prefs = tester.getRect(prefsButton);
-      final add = tester.getRect(addButton);
-      final row = tester.getRect(
-        find.ancestor(of: addButton, matching: find.byType(Row)).first,
-      );
-      // Preferences then the primary action, both pulled to the right edge of the row.
-      expect(add.left - prefs.right, closeTo(10, 0.5));
-      expect(prefs.right, lessThan(add.left));
-      expect(add.right, closeTo(row.right, 1));
-      // The description stays on the left, so it does not sit between the two buttons.
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
+      await tester.pumpAndSettle();
+      final codex = find.byKey(const ValueKey('platform-runtime-codex'));
+      final claude = find.byKey(const ValueKey('platform-runtime-claude'));
+      await tester.ensureVisible(codex);
+      // The app's own select, and no stored preference is an empty value.
+      expect(tester.widget<FfdSelect<String>>(codex).value, '');
+      await tester.tap(codex);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Codex CLI').last);
+      await tester.pumpAndSettle();
+      expect(tester.widget<FfdSelect<String>>(codex).value, 'cli');
+      await tester.ensureVisible(claude);
+      await tester.tap(claude);
+      await tester.pumpAndSettle();
       expect(
-        tester.getRect(find.textContaining('Create a new coordinator')).right,
-        lessThan(prefs.left),
+        tester
+            .widget<FfdSelect<String>>(claude)
+            .options
+            .singleWhere((i) => i.value == 'cli')
+            .enabled,
+        false,
       );
+      await tester.tap(find.text('Claude Desktop').last);
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Choose Claude Desktop launcher'), findsNothing);
+      expect(tester.widget<FfdSelect<String>>(claude).value, 'desktop');
+      // Choices are staged in the panel and written together by Save changes.
+      await tester.ensureVisible(find.text('Save changes'));
+      await tester.tap(find.text('Save changes'));
+      await tester.pumpAndSettle();
+      expect(api.saved['codex']?['executionMode'], 'cli');
+      expect(api.saved['claude']?['executionMode'], 'desktop');
+      expect(api.saved['claude']!.containsKey('desktopParentId'), false);
+      expect(api.saved['claude']?['connectionRevision'], 'desktop-revision');
+      expect(api.saved['codex']?['executionMode'], 'cli');
+      expect(api.calls, everyElement('/api/platform-preference'));
+      expect(api.calls.length, 2);
+      // Saving closes the panel and leaves the coordinator dialog open.
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<FfdSelect<String>>(codex).value, 'cli');
+      expect(tester.widget<FfdSelect<String>>(claude).value, 'desktop');
       expect(tester.takeException(), isNull);
+      if (Platform.environment['FFD_CAPTURE_PLATFORMS'] == '1') {
+        await tester.ensureVisible(find.text('Coding app preferences'));
+        await tester.pumpAndSettle();
+        await expectLater(
+          find.byType(Scaffold),
+          matchesGoldenFile('../../.local/platform-preferences.png'),
+        );
+      }
       await tester.pumpWidget(const SizedBox());
     },
   );
-
-  testWidgets('the picker and the panel describe one runtime the same way', (
-    tester,
-  ) async {
-    size(tester);
-    final api = PreferenceGateway();
-    await tester.pumpWidget(FarFromDeskApp(gateway: api));
-    await tester.pumpAndSettle();
-    // The panel says Claude's CLI needs setup.
-    await openAppPreferences(tester);
-    expect(find.text('CLI needs setup · Desktop app ready'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    // The coding app picker says the same thing about the same runtime, not a different word for it.
-    await tester.tap(find.text('+ Add coordinator'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
-    await tester.pumpAndSettle();
-    final rows = find.ancestor(
-      of: find.text('Claude CLI'),
-      matching: find.byType(SingleChildScrollView),
-    );
-    expect(
-      find.descendant(of: rows.last, matching: find.text('Needs setup')),
-      findsOneWidget,
-    );
-    expect(find.text('Terminal · Sign in required'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
-
-  testWidgets('Coding app preferences discard a staged choice on Cancel', (
-    tester,
-  ) async {
-    size(tester);
-    final api = PreferenceGateway();
-    await tester.pumpWidget(FarFromDeskApp(gateway: api));
-    await tester.pumpAndSettle();
-    await openAppPreferences(tester);
-    await tester.tap(find.byKey(const ValueKey('platform-runtime-codex')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Codex CLI').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    expect(api.calls, isEmpty);
-    expect(api.saved, isEmpty);
-    await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
-    await tester.pumpAndSettle();
-    expect(find.text('No preference'), findsNWidgets(2));
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
-
-  testWidgets('choosing No preference clears the stored choice explicitly', (
-    tester,
-  ) async {
-    size(tester);
-    final api = PreferenceGateway();
-    api.saved['codex'] = {'provider': 'codex', 'executionMode': 'cli'};
-    await tester.pumpWidget(FarFromDeskApp(gateway: api));
-    await tester.pumpAndSettle();
-    await openAppPreferences(tester);
-    expect(find.text('Codex CLI'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('platform-runtime-codex')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('No preference').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Save changes'));
-    await tester.pumpAndSettle();
-    expect(api.posted.single['executionMode'], 'none');
-    expect(api.saved.containsKey('codex'), isFalse);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
-
   testWidgets(
     'Multiple coordinators change default without replacing a session',
     (tester) async {
@@ -1705,27 +1547,13 @@ void main() {
 
 class PreferenceGateway extends ConnectionGateway {
   final saved = <String, Map<String, dynamic>>{};
-  final posted = <Map<String, dynamic>>[];
   @override
   Future<Map<String, dynamic>> get(String path) async {
     final data = await super.get(path);
     data['platformPreferences'] = saved.values.toList();
-    final platforms = data['masterSetup']['platforms'] as List;
-    for (final option in platforms) {
+    for (final option in data['masterSetup']['platforms']) {
       if (option['provider'] == 'claude') option['sessions'] = [];
     }
-    platforms.add({
-      'provider': 'muse',
-      'executionMode': 'cli',
-      'available': true,
-      'canCreate': true,
-      'connection': {
-        'state': 'verified',
-        'label': 'Muse Code CLI · local credential',
-        'revision': 'muse-revision',
-      },
-      'sessions': [],
-    });
     return data;
   }
 
@@ -1735,19 +1563,13 @@ class PreferenceGateway extends ConnectionGateway {
     Map<String, dynamic> data,
   ) async {
     if (path == '/api/platform-preference') {
-      posted.add(data);
-      // Mirrors the backend: "none" clears the stored preference instead of being a third mode.
-      if (data['executionMode'] == 'none') {
-        saved.remove(data['provider']);
-      } else {
-        saved[data['provider']] = {
-          ...data,
-          'connectionLabel':
-              'Selected ${data['provider']} ${data['executionMode']} account',
-          if (data['desktopParentId'] != null)
-            'launcherName': 'Personal desktop chat',
-        };
-      }
+      saved[data['provider']] = {
+        ...data,
+        'connectionLabel':
+            'Selected ${data['provider']} ${data['executionMode']} account',
+        if (data['desktopParentId'] != null)
+          'launcherName': 'Personal desktop chat',
+      };
     }
     return super.post(path, data);
   }
@@ -1758,10 +1580,86 @@ class AuditGateway extends PreviewGateway {
   static const orphanError =
       'Transcript saved, but the original WhatsApp chat could not be routed.';
   final diagnosticCalls = <String>[];
+  // Kept so the test can prove the pane no longer reads a per-session thread.
   final threadCalls = <String>[];
   static const at = 1792911400000;
+
+  List<Map<String, dynamic>> get views => [
+    {
+      'id': 'all',
+      'kind': 'all',
+      'name': 'One conversation',
+      'count': 2,
+      'needsYou': 1,
+      'latestAt': at + 1000,
+      'preview': 'Separate destination request',
+    },
+    {
+      'id': 'sample-worker',
+      'kind': 'coordinator',
+      'name': 'Separate session',
+      'provider': 'codex',
+      'count': 1,
+      'latestAt': at + 1000,
+      'preview': 'Separate destination request',
+    },
+    {
+      'id': 'attention',
+      'kind': 'attention',
+      'name': 'Needs you',
+      'count': 1,
+      'needsYou': 1,
+      'latestAt': at,
+      'preview': '',
+    },
+  ];
+
   @override
   Future<Map<String, dynamic>> get(String path) async {
+    if (path.startsWith('/api/inbox-feed')) {
+      final view = Uri.parse(path).queryParameters['view'] ?? 'all';
+      return {
+        'view': views.firstWhere(
+          (v) => v['id'] == view,
+          orElse: () => views.first,
+        ),
+        'views': views,
+        'messages': [
+          {
+            'key': '0:request:wa:voice',
+            'at': at + 1000,
+            'source': 'coordinator',
+            'provider': 'codex',
+            'bindingId': 'sample-worker',
+            'sessionName': 'Separate session',
+            'kind': 'update',
+            'kindLabel': 'Update',
+            'text': 'Separate destination request',
+            'requestId': 'wa:voice',
+            'delivery': {'state': 'delivered', 'at': at + 1500},
+          },
+          {
+            'key': 'attention:voice:wa:voice',
+            'at': at,
+            'source': 'attention',
+            'kind': 'attention',
+            'kindLabel': 'Voice note · routing blocked',
+            'text': orphanError,
+            'requestId': 'wa:voice',
+            'bindingId': 'unassigned-voice',
+            'destination': 'original-owner',
+            'canReviewOrphan': 1,
+            'needsReview': true,
+          },
+        ].where((m) => view == 'all' || m['bindingId'] == view || m['source'] == 'attention').toList(),
+        'next': null,
+        'stats': {'total': 2, 'firstAt': at, 'lastAt': at + 1000, 'needsYou': 1},
+      };
+    }
+    if (path.startsWith('/api/inbox-thread')) {
+      threadCalls.add('${Uri.parse(path).queryParameters['bindingId']}');
+      return {'messages': <Map>[], 'jobs': <Map>[], 'next': null};
+    }
     if (path.startsWith('/api/request-events')) {
       diagnosticCalls.add(path);
       return {
@@ -1775,89 +1673,11 @@ class AuditGateway extends PreviewGateway {
         'deliveries': [],
       };
     }
-    if (path.startsWith('/api/inbox-thread')) {
-      final id = Uri.parse(path).queryParameters['bindingId'];
-      if (id == null) {
-        return {
-          'sessions': [
-            {
-              'id': 'sample-worker',
-              'binding_id': 'sample-worker',
-              'name': 'Separate session',
-              'preview': 'Separate destination request',
-              'latestAt': at + 1000,
-              'requestCount': 1,
-              'needsReview': 1,
-              'waiting': 0,
-              'answered': 0,
-              'closed': 0,
-            },
-            {
-              'id': 'unassigned-voice',
-              'binding_id': null,
-              'name': 'Unassigned voice notes',
-              'preview': orphanError,
-              'latestAt': at,
-              'requestCount': 1,
-              'needsReview': 1,
-              'waiting': 0,
-              'answered': 0,
-              'closed': 0,
-            },
-          ],
-          'attention': [
-            {
-              'id': 'voice:wa:voice',
-              'bindingId': 'unassigned-voice',
-              'requestId': 'wa:voice',
-              'title': 'Voice note · routing blocked',
-              'text': orphanError,
-              'at': at,
-              'destination': 'original-owner',
-              'canReviewOrphan': 1,
-            },
-          ],
-        };
-      }
-      threadCalls.add(id);
-      if (id == 'unassigned-voice') {
-        return {
-          'messages': [
-            {
-              'key': '2:voice:wa:voice',
-              'requestId': 'wa:voice',
-              'kind': 'voice-failed',
-              'text': orphanError,
-              'at': at,
-              'destination': 'original-owner',
-              'voice': 1,
-            },
-          ],
-          'jobs': [],
-          'next': null,
-        };
-      }
-      return {
-        'messages': [
-          {
-            'key': '0:request:wa:voice',
-            'requestId': 'wa:voice',
-            'kind': 'owner',
-            'text': 'Separate destination request',
-            'at': at + 1000,
-            'destination': 'different-owner',
-            'voice': 0,
-          },
-        ],
-        'jobs': [],
-        'next': null,
-      };
-    }
     final data = await super.get(path);
     data['voiceRequests'] = [
       {'id': 'wa:voice', 'status': 'routing_blocked', 'created_at': at},
     ];
-    // The orphan's id alone is insufficient: another chat can have that request id.
+    // The orphan's id alone is insufficient: another chat can have that id.
     data['pendingJobs'] = [
       {
         'id': 'wa:voice',
@@ -1921,8 +1741,91 @@ class UpdateGateway extends PreviewGateway {
 
 class ActivityDesignGateway extends PreviewGateway {
   ActivityDesignGateway() : super(fixture: 'activity', screen: 'activity');
+  final feedQueries = <String>[];
+
+  List<Map<String, dynamic>> get feedMessages => [
+    {
+      'key': '0:request:sample-wait',
+      'at': 1792911400000,
+      'source': 'you',
+      'kind': 'text',
+      'channel': 'whatsapp',
+      'text': 'Review the website changes',
+      'bindingId': 'sample-worker',
+      'requestId': 'wa:sample-wait',
+      'delivery': {'state': 'delivered', 'at': 1792911410000},
+    },
+    {
+      'key': '1:update:sample-review',
+      'at': 1792911450000,
+      'source': 'coordinator',
+      'provider': 'codex',
+      'bindingId': 'sample-worker',
+      'sessionName': 'Website redesign',
+      'kind': 'update',
+      'kindLabel': 'Update',
+      'text': 'Check delivery after reconnecting',
+      'requestId': 'wa:sample-review',
+      'delivery': {'state': 'delivered', 'at': 1792911460000},
+    },
+  ];
+
   @override
   Future<Map<String, dynamic>> get(String path) async {
+    if (path.startsWith('/api/inbox-feed')) {
+      final uri = Uri.parse(path);
+      feedQueries.add(path);
+      final view = uri.queryParameters['view'] ?? 'all';
+      final q = (uri.queryParameters['q'] ?? '').toLowerCase();
+      final shown = feedMessages
+          .where((m) => view == 'all' || m['bindingId'] == view)
+          .where(
+            (m) =>
+                q.isEmpty ||
+                '${m['text']}'.toLowerCase().contains(q) ||
+                '${m['sessionName'] ?? ''}'.toLowerCase().contains(q),
+          )
+          .toList();
+      return {
+        'view': {
+          'id': view,
+          'kind': view == 'all' ? 'all' : 'coordinator',
+          'name': view == 'all' ? 'One conversation' : 'Website redesign',
+          'provider': view == 'all' ? null : 'codex',
+          'count': shown.length,
+          'firstAt': shown.isEmpty ? null : shown.first['at'],
+        },
+        'views': [
+          {
+            'id': 'all',
+            'kind': 'all',
+            'name': 'One conversation',
+            'count': 3,
+            'needsYou': 1,
+            'latestAt': 1792911450000,
+            'preview': 'Ask Codex to fix the pricing table...',
+          },
+          {
+            'id': 'sample-worker',
+            'kind': 'coordinator',
+            'name': 'Website redesign',
+            'provider': 'codex',
+            'detail': 'Codex · Terminal',
+            'count': 2,
+            'latestAt': 1792911450000,
+            'preview': 'Check delivery after reconnecting',
+          },
+        ],
+        'messages': shown,
+        'next': null,
+        'stats': {
+          'total': 3,
+          'firstAt': 1792911400000,
+          'lastAt': 1792911450000,
+          'needsYou': 1,
+        },
+      };
+    }
     final data = await super.get(path);
     data['pendingJobs'] = [
       {
@@ -1931,6 +1834,7 @@ class ActivityDesignGateway extends PreviewGateway {
         'status': 'uncertain',
         'canClose': true,
         'created_at': 1792911450000,
+        'updated_at': 1792911450000,
         'preview': 'Check delivery after reconnecting',
       },
       {
@@ -1939,6 +1843,7 @@ class ActivityDesignGateway extends PreviewGateway {
         'status': 'submitted',
         'canClose': true,
         'created_at': 1792911400000,
+        'updated_at': 1792911400000,
         'preview': 'Review the website changes',
       },
       {
@@ -1964,6 +1869,17 @@ class ActivityDesignGateway extends PreviewGateway {
         'status': 'reviewed',
         'created_at': 1792911000000,
         'preview': 'Check the previous build',
+      },
+    ];
+    data['bindings'] = [
+      {
+        'id': 'sample-worker',
+        'alias': 'sample-worker',
+        'name': 'Website redesign',
+        'provider': 'codex',
+        'executionMode': 'cli',
+        'native_id': 'sample-exact-session',
+        'cwd': '/sample/projects/website',
       },
     ];
     return data;
@@ -2319,10 +2235,53 @@ class CommandHistoryGateway extends PreviewGateway {
   CommandHistoryGateway() : super(fixture: 'connected', screen: 'activity');
   @override
   Future<Map<String, dynamic>> get(String path) async {
+    if (path.startsWith('/api/inbox-feed')) {
+      final view = Uri.parse(path).queryParameters['view'] ?? 'all';
+      return {
+        'view': {
+          'id': view,
+          'kind': view == 'commands' ? 'command' : 'all',
+          'name': view == 'commands' ? 'Commands' : 'One conversation',
+          'count': 1,
+          'firstAt': 400,
+        },
+        'views': [
+          {
+            'id': 'all',
+            'kind': 'all',
+            'name': 'One conversation',
+            'count': 1,
+            'latestAt': 400,
+            'preview': 'No connected Claude session.',
+          },
+          {
+            'id': 'commands',
+            'kind': 'command',
+            'name': 'Commands',
+            'count': 1,
+            'latestAt': 400,
+            'preview': 'No connected Claude session.',
+          },
+        ],
+        'messages': [
+          {
+            'key': '1:command:failed',
+            'at': 400,
+            'source': 'command',
+            'kind': 'command',
+            'kindLabel': '/claude',
+            'text': 'No connected Claude session.',
+          },
+        ],
+        'next': null,
+        'stats': {'total': 1, 'firstAt': 400, 'lastAt': 400, 'needsYou': 0},
+      };
+    }
     final data = await super.get(path);
     if (path == '/api/status') {
       data['jobs'] = [];
       data['pendingJobs'] = [];
+      // The feed is the authority for commands; this must not add a second one.
       data['commandTurns'] = [
         {
           'id': 'tg:1:2:3',
@@ -2460,12 +2419,13 @@ class ReconnectingItemsGateway extends PreviewGateway {
 
 class SessionInboxGateway extends PreviewGateway {
   SessionInboxGateway() : super(fixture: 'activity', screen: 'activity');
-  bool holdBeta = false;
-  final betaPending = Completer<Map<String, dynamic>>();
+  bool holdAlpha = false;
+  final alphaPending = Completer<Map<String, dynamic>>();
   int olderCalls = 0;
   final reviewed = <Map<String, dynamic>>[];
   bool oldReviewed = false;
   static const now = 1793232000000;
+
   List<Map<String, dynamic>> get testJobs => [
     {
       'id': 'tg:old',
@@ -2490,162 +2450,146 @@ class SessionInboxGateway extends PreviewGateway {
       'preview': 'A full current request',
       'destination': 'tg:owner',
     },
+  ];
+
+  List<Map<String, dynamic>> get views => [
     {
-      'id': 'tg:beta',
-      'binding_id': 'beta',
-      'status': 'completed',
-      'outcome': 'done',
-      'created_at': now + 10000,
-      'updated_at': now + 10000,
-      'body': 'Only in the other session',
+      'id': 'all',
+      'kind': 'all',
+      'name': 'One conversation',
+      'count': 3,
+      'needsYou': 1,
+      'latestAt': now + 10000,
       'preview': 'Only in the other session',
-      'destination': 'tg:owner',
+    },
+    {
+      'id': 'alpha',
+      'kind': 'coordinator',
+      'name': 'Shared session',
+      'provider': 'claude',
+      'detail': 'Claude · Desktop',
+      'count': 2,
+      'latestAt': now + 2000,
+      'preview': 'A full current request',
+    },
+    {
+      'id': 'beta',
+      'kind': 'coordinator',
+      'name': 'Other session',
+      'provider': 'codex',
+      'detail': 'Codex · CLI',
+      'count': 1,
+      'latestAt': now + 10000,
+      'preview': 'Only in the other session',
     },
   ];
-  Map<String, dynamic> thread(String id, {bool older = false}) {
-    if (id == 'beta') {
-      return {
-        'messages': [
-          {
-            'key': 'request:tg:beta',
-            'requestId': 'tg:beta',
-            'kind': 'owner',
-            'text': 'Only in the other session',
-            'at': now + 10000,
-            'destination': 'tg:owner',
-            'voice': 0,
-          },
-        ],
-        'jobs': testJobs.where((j) => j['binding_id'] == 'beta').toList(),
-        'next': null,
-      };
+
+  List<Map<String, dynamic>> get feedMessages => [
+    {
+      'key': '0:request:tg:new',
+      'at': now,
+      'source': 'you',
+      'kind': 'text',
+      'channel': 'telegram',
+      'text': 'A full current request',
+      'bindingId': 'alpha',
+      'requestId': 'tg:new',
+      'delivery': {'state': 'delivered', 'at': now + 1000},
+    },
+    {
+      'key': '1:reply:final',
+      'at': now + 2000,
+      'source': 'coordinator',
+      'provider': 'claude',
+      'bindingId': 'alpha',
+      'sessionName': 'Shared session',
+      'kind': 'final',
+      'kindLabel': 'Final',
+      'text': 'Found the needle reply.',
+      'requestId': 'tg:new',
+      'delivery': {'state': 'delivered', 'at': now + 3000},
+    },
+    {
+      'key': '2:reply:beta',
+      'at': now + 10000,
+      'source': 'coordinator',
+      'provider': 'codex',
+      'bindingId': 'beta',
+      'sessionName': 'Other session',
+      'kind': 'final',
+      'kindLabel': 'Final',
+      'text': 'Only in the other session',
+      'requestId': 'tg:beta',
+      'delivery': {'state': 'delivered', 'at': now + 11000},
+    },
+  ];
+
+  List<Map<String, dynamic>> get history => [
+    {
+      'key': '0:request:tg:old',
+      'at': now - 86400000,
+      'source': 'you',
+      'kind': 'text',
+      'channel': 'telegram',
+      'text': 'Earlier owner request to review',
+      'bindingId': 'alpha',
+      'requestId': 'tg:old',
+      'delivery': {'state': 'delivered', 'at': now - 86399000},
+    },
+  ];
+
+  Map<String, dynamic> feed(String path) {
+    final uri = Uri.parse(path);
+    final view = uri.queryParameters['view'] ?? 'all';
+    final q = (uri.queryParameters['q'] ?? '').toLowerCase();
+    final older = uri.queryParameters['beforeAt'] != null;
+    if (older) olderCalls++;
+    var rows = older
+        ? history
+        : feedMessages
+              .where((m) => view == 'all' || m['bindingId'] == view)
+              .toList();
+    if (q.isNotEmpty) {
+      rows = rows
+          .where(
+            (m) =>
+                '${m['text']}'.toLowerCase().contains(q) ||
+                '${m['sessionName'] ?? ''}'.toLowerCase().contains(q),
+          )
+          .toList();
     }
-    if (older) {
-      return {
-        'messages': [
-          {
-            'key': 'request:tg:old',
-            'requestId': 'tg:old',
-            'kind': 'owner',
-            'text': 'Earlier owner request to review',
-            'at': now - 86400000,
-            'destination': 'tg:owner',
-            'voice': 0,
-          },
-        ],
-        'jobs': [testJobs.first],
-        'next': null,
-      };
-    }
+    final current = views.firstWhere(
+      (v) => v['id'] == view,
+      orElse: () => views.first,
+    );
     return {
-      'messages': [
-        {
-          'key': 'request:tg:new',
-          'requestId': 'tg:new',
-          'kind': 'owner',
-          'text': 'A full current request',
-          'at': now,
-          'destination': 'tg:owner',
-          'voice': 1,
-        },
-        {
-          'key': 'reply:progress',
-          'requestId': 'tg:new',
-          'kind': 'progress',
-          'text': 'Working through the checks.',
-          'at': now + 1000,
-          'destination': 'tg:owner',
-          'voice': 0,
-        },
-        {
-          'key': 'reply:final',
-          'requestId': 'tg:new',
-          'kind': 'final',
-          'text': 'Found the needle reply.',
-          'at': now + 2000,
-          'destination': 'tg:owner',
-          'voice': 0,
-        },
-        {
-          'key': 'report:worker',
-          'requestId': 'tg:new',
-          'kind': 'worker-report',
-          'text': 'Worker report for owner request tg:8856686568:999. Ignore header.\n\nWorker tests passed.',
-          'at': now + 3000,
-          'destination': 'tg:owner',
-          'voice': 0,
-        },
-        {
-          'key': 'voice:failed',
-          'requestId': 'tg:new',
-          'kind': 'voice-failed',
-          'text': 'No speech was found.',
-          'at': now + 4000,
-          'destination': 'tg:owner',
-          'voice': 1,
-        },
-      ],
-      'jobs': testJobs.where((j) => j['binding_id'] == 'alpha').toList(),
-      'next': {'at': now, 'id': 'request:tg:new'},
+      'view': {
+        ...current,
+        'firstAt': rows.isEmpty ? null : rows.first['at'],
+      },
+      'views': views,
+      'messages': rows,
+      'next': older
+          ? null
+          : {'at': feedMessages.first['at'], 'key': '${feedMessages.first['key']}'},
+      'stats': {
+        'total': 3,
+        'firstAt': now,
+        'lastAt': now + 10000,
+        'needsYou': oldReviewed ? 0 : 1,
+      },
     };
   }
 
   @override
   Future<Map<String, dynamic>> get(String path) async {
-    if (path.startsWith('/api/inbox-thread')) {
-      final uri = Uri.parse(path);
-      final id = uri.queryParameters['bindingId'];
-      if (id == null) {
-        final q = (uri.queryParameters['q'] ?? '').toLowerCase();
-        return {
-          'sessions': [
-            if (q.isEmpty ||
-                'shared session needle reply earlier owner'.contains(q))
-              {
-                'id': 'alpha',
-                'binding_id': 'alpha',
-                'name': 'Shared session',
-                'requestCount': 2,
-                'latestAt': now + 5000,
-                'preview': 'Found the needle reply.',
-                'needsReview': oldReviewed ? 0 : 1,
-                'waiting': 0,
-                'answered': 1,
-                'closed': oldReviewed ? 1 : 0,
-              },
-            if (q.isEmpty)
-              {
-                'id': 'beta',
-                'binding_id': 'beta',
-                'name': 'Shared session',
-                'requestCount': 1,
-                'latestAt': now + 10000,
-                'preview': 'Other latest preview',
-                'needsReview': 0,
-                'waiting': 0,
-                'answered': 1,
-                'closed': 0,
-              },
-          ],
-          'attention': [
-            {
-              'id': 'delivery:failed',
-              'bindingId': 'alpha',
-              'requestId': 'tg:new',
-              'title': 'Reply delivery needs attention',
-              'text': 'Messaging service did not confirm delivery.',
-              'at': now + 6000,
-            },
-          ],
-        };
-      }
-      if (id == 'beta' && holdBeta) return betaPending.future;
-      final older = uri.queryParameters.containsKey('beforeAt');
-      if (older) olderCalls++;
-      return thread(id, older: older);
+    if (path.startsWith('/api/inbox-feed')) {
+      final view = Uri.parse(path).queryParameters['view'] ?? 'all';
+      if (view == 'alpha' && holdAlpha) return alphaPending.future;
+      return feed(path);
     }
     if (path.startsWith('/api/request-events')) {
-      return {'events': [], 'deliveries': []};
+      return {'events': <Map>[], 'deliveries': <Map>[]};
     }
     final data = await super.get(path);
     data['bindings'] = [
@@ -2662,7 +2606,7 @@ class SessionInboxGateway extends PreviewGateway {
       {
         'id': 'beta',
         'alias': 'beta',
-        'name': 'Shared session',
+        'name': 'Other session',
         'provider': 'codex',
         'executionMode': 'cli',
         'native_id': 'beta-native-id',
@@ -2674,15 +2618,7 @@ class SessionInboxGateway extends PreviewGateway {
         .where((j) => j['status'] == 'uncertain')
         .toList();
     data['jobs'] = testJobs;
-    data['commandTurns'] = [
-      {
-        'id': 'cmd:one',
-        'label': '/claude',
-        'status': 'handled',
-        'summary': '💬 *Reply*\nReady for your next message.\n\n— FarFromDesk',
-        'created_at': now,
-      },
-    ];
+    data['commandTurns'] = [];
     data['approvals'] = [];
     data['voiceRequests'] = [];
     data['unlinkedUpdates'] = [];
@@ -2705,30 +2641,53 @@ class SessionInboxGateway extends PreviewGateway {
 
 class SameTimestampInboxGateway extends SessionInboxGateway {
   bool newPage = false;
+
+  Map<String, dynamic> message(int n, String text) => {
+    'key': '1:reply:${n.toString().padLeft(3, '0')}',
+    'at': SessionInboxGateway.now,
+    'source': 'coordinator',
+    'provider': 'claude',
+    'bindingId': 'alpha',
+    'sessionName': 'Shared session',
+    'kind': 'update',
+    'kindLabel': 'Update',
+    'text': text,
+    'requestId': 'tg:new',
+    'delivery': {'state': 'delivered', 'at': SessionInboxGateway.now},
+  };
+
   @override
-  Map<String, dynamic> thread(String id, {bool older = false}) {
-    if (id != 'alpha') {
-      return super.thread(id, older: older);
-    }
-    Map<String, dynamic> message(int n, String text) => {
-      'key': '1:reply:${n.toString().padLeft(3, '0')}',
-      'requestId': 'tg:new',
-      'kind': 'progress',
-      'text': text,
-      'at': SessionInboxGateway.now,
-      'destination': 'tg:owner',
-      'voice': 0,
-    };
+  Map<String, dynamic> feed(String path) {
+    final uri = Uri.parse(path);
+    final view = uri.queryParameters['view'] ?? 'all';
+    if (view != 'alpha') return super.feed(path);
+    final older = uri.queryParameters['beforeAt'] != null;
+    if (older) olderCalls++;
+    final rows = older
+        ? [message(100, 'Recovered middle message')]
+        : newPage
+        ? [for (var n = 200; n < 260; n++) message(n, 'New message $n')]
+        : [message(0, 'Original cached message')];
     return {
-      'messages': older
-          ? [message(100, 'Recovered middle message')]
-          : newPage
-          ? [for (var n = 200; n < 300; n++) message(n, 'New message $n')]
-          : [message(0, 'Original cached message')],
-      'jobs': testJobs.where((j) => j['binding_id'] == 'alpha').toList(),
+      'view': {
+        'id': 'alpha',
+        'kind': 'coordinator',
+        'name': 'Shared session',
+        'provider': 'claude',
+        'count': rows.length,
+        'firstAt': rows.isEmpty ? null : rows.first['at'],
+      },
+      'views': views,
+      'messages': rows,
       'next': newPage && !older
-          ? {'at': SessionInboxGateway.now, 'id': '1:reply:200'}
+          ? {'at': SessionInboxGateway.now, 'key': '1:reply:200'}
           : null,
+      'stats': {
+        'total': 3,
+        'firstAt': SessionInboxGateway.now,
+        'lastAt': SessionInboxGateway.now,
+        'needsYou': 1,
+      },
     };
   }
 }

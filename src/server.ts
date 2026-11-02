@@ -6,7 +6,7 @@ import { reviewOrphanVoice } from './voice-attention.js';
 import {ownerResearchRequest} from './agent-reach-request.js';
 import {sessionResearchRead,sessionResearchRefine,sessionResearchRequest} from './session-research.js';
 import {sessionSpecialty} from './session-specialty.js';
-import { inboxSessions, inboxThread } from './inbox-view.js';
+import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
 import { SocialAssistant } from './social-assistant.js';
 import { saveSessionSocialDrafts } from './social-session-drafts.js';
@@ -65,6 +65,9 @@ async function body(req:IncomingMessage,limit=128000) {
 }
 const json=(res:ServerResponse,status:number,data:unknown)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};
 const cleanBinding=(b:Binding)=>{const {token_hash,...rest}=b;return rest;};
+// A plain-language reading of the composer result. The status is the contract;
+// this is only what the app can show next to it.
+const APP_SEND_REASON:Record<string,string>={queued:'Waiting for the session to answer.',handled:'Handled in your chat.',blocked:'Nothing was sent to a session.',ignored:'This message was already handled.'};
 export function saveBindingCredentials(b:Binding,token:string) {
   const dir=join(stateDir,'bindings');mkdirSync(dir,{recursive:true,mode:0o700});
   writeFileSync(join(dir,`${b.alias}.json`),JSON.stringify({id:b.id,token,alias:b.alias,provider:b.provider,nativeId:b.native_id,cwd:b.cwd}),{mode:0o600});
@@ -445,6 +448,28 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/media/cleanup'&&req.method==='POST') {await body(req);json(res,200,{incoming:router.attachments.cleanup(),outgoing:artifacts.cleanup()});return;}
       if(path==='/api/hook-update'&&req.method==='GET') {json(res,200,store.hookUpdate(url.searchParams.get('id')??'')??{text:'This local update has expired.'});return;}
       if(path==='/api/inbox-thread'&&req.method==='GET') {if(!isAdmin){json(res,403,{error:'Conversation history requires the app.'});return;}const id=url.searchParams.get('bindingId');const data=id?inboxThread(store,id,url.searchParams.get('beforeAt'),url.searchParams.get('beforeId')):inboxSessions(store,url.searchParams.get('q')??'');if('jobs' in data)data.jobs=data.jobs.map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)}));json(res,200,data);return;}
+      if(path==='/api/inbox-feed'&&req.method==='GET') {if(!isAdmin){json(res,403,{error:'Conversation history requires the app.'});return;}json(res,200,inboxFeed(store,{view:url.searchParams.get('view'),beforeAt:url.searchParams.get('beforeAt'),beforeKey:url.searchParams.get('beforeKey'),query:url.searchParams.get('q')}));return;}
+      // The composer sends as the owner. The claim minted here is the only thing
+      // that authenticates the app origin; a stopped bridge or an unpaired owner
+      // chat cannot be claimed at all.
+      if(path==='/api/inbox-send'&&req.method==='POST') {
+        if(!isAdmin){json(res,403,{error:'Sending from the app requires the app.'});return;}
+        const d=await body(req,20000),text=typeof d.text==='string'?d.text:'';
+        if(!text.trim()){json(res,400,{error:'Type a message before sending.'});return;}
+        if(text.length>4000){json(res,400,{error:'A message can be up to 4000 characters.'});return;}
+        const destination=store.destination();
+        if(router.stopped){json(res,409,{error:'The bridge is stopped. Turn background operation back on, then try again.'});return;}
+        if(!destination||!store.ownerFor(destination)){json(res,409,{error:'No owner chat is connected yet. Pair WhatsApp or Telegram first.'});return;}
+        const id=`app:${randomUUID()}`;
+        if(!store.claimAppOrigin(id,destination,store.controlChannel(),store.get('incoming-owner-generation')??'')){json(res,409,{error:'This message could not be claimed. Try sending it again.'});return;}
+        // No new dispatch path: the ordinary receive() pipeline stores, routes and answers it.
+        // The flags mirror a fresh owner text message on WhatsApp or Telegram exactly: not a
+        // reply, not a forward, so both transports pass ownerIntent and ownerCommand true
+        // (whatsapp.ts:328, telegram.ts:192). Passing false here silently skipped the owner
+        // paths that depend on them, which is not the equivalence the app promises.
+        const result=await router.receive({id,text,ownerIntent:true,ownerCommand:true,ownerChoice:true});
+        json(res,200,{requestId:result.requestId,status:result.status,code:result.code??null,reason:APP_SEND_REASON[result.status]??null});return;
+      }
       if(path==='/api/request-events'&&req.method==='GET') {const id=url.searchParams.get('id')??'';json(res,200,{events:store.events(id),deliveries:store.deliveries(id)});return;}
 
       if(path==='/api/mac-control'&&req.method==='GET'){json(res,200,macControl.view());return;}

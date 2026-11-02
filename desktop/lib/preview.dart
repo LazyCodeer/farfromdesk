@@ -141,7 +141,10 @@ class PreviewGateway extends Gateway {
     'intro': 'done',
   };
   @override
-  Future<Map<String, dynamic>> get(String path) async => path == '/api/memory'
+  Future<Map<String, dynamic>> get(String path) async =>
+      path.startsWith('/api/inbox-feed')
+      ? inboxFeed(path)
+      : path == '/api/memory'
       ? memory
       : path == '/api/meta-timeline'
       ? {'scope': 'preview', 'events': <Object>[]}
@@ -300,6 +303,278 @@ class PreviewGateway extends Gateway {
             ],
           },
         };
+    /// The unified Inbox, from canned data, so the design preview shows the real
+  /// pane without a backend. No invented voice duration: the bridge's audio
+  /// table stores none, so the preview shows what the app will really show.
+  Map<String, dynamic> inboxFeed(String path) {
+    final uri = Uri.parse(path);
+    final view = uri.queryParameters['view'] ?? 'all';
+    final query = (uri.queryParameters['q'] ?? '').toLowerCase();
+    final before = int.tryParse(uri.queryParameters['beforeAt'] ?? '');
+    final now = DateTime.now();
+    final start = DateTime(now.year, now.month, now.day, 7, 55);
+    int at(int minutes) =>
+        start.add(Duration(minutes: minutes)).millisecondsSinceEpoch;
+
+    Map<String, dynamic> delivery(String state, [int? minutes]) => {
+      'state': state,
+      if (minutes != null) 'at': at(minutes),
+    };
+    final messages = <Map<String, dynamic>>[
+      {
+        'key': '0:request:preview-app',
+        'at': at(0),
+        'source': 'you',
+        'kind': 'voice',
+        'channel': 'whatsapp',
+        'origin': 'app',
+        'text': 'Ask Codex to fix the pricing table on the pricing page. It overflows on a phone.',
+        'delivery': delivery('delivered', 4),
+        'requestId': 'wa:preview',
+      },
+      {
+        'key': '1:routing:preview',
+        'at': at(6),
+        'source': 'brain',
+        'kind': 'routing',
+        'text': 'Routed to Website redesign (Codex). No other session matched.',
+      },
+      {
+        'key': '2:working:preview',
+        'at': at(9),
+        'source': 'coordinator',
+        'provider': 'codex',
+        'bindingId': 'alpha',
+        'sessionName': 'Website redesign',
+        'kind': 'working',
+        'kindLabel': 'Working',
+        'text': 'Confirming the fix at 375 px and 320 px before I call it done.',
+        'delivery': delivery('sent'),
+        'requestId': 'wa:preview',
+      },
+      {
+        'key': '3:update:preview',
+        'at': at(17),
+        'source': 'coordinator',
+        'provider': 'claude',
+        'bindingId': 'beta',
+        'sessionName': 'Docs pass',
+        'kind': 'update',
+        'kindLabel': 'Update',
+        'text': 'Pagination reference updated. One naming question is open.',
+        'delivery': delivery('delivered', 18),
+        'requestId': 'wa:docs',
+      },
+      {
+        'key': '4:final:preview',
+        'at': at(20),
+        'source': 'coordinator',
+        'provider': 'codex',
+        'bindingId': 'alpha',
+        'sessionName': 'Website redesign',
+        'itemRef': 3,
+        'kind': 'final',
+        'kindLabel': 'Final',
+        'text': 'No overflow at 375 px or 320 px. Nothing else changed.',
+        'delivery': delivery('delivered', 32),
+        'requestId': 'wa:preview',
+      },
+      {
+        'key': '5:attention:preview',
+        'at': at(24),
+        'source': 'attention',
+        'kind': 'attention',
+        'kindLabel': 'Voice note · routing blocked',
+        'text':
+            'Transcript saved, but the original WhatsApp chat could not be routed.',
+        'requestId': 'wa:preview',
+        'bindingId': 'unassigned-voice',
+        'destination': 'original-owner',
+        'canReviewOrphan': 1,
+        'needsReview': true,
+      },
+      {
+        'key': '6:command:preview',
+        'at': at(28),
+        'source': 'command',
+        'kind': 'command',
+        'kindLabel': 'Command',
+        'text': '2 requests open. Nothing is waiting on you.',
+      },
+    ];
+    final history = <Map<String, dynamic>>[
+      {
+        'key': '0:request:preview-old',
+        'at': at(-720),
+        'source': 'you',
+        'kind': 'text',
+        'channel': 'whatsapp',
+        'text': 'Start with the pricing table when you get a moment.',
+        'delivery': delivery('delivered', -714),
+      },
+      {
+        'key': '1:reply:preview-old',
+        'at': at(-700),
+        'source': 'coordinator',
+        'provider': 'codex',
+        'bindingId': 'alpha',
+        'sessionName': 'Website redesign',
+        'kind': 'update',
+        'kindLabel': 'Update',
+        'text': 'Earlier reply kept for the record.',
+        'delivery': delivery('delivered', -699),
+      },
+    ];
+    final views = <Map<String, dynamic>>[
+      {
+        'id': 'all',
+        'kind': 'all',
+        'name': 'One conversation',
+        'detail': null,
+        'count': 34,
+        'needsYou': 2,
+        'latestAt': at(28),
+        'preview': 'Ask Codex to fix the pricing table...',
+      },
+      {
+        'id': 'you',
+        'kind': 'you',
+        'name': 'You',
+        'detail': null,
+        'count': 12,
+        'latestAt': at(0),
+        'preview': 'Ask Codex to fix the pricing table...',
+      },
+      {
+        'id': 'alpha',
+        'kind': 'coordinator',
+        'name': 'Website redesign',
+        'provider': 'codex',
+        'detail': 'Codex · Terminal',
+        'count': 8,
+        'latestAt': at(20),
+        'preview': 'Update layout and fix mobile overflow',
+      },
+      {
+        'id': 'beta',
+        'kind': 'coordinator',
+        'name': 'Docs pass',
+        'provider': 'claude',
+        'detail': 'Claude · Desktop',
+        'count': 6,
+        'latestAt': at(17),
+        'preview': 'Pagination reference updated...',
+      },
+      {
+        'id': 'brain',
+        'kind': 'brain',
+        'name': 'Brain',
+        'detail': null,
+        'count': 1,
+        'latestAt': null,
+        'preview': '',
+      },
+      {
+        'id': 'brain-brief',
+        'kind': 'brain',
+        'name': 'Morning brief',
+        'detail': null,
+        'count': 1,
+        'latestAt': null,
+        'preview': '3 requests open, 1 waiting on you',
+      },
+      {
+        'id': 'brain-memory',
+        'kind': 'brain',
+        'name': 'Memory',
+        'detail': null,
+        'count': 2,
+        'latestAt': null,
+        'preview': 'Saved 2 notes to about-me.md...',
+      },
+      {
+        'id': 'commands',
+        'kind': 'command',
+        'name': 'Status',
+        'detail': null,
+        'count': 3,
+        'latestAt': at(28),
+        'preview': '2 requests open. Nothing is waiting...',
+      },
+      {
+        'id': 'attention',
+        'kind': 'attention',
+        'name': 'Needs you',
+        'detail': null,
+        'count': 2,
+        'needsYou': 2,
+        'latestAt': at(24),
+        'preview': '',
+      },
+    ];
+    final filtered = switch (view) {
+      'you' => messages.where((m) => m['source'] == 'you').toList(),
+      'coordinators' => messages
+          .where((m) => m['source'] == 'coordinator')
+          .toList(),
+      'alpha' || 'beta' => messages
+          .where((m) => m['bindingId'] == view)
+          .toList(),
+      'brain' => messages.where((m) => m['source'] == 'brain').toList(),
+      'commands' => messages.where((m) => m['source'] == 'command').toList(),
+      'attention' => messages
+          .where((m) => m['source'] == 'attention')
+          .toList(),
+      _ => messages,
+    };
+    final rows = [
+      for (final m in before == null ? filtered : history)
+        if (query.isEmpty ||
+            '${m['text']}'.toLowerCase().contains(query) ||
+            '${m['sessionName'] ?? ''}'.toLowerCase().contains(query))
+          m,
+    ];
+    final current =
+        views.where((v) => v['id'] == view).firstOrNull ??
+        (view == 'coordinators'
+            ? <String, dynamic>{
+                'id': 'coordinators',
+                'kind': 'coordinator',
+                'name': 'Coordinators',
+                'count': 14,
+              }
+            : views.where((v) => v['id'] == 'all').firstOrNull ??
+                  <String, dynamic>{});
+    return {
+      'view': {
+        ...current,
+        'firstAt': rows.isEmpty ? null : rows.first['at'],
+        'lastAt': rows.isEmpty ? null : rows.last['at'],
+      },
+      'views': views,
+      // Every group, counted globally, exactly as the bridge reports them. The
+      // chip row reads these, so a group with nothing in it still shows 0.
+      'filters': const [
+        {'id': 'all', 'label': 'All', 'count': 34},
+        {'id': 'you', 'label': 'You', 'count': 12},
+        {'id': 'coordinators', 'label': 'Coordinators', 'count': 14},
+        {'id': 'brain', 'label': 'Brain', 'count': 4},
+        {'id': 'commands', 'label': 'Commands', 'count': 3},
+        {'id': 'attention', 'label': 'Needs you', 'count': 2},
+      ],
+      'messages': rows,
+      'next': before != null || rows.isEmpty
+          ? null
+          : {'at': rows.first['at'], 'key': '${rows.first['key']}'},
+      'stats': {
+        'total': 34,
+        'firstAt': at(0),
+        'lastAt': at(28),
+        'needsYou': 2,
+      },
+    };
+  }
+
   @override
   Future<Map<String, dynamic>> post(
     String path,

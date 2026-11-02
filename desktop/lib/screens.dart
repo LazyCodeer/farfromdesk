@@ -1,5 +1,21 @@
 part of 'app.dart';
 
+// One month vocabulary for both the timeline day pills and the view rows.
+const _monthNames = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
 // Layout is ported from the build-41 SwiftUI views. Only OS wording and verified
 // integration availability differ; component geometry and navigation are shared.
 
@@ -4106,15 +4122,6 @@ extension _BridgeScreens on _DeskState {
     ];
   }
 
-  bool includeJob(Map job, String filter) => switch (filter) {
-    'Waiting' => ['queued', 'dispatched', 'submitted'].contains(job['status']),
-    'Needs review' =>
-      ['uncertain', 'failed'].contains(job['status']) ||
-          job['outcome'] == 'blocked',
-    'Answered' => job['status'] == 'completed' && job['outcome'] != 'blocked',
-    'Closed' => ['reviewed', 'replaced', 'auto_closed'].contains(job['status']),
-    _ => true,
-  };
   String jobLabel(String state) => switch (state) {
     'submitted' => 'Awaiting reply',
     'dispatched' => 'Sending to agent',
@@ -4225,7 +4232,7 @@ extension _BridgeScreens on _DeskState {
         ? 'Today'
         : days == 1
         ? 'Yesterday'
-        : '${t.day.toString().padLeft(2, '0')}/${t.month.toString().padLeft(2, '0')}/${t.year}';
+        : '${t.day} ${_monthNames[t.month - 1]}';
   }
 
   String clock(num at) {

@@ -21,22 +21,16 @@ void main() {
   }
 
   testWidgets(
-    'Inbox retains the filter and moves cleanup into its own dialog',
+    'Inbox keeps the cleanup panel behind its own control and dialog',
     (tester) async {
       size(tester);
       final api = PreviewGateway(fixture: 'activity', screen: 'activity');
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
-      final filter = find.byKey(const ValueKey('activity-filter-group'));
-      expect(filter, findsOneWidget);
-      await tester.tap(filter);
-      await tester.pumpAndSettle();
-      expect(find.text('Waiting'), findsOneWidget);
-      expect(find.text('Needs review'), findsOneWidget);
-      await tester.tap(find.text('Waiting'));
-      await tester.pumpAndSettle();
-      expect(find.text('Waiting'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('inbox-cleanup-settings')));
+      // The funnel that used to open the filter menu now opens request cleanup.
+      final cleanup = find.byKey(const ValueKey('inbox-cleanup-settings'));
+      expect(cleanup, findsOneWidget);
+      await tester.tap(cleanup);
       await tester.pumpAndSettle();
       expect(find.text('Auto-close stale requests'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('request-cleanup-enabled')));
