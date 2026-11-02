@@ -61,6 +61,27 @@ const MemoryInput=z.object({command:z.enum(['view','create','str_replace','inser
  * The memory commands follow Anthropic's memory tool (view, create, str_replace, insert). */
 export class MetaModel {
   constructor(private fetcher:typeof fetch=fetch,private timeoutMs=30000) {}
+  /** One bounded, redirect-free request with the key attached, so a notice cannot leak it. */
+  private async send(key:string,policy:BrainPolicy,body:unknown,timeoutMs:number):Promise<string> {
+    const signal=AbortSignal.timeout(timeoutMs);
+    const request:typeof fetch=async(url,init)=>{
+      const response=await this.fetcher(url,{...init,redirect:'error'});
+      if(!response.ok)throw new Error(response.status===401||response.status===403?'Meta authentication failed.':`Meta API unavailable (HTTP ${response.status}).`);
+      const reader=response.body?.getReader();if(!reader)throw new Error('Meta returned no response.');
+      let size=0;const chunks:Uint8Array[]=[];
+      for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>65536){await reader.cancel();throw new Error('Meta response exceeded the limit.');}chunks.push(value);}
+      return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
+    };
+    const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:request});
+    const result=await generateText({model:meta(policy.model),system:String((body as {system:string}).system),prompt:JSON.stringify((body as {facts:unknown}).facts),maxRetries:0,abortSignal:signal,providerOptions:{meta:{reasoningEffort:'low'}}});
+    const text=String(result.text??'').trim();
+    if(!text)throw new Error('Meta returned no wording.');
+    return text;
+  }
+  /** Short owner-facing wording for a companion notice. The caller validates every line. */
+  async compose(key:string,policy:BrainPolicy,system:string,facts:unknown,timeoutMs=8000):Promise<string> {
+    return this.send(key,policy,{system,facts},timeoutMs);
+  }
   async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void,observe?:MetaObserver):Promise<Interpretation> {
     const signal=AbortSignal.timeout(this.timeoutMs);let status=0;
     // Bound streamed bytes and never follow redirects with the key attached.

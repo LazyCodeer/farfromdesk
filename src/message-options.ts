@@ -18,7 +18,8 @@ export function initializeOptions(store:Store){store.db.exec(`CREATE TABLE IF NO
  id TEXT PRIMARY KEY,outbox_id TEXT UNIQUE NOT NULL REFERENCES outbox(id) ON DELETE CASCADE,request_id TEXT NOT NULL,binding_id TEXT NOT NULL,
  destination TEXT NOT NULL,owner TEXT NOT NULL,choices TEXT NOT NULL,expires_at INTEGER NOT NULL,selected_id TEXT,response_id TEXT);
  CREATE UNIQUE INDEX IF NOT EXISTS message_options_response ON message_options(response_id) WHERE response_id IS NOT NULL;
- CREATE TABLE IF NOT EXISTS owner_target_options(option_id TEXT PRIMARY KEY REFERENCES message_options(id) ON DELETE CASCADE);`);
+ CREATE TABLE IF NOT EXISTS owner_target_options(option_id TEXT PRIMARY KEY REFERENCES message_options(id) ON DELETE CASCADE);
+ CREATE TABLE IF NOT EXISTS option_actions(option_id TEXT PRIMARY KEY REFERENCES message_options(id) ON DELETE CASCADE,kind TEXT NOT NULL);`);
   const columns=store.db.prepare('PRAGMA table_info(message_options)').all() as {name:string}[];
   if(!columns.some(c=>c.name==='stuck_identity'))store.db.exec('ALTER TABLE message_options ADD COLUMN stuck_identity TEXT');
   if(!columns.some(c=>c.name==='stuck_attempt'))store.db.exec('ALTER TABLE message_options ADD COLUMN stuck_attempt TEXT');
@@ -37,6 +38,10 @@ export function createOptions(store:Store,outboxId:string,requestId:string,bindi
   store.db.prepare('INSERT INTO message_options(id,outbox_id,request_id,binding_id,destination,owner,choices,expires_at,stuck_identity,stuck_attempt) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,outboxId,requestId,bindingId,destination,store.ownerFor(destination)??'',JSON.stringify(options.choices),Date.now()+options.expiresInSeconds*1000,identity??null,attempt);
   return id;
 }
+/** An action option runs bridge code instead of queueing a reply to a session. The kind is
+ * stored beside the option so an answer can never be replayed as an agent instruction. */
+export function markActionOption(store:Store,optionId:string,kind:string){store.db.prepare('INSERT OR REPLACE INTO option_actions(option_id,kind) VALUES(?,?)').run(optionId,kind);}
+export function optionAction(store:Store,optionId:string){return (store.db.prepare('SELECT kind FROM option_actions WHERE option_id=?').get(optionId) as {kind:string}|undefined)?.kind;}
 export function optionsMarkup(store:Store,outboxId:string){
   const row=store.db.prepare('SELECT * FROM message_options WHERE outbox_id=?').get(outboxId) as any;
   if(!row||row.selected_id||row.expires_at<=Date.now())return undefined;
@@ -61,15 +66,17 @@ export function previewOption(store:Store,input:{responseId:string;destination:s
   if(!choice)throw new Error('Choose one of the offered numbers.');
   return {row,target,choice,body:`Owner selected an offered answer for request ${row.request_id}: ${JSON.stringify(choice)}. This is a message choice, not a native permission grant. Preserve the original task scope.`};
 }
-export function selectOption(store:Store,input:{responseId:string;destination:string;messageId:string;token?:string;number?:number},queue:(bindingId:string,text:string)=>void,chooseTarget?:(requestId:string,choiceId:string)=>void){
+export function selectOption(store:Store,input:{responseId:string;destination:string;messageId:string;token?:string;number?:number},queue:(bindingId:string,text:string)=>void,chooseTarget?:(requestId:string,choiceId:string)=>void,onAction?:(o:{row:any;choice:{id:string;label:string};kind:string})=>void){
   const preview=previewOption(store,input,!!chooseTarget);if(!preview)return false;
   const {row,target,choice,body}=preview;
+  const action=onAction?optionAction(store,row.id):undefined;
   if(row.selected_id){if(row.selected_id===choice.id)return true;throw new Error('This question already has an answer.');}
   store.db.exec('SAVEPOINT choose_option');
   try{
     const changed=store.db.prepare('UPDATE message_options SET selected_id=?,response_id=? WHERE id=? AND selected_id IS NULL').run(choice.id,input.responseId,row.id);
     if(changed.changes){
-      if(target)chooseTarget!(row.request_id,choice.id);
+      if(action)onAction!({row,choice,kind:action});
+      else if(target)chooseTarget!(row.request_id,choice.id);
       else {const item=store.itemOf(row.request_id);if(item)store.linkItem(input.responseId,item);
       queue(row.binding_id,body);}
       store.remember(input.responseId);

@@ -3,8 +3,11 @@ import {asksForSocialCreation} from './social-intent.js';
 import {requestedSocialImageProvider} from './social-image-provider.js';
 import { DesktopReadinessError } from './session-activation.js';
 import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected } from './owner-commands.js';
-import { selectOption, previewOption, parseMessageOptions } from './message-options.js';
+import { selectOption, previewOption, parseMessageOptions, createOptions, markActionOption, optionAction } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
+import { MetaModel } from './meta-model.js';
+import { composeNotice, CLOSED_FALLBACK, ESCALATED_FALLBACK } from './companion-voice.js';
+import { DeliveryChoiceHold, deliveryAlternatives, heldCard, escalatedCard, readDeliveryHold, saveDeliveryHold, releaseDeliveryHold, heldDelivery, openHolds, holdTarget, runningApps, openTarget, DELIVERY_CHOICE_MINUTES } from './delivery-choice.js';
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { TaskContracts } from './task-contracts.js';
 import { queueReportedProof } from './proof-report.js';
@@ -311,6 +314,14 @@ export class Router {
           const guarded=this.contracts.hasGuard(preview.row.request_id);
           const reviewBody=guarded?this.contracts.choiceReview(this,preview.row.request_id,preview.body):preview.body;
           if(preview.row.selected_id){if(contractApproved)throw new Error('These choices were already answered. Nothing was sent.');selectOption(this.store,input,()=>{throw new Error('Choice was already answered.');});return {status:'handled',requestId:m.id};}
+          // A delivery choice runs bridge code: it moves or releases a held message, so it is
+          // never a task contract, never a session instruction, and never a forwarded reply.
+          const action=optionAction(this.store,preview.row.id);
+          if(action){
+            if(!m.optionToken&&(!authenticatedOwner(this,m)||m.ownerChoice!==true))throw new Error('Choose this with your own direct reply. Nothing was sent.');
+            const claimed=selectOption(this.store,input,()=>{throw new Error('This choice does not send a task.');},undefined,({row,choice})=>this.applyDeliveryChoice(m.id,row,choice));
+            if(claimed)return {status:'handled',requestId:m.id};
+          }
           if(!contractApproved&&(this.contracts.enabled()||guarded)){
             // Token callbacks and polls have already been authenticated by their channel adapter.
             // Typed choices must be direct owner replies, never forwarded data.
@@ -660,9 +671,14 @@ export class Router {
   /** One lsappinfo per app per maintenance tick; receipts and notices read the cached answer. */
   probeApps() {
     void probeDesktopApps().then(r=>this.recordLiveness(r)).catch(()=>{});
+    this.settleDeliveryHolds();
   }
   /** Replaced in tests so receipts do not depend on which desktop apps happen to be open. */
   livenessProbe:()=>{codex:boolean;claude:boolean}=probeDesktopAppsNow;
+  /** Replaced in tests so a held message never opens the owner's real app. */
+  openTarget:(b:Binding)=>Promise<void>=openTarget;
+  /** The model that writes companion notice wording. Replaced in tests. */
+  noticeModel=new MetaModel();
   private recordLiveness(live:{codex:boolean;claude:boolean}) {
     for(const provider of ['codex','claude'] as Provider[]){
       if(provider==='muse')continue;
@@ -684,6 +700,180 @@ export class Router {
     this.store.set(`app-running:${b.provider}:at`,String(Date.now()));
     queueOwnerReceipt(this.store,id,b);
   }
+  /**
+   * The receipt is the one moment when the owner still has a choice, so a closed app asks
+   * instead of only promising. Everything downstream assumes the message may already be inside
+   * the app's own queue, which cannot be cancelled.
+   */
+  private ownerReceipt(id:string,b:Binding) {
+    // Muse Code is a CLI with no companion desktop app, so it is never "closed".
+    if(b.provider==='muse'){this.store.set('app-running:muse','true');queueOwnerReceipt(this.store,id,b);return;}
+    // One fresh probe per owner message: a minute-old answer is how a closed app still read "queued".
+    const live=this.livenessProbe();
+    this.store.set(`app-running:${b.provider}`,String(live[b.provider]));
+    this.store.set(`app-running:${b.provider}:at`,String(Date.now()));
+    if(this.holdClosedTarget(id,b))return;
+    queueOwnerReceipt(this.store,id,b);
+  }
+  /**
+   * Hold a message for a closed desktop app, and ask where it should go.
+   *
+   * Codex takes queued work through `codex queue`, which has no list and no cancel, so a message
+   * handed over cannot be moved afterwards without risking the same task running twice. Holding
+   * it in the bridge keeps "one message, one session" true. A hold only happens when another
+   * session can genuinely take the work now; otherwise the ordinary receipt stands, and the
+   * escalation card below still offers to open the app.
+   */
+  private holdClosedTarget(id:string,b:Binding):boolean {
+    try {
+      // Only the owner's own message is worth asking about; reports and coordinator traffic are not.
+      if(!/^(wa|tg):/.test(id))return false;
+      if(b.provider==='muse')return false;
+      if(this.store.get(`execution-mode:${b.id}`)!=='desktop')return false;
+      if(this.appOnline(b.provider))return false;
+      // A contract, a schedule or an earlier choice owns this dispatch. Never stand in front of it.
+      if(this.contracts.hasGuard(id)||this.contracts.hasOptionGuard(id)||hasScheduleGuard(this,id))return false;
+      const job=this.store.job(id),destination=this.store.destination();
+      if(!job||job.status!=='queued'||!destination)return false;
+      const owner=this.store.captureIncomingOwner(destination,this.store.controlChannel());
+      if(!owner)return false;
+      const alternatives=deliveryAlternatives(this.store,b,id=>!!this.coordinator?.isCoordinator(id),provider=>this.appOnline(provider as Provider));
+      if(!alternatives.length)return false;
+      const at=Date.now();
+      saveDeliveryHold(this.store,{requestId:id,bindingId:b.id,...holdTarget(this.store,b),body:job.body,destination,
+        owner:owner.owner,channel:owner.channel,alternatives,at,expiresAt:at+DELIVERY_CHOICE_MINUTES*60_000});
+      this.store.event(id,'delivery_held',{provider:b.provider,alternatives:alternatives.length});
+      void this.sendHeldCard(id,b,owner).catch(e=>{
+        // The hold must never outlive its card: without a card the owner cannot answer.
+        if(!this.stopped)console.error(`Held-message card failed: ${e instanceof Error?e.message:'unknown failure'}`);
+        try{releaseDeliveryHold(this.store,id);this.pump();}catch{/* the bridge is stopping */ }
+      });
+      return true;
+    } catch(e) {
+      if(!this.stopped)console.error(`Delivery choice failed: ${e instanceof Error?e.message:'unknown failure'}`);
+      return false;
+    }
+  }
+  /** One card per held message. The brain writes the lead when it is configured, never the facts. */
+  private async sendHeldCard(id:string,b:Binding,owner:NonNullable<ReturnType<Store['captureIncomingOwner']>>) {
+    const hold=readDeliveryHold(this.store,id);if(!hold)return;
+    const running=runningApps(this.store);
+    const card=heldCard({short:false,lead:'',hold,running});
+    const {lead}=await composeNotice({store:this.store,secret:this.brain.secret,model:this.noticeModel,
+      facts:{state:'closed',app:hold.app,session:hold.session,folder:hold.folder,running,alternatives:hold.alternatives.map(a=>a.label),
+        held:true,options:card.choices.map(c=>c.label),expiresMinutes:DELIVERY_CHOICE_MINUTES},
+      fallback:CLOSED_FALLBACK(hold.app,hold.session)});
+    // Writing the wording is asynchronous, so the bridge can shut down or be paused meanwhile.
+    if(this.stopped||this.paused)return;
+    try {
+      this.store.incomingOwnerContext.run(owner,()=>{
+        if(!this.store.incomingOwnerCurrent()){releaseDeliveryHold(this.store,id);return;}
+        const current=readDeliveryHold(this.store,id),job=this.store.job(id);
+        // The app may have opened on its own, or the request moved on, while the wording was written.
+        if(!current||!job||job.status!=='queued'){releaseDeliveryHold(this.store,id);return;}
+        const filled=heldCard({short:current.destination.startsWith('tg:'),lead,hold:current,running});
+        const optionId=this.sendChoices(b,id,current.destination,filled,`delivery-choice:${id}`,'delivery');
+        if(optionId)saveDeliveryHold(this.store,{...current,optionId});
+      });
+      this.pump();
+    } catch(e) {
+      // The message is never held without its card: release it so the ordinary path takes over.
+      if(!this.stopped)console.error(`Held-message card failed: ${e instanceof Error?e.message:'unknown failure'}`);
+      try{releaseDeliveryHold(this.store,id);}catch{/* the bridge is stopping */ }
+    }
+  }
+  /** Write a card and attach its choices as action options, so an answer runs bridge code. */
+  private sendChoices(binding:Binding,requestId:string,destination:string,card:{text:string;choices:{id:string;label:string}[]},source:string,kind:string):string|undefined {
+    this.store.output(binding,card.text,source,destination,{requestId,kind:'system',origin:'system',plain:true});
+    const row=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as {id:string}|undefined;
+    if(!row)return undefined;
+    const optionId=createOptions(this.store,row.id,requestId,binding.id,destination,{choices:card.choices,expiresInSeconds:DELIVERY_CHOICE_MINUTES*60},binding);
+    markActionOption(this.store,optionId,kind);
+    return optionId;
+  }
+  /** A hold ends by itself: the app opened, the choice expired, or the request moved on. */
+  settleDeliveryHolds() {
+    for(const hold of openHolds(this.store)){
+      try {
+        const job=this.store.job(hold.requestId),binding=this.store.binding(hold.bindingId);
+        if(!job||!binding||job.status!=='queued'){releaseDeliveryHold(this.store,hold.requestId);continue;}
+        if(this.appOnline(binding.provider)){
+          this.releaseHeld(hold,`✅ ${hold.app} is open now, so your held message is on its way to ${hold.session}.`,'delivery-opened');
+          continue;
+        }
+        if(Date.now()>=hold.expiresAt)this.releaseHeld(hold,`⌛️ I had no answer for ${DELIVERY_CHOICE_MINUTES} minutes, so your message goes to ${hold.app} as usual and runs when the app opens.`,'delivery-expired');
+      } catch(e) {
+        console.error(`Delivery hold could not be settled: ${e instanceof Error?e.message:'unknown failure'}`);
+      }
+    }
+  }
+  private releaseHeld(hold:{requestId:string;bindingId:string;destination:string},text:string,source:string) {
+    releaseDeliveryHold(this.store,hold.requestId);
+    this.store.output(this.store.binding(hold.bindingId),text,`${source}:${hold.requestId}`,hold.destination,{requestId:hold.requestId,kind:'system',origin:'system',plain:true});
+    this.store.event(hold.requestId,source==='delivery-expired'?'delivery_choice_expired':'delivery_app_opened');
+    this.pump();
+  }
+  /** The escalation card: the message is already inside the app's queue, so opening it is all we can offer. */
+  private async sendWakeCard(id:string,b:Binding,destination:string,minutes:number) {
+    const app=sessionShortName(this.store,b)||b.alias,name=this.store.get(`name:${b.id}`)??b.alias;
+    const card=escalatedCard({short:destination.startsWith('tg:'),lead:'',app,session:name,minutes});
+    const {lead}=await composeNotice({store:this.store,secret:this.brain.secret,model:this.noticeModel,
+      facts:{state:'escalated',app,session:name,running:runningApps(this.store),held:false,minutes,options:card.choices.map(c=>c.label)},
+      fallback:ESCALATED_FALLBACK(app,minutes)});
+    if(this.stopped||this.paused)return;
+    // A wake card is a courtesy on top of an already-submitted message, so it fails quietly.
+    try {
+      if(!this.store.incomingOwnerCurrent())return;
+      const filled=escalatedCard({short:destination.startsWith('tg:'),lead,app,session:name,minutes});
+      this.sendChoices(b,id,destination,filled,`silence:${id}:2`,'wake');
+    } catch(e) {
+      if(!this.stopped)console.error(`Escalation card failed: ${e instanceof Error?e.message:'unknown failure'}`);
+    }
+  }
+  /** Carry out the owner's answer. Each branch says what is true before and after it acts. */
+  private applyDeliveryChoice(answerId:string,row:any,choice:{id:string;label:string}):void {
+    void this.runDeliveryChoice(answerId,row,choice).catch(e=>{
+      const hold=readDeliveryHold(this.store,row.request_id);
+      const text=`⚠️ I could not do that: ${e instanceof Error?e.message:'unknown failure'}. ${hold?`Your message is still held for ${hold.app}; ask again or send it yourself.`:'Nothing was changed.'}`;
+      try{this.store.output(this.store.binding(row.binding_id),text,`delivery-choice-error:${row.id}`,row.destination,{requestId:row.request_id,kind:'system',origin:'system',plain:true});}catch{}
+    });
+  }
+  private async runDeliveryChoice(answerId:string,row:any,choice:{id:string;label:string}) {
+    const hold=readDeliveryHold(this.store,row.request_id);
+    const binding=this.store.binding(row.binding_id);if(!binding)throw new Error('that session no longer exists');
+    const destination=row.destination as string,app=hold?.app??(sessionShortName(this.store,binding)||binding.alias);
+    const say=(text:string,source:string)=>this.store.output(binding,text,`${source}:${answerId}`,destination,{requestId:row.request_id,kind:'system',origin:'system',plain:true});
+    if(choice.id==='wait'){
+      if(hold){releaseDeliveryHold(this.store,hold.requestId);say(`👍 Kept for ${hold.session}. It sends as soon as ${hold.app} opens.`,'delivery-wait');this.pump();}
+      else say(`👍 Left with ${app}. It runs as soon as the app is ready.`,'delivery-wait');
+      return;
+    }
+    if(choice.id==='open'){
+      say(`🔓 Opening ${app}…`,'delivery-open');
+      await this.openTarget(binding);
+      if(hold){
+        releaseDeliveryHold(this.store,hold.requestId);
+        this.store.event(hold.requestId,'delivery_opened');
+        say(`✅ ${app} is open. Sending your message to ${hold.session} now; I will tell you as soon as it answers.`,'delivery-opened');
+        this.pump();
+      } else say(`✅ ${app} is open. It will pick up the queued message for ${binding.id===row.binding_id?sessionShortName(this.store,binding)||binding.alias:'that session'}.`,'delivery-opened');
+      return;
+    }
+    const match=/^switch([1-9])$/.exec(choice.id),alternative=match?hold?.alternatives[Number(match[1])-1]:undefined;
+    if(!hold||!alternative)throw new Error('that session is no longer offered');
+    const target=this.store.binding(alternative.bindingId);
+    if(!target||!target.enabled)throw new Error('that session is no longer connected');
+    if(target.provider!=='muse'&&!this.appOnline(target.provider))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
+    say(`➡️ Sending this to ${alternative.label}…`,'delivery-move');
+    // The held copy was never submitted, so closing it cannot leave the task running twice.
+    this.store.jobState(hold.requestId,'replaced','You moved this message to another session before it was sent.');
+    releaseDeliveryHold(this.store,hold.requestId);
+    const item=this.store.itemOf(hold.requestId);
+    this.queue(answerId,target,hold.body);
+    if(item)this.store.linkItem(answerId,item);
+    say(`✅ Sent to ${alternative.label}. ${hold.app} never received it, so it will not run twice. I will tell you when it answers.`,'delivery-moved');
+    this.pump();
+  }
   /** An app that quits while a message waits corrects the receipt at once, not at the next reminder. */
   private announceClosed(provider:Provider) {
     try {
@@ -692,6 +882,8 @@ export class Router {
         if(!/^(wa|tg):/.test(id))continue;
         const job=this.store.job(id);
         if(!job||job.first_reply_at)continue;
+        // A held message already has its own card; a second "closed since" line would only confuse.
+        if(readDeliveryHold(this.store,id))continue;
         const binding=this.store.binding(job.binding_id);
         if(!binding||binding.provider!==provider)continue;
         if(this.store.db.prepare('SELECT 1 FROM reply_receipts WHERE source=?').get(`closed:${id}`))continue;
@@ -718,10 +910,18 @@ export class Router {
         if(this.paused||!job||job.first_reply_at||!['dispatched','submitted','queued'].includes(job.status))return;
         const closed=!this.appOnline(b.provider);
         this.store.event(id,stage===1?'silence_notice':'silence_escalated',{stage,appRunning:!closed});
+        const minutes=Math.max(1,Math.round((Date.now()-job.created_at)/60000));
+        const target=destination??this.store.get('whatsapp-owner')??null;
+        // A closed desktop app gets real buttons instead of advice: the message is already in its
+        // own queue, so opening the app is the one thing that can still move this forward.
+        if(stage===2&&closed&&target&&(b.provider==='codex'||b.provider==='claude')&&this.store.get(`execution-mode:${b.id}`)==='desktop'){
+          void this.sendWakeCard(id,b,target,minutes).catch(e=>console.error(`Escalation card failed: ${e instanceof Error?e.message:'unknown failure'}`));
+          return;
+        }
         const text=stage===1
           ?(closed?`📴 ${name} is closed. Your message is queued and runs when the app opens.`:`⏳ ${name} has not started this yet.`)
-          :`⚠️ Still no answer from ${name} after ${Math.max(1,Math.round((Date.now()-job.created_at)/60000))} min. Open the app to continue, or send /status.`;
-        this.store.output(b,text,`silence:${id}:${stage}`,destination??this.store.get('whatsapp-owner')??null,{requestId:id,kind:'system',origin:'system',plain:true});
+          :`⚠️ Still no answer from ${name} after ${minutes} min. Open the app to continue, or send /status.`;
+        this.store.output(b,text,`silence:${id}:${stage}`,target,{requestId:id,kind:'system',origin:'system',plain:true});
         if(stage===1)arm(this.silenceEscalateMs,2);
       },delay);
       timer.unref?.();
@@ -877,7 +1077,7 @@ export class Router {
       }
       const item=this.store.itemOf(id),destination=this.store.destination();
       if(item&&destination)this.store.set(`brain-topic:${destination}`,`item:${item}`);
-      if(!exists&&this.coordinator?.isCoordinator(b.id))this.receiptWithLiveness(id,b);
+      if(!exists&&this.coordinator?.isCoordinator(b.id))this.ownerReceipt(id,b);
       this.store.db.exec('RELEASE queue_owner');
     }catch(e){this.store.db.exec('ROLLBACK TO queue_owner; RELEASE queue_owner');throw e;}
   }
@@ -895,10 +1095,16 @@ export class Router {
   }
   /** Called before every channel/native submit; future dispatch guards share this boundary. */
   assertDispatchAllowed(id:string,b:Binding){
-    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id),collaboration=this.collaboration?.has(id)??false,specialty=hasSessionSpecialty(this.store,id);
+    const scheduled=hasScheduleGuard(this,id),guard=briefDispatchGuard(this.store,id),contract=this.contracts.hasGuard(id),choice=this.contracts.hasOptionGuard(id),collaboration=this.collaboration?.has(id)??false,specialty=hasSessionSpecialty(this.store,id),held=heldDelivery(this.store,id);
     if(!collaboration)this.collaboration?.assertOrdinaryDispatch(id,b);
-    if(!scheduled&&!guard&&!contract&&!choice&&!collaboration&&!specialty)return false;
+    if(!scheduled&&!guard&&!contract&&!choice&&!collaboration&&!specialty&&!held)return false;
     const job=this.store.job(id);if(!job)throw new DispatchNotSubmittedError('The request no longer exists.');
+    // The owner has been asked where this should go. Nothing is submitted until they answer.
+    if(held){
+      const hold=readDeliveryHold(this.store,id);
+      if(!hold||hold.bindingId!==b.id)throw new DispatchNotSubmittedError('The session changed while this message was held. Nothing was sent.');
+      throw new DeliveryChoiceHold(`${hold.app} is closed. This message is held until you choose where it goes.`);
+    }
     if(specialty&&sessionSpecialty(this.store,id)?.bindingId!==b.id)throw new DispatchNotSubmittedError('The selected session or request changed. Nothing was sent.');
     if(specialty&&!jobsFollowupCurrent(this.store,id))throw new DispatchNotSubmittedError('The original job search or question changed. Nothing was sent.');
     if(specialty)try{assertFollowupContracts(this,id);}catch{throw new DispatchNotSubmittedError('The original approved job search changed. Nothing was sent.');}
@@ -967,7 +1173,7 @@ export class Router {
         if(fence)this.store.db.exec('RELEASE collaboration_dispatch');
       }catch(e){
         if(fence)this.store.db.exec('ROLLBACK TO collaboration_dispatch; RELEASE collaboration_dispatch');
-        if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold||isCollaborationFenceError(e))continue;
+        if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold||e instanceof DeliveryChoiceHold||isCollaborationFenceError(e))continue;
         if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);continue;}throw e;
       }
       this.busy.add(b.id);
@@ -976,7 +1182,7 @@ export class Router {
       const task=this.coordinator?(this.coordinator.isCoordinator(b.id)?this.coordinator.scope.run(b.id,run):this.coordinator.scope.exit(run)):run();
       void task.then(()=>{const current=this.store.job(job.id);if(!dispatchAttempt||current?.attempt_id!==dispatchAttempt)return;if(current.status==='dispatched')this.store.jobState(job.id,'submitted');this.watchSilence(job.id,b,job.destination??null);this.collaboration?.managedTurnEnded(job.id,b,dispatchAttempt);}).catch(e=>{
         if(!dispatchAttempt||this.store.job(job.id)?.attempt_id!==dispatchAttempt)return;
-        if((e instanceof ScheduledChannelHold||e instanceof CollaborationHold)&&!this.collaboration?.mayHaveSubmitted(job.id)){this.collaboration?.heldBeforeSubmission(job.id);if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
+        if((e instanceof ScheduledChannelHold||e instanceof CollaborationHold||e instanceof DeliveryChoiceHold)&&!this.collaboration?.mayHaveSubmitted(job.id)){this.collaboration?.heldBeforeSubmission(job.id);if(this.store.job(job.id)?.status==='dispatched')this.store.jobState(job.id,'queued');return;}
         if(e instanceof DispatchNotSubmittedError&&!this.collaboration?.mayHaveSubmitted(job.id)){this.failBeforeSubmission(job.id,e.message);return;}
         if(['completed','reviewed','auto_closed','replaced'].includes(this.store.job(job.id)?.status??''))return;
         const failure=e instanceof DispatchNotSubmittedError&&this.collaboration?.mayHaveSubmitted(job.id)?new Error('The managed session may have received this request. Check the session before retrying.'):e;
@@ -1010,7 +1216,7 @@ export class Router {
       if(fence)this.store.db.exec('RELEASE collaboration_channel');
     }catch(e){
       if(fence)this.store.db.exec('ROLLBACK TO collaboration_channel; RELEASE collaboration_channel');
-      if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold||isCollaborationFenceError(e))return null;
+      if(e instanceof ScheduledChannelHold||e instanceof CollaborationHold||e instanceof DeliveryChoiceHold||isCollaborationFenceError(e))return null;
       if(e instanceof DispatchNotSubmittedError){this.failBeforeSubmission(job.id,e.message);return null;}throw e;
     }
     envelope.acknowledge();return {...job,body:envelope.body};
