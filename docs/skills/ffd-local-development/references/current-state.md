@@ -1,5 +1,11 @@
 # Snapshot as of 31 October 2026
 
+**Read the last section first.** The snapshot summary below is from 31 October and
+the numbered sections after it supersede it one build at a time. As of 3 November
+the current source is `/private/tmp/ffd-pr` (a real checkout on branch
+`codex/local-desktop-work`, shared with other sessions), and the installed Local
+app is **2356** (`local-settings-remote-2356`).
+
 ## Source and installation
 
 Actual current Local source:
@@ -9,8 +15,8 @@ This is an ignored copied snapshot under the parent repository, not a Git worktr
 
 Installed testing app: `/Users/sagar/Applications/FarFromDesk Local.app`
 Bundle ID: `com.codecylabs.farfromdesk.localtest`
-Last installed version: **2323**
-Backend build ID: `local-social-chat-previews-2323`
+Last installed version: **2356**
+Backend build ID: `local-settings-remote-2356`
 The UI/backend/helpers were observed running from that path. Unauthenticated loopback health returned 401 as expected; this alone does not verify authenticated owner features. The isolated package smoke did verify authenticated startup.
 
 Main app: `/Users/sagar/Applications/FarFromDesk.app`, untouched by this work.
@@ -926,3 +932,70 @@ found 2348 as the previous version and left `startup-recovery-2354/local-2348-ro
 from the shared source as of 16:05, which includes their `studio_panes.dart` work (15:43), so nothing of theirs
 was dropped by the replacement. Build numbers are now racing between sessions: take the installed version at
 build time, as this file already warns.
+
+## 2356 — Remote control is one permissions list, and two password states (`local-settings-remote-2356`)
+
+Owner review of Settings → Remote control: "make this page simpler ... we don't need
+already if permission is there means it can control ... remove the sessions allowed
+to control this Mac section ... redesign the remote password section both not set
+and set state". Three decisions were taken with the owner before any code moved:
+remove the per-session allowlist *and* its backend gate; fold the driver's grants
+into the Permissions list; and give the password one card with two states.
+
+- **One permissions list.** The page said the same thing three times: Permissions
+  (the helper's Accessibility and Screen Recording), Desktop control (the driver's
+  own two grants under their own heading) and Sessions allowed. The driver's rows
+  now sit in the Permissions list, named as the driver's (`mac_control_panel.dart`
+  reads `status['desktopControl']['permission']`), with the note that macOS tracks
+  them against the driver rather than the helper. The "Desktop control" heading and
+  `desktop_control_panel.dart` are gone. Only the helper's rows carry the
+  "open System Settings" button (that pane is the helper's); the driver's rows carry
+  refresh only, and the 15-second status probe keeps them fresh.
+- **The per-session allowlist is gone, both sides, on purpose.** `src/server.ts` no
+  longer defines or reads `desktop-control-sessions`, its GET and POST endpoints are
+  removed, `/api/status` no longer publishes `desktopControlSessions`, and the
+  `DESKTOP_CONTROL_NOT_ALLOWED` refusal is deleted. A registered session may now
+  drive the Mac on a request it was actually given; `requireDesktopPermission()`
+  (the driver's own macOS grant) is the only remaining gate, exactly as for the
+  master route. The stored `desktop-control-sessions` key is left in place and
+  ignored. **Do not re-add the allowlist as a "missing safety control" — the owner
+  removed it deliberately, because the macOS grant is the real gate.**
+- **Remote password, one card, two states.** Not set: the form is the whole column
+  with one primary "Set password". Set: a locked mask row ("Stored on this Mac"),
+  the note that changing it ends any open phone session, and one "Change password"
+  action that swaps the same form back in with "Save new password" and Cancel. The
+  fields are never shown over a working password. The mask is a fixed twelve dots
+  because the backend keeps a salt and a scrypt hash and not the length. The row is a
+  `Wrap`, not a `Row`: the column is about 277 px at the owner's window and the label
+  carries the computer's name, which overflowed a `Row` by 11 px.
+
+Validation: `flutter analyze` clean apart from the one pre-existing info in
+`social_image_settings_test.dart`; desktop suite **231 pass / 1 skipped / 2 fail**,
+the two being the known pre-existing `social_preview_test.dart` failures; `tsc` and
+`npm run build` clean; backend suite **1667 pass / 14 fail**, and the *same 14* fail
+with `src/server.ts` reverted, so this change adds none. Two of those 14 are the
+`/api/status` stubs that omit `desktopControl.permissionReport`, which is why
+`test/http-hooks.test.ts` and `test/inbox-session-label-http.test.ts` fail there;
+that is another session's in-flight area, not this change. Two new widget tests in
+`widget_test.dart` pin the folded list (`MacControlGateway` gained
+`driverAccessibility` / `driverScreenRecording`) and the two password states.
+
+Verified: the redesigned tab was rendered at the owner's 1156x814 window through a
+temporary golden harness, which was then deleted (the repo keeps no goldens); the
+renders are archived beside this build. Installed as 2356; the UI and backend
+processes run from the installed path and loopback `/health` returned 401
+immediately after launch and again six minutes later. The shipped Dart AOT snapshot
+carries "Desktop driver access", "Desktop driver screen access", "Change password",
+"Set password", "Save new password" and "Stored on this ", and carries none of
+"Sessions allowed to control this Mac", "What FarFromDesk needs to drive another
+app" or "No connected session to choose from yet."; the shipped `dist/server.js`
+contains no `desktop-control-sessions`, `desktopControlSessions` or
+`DESKTOP_CONTROL_NOT_ALLOWED`.
+
+Not verified: a live walk of the Settings tab in the installed app (the agent cannot
+click — it holds Screen Recording but not Accessibility), and a real desktop-control
+run from a coding session under the new policy. Both need the owner.
+
+Rollback: `settings-remote-2356/local-2355-rollback.bundle`. Source `/private/tmp/ffd-pr`
+at `0be1765`; the commit before it (`293c766`, the `/muse` command gate) is another
+session's, and the checkout is shared, so re-check `git log` before building the next one.
