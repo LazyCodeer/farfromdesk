@@ -6,6 +6,7 @@ import type { Store,Binding } from './store.js';
 import { sameProject, type Session } from './session-catalog.js';
 import type { NativeAgents } from './native.js';
 import { openClaudeNewSession } from './session-activation.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 
 type Start={supportDir?:string;stage?:string;requireDetached?:boolean;accountScope?:string;createdId?:string;detachSubmitted?:boolean;proposalId?:string;bindingId:string;parentId:string;cwd:string;nonce:string;status:'prepared'|'submitted'|'uncertain'|'ready'|'needs_action';nativeId?:string};
 export function readStartReceipt(path:string):any {
@@ -71,6 +72,9 @@ export class DesktopStarts {
     return s.activation==='desktop-open'?await this.native.activation.ready(s):s;
   }
   async create(b:Binding,parentId:string,title:string,instructions:string) {
+    return withProviderSetup(this.store,'desktop-create',()=>this.createScoped(b,parentId,title,instructions));
+  }
+  private async createScoped(b:Binding,parentId:string,title:string,instructions:string) {
     if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
     const route=JSON.parse(this.store.get(`session-route:${b.id}`)??'null');
     const launcher=await this.parent(parentId,route?.accountScope);parentId=launcher.id;
@@ -81,12 +85,16 @@ export class DesktopStarts {
     writeFileSync(file,desktopStartPrompt(op,title,instructions),{mode:0o600,flag:'wx'});
     // Save before sending: after a crash, never blindly send a second creation instruction.
     this.save({...op,status:'uncertain'});
+    assertProviderSetup(this.store);
     try{await this.native.sendDesktopCreation(parentId,file);}catch{throw new Error('Desktop creation submission is unconfirmed. Recover this exact setup before retrying.');}
     this.save({...op,status:'submitted',stage:'Waiting for Claude to start the session'});
     return this.confirm(b);
   }
   // Opens a prefilled top-level chat without a launcher chat; it starts only when the owner presses Send.
   async createDirect(b:Binding,instructions:string,lead='Set up this folder as my FarFromDesk coordinator.') {
+    return withProviderSetup(this.store,'desktop-create-direct',()=>this.createDirectScoped(b,instructions,lead));
+  }
+  private async createDirectScoped(b:Binding,instructions:string,lead:string) {
     if(this.get(b.id))throw new Error('Desktop creation already has a receipt. Recover it; do not create again.');
     if(realpathSync(b.cwd)!==b.cwd)throw new Error('Desktop project path changed.');
     const op:Start={supportDir:this.store.get(`master-support:${b.id}`),stage:'Opening Claude',bindingId:b.id,parentId:'',cwd:b.cwd,nonce:randomUUID(),status:'uncertain',requireDetached:false};
@@ -94,12 +102,16 @@ export class DesktopStarts {
     const prompt=`${lead} ${instructions}\nNow use get_session to find your own exact session ID and write ${JSON.stringify({nonce:op.nonce,ready:true,sessionId:'YOUR_EXACT_SESSION_ID'})} to ${JSON.stringify(ready)}. Then reply READY and wait for my WhatsApp requests.`;
     // Save before opening: after a crash, never open a second new-session page blindly.
     this.save(op);
+    assertProviderSetup(this.store);
     try{await this.openNew(b.cwd,prompt);}catch{throw new Error('Claude Desktop did not open. Open Claude, then recover this setup.');}
     this.save({...op,status:'needs_action',stage:'Press Send in Claude to start your coordinator'});
     // The owner's Send arrives later; the setup poll picks up the session's ready receipt.
     throw new Error('Desktop start needs owner action: confirm the folder and press Send in the new Claude chat that just opened. FarFromDesk connects it automatically.');
   }
   async confirm(b:Binding,recover=false) {
+    return withProviderSetup(this.store,'desktop-confirm',()=>this.confirmScoped(b,recover));
+  }
+  private async confirmScoped(b:Binding,recover:boolean) {
     const op=this.get(b.id);if(!op)throw new Error('No desktop creation receipt exists.');
     const until=Date.now()+this.timeoutMs;
     do {
@@ -137,7 +149,7 @@ export class DesktopStarts {
               const file=join(op.supportDir??op.cwd,'.tether-desktop-detach.txt');
               writeFileSync(file,`Owner-authorized recovery of an existing FarFromDesk child. Preserve native permissions. Do not create any session or start/restart a task. Inspect exact child ${JSON.stringify(created.sessionId)} with get_session, confirm cwd ${JSON.stringify(op.cwd)}, and only if still attached use mcp__ccd_session_mgmt__detach_session on that exact ID. Verify detached=true. Operation ${op.bindingId}. If not allowed, report the native blocker.`,{mode:0o600,flag:'wx'});
               op.detachSubmitted=true;this.save(op);
-              await this.native.sendDesktopCreation(op.parentId,file);
+              assertProviderSetup(this.store);await this.native.sendDesktopCreation(op.parentId,file);
             }
             if(Date.now()<until)await new Promise(r=>setTimeout(r,1000));
             continue;

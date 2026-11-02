@@ -6,35 +6,78 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import 'gateway.dart';
+import 'local_email_screen.dart';
 import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
 import 'updates.dart';
 import 'connection_status.dart';
+import 'ffd_select.dart';
 import 'startup_trace.dart';
+import 'social_preview.dart';
+import 'server_mode_activity.dart';
+import 'social_screen.dart';
+import 'chat_message_text.dart';
 
 import 'bridge_theme.dart';
 part 'screens.dart';
 part 'mac_control_panel.dart';
+part 'desktop_control_panel.dart';
 part 'remote_control_panel.dart';
 part 'studio_panes.dart';
+part 'overview_metric_art.dart';
+
+class DesktopCloseGuard {
+  Future<bool> Function()? _check;
+  void Function()? _release;
+  void attach(Future<bool> Function() check, void Function() release) {
+    _check = check;
+    _release = release;
+  }
+
+  void detach(Future<bool> Function() check) {
+    if (_check == check) {
+      _check = null;
+      _release = null;
+    }
+  }
+
+  Future<bool> allowClose() async => await _check?.call() ?? true;
+  void release() => _release?.call();
+}
 
 class FarFromDeskApp extends StatelessWidget {
   final Gateway gateway;
   final Future<void> Function()? initialize;
-  const FarFromDeskApp({super.key, required this.gateway, this.initialize});
+  final DesktopCloseGuard? closeGuard;
+  const FarFromDeskApp({
+    super.key,
+    required this.gateway,
+    this.initialize,
+    this.closeGuard,
+  });
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'FarFromDesk',
     debugShowCheckedModeBanner: false,
     theme: bridgeTheme(),
-    home: Desk(gateway: gateway, initialize: initialize),
+    home: Desk(
+      gateway: gateway,
+      initialize: initialize,
+      closeGuard: closeGuard,
+    ),
   );
 }
 
 class Desk extends StatefulWidget {
   final Gateway gateway;
   final Future<void> Function()? initialize;
-  const Desk({super.key, required this.gateway, this.initialize});
+  final DesktopCloseGuard? closeGuard;
+  const Desk({
+    super.key,
+    required this.gateway,
+    this.initialize,
+    this.closeGuard,
+  });
   @override
   State<Desk> createState() => _DeskState();
 }
@@ -43,16 +86,29 @@ class _DeskState extends State<Desk> {
   Map<String, dynamic> status = {};
   String? error, actionError;
   bool ready = false, busy = false, polling = false, startup = false;
+  bool coordinatorSubmitting = false;
+  // Which step of the add-a-coordinator flow is showing.
+  int setupStep = 1;
+  // Muse runs headless and cannot ask to trust a folder, so this is chosen up front.
+  bool workspaceTrust = true;
   // Lets the owner reach the app before linking a chat; not persisted.
   bool onboardingSkipped = false;
+  // An explicit request from the offline banner to reopen setup.
+  bool setupRequested = false;
   int section = 0, page = 0;
   String platform = 'codex:cli',
       setupAction = 'new',
+          // The project a new coordinator runs in; empty means its own private folder.
+          selectedWorkspaceId =
+          '',
       selectedNativeId = '',
       activityFilter = 'All',
       activityQuery = '',
       itemQuery = '',
-      settingsTab = 'This Mac';
+          // Stable Settings tab id, not a display title: the title carries the
+          // machine name and would drift.
+          settingsTab =
+          'this-mac';
   // A stable binding identity, never a request title or session display name.
   String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
   String inboxTab = 'Requests';
@@ -64,7 +120,7 @@ class _DeskState extends State<Desk> {
   bool inboxLoading = false, inboxOlderLoading = false, inboxShowThread = false;
   int inboxEpoch = 0;
   Timer? inboxSearchTimer;
-  final settingsKeys = <String, GlobalKey>{};
+  final socialKey = GlobalKey<SocialScreenState>();
   bool editingVoice = false;
   // Item board from the brain; the 3s status poll doesn't carry it.
   List<dynamic> loadedItems = [];
@@ -93,6 +149,18 @@ class _DeskState extends State<Desk> {
   bool replacingVoiceKey = false;
   final voiceKey = TextEditingController();
   Timer? timer, updateTimer;
+
+  /// How long a manual "Check now" keeps its spinner up even when the check
+  /// answers instantly, so pressing the button visibly does something.
+  static const _updateCheckFloor = Duration(milliseconds: 700);
+  /// The cadence the Updates pane displays and the checker enforces. One value,
+  /// two readers, so the sentence under the dropdown cannot drift from what
+  /// actually runs - which is exactly what had happened.
+  UpdateSchedule updateSchedule = UpdateSchedule.hourly;
+  /// Stored alongside the schedule so the preference file keeps its shape; the
+  /// App updates switch that would read it is not built yet, so nothing here
+  /// can silently start installing on its own.
+  bool autoUpdate = true;
   DateTime macCheckedAt = DateTime(0);
   bool macChecking = false;
   Map<String, dynamic> remoteLink = {}, phoneRemote = {}, legacyRemote = {};
@@ -100,6 +168,7 @@ class _DeskState extends State<Desk> {
   int? phonePid, phoneWindowId;
   String? phoneAddress, remoteError;
   bool remoteBusy = false, changingRemotePassword = false;
+  bool remotePasswordVisible = false, remoteConfirmVisible = false;
   int remoteEpoch = 0;
   bool phoneAddressInitialized = false;
   final remotePassword = TextEditingController(),
@@ -109,19 +178,29 @@ class _DeskState extends State<Desk> {
   bool installingUpdate = false;
   Map<String, dynamic> updateProgress = {};
   Gateway get api => widget.gateway;
-  List<dynamic> get platforms => status['masterSetup']?['platforms'] ?? [];
+
+  /// Muse Code is CLI only, so a desktop entry for it never reaches the UI.
+  List<dynamic> get platforms => [
+    for (final p in status['masterSetup']?['platforms'] ?? const [])
+      if (p['provider'] != 'muse' || p['executionMode'] != 'desktop') p,
+  ];
   Map<String, dynamic> get preferences =>
       Map<String, dynamic>.from(status['preferences'] ?? {});
   @override
   void initState() {
     super.initState();
     section = api.initialScreen;
+    widget.closeGuard?.attach(allowClose, releaseCloseLock);
     boot();
     unawaited(checkUpdates());
-    updateTimer = Timer.periodic(
-      const Duration(hours: 1),
-      (_) => checkUpdates(),
-    );
+    armUpdateTimer();
+  }
+
+  /// Wakes on the cadence the pane shows. The checker enforces the same interval
+  /// too, so an early wake is a no-op rather than an extra network call.
+  void armUpdateTimer() {
+    updateTimer?.cancel();
+    updateTimer = Timer.periodic(updateSchedule.interval, (_) => checkUpdates());
   }
 
   Future<void> boot() async {
@@ -129,6 +208,17 @@ class _DeskState extends State<Desk> {
       await widget.initialize?.call();
       traceStartup('reading login registration');
       startup = await api.startupEnabled();
+      traceStartup('reading update preferences');
+      final updatePrefs = await api.loadUpdatePreferences();
+      if (mounted) {
+        setState(() {
+          updateSchedule = updatePrefs.schedule;
+          autoUpdate = updatePrefs.automatic;
+        });
+        // Re-armed with whatever was actually stored, so the first automatic
+        // check after launch already uses the owner's cadence.
+        armUpdateTimer();
+      }
       traceStartup('reading initial status');
       await refresh();
       if (mounted) {
@@ -185,12 +275,14 @@ class _DeskState extends State<Desk> {
   String clean(Object e) => e.toString().replaceFirst('Bad state: ', '');
   @override
   void dispose() {
+    widget.closeGuard?.detach(allowClose);
     timer?.cancel();
     inboxSearchTimer?.cancel();
     for (final controller in inboxScrolls.values) {
       controller.dispose();
     }
     updateTimer?.cancel();
+    unawaited(ServerModeActivity.setActive(false));
     api.closeUpdates();
     search.dispose();
     customName.dispose();
@@ -203,6 +295,7 @@ class _DeskState extends State<Desk> {
   Future<void> checkUpdates({bool manual = false}) async {
     if (checkingUpdates) return;
     setState(() => checkingUpdates = true);
+    final started = DateTime.now();
     try {
       final result = await api.checkUpdates(manual: manual);
       if (mounted) setState(() => update = result);
@@ -216,7 +309,32 @@ class _DeskState extends State<Desk> {
         );
       }
     } finally {
+      // A check against a local or already-cached feed returns in a couple of
+      // milliseconds, so the spinner never got a frame and the button read as
+      // dead. Hold the busy state briefly so the press is acknowledged.
+      final elapsed = DateTime.now().difference(started);
+      if (manual && elapsed < _updateCheckFloor) {
+        await Future<void>.delayed(_updateCheckFloor - elapsed);
+      }
       if (mounted) setState(() => checkingUpdates = false);
+    }
+  }
+
+  /// Changes how often the app checks, and persists it.
+  ///
+  /// This is the whole of the schedule feature: the value the pane renders its
+  /// sentence from is the same value the checker throttles on, so the app can no
+  /// longer claim a cadence it is not keeping.
+  Future<void> setUpdateSchedule(UpdateSchedule next) async {
+    setState(() => updateSchedule = next);
+    armUpdateTimer();
+    try {
+      await api.saveUpdatePreferences(
+        UpdatePreferences(schedule: next, automatic: autoUpdate),
+      );
+    } catch (_) {
+      // The choice still applies for this run; a failed write must not undo the
+      // option the owner just picked.
     }
   }
 
@@ -398,8 +516,15 @@ class _DeskState extends State<Desk> {
           if (!ready) showGroups = next['destination']?['kind'] == 'group';
           error = null;
         });
+        // A hidden or lid-closed app can be App Napped; opt out only while
+        // server mode is actually keeping sleep off.
+        final serverMode = Map<String, dynamic>.from(
+          next['preferences']?['serverMode'] ?? const {},
+        );
+        unawaited(ServerModeActivity.setActive(serverMode['active'] == true));
         modalUpdate?.call(() {});
         if (section == 1) unawaited(loadInbox());
+        if (section == 6) unawaited(socialKey.currentState?.refreshQuietly());
         if (section == 4 &&
             next['macControl']?['supported'] == true &&
             !remoteBusy) {
@@ -422,7 +547,10 @@ class _DeskState extends State<Desk> {
         }
       }
     } catch (e) {
-      if (mounted) setState(() => error = clean(e));
+      if (mounted) {
+        setState(() => error = clean(e));
+        modalUpdate?.call(() {});
+      }
     } finally {
       polling = false;
     }
@@ -434,7 +562,21 @@ class _DeskState extends State<Desk> {
     if (mounted) setState(() => macChecking = true);
     try {
       final next = await api.post('/api/mac-control', {'action': 'check'});
-      if (mounted) setState(() => status['macControl'] = next);
+      if (mounted) {
+        // Merge, never replace: a check response that omits `supported` used to
+        // wipe the flag and hide the whole Permissions section until the next
+        // status poll put it back.
+        final previous = Map<String, dynamic>.from(status['macControl'] ?? {});
+        final capture = Map<String, dynamic>.from(previous['capture'] ?? {});
+        final nextCapture = Map<String, dynamic>.from(next['capture'] ?? {});
+        setState(
+          () => status['macControl'] = {
+            ...previous,
+            ...next,
+            'capture': {...capture, ...nextCapture},
+          },
+        );
+      }
     } catch (_) {
       // The next poll shows the backend's own error state.
     } finally {
@@ -448,15 +590,20 @@ class _DeskState extends State<Desk> {
       busy = true;
       actionError = null;
     });
+    modalUpdate?.call(() {});
     try {
       await action();
       if (mounted) setState(() => error = null);
     } catch (e) {
-      if (mounted) setState(() => actionError = clean(e));
+      if (mounted) {
+        setState(() => actionError = clean(e));
+        modalUpdate?.call(() {});
+      }
     } finally {
       if (mounted) {
         setState(() => busy = false);
         await refresh();
+        if (mounted) modalUpdate?.call(() {});
       }
     }
   }
@@ -527,10 +674,29 @@ class _DeskState extends State<Desk> {
     modalUpdate?.call(() {});
   }
 
+  Future<bool> allowClose() async {
+    if (section != 6 || socialKey.currentState == null) return true;
+    return socialKey.currentState!.allowLeave(forClose: true);
+  }
+
+  void releaseCloseLock() => socialKey.currentState?.releaseCloseLock();
+
   void go(int index) {
+    unawaited(navigate(index));
+  }
+
+  Future<bool> navigate(int index) async {
+    if (section == 6 &&
+        index != 6 &&
+        socialKey.currentState != null &&
+        !await socialKey.currentState!.allowLeave()) {
+      return false;
+    }
+    if (!mounted) return false;
     setState(() => section = index);
     if (index == 2) unawaited(loadItems());
     if (index == 1) unawaited(loadInbox());
+    return true;
   }
 
   Widget button(
@@ -724,7 +890,7 @@ class _DeskState extends State<Desk> {
     child: Text(text, style: const TextStyle(color: muted, fontSize: 12)),
   );
 
-  /// Brand tile: WhatsApp, Claude or Codex (OpenAI) mark on its own colour.
+  /// Brand tile: WhatsApp, Claude, Codex (OpenAI) or Muse Code on its colour.
   Widget logoTile(String brand, {double size = 40, bool dim = false}) {
     if (brand == 'telegram') {
       return Opacity(
@@ -737,9 +903,12 @@ class _DeskState extends State<Desk> {
         ),
       );
     }
+    // Muse Code ships a dark-mode mark (blue chevron, white M), so its tile is dark and the mark
+    // is the real one from the CLI rather than a stand-in glyph.
     final (bg, asset) = switch (brand) {
       'whatsapp' => (whatsappGreen, 'whatsapp'),
       'claude' => (const Color(0xfff4ede4), 'claude'),
+      'muse' => (const Color(0xff1b1b20), 'muse'),
       _ => (const Color(0xfff3f1ea), 'openai'),
     };
     final tile = Container(
@@ -752,8 +921,9 @@ class _DeskState extends State<Desk> {
       alignment: Alignment.center,
       child: Image.asset(
         'assets/logo-$asset.png',
-        width: size * .53,
-        height: size * .53,
+        width: size * (brand == 'muse' ? .62 : .53),
+        height: size * (brand == 'muse' ? .62 : .53),
+        fit: BoxFit.contain,
       ),
     );
     return dim
@@ -1022,8 +1192,20 @@ class _DeskState extends State<Desk> {
     Widget card(Map op, {bool detailed = false}) {
       final desktopClaude =
           op['provider'] == 'claude' && op['executionMode'] == 'desktop';
+      // Muse Code is CLI only, so a waiting CLI setup must not read as an app.
+      final desktopApp = op['executionMode'] == 'desktop';
+      final label = providerLabel(op['provider']);
       final waiting = op['status'] == 'needs_action',
           creating = op['status'] == 'creating';
+      final heading = creating
+          ? 'Setting up your coordinator'
+          : waiting
+          ? desktopClaude
+                ? 'Start your session in Claude'
+                : desktopApp
+                ? 'Start the session in $label'
+                : 'Setup needs you'
+          : 'Setup not completed';
       final at = stepOf(op);
       return Container(
         width: double.infinity,
@@ -1044,11 +1226,7 @@ class _DeskState extends State<Desk> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        creating
-                            ? 'Setting up your coordinator'
-                            : waiting
-                            ? 'Start your session in Claude'
-                            : 'Setup not completed',
+                        heading,
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
@@ -1093,9 +1271,11 @@ class _DeskState extends State<Desk> {
               note('You can close this window. Progress stays on Home.'),
             if (waiting)
               note(
-                op['workspaceId'] == null
-                    ? 'Claude opened a new chat with the setup message filled in. Confirm the folder and press Send. FarFromDesk detects it and connects automatically.'
-                    : 'Claude shows a card for this session. Click Start on it once. FarFromDesk detects it and connects automatically.',
+                !desktopApp
+                    ? '$label is running in its terminal. FarFromDesk connects the session automatically when it is ready.'
+                    : op['workspaceId'] == null
+                    ? '$label opened a new chat with the setup message filled in. Confirm the folder and press Send. FarFromDesk detects it and connects automatically.'
+                    : '$label shows a card for this session. Click Start on it once. FarFromDesk detects it and connects automatically.',
               )
             else if (op['error'] != null)
               note(op['error']),
@@ -1110,7 +1290,7 @@ class _DeskState extends State<Desk> {
                 runSpacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (waiting)
+                  if (waiting && desktopApp)
                     button(
                       'Open Claude',
                       () => post('/api/master-open-proposal', {
@@ -1238,7 +1418,7 @@ class _DeskState extends State<Desk> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              '${s['provider']} ${s['executionMode']} · ${s['cwd']}\n${s['status'] ?? ''}',
+                              '${providerLabel(s['provider'])} ${s['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'} · ${s['cwd']}\n${s['status'] ?? ''}',
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -1329,7 +1509,7 @@ class _DeskState extends State<Desk> {
     if (selected == null || selected.isEmpty) return;
     if (!await confirm(
       'Resume these selected sessions?',
-      '${selected.map((s) => "${s['name']} · ${s['provider']} ${s['executionMode']}\n${s['connectionLabel']}").join('\n\n')}\n\nThese exact connections will be added or reviewed. Queued work may run using the selected connection. Native permissions still apply.',
+      '${selected.map((s) => "${s['name']} · ${providerLabel(s['provider'])} ${s['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}\n${s['connectionLabel']}").join('\n\n')}\n\nThese exact connections will be added or reviewed. Queued work may run using the selected connection. Native permissions still apply.',
     )) {
       return;
     }

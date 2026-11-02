@@ -52,6 +52,7 @@ export class TaskContracts {
   private jobContract(id:string){return this.store.db.prepare("SELECT t.* FROM task_contracts t LEFT JOIN task_contract_jobs j ON j.contract_id=t.id WHERE t.state='approved' AND (t.dispatch_id=? OR j.job_id=?) LIMIT 1").get(id,id) as ContractRow|undefined;}
   hasGuard(id:string){return !!this.store.db.prepare('SELECT 1 FROM task_contracts WHERE dispatch_id=? UNION ALL SELECT 1 FROM task_contract_jobs WHERE job_id=? LIMIT 1').get(id,id);}
   private pending(owner:string,destination:string){return this.store.db.prepare("SELECT * FROM task_contracts WHERE owner=? AND destination=? AND state='pending'").get(owner,destination) as ContractRow|undefined;}
+  hasPendingOwner(owner:string,destination:string){return !!this.pending(owner,destination);}
   private context(r:Router,m:Incoming,option=false){
     const destination=this.store.destination(),owner=this.store.ownerFor(destination),channel=this.store.controlChannel();
     if(!destination||!owner||!option&&!authenticatedOwner(r,m))return;
@@ -107,7 +108,7 @@ export class TaskContracts {
     return {...JSON.parse(row.incoming) as Incoming,id:m.id};
   }
   /** Invoke only after permission/option replies have had their own chance to consume the message. */
-  async preflight(r:Router,m:Incoming,reviewText?:string,schedule?:ContractSchedule,brief?:BriefIntent,option=false,optionGuarded=false):Promise<ContractResult>{
+  async preflight(r:Router,m:Incoming,reviewText?:string,schedule?:ContractSchedule,brief?:BriefIntent,option=false,optionGuarded=false,specialty=false):Promise<ContractResult>{
     if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
     const context=this.context(r,m,option);if(!context)return {kind:'pass'};
     let pending=this.pending(context.owner,context.destination);
@@ -138,6 +139,9 @@ export class TaskContracts {
         if(schedule&&hash(schedule.payload)!==schedule.payload_hash)throw new Error('The scheduled task changed. Nothing was sent.');
         if(brief&&hash(brief.payload)!==brief.payload_hash)throw new Error('The brief item changed. Nothing was sent.');
         const approvedHash=hash(JSON.stringify([pending.id,pending.origin_id,pending.owner,pending.destination,pending.revision,pending.original,pending.review_text,pending.incoming,pending.edits,pending.draft,schedule?.payload_hash??null,brief?.payload_hash??null]));
+        // Preserve the approval's original authenticated connection for any
+        // later opt-in collaboration handoff, even if dispatch runs in the background.
+        this.store.recordIncomingInput(m.id);
         const changed=this.store.db.prepare("UPDATE task_contracts SET state='approved',dispatch_id=?,approved_hash=?,approved_at=? WHERE id=? AND state='pending' AND revision=? AND expires_at>?").run(m.id,approvedHash,this.now(),pending.id,pending.revision,this.now());
         if(!changed.changes)throw new Error('This task contract is no longer available.');
         return {kind:'replay',incoming:{...original,id:m.id}};
@@ -169,7 +173,7 @@ export class TaskContracts {
     if(!this.enabled())return {kind:'pass'};
     const text=m.text.trim();
     // Bridge controls are not coding work; /to is an explicit owner task and must be classified.
-    if(text.startsWith('/')&&!/^\/to\s+/i.test(text))return {kind:'pass'};
+    if(text.startsWith('/')&&!/^\/to\s+/i.test(text)&&!specialty)return {kind:'pass'};
     const key=this.secret.read();if(!key)throw new Error('The task contract needs a Meta key. Nothing was sent.');
     const review=(reviewText??text).trim();if(text.length>4000||review.length>4000)throw new Error('Please send a task under 4,000 characters for review. Nothing was sent.');
     const decision=ContractDecision.parse(await this.interpret(key,review,[],metaObserver(this.store,'contracted',context.destination,context.owner)));
@@ -305,7 +309,7 @@ export class TaskContracts {
     const row=this.jobContract(id);
     if(!row)return body;
     if(!(row.dispatch_id===id?contextValid(r,row):dispatchContextValid(r,row))||hash(this.secret.read()??'')!==row.key_hash)throw new Error('The approved task or destination changed. Nothing was sent.');
-    if(row.review_text!==row.original&&body.trim()!==row.review_text)throw new Error('The reviewed task changed. Nothing was sent.');
+    if(row.review_text!==row.original&&body.trim()!==row.review_text&&!this.store.get(`jobs-followup-parent:${id}`))throw new Error('The reviewed task changed. Nothing was sent.');
     const text=this.render(row,body);
     if(row.dispatch_id===id)this.store.db.prepare('UPDATE task_contracts SET binding_id=?,binding_hash=?,body_hash=? WHERE id=? AND state=\'approved\'').run(binding.id,bindingHash(r,binding),hash(text),row.id);
     else this.store.db.prepare('UPDATE task_contract_jobs SET body_hash=? WHERE job_id=? AND contract_id=? AND binding_id=? AND binding_hash=? AND raw_hash=?').run(hash(text),id,row.id,binding.id,bindingHash(r,binding),hash(body));
@@ -339,7 +343,9 @@ export class TaskContracts {
       if(!parentBinding)throw new Error('The original session is unavailable. Nothing was sent.');
       if(this.hasGuard(parent.id))this.assertDispatch(r,parent.id,parentBinding,parent.body,new Set(visited),inactive);
     }
-    if(link?.parent_id){const parent=this.store.job(link.parent_id),parentBinding=parent&&this.store.binding(parent.binding_id);if(!parent||!parentBinding||!(['queued','dispatched','submitted'].includes(parent.status)||parent.status==='completed'&&this.hasOptionGuard(id)))throw new Error('The owner request has ended. Nothing was sent.');this.assertDispatch(r,link.parent_id,parentBinding,parent.body,visited,inactive);}
+    if(link?.parent_id){const parent=this.store.job(link.parent_id),parentBinding=parent&&this.store.binding(parent.binding_id);
+      let followup=false;try{const proof=JSON.parse(this.store.get(`jobs-followup-parent:${id}`)??'null');const key=proof?.purpose==='attachment'?'jobs-followup-attachment':'jobs-followup-question';followup=proof?.parent===link.parent_id&&this.store.get(`${key}:${proof.question}`)===id;}catch{}
+      if(!parent||!parentBinding||!(['queued','dispatched','submitted'].includes(parent.status)&&(!followup||!parent.outcome)||parent.status==='completed'&&(this.hasOptionGuard(id)||followup&&!parent.outcome)))throw new Error('The owner request has ended. Nothing was sent.');this.assertDispatch(r,link.parent_id,parentBinding,parent.body,visited,inactive);}
 
   }
   rejectDispatch(id:string,reason:string){

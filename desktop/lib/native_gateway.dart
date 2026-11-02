@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ffi';
 
 import 'package:file_selector/file_selector.dart';
@@ -9,9 +10,21 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:path/path.dart' as p;
 
 import 'gateway.dart';
+import 'social_share.dart';
+
+import 'package:flutter/services.dart';
+
 import 'startup_trace.dart';
 import 'updates.dart';
 import 'document_preparation.dart';
+import 'local_backend_environment.dart';
+import 'local_state_guard.dart';
+import 'social_meta_client.dart';
+
+const _isolatedLocal = bool.fromEnvironment('FFD_ISOLATED_LOCAL');
+const _localState = String.fromEnvironment('FFD_LOCAL_STATE');
+const _localPort = int.fromEnvironment('FFD_LOCAL_PORT', defaultValue: 47961);
+const _localCodexHome = String.fromEnvironment('FFD_LOCAL_CODEX_HOME');
 
 Future<Directory> createUpdateAttempt(Directory directory) async {
   await directory.create(recursive: true);
@@ -24,18 +37,64 @@ int? compareBuilds(Object? running, Object? ours) {
   return a == null || b == null ? null : a.compareTo(b);
 }
 
+/// Reads only the bounded, regular Brain key file when a social action begins.
+Future<String> readSocialBrainKey(String state) async {
+  RandomAccessFile? handle;
+  try {
+    final path = p.join(state, 'meta-model-api-key');
+    if (await FileSystemEntity.type(path, followLinks: false) !=
+        FileSystemEntityType.file) {
+      throw StateError('missing');
+    }
+    handle = await File(path).open(mode: FileMode.read);
+    final buffer = BytesBuilder(copy: false);
+    while (buffer.length < 4097) {
+      final chunk = await handle.read(4097 - buffer.length);
+      if (chunk.isEmpty) break;
+      buffer.add(chunk);
+    }
+    final bytes = buffer.takeBytes();
+    if (bytes.length > 4096) throw StateError('invalid');
+    final key = utf8.decode(bytes).trim();
+    if (key.length < 20 ||
+        key.length > 4096 ||
+        !RegExp(r'^[\x21-\x7e]+$').hasMatch(key)) {
+      throw StateError('invalid');
+    }
+    return key;
+  } catch (_) {
+    throw StateError('Add a Meta Model API key in Brain settings first.');
+  } finally {
+    try {
+      await handle?.close();
+    } catch (_) {
+      /* No credential data in errors. */
+    }
+  }
+}
+
 class NativeGateway extends Gateway {
   final String state;
   final int port;
   String? _token;
   NativeGateway()
     : state = stateDirectory(),
-      port = int.parse(Platform.environment['WSB_PORT'] ?? '47831');
+      port = _isolatedLocal
+          ? _localPort
+          : int.parse(Platform.environment['WSB_PORT'] ?? '47831');
   @override
   String get platform => Platform.operatingSystem;
   @override
+  bool get localEmail => _isolatedLocal && Platform.isMacOS;
+  @override
   String get computerName => Platform.localHostname;
   static String stateDirectory() {
+    if (_isolatedLocal) {
+      if (_localState.isEmpty) {
+        throw StateError('Local test state path is missing.');
+      }
+      return _localState;
+    }
     final e = Platform.environment;
     if (e['WSB_STATE_DIR'] != null) return e['WSB_STATE_DIR']!;
     final home = e[Platform.isWindows ? 'USERPROFILE' : 'HOME']!;
@@ -61,6 +120,40 @@ class NativeGateway extends Gateway {
 
   Future<UpdateChecker>? _updateChecker;
   bool _updatesClosed = false;
+
+  /// Separate from `update-check.json` on purpose: that file is keyed by version
+  /// and platform and is discarded when either changes, so preferences kept
+  /// inside it would reset themselves every time the app updated.
+  File get _updatePreferencesFile =>
+      File(p.join(state, 'update-preferences.json'));
+
+  @override
+  Future<UpdatePreferences> loadUpdatePreferences() async {
+    try {
+      final file = _updatePreferencesFile;
+      if (await file.exists() && await file.length() <= 64 * 1024) {
+        return UpdatePreferences.fromJson(jsonDecode(await file.readAsString()));
+      }
+    } catch (_) {
+      // An unreadable preference file means "no choice recorded yet", never a
+      // reason to fail startup.
+    }
+    return UpdatePreferences();
+  }
+
+  @override
+  Future<void> saveUpdatePreferences(UpdatePreferences prefs) async {
+    final file = _updatePreferencesFile;
+    await file.parent.create(recursive: true);
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(jsonEncode(prefs.toJson()), flush: true);
+    await temporary.rename(file.path);
+    // Apply immediately so the next check obeys the new cadence without a
+    // restart, which is what the pane promises when someone changes it.
+    final checker = await (_updateChecker ??= loadUpdateChecker());
+    checker.applyPreferences(prefs);
+  }
+
   Future<UpdateChecker> loadUpdateChecker() async {
     final abi = Abi.current();
     final arch =
@@ -70,10 +163,13 @@ class NativeGateway extends Gateway {
         ? 'x64'
         : 'unsupported';
     final file = File(p.join(state, 'update-check.json'));
+    final prefs = await loadUpdatePreferences();
     final checker = UpdateChecker(
       current: installedVersion,
       platform: Platform.isMacOS ? 'macos' : Platform.operatingSystem,
       architecture: arch,
+      schedule: prefs.schedule,
+      automatic: prefs.automatic,
       save: (data) async {
         if (_updatesClosed) return;
         await file.parent.create(recursive: true);
@@ -93,7 +189,7 @@ class NativeGateway extends Gateway {
 
   @override
   Future<UpdateCheck> checkUpdates({bool manual = false}) async {
-    if (Platform.environment['FFD_SMOKE_TEST'] == '1') {
+    if (_isolatedLocal || Platform.environment['FFD_SMOKE_TEST'] == '1') {
       return const UpdateCheck();
     }
     final checker = await (_updateChecker ??= loadUpdateChecker());
@@ -104,6 +200,51 @@ class NativeGateway extends Gateway {
   void closeUpdates() {
     _updatesClosed = true;
     _updateChecker?.then((checker) => checker.close());
+  }
+
+  @override
+  bool get canShareSocialNatively => Platform.isMacOS;
+
+  @override
+  Future<void> openSocialPlatform(String platform, String caption) =>
+      _openBrowser(socialShareTarget(platform, caption).uri);
+
+  @override
+  Future<bool> exportSocialPost(SocialSharePayload post) async {
+    final location = await getDirectoryPath(
+      confirmButtonText: 'Export post here',
+    );
+    if (location == null) return false;
+    // A new directory avoids overwriting any user files or previous exports.
+    final folder = await Directory(location).createTemp('farfromdesk-post-');
+    try {
+      await File(p.join(folder.path, 'caption.txt'))
+          .writeAsString(post.caption);
+      for (var i = 0; i < post.images.length; i++) {
+        await File(
+          p.join(
+            folder.path,
+            'slide-${(i + 1).toString().padLeft(2, '0')}.jpg',
+          ),
+        ).writeAsBytes(post.images[i]);
+      }
+    } catch (_) {
+      // Only the newly created export folder is owned by this operation.
+      await folder.delete(recursive: true);
+      rethrow;
+    }
+    return true;
+  }
+
+  @override
+  Future<bool> shareSocialPost(SocialSharePayload post) async {
+    if (!canShareSocialNatively) return false;
+    return await const MethodChannel('farfromdesk/social-share')
+            .invokeMethod<bool>('show', {
+              'caption': post.caption,
+              'images': post.images,
+            }) ??
+        false;
   }
 
   @override
@@ -162,14 +303,18 @@ class NativeGateway extends Gateway {
 
   @override
   bool get canInstallUpdate =>
-      Platform.isMacOS ||
-      (Platform.isWindows && Abi.current() == Abi.windowsX64);
+      !_isolatedLocal &&
+      (Platform.isMacOS ||
+          (Platform.isWindows && Abi.current() == Abi.windowsX64));
   bool _installing = false;
   @override
   Future<void> installUpdate(
     AppRelease release,
     void Function(Map<String, dynamic>) progress,
   ) async {
+    if (_isolatedLocal) {
+      throw StateError('Updates are disabled for FarFromDesk Local.');
+    }
     if (Platform.isWindows) {
       return _installWindowsUpdate(release, progress);
     }
@@ -380,6 +525,48 @@ class NativeGateway extends Gateway {
   }
 
   Future<void> start() async {
+    if (_isolatedLocal) {
+      final normalHome = Platform.environment['HOME'];
+      if (!Platform.isMacOS ||
+          normalHome == null ||
+          !p.isAbsolute(normalHome)) {
+        throw StateError('Cannot verify the normal account paths for Local.');
+      }
+      // Validate metadata before creating or accessing Local's state. The
+      // second check covers links added while the state directory was created.
+      final protected = [
+        p.join(
+          normalHome,
+          'Library',
+          'Application Support',
+          'WhatsApp Session Bridge',
+        ),
+        p.join(normalHome, '.farfromdesk'),
+        p.join(normalHome, 'Tether Projects'),
+        p.join(normalHome, '.codex'),
+        p.join(normalHome, '.claude'),
+        _localCodexHome,
+      ];
+      final runtimes = [
+        p.join(normalHome, '.pyenv', 'versions'),
+        p.join(normalHome, '.local', 'share', 'uv', 'python'),
+      ];
+      const codexExecutable =
+          '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
+      await assertLocalStateSafe(
+        state,
+        protected,
+        allowedExternalFileRoots: runtimes,
+        allowedCodexExecutables: [codexExecutable],
+      );
+      await Directory(state).create(recursive: true);
+      await assertLocalStateSafe(
+        state,
+        protected,
+        allowedExternalFileRoots: runtimes,
+        allowedCodexExecutables: [codexExecutable],
+      );
+    }
     if (Platform.isWindows &&
         await Directory(p.join(state, 'app-update', 'lock')).exists()) {
       Map<String, dynamic>? updateState;
@@ -399,13 +586,15 @@ class NativeGateway extends Gateway {
       }
     }
     launchAtStartup.setup(
-      appName: 'FarFromDesk',
+      appName: _isolatedLocal ? 'FarFromDesk Local' : 'FarFromDesk',
       appPath: Platform.resolvedExecutable,
-      packageName: 'com.codecylabs.farfromdesk',
+      packageName: _isolatedLocal
+          ? 'com.codecylabs.farfromdesk.localtest'
+          : 'com.codecylabs.farfromdesk',
     );
     final executableDir = p.dirname(Platform.resolvedExecutable);
     final root =
-        Platform.environment['FFD_BACKEND_ROOT'] ??
+        (_isolatedLocal ? null : Platform.environment['FFD_BACKEND_ROOT']) ??
         (Platform.isMacOS
             ? p.normalize(p.join(executableDir, '..', 'Resources', 'backend'))
             : p.join(executableDir, 'backend'));
@@ -457,7 +646,7 @@ class NativeGateway extends Gateway {
     traceStartup('checking existing backend');
     if (await connected()) return;
     final node =
-        Platform.environment['FFD_NODE_BIN'] ??
+        (_isolatedLocal ? null : Platform.environment['FFD_NODE_BIN']) ??
         p.join(root, 'runtime', Platform.isWindows ? 'node.exe' : 'node');
     if (!await File(node).exists() ||
         !await File(p.join(root, 'dist', 'main.js')).exists()) {
@@ -471,7 +660,21 @@ class NativeGateway extends Gateway {
       node,
       [p.join(root, 'dist', 'main.js')],
       workingDirectory: root,
+      includeParentEnvironment: !_isolatedLocal,
       environment: {
+        if (_isolatedLocal) ...{
+          ...localBackendEnvironment(state: state, codexHome: _localCodexHome),
+          'FFD_MAIL_KEYCHAIN_HELPER': p.join(
+            root,
+            'native',
+            'local-mail-keychain',
+          ),
+          'FFD_MAIL_APPROVAL_HELPER': p.join(
+            root,
+            'native',
+            'local-mail-approval',
+          ),
+        },
         'WSB_STATE_DIR': state,
         'WSB_PORT': '$port',
         'FFD_PORTABLE_AGENTS': Platform.isMacOS ? '0' : '1',
@@ -507,7 +710,12 @@ class NativeGateway extends Gateway {
       final response = await client
           .send(request)
           .then(http.Response.fromStream)
-          .timeout(const Duration(seconds: 30));
+          .timeout(
+            // A preference change can wait on a macOS administrator prompt.
+            path == '/api/local-email' || path == '/api/preferences'
+                ? const Duration(minutes: 6)
+                : Duration(seconds: path.startsWith('/api/social') ? 150 : 30),
+          );
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode != 200) {
         throw StateError(
@@ -565,6 +773,35 @@ class NativeGateway extends Gateway {
   @override
   Future<String?> chooseFile(String label) async =>
       (await openFile(confirmButtonText: label))?.path;
+  @override
+  Future<SocialGenerator> prepareSocialGenerator() async {
+    if (!_isolatedLocal) {
+      throw StateError(
+        'Meta generation is only available in FarFromDesk Local.',
+      );
+    }
+    final key = await readSocialBrainKey(state);
+    return (kind, input) =>
+        SocialMetaClient().generate(kind: kind, key: key, input: input);
+  }
+
+  @override
+  Future<bool> saveSocialImage(Uint8List bytes) async {
+    final location = await getSaveLocation(
+      suggestedName: 'social-image.jpg',
+      acceptedTypeGroups: [
+        const XTypeGroup(label: 'JPEG', extensions: ['jpg', 'jpeg']),
+      ],
+    );
+    if (location == null) return false;
+    await XFile.fromData(
+      bytes,
+      mimeType: 'image/jpeg',
+      name: 'social-image.jpg',
+    ).saveTo(location.path);
+    return true;
+  }
+
   @override
   Future<Map<String, dynamic>> readDocument(String path) =>
       reviewedDocumentReference(path);

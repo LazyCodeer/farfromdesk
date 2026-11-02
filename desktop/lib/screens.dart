@@ -2,12 +2,36 @@ part of 'app.dart';
 
 // Layout is ported from the build-41 SwiftUI views. Only OS wording and verified
 // integration availability differ; component geometry and navigation are shared.
+
+/// One Settings tab: its stable id, the heading it renders, an optional state
+/// dot or chip in its nav row, the section's own status, and its cards.
+typedef _SettingsSection = ({
+  String id,
+  String title,
+  String subtitle,
+  IconData icon,
+  Widget? badge,
+  Widget? status,
+  List<Widget> cards,
+});
+
 extension _BridgeScreens on _DeskState {
   bool get hasChannelChoice => status['channelChosen'] != false;
   bool get usingTelegram => status['controlChannel'] == 'telegram';
   String get channelName => usingTelegram ? 'Telegram' : 'WhatsApp';
   bool get connected =>
       status[usingTelegram ? 'telegram' : 'whatsapp']?['status'] == 'connected';
+
+  /// The selected channel has everything it needs and is only waiting for a
+  /// connection. A saved, confirmed bot is not a reason to run setup again.
+  bool get channelConfigured {
+    if (usingTelegram) {
+      final tg = status['telegram'];
+      return tg?['configured'] == true && tg?['ownerId'] != null;
+    }
+    return status['whatsapp']?['phoneNumber'] != null;
+  }
+
   String get computer => api.platform == 'macos'
       ? 'Mac'
       : api.platform == 'windows'
@@ -17,12 +41,55 @@ extension _BridgeScreens on _DeskState {
       .cast<Map>()
       .where((p) => '${p['provider']}:${p['executionMode']}' == platform)
       .firstOrNull;
-  String get platformName =>
-      '${platform.startsWith('claude') ? 'Claude' : 'Codex'} ${platform.endsWith('desktop') ? 'Desktop' : 'CLI'}';
+  String get platformName => platformTitle({
+    'provider': platform.split(':').first,
+    'executionMode': platform.split(':').last,
+  });
+
+  /// One naming rule for a platform row and for the current selection.
+  String platformTitle(Map p) {
+    final label = providerLabel(p['provider']);
+    if (p['executionMode'] == 'desktop') return '$label Desktop';
+    return p['provider'] == 'muse' ? label : '$label CLI';
+  }
+
+  /// Two trailing segments keep same-named projects apart without a wall of path.
+  String projectTail(String path) {
+    final parts = path.split('/').where((p) => p.isNotEmpty).toList();
+    return parts.length <= 2
+        ? path
+        : '…/${parts.sublist(parts.length - 2).join('/')}';
+  }
+
+  /// Projects this platform can run in, most recently used first. A desktop coordinator works in
+  /// its own folder and opens its own chat there, so the choice is only offered for a terminal.
+  List<Map> get setupWorkspaces => platform.endsWith(':desktop')
+      ? const []
+      : (selectedPlatform?['workspaces'] ?? [])
+            .cast<Map>()
+            .where((w) => w['available'] != false)
+            .toList();
+
+  /// Default to the project the owner last worked in, the way they run the CLI themselves.
+  String defaultWorkspaceId() {
+    final list = setupWorkspaces;
+    return list.isEmpty ? '' : '${list.first['id']}';
+  }
+
+  /// Where the coordinator will actually run, which is what the owner is choosing here.
+  String get resolvedFolderPreview {
+    final chosen = setupWorkspaces
+        .where((w) => '${w['id']}' == selectedWorkspaceId)
+        .firstOrNull;
+    return chosen == null ? coordinatorFolderPreview : '${chosen['cwd']}';
+  }
+
   String get defaultCoordinatorName => 'FarFromDesk Orbit · $platformName';
 
   void selectCoordinatorPlatform(String value) {
     platform = value;
+    selectedWorkspaceId = defaultWorkspaceId();
+    workspaceTrust = true;
     if (!coordinatorNameEdited) customName.text = defaultCoordinatorName;
   }
 
@@ -69,7 +136,11 @@ extension _BridgeScreens on _DeskState {
         ),
       );
     }
-    if (ready && !connected && !onboardingSkipped && section == 0) {
+    if (ready &&
+        !connected &&
+        !onboardingSkipped &&
+        section == 0 &&
+        (!channelConfigured || setupRequested)) {
       return Scaffold(
         body: SafeArea(
           child: Column(
@@ -95,7 +166,15 @@ extension _BridgeScreens on _DeskState {
         ),
       );
     }
-    final titles = ['Overview', 'Inbox', 'Items', 'Brain', 'Settings'];
+    final titles = [
+      'Overview',
+      'Inbox',
+      'Items',
+      'Brain',
+      'Settings',
+      'Email',
+      'Social',
+    ];
     final pending = (status['pendingJobs'] ?? []).length;
     final count = pending + (status['approvals'] ?? []).length;
     return Scaffold(
@@ -145,6 +224,45 @@ extension _BridgeScreens on _DeskState {
                               actionError = null;
                             }),
                             icon: const Icon(Icons.close, size: 16),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (channelConfigured && !connected)
+                    Container(
+                      margin: const EdgeInsets.fromLTRB(32, 16, 32, 0),
+                      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+                      decoration: BoxDecoration(
+                        color: sand,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.cloud_off_rounded,
+                            size: 19,
+                            color: warning,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              '$channelName is offline. Your setup is saved and FarFromDesk keeps retrying.',
+                              key: const Key('channel-offline'),
+                            ),
+                          ),
+                          if (usingTelegram)
+                            button(
+                              'Retry now',
+                              () => post('/api/telegram/connect', {}),
+                              compact: true,
+                            ),
+                          TextButton(
+                            onPressed: () => changeView(() {
+                              setupRequested = true;
+                              onboardingSkipped = false;
+                              section = 0;
+                            }),
+                            child: const Text('Setup'),
                           ),
                         ],
                       ),
@@ -224,7 +342,7 @@ extension _BridgeScreens on _DeskState {
         message: title,
         waitDuration: const Duration(seconds: 1),
         child: Material(
-          color: on ? const Color(0xff181818) : Colors.transparent,
+          color: on ? const Color(0xff1d1d1d) : Colors.transparent,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
             side: on
@@ -241,7 +359,7 @@ extension _BridgeScreens on _DeskState {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 child: Row(
                   children: [
-                    Icon(icon, size: 16, color: on ? ink : faint),
+                    Icon(icon, size: 16, color: on ? ink : muted),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -251,7 +369,7 @@ extension _BridgeScreens on _DeskState {
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
-                          color: on ? ink : muted,
+                          color: on ? ink : ink2,
                         ),
                       ),
                     ),
@@ -332,10 +450,11 @@ extension _BridgeScreens on _DeskState {
     if (!hasChannelChoice || !connected) {
       return sidebarBox(
         tint: accent,
-        onTap: () => changeView(() {
-          onboardingSkipped = false;
-          section = 0;
-        }),
+        onTap: () async {
+          if (await navigate(0) && mounted) {
+            changeView(() => onboardingSkipped = false);
+          }
+        },
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -464,6 +583,11 @@ extension _BridgeScreens on _DeskState {
                 navItem(2, titles[2], Icons.grid_view_rounded, itemsNeedingYou),
                 navGroup('Assistant'),
                 navItem(3, titles[3], Icons.psychology_outlined, 0),
+                if (api.localEmail)
+                  navItem(5, titles[5], Icons.mail_outline, 0),
+                if (api.preview ||
+                    const bool.fromEnvironment('FFD_ISOLATED_LOCAL'))
+                  navItem(6, titles[6], Icons.auto_awesome_outlined, 0),
                 navItem(4, titles[4], Icons.tune_rounded, 0),
               ],
             ),
@@ -681,18 +805,10 @@ extension _BridgeScreens on _DeskState {
           ),
           const SizedBox(width: 12),
           button('View settings', () {
+            // The tab is the destination now, so selecting it is the whole job.
             changeView(() {
               section = 4;
-              settingsTab = 'Remote control';
-            });
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              final target = settingsKeys['Remote control']?.currentContext;
-              if (target != null) {
-                Scrollable.ensureVisible(
-                  target,
-                  duration: const Duration(milliseconds: 250),
-                );
-              }
+              settingsTab = 'remote';
             });
           }, compact: true),
         ],
@@ -794,6 +910,13 @@ extension _BridgeScreens on _DeskState {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              DropdownMenuItem(
+                value: 'telegram-offline',
+                child: Text(
+                  'Telegram · saved but offline',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
             onChanged: (value) async {
               if (value != null) {
@@ -807,10 +930,11 @@ extension _BridgeScreens on _DeskState {
     ),
   );
 
-  void resumeOnboarding() => changeView(() {
-    onboardingSkipped = false;
-    section = 0;
-  });
+  Future<void> resumeOnboarding() async {
+    if (await navigate(0) && mounted) {
+      changeView(() => onboardingSkipped = false);
+    }
+  }
 
   Future<void> chooseMessagingApp(String next) =>
       post('/api/control-channel', {'channel': next});
@@ -1114,7 +1238,11 @@ extension _BridgeScreens on _DeskState {
           ),
           gap(20),
           if (tg['status'] == 'disconnected') ...[
-            tag('Not connected'),
+            tag(
+              tg['configured'] == true
+                  ? 'Not connected · bot saved'
+                  : 'Not connected',
+            ),
             gap(12),
           ],
           if (connected) ...[
@@ -2133,162 +2261,381 @@ extension _BridgeScreens on _DeskState {
     await api.get('/api/master-options?fresh=1');
   });
 
-  Widget codingPlatformsCard() {
-    final found = platforms.any((p) => p['available'] == true);
+  /// The apps the preferences panel shows a card for: every provider the backend reports.
+  List<String> get codingAppProviders => const ['codex', 'claude', 'muse']
+      .where((provider) => platforms.any((p) => p['provider'] == provider))
+      .toList();
+
+  /// Opens the coding app panel: what was detected, one card per platform, and one save.
+  ///
+  /// Choices are staged here and written once, so opening the panel to read the current state can
+  /// never change it, and both apps can be set before anything is stored. "No preference" clears a
+  /// stored choice rather than being a silent third mode.
+  Future<void> openCodingAppPreferences() async {
+    final draft = <String, String>{};
+    final providers = codingAppProviders;
+    String stored(String provider) =>
+        '${preferredPlatform(provider)?['executionMode'] ?? ''}';
+    String current(String provider) => draft[provider] ?? stored(provider);
     Widget link(String label, String url) => TextButton(
       onPressed: () => act(() => api.openReleasePage(Uri.parse(url))),
       child: Text(label),
     );
-    return panel(
-      'Coding platforms',
-      trailing: found
-          ? spinButton('Check apps', 'Checking…', checkCodingApps)
-          : null,
-      !found
-          ? Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
+    await showDialog<void>(
+      context: context,
+      builder: (dialog) => StatefulBuilder(
+        builder: (dialog, updatePanel) {
+          // The same list the coding app picker shows: one row per runtime the backend reports.
+          final runtimes = platforms.length;
+          final apps = providers.length;
+          final changed = draft.entries
+              .where((e) => e.value != stored(e.key))
+              .toList();
+          Future<void> detect() async {
+            await checkCodingApps();
+            if (dialog.mounted) updatePanel(() {});
+          }
+
+          Future<void> save() async {
+            await act(() async {
+              for (final entry in changed) {
+                final option = platforms
+                    .cast<Map>()
+                    .where(
+                      (p) =>
+                          p['provider'] == entry.key &&
+                          p['executionMode'] == entry.value,
+                    )
+                    .firstOrNull;
+                await api.post('/api/platform-preference', {
+                  'provider': entry.key,
+                  // An empty mode is the backend's "no preference": it clears the stored choice.
+                  'executionMode': entry.value.isEmpty ? 'none' : entry.value,
+                  'connectionRevision': option?['connection']?['revision'],
+                });
+              }
+            });
+            if (dialog.mounted) Navigator.pop(dialog);
+          }
+
+          return Dialog(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 720,
+                maxHeight: MediaQuery.sizeOf(dialog).height - 48,
+              ),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      logoTile('openai', dim: true),
-                      const SizedBox(width: 6),
-                      logoTile('claude', dim: true),
-                    ],
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(24, 22, 24, 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Coding app preferences',
+                                      style: Theme.of(dialog)
+                                          .textTheme
+                                          .headlineLarge,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    small(
+                                      'Detect apps and choose how to run each one (CLI or Desktop).',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Close',
+                                onPressed: () => Navigator.pop(dialog),
+                                icon: const Icon(Icons.close, size: 18),
+                              ),
+                            ],
+                          ),
+                          gap(16),
+                          detectionBanner(runtimes, apps, detect),
+                          if (runtimes == 0) ...[
+                            gap(2),
+                            Row(
+                              children: [
+                                link(
+                                  'Get Claude Code',
+                                  'https://claude.com/claude-code',
+                                ),
+                                link(
+                                  'Get Codex',
+                                  'https://developers.openai.com/codex',
+                                ),
+                              ],
+                            ),
+                          ],
+                          for (final provider in providers) ...[
+                            gap(12),
+                            codingAppCard(
+                              provider,
+                              current(provider),
+                              stored(provider),
+                              (mode) =>
+                                  updatePanel(() => draft[provider] = mode),
+                            ),
+                          ],
+                          gap(14),
+                        ],
+                      ),
+                    ),
                   ),
-                  gap(14),
-                  const Text(
-                    'No coding apps found',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                  ),
-                  gap(6),
-                  Text(
-                    'FarFromDesk works with Claude Code and Codex on this $computer. Install one, then check again.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12, color: muted),
-                  ),
-                  gap(12),
-                  spinButton(
-                    'Check again',
-                    'Checking…',
-                    checkCodingApps,
-                    primary: true,
-                  ),
-                  gap(4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      link('Get Claude Code', 'https://claude.com/claude-code'),
-                      link('Get Codex', 'https://developers.openai.com/codex'),
-                    ],
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(24, 14, 24, 18),
+                    decoration: const BoxDecoration(
+                      border: Border(top: BorderSide(color: hairline)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.info_outline, size: 16, color: muted),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: small(
+                            '“No preference” lets FarFromDesk choose the best available mode based on your request.',
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        button(
+                          'Cancel',
+                          () => Navigator.pop(dialog),
+                          compact: true,
+                        ),
+                        const SizedBox(width: 10),
+                        button(
+                          'Save changes',
+                          save,
+                          primary: true,
+                          compact: true,
+                          enabled: changed.isNotEmpty,
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final provider in ['codex', 'claude'])
-                  platformRow(provider),
-              ],
             ),
+          );
+        },
+      ),
     );
   }
 
-  Widget platformRow(String provider) {
+  /// What was detected, and the one control that looks again.
+  Widget detectionBanner(
+    int runtimes,
+    int apps,
+    Future<void> Function() detect,
+  ) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+      decoration: BoxDecoration(
+        color: fieldColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: line2),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: sand,
+              borderRadius: BorderRadius.circular(9),
+            ),
+            alignment: Alignment.center,
+            child: const Icon(
+              Icons.desktop_windows_outlined,
+              size: 16,
+              color: muted,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  runtimes == 0
+                      ? 'No coding apps found'
+                      : 'Detected $runtimes coding ${runtimes == 1 ? 'runtime' : 'runtimes'}',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                small(
+                  runtimes == 0
+                      ? 'FarFromDesk works with Claude Code, Codex and Muse Code on this $computer. Install one, then detect again.'
+                      : 'In $apps ${apps == 1 ? 'app' : 'apps'}, the same list the coding app picker shows. Set the preferred mode for each app.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          spinButton(
+            runtimes == 0 ? 'Detect apps' : 'Detect again',
+            'Detecting…',
+            detect,
+            primary: runtimes == 0,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One app: its name and readiness, the state of each of its runtimes, and the mode it should run
+  /// in, all on one row.
+  ///
+  /// Muse Code has no desktop app and no stored preference, so it states its one mode instead of
+  /// offering a choice.
+  Widget codingAppCard(
+    String provider,
+    String current,
+    String stored,
+    ValueChanged<String> onChanged,
+  ) {
     final options = platforms.where((p) => p['provider'] == provider).toList();
-    String mode(String m) =>
-        options.any((p) => p['executionMode'] == m && p['available'] == true)
-        ? 'available'
-        : 'not detected';
-    final ready = options.any((p) => p['available'] == true);
-    final name = provider == 'codex' ? 'Codex' : 'Claude';
-    final chosen = preferredPlatform(provider);
+    final detected = options.any((p) => p['available'] == true);
+    final ready = options.any(
+      (p) => p['available'] == true && p['canCreate'] != false,
+    );
+    final name = providerLabel(provider);
+    final hasDesktop = options.any((p) => p['executionMode'] == 'desktop');
+    final preference = preferredPlatform(provider);
+    final selected = current == stored ? preference : null;
+    final option = options
+        .where((p) => p['executionMode'] == current)
+        .firstOrNull;
+    String mode(String m) {
+      final option = options.where((p) => p['executionMode'] == m).firstOrNull;
+      if (option == null) return 'not detected';
+      return runtimeReadiness(option).toLowerCase();
+    }
+
     return Container(
       key: ValueKey('platform-preference-$provider'),
-      padding: EdgeInsets.only(top: provider == 'codex' ? 4 : 16, bottom: 16),
+      padding: const EdgeInsets.fromLTRB(16, 13, 16, 13),
       decoration: BoxDecoration(
-        border: provider == 'codex'
-            ? null
-            : const Border(top: BorderSide(color: hairline)),
+        color: toneCharcoal,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: hairline),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              logoTile(provider == 'codex' ? 'openai' : 'claude'),
+              logoTile(providerBrand(provider), size: 34),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      name,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            name,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ready
+                            ? tag('Ready', good: true)
+                            : detected
+                            ? tag('Needs setup')
+                            : tag('Not found'),
+                      ],
                     ),
-                    small('CLI ${mode('cli')} · Desktop ${mode('desktop')}'),
+                    const SizedBox(height: 3),
+                    small(
+                      hasDesktop
+                          ? 'CLI ${mode('cli')} · Desktop ${mode('desktop')}'
+                          : 'CLI ${mode('cli')} · No desktop app',
+                    ),
                   ],
                 ),
               ),
-              ready ? tag('Ready', good: true) : tag('Not found'),
-            ],
-          ),
-          gap(12),
-          dropdown<String>(
-            key: ValueKey('platform-runtime-$provider'),
-            value: chosen?['executionMode'],
-            hint: 'No preference',
-            items: [
-              for (final option in options)
-                DropdownMenuItem<String>(
-                  value: option['executionMode'],
-                  enabled:
-                      option['available'] == true &&
-                      option['canCreate'] != false,
-                  child: Text(
-                    '$name ${option['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}${option['available'] != true
-                        ? ' · not detected'
-                        : option['canCreate'] == false
-                        ? ' · ${platformConnectionStatus(option)}'
-                        : ''}',
+              const SizedBox(width: 14),
+              if (!hasDesktop)
+                small('Always CLI')
+              else
+                SizedBox(
+                  width: 250,
+                  child: FfdSelect<String>(
+                    key: ValueKey('platform-runtime-$provider'),
+                    value: current,
+                    compact: true,
+                    alignRight: true,
+                    placeholder: 'No preference',
+                    options: [
+                      const SelectOption(
+                        value: '',
+                        label: 'No preference',
+                        detail: 'FarFromDesk picks the mode per request',
+                      ),
+                      for (final option in options)
+                        SelectOption(
+                          value: '${option['executionMode']}',
+                          label:
+                              '$name ${option['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}',
+                          enabled:
+                              option['available'] == true &&
+                              option['canCreate'] != false,
+                          trailing: setupStatusText(option),
+                          detail:
+                              option['available'] == true &&
+                                  option['canCreate'] == false
+                              ? platformConnectionStatus(option)
+                              : null,
+                        ),
+                    ],
+                    onChanged: onChanged,
                   ),
                 ),
             ],
-            onChanged: (value) {
-              if (value != null) savePreferredPlatform(provider, value);
-            },
           ),
-          if (chosen?['connectionLabel'] != null) ...[
+          // Availability, the saved route and any setup warning come from the backend, never made up
+          // here. They describe the stored choice, so they only show while the picker still matches
+          // it.
+          if (selected?['connectionLabel'] != null) ...[
             gap(8),
-            small(chosen!['connectionLabel']),
+            small('${selected!['connectionLabel']}'),
           ],
-          if (chosen?['executionMode'] == 'desktop')
-            for (final option in options.where(
-              (p) => p['executionMode'] == 'desktop',
-            ))
-              if (option['creationReadiness']?['message'] != null) ...[
-                gap(8),
-                small(option['creationReadiness']['message']),
-              ],
+          if (current == 'desktop' &&
+              option?['creationReadiness']?['message'] != null) ...[
+            gap(8),
+            small('${option!['creationReadiness']['message']}'),
+          ],
+          if (!ready) ...[
+            gap(8),
+            small('${options.firstOrNull?['reason'] ?? 'Not detected'}'),
+          ],
+          if (detected && !ready && options.firstOrNull?['reason'] == null) ...[
+            gap(8),
+            small('This app is installed but not signed in yet.'),
+          ],
         ],
       ),
     );
-  }
-
-  Future<void> savePreferredPlatform(String provider, String mode) async {
-    final option = platforms.cast<Map>().firstWhere(
-      (p) => p['provider'] == provider && p['executionMode'] == mode,
-    );
-    await post('/api/platform-preference', {
-      'provider': provider,
-      'executionMode': mode,
-      'connectionRevision': option['connection']?['revision'],
-    });
   }
 
   /// Coordinators answer WhatsApp. Older bridges only report one master.
@@ -2303,7 +2650,7 @@ extension _BridgeScreens on _DeskState {
   }
 
   String appName(Map entry) =>
-      '${entry['provider'] == 'claude' ? 'Claude' : 'Codex'} · ${entry['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}';
+      '${providerLabel(entry['provider'])} · ${entry['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}';
 
   Widget coordinatorRow(
     Map entry,
@@ -2319,7 +2666,7 @@ extension _BridgeScreens on _DeskState {
     ),
     child: Row(
       children: [
-        logoTile(entry['provider'] == 'claude' ? 'claude' : 'openai', size: 34),
+        logoTile(providerBrand(entry['provider']), size: 34),
         const SizedBox(width: 14),
         Expanded(
           child: Column(
@@ -2338,7 +2685,7 @@ extension _BridgeScreens on _DeskState {
                         ? 'Forwarding paused'
                         : entry['isDefault'] == true
                         ? 'Default coordinator'
-                        : 'Used when a message names ${entry['provider'] == 'claude' ? 'Claude' : 'Codex'}')}',
+                        : 'Used when a message names ${providerLabel(entry['provider'])}')}',
               ),
               if (entry['error'] != null) small(entry['error'].toString()),
             ],
@@ -2478,6 +2825,7 @@ extension _BridgeScreens on _DeskState {
     bool another = false,
   }) async {
     void startAdding([String? requested]) => editSetup(() {
+      actionError = null;
       platform =
           requested ??
           (status['master'] == null
@@ -2487,6 +2835,9 @@ extension _BridgeScreens on _DeskState {
       customName.text = defaultCoordinatorName;
       setupAction = 'new';
       setupFormRequested = false;
+      setupStep = 1;
+      selectedWorkspaceId = defaultWorkspaceId();
+      workspaceTrust = true;
       selectedNativeId = '';
       search.clear();
       visibleSessions = 30;
@@ -2521,13 +2872,6 @@ extension _BridgeScreens on _DeskState {
               ? Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (entries.isNotEmpty)
-                      TextButton.icon(
-                        onPressed: () =>
-                            update(() => addingCoordinator = false),
-                        icon: const Icon(Icons.arrow_back, size: 16),
-                        label: const Text('Back to coordinators'),
-                      ),
                     ...setupOperation(),
                     Container(
                       margin: const EdgeInsets.only(top: 12),
@@ -2540,22 +2884,19 @@ extension _BridgeScreens on _DeskState {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            entries.isEmpty
-                                ? 'Set up a coordinator'
-                                : 'Add a coordinator',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          gap(4),
-                          small(
-                            entries.isEmpty
-                                ? 'Pick the app that should answer your requests.'
-                                : 'Pick the app. Your current coordinators keep working until the new one is ready.',
-                          ),
-                          gap(16),
-                          masterForm(),
-                          gap(16),
-                          masterActions(),
+                          setupCodingAppRow(),
+                          gap(18),
+                          if (setupStep > 1) ...[setupStepper(), gap(18)],
+                          switch (setupStep) {
+                            1 => setupStepOneBody(),
+                            2 =>
+                              setupAction == 'new'
+                                  ? setupConfigureBody()
+                                  : setupSessionBody(),
+                            _ => setupReviewBody(),
+                          },
+                          gap(18),
+                          setupFooter(),
                         ],
                       ),
                     ),
@@ -2565,10 +2906,21 @@ extension _BridgeScreens on _DeskState {
               ? emptyBox(
                   'No coordinators yet',
                   'Add one so your messages have someone to answer them.',
-                  button('+ Add coordinator', () {
-                    startAdding();
-                    update(() => addingCoordinator = true);
-                  }, primary: true),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      button(
+                        'Coding app preferences',
+                        openCodingAppPreferences,
+                        key: const ValueKey('coordinator-coding-apps'),
+                      ),
+                      const SizedBox(width: 10),
+                      button('+ Add coordinator', () {
+                        startAdding();
+                        update(() => addingCoordinator = true);
+                      }, primary: true),
+                    ],
+                  ),
                   logos: true,
                 )
               : Column(
@@ -2616,16 +2968,22 @@ extension _BridgeScreens on _DeskState {
                     gap(16),
                     Row(
                       children: [
+                        Expanded(
+                          child: small(
+                            'Create a new coordinator for a coding platform, project, or general requests.',
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        button(
+                          'Coding app preferences',
+                          openCodingAppPreferences,
+                          key: const ValueKey('coordinator-coding-apps'),
+                        ),
+                        const SizedBox(width: 10),
                         button('+ Add coordinator', () {
                           startAdding();
                           update(() => addingCoordinator = true);
                         }, primary: true),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: small(
-                            'Name a coding platform in your chat, or the default answers general requests.',
-                          ),
-                        ),
                       ],
                     ),
                   ],
@@ -2636,52 +2994,96 @@ extension _BridgeScreens on _DeskState {
                 maxWidth: 960,
                 maxHeight: MediaQuery.sizeOf(context).height - 48,
               ),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(26, 24, 26, 26),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Column(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(26, 24, 26, 26),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                'Coordinators',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .headlineLarge,
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Coordinators',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineLarge,
+                                    ),
+                                    gap(4),
+                                    small(
+                                      addingCoordinator || setupFormRequested
+                                          ? setupSubtitle
+                                          : 'Choose who answers your messages and how they work.',
+                                    ),
+                                  ],
+                                ),
                               ),
-                              gap(4),
-                              small('Choose who answers your messages.'),
+                              IconButton(
+                                tooltip: 'Close',
+                                onPressed: () => Navigator.pop(context),
+                                icon: const Icon(Icons.close, size: 18),
+                              ),
                             ],
                           ),
-                        ),
-                        IconButton(
-                          tooltip: 'Close',
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.close, size: 18),
-                        ),
-                      ],
-                    ),
-                    gap(16),
-                    body,
-                    if (!addingCoordinator && !setupActive) ...[
-                      gap(16),
-                      ExpansionTile(
-                        key: const ValueKey('coordinator-coding-apps'),
-                        title: const Text('Coding app preferences'),
-                        subtitle: small(
-                          'Check apps and choose CLI or Desktop.',
-                        ),
-                        children: [codingPlatformsCard()],
+                          gap(16),
+                          body,
+                        ],
                       ),
-                    ],
-                  ],
-                ),
+                    ),
+                  ),
+                  if (actionError != null || error != null)
+                    Container(
+                      key: const ValueKey('coordinator-action-error'),
+                      margin: const EdgeInsets.fromLTRB(26, 0, 26, 20),
+                      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+                      decoration: BoxDecoration(
+                        color: sand,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Semantics(
+                        liveRegion: true,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              Icons.error_outline,
+                              color: warning,
+                              size: 19,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxHeight: 120,
+                                ),
+                                child: SingleChildScrollView(
+                                  child: SelectableText(actionError ?? error!),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Dismiss coordinator error',
+                              onPressed: coordinatorSubmitting
+                                  ? null
+                                  : () => editSetup(() {
+                                      actionError = null;
+                                      error = null;
+                                    }),
+                              icon: const Icon(Icons.close, size: 16),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           );
@@ -2717,6 +3119,8 @@ extension _BridgeScreens on _DeskState {
               logoTile('openai', dim: true),
               const SizedBox(width: 6),
               logoTile('claude', dim: true),
+              const SizedBox(width: 6),
+              logoTile('muse', dim: true),
             ],
           ),
           gap(14),
@@ -2776,89 +3180,420 @@ extension _BridgeScreens on _DeskState {
     return '~/.farfromdesk/coordinators/${slug.isEmpty ? 'coordinator' : slug}-…';
   }
 
-  Widget masterForm() {
-    final detected = platforms.where((p) => p['available'] == true).toList();
-    final entries = (selectedPlatform?['sessions'] ?? [])
-        .cast<Map>()
-        .where(
-          (s) => '${s['name']} ${s['cwd']} ${s['id']}'.toLowerCase().contains(
-            search.text.toLowerCase(),
+  /// Where the owner is in the add flow; the dialog's own subtitle follows it.
+  String get setupSubtitle => switch (setupStep) {
+    2 =>
+      setupAction == 'new'
+          ? 'Set up a new coordinator for your workspace.'
+          : 'Reuse a previous coding session as a coordinator.',
+    3 => 'Confirm the details before adding the coordinator.',
+    _ => 'Choose the apps and sessions that can answer your messages.',
+  };
+
+  /// Most recent first is the useful order; a dropdown of hundreds is not.
+  List<Map> get setupProjects => setupWorkspaces.take(15).toList();
+
+  bool get setupPlatformReady =>
+      selectedPlatform?['available'] == true &&
+      selectedPlatform?['canCreate'] != false;
+
+  bool get setupReplace =>
+      List<Map>.from(status['coordinators'] ?? [])
+          .any((c) => '${c['provider']}:${c['executionMode']}' == platform);
+
+  /// A saved session's age, which is how an owner recognises the one they want.
+  String relativeTime(Object? value) {
+    final ms = value is num ? value.toInt() : null;
+    if (ms == null || ms <= 0) return '';
+    final elapsed = DateTime.now().difference(
+      DateTime.fromMillisecondsSinceEpoch(ms),
+    );
+    if (elapsed.inMinutes < 60) return '${elapsed.inMinutes.clamp(1, 59)}m ago';
+    if (elapsed.inHours < 24) return '${elapsed.inHours}h ago';
+    return '${elapsed.inDays}d ago';
+  }
+
+  /// Which runtime answers, whether it is ready, and a way to look again.
+  ///
+  /// The picker keeps a fixed width and sits at the right, directly beside the detection button, so
+  /// the row reads as one control group instead of a bar stretched across the card. Readiness of
+  /// the current app lives inside the picker, and every other app carries its own state in the
+  /// menu, which is where the choice is actually made.
+  Widget setupCodingAppRow() {
+    final ordered = [
+      ...platforms.where((p) => p['available'] == true),
+      ...platforms.where((p) => p['available'] != true),
+    ].cast<Map>();
+    final selected = selectedPlatform;
+    final account = '${selected?['connection']?['label'] ?? ''}'.trim();
+    return LayoutBuilder(
+      builder: (context, box) {
+        final stacked = box.maxWidth < 560;
+        final detect = setupStep == 1
+            ? spinButton('Detect apps', 'Detecting…', checkCodingApps)
+            : null;
+        final picker = SizedBox(
+          width: stacked ? (box.maxWidth - 28).clamp(180.0, 300.0) : 300,
+          child: FfdSelect<String>(
+            key: const ValueKey('coordinator-coding-app'),
+            value: platform,
+            enabled: !busy && !coordinatorSubmitting,
+            placeholder: 'Choose a coding app',
+            alignRight: true,
+            trailing: selected == null
+                ? null
+                : setupStatusPill(selected, compact: true),
+            options: [
+              for (final p in ordered)
+                SelectOption(
+                  value: '${p['provider']}:${p['executionMode']}',
+                  label: platformTitle(p),
+                  leading: logoTile(providerBrand(p['provider']), size: 18),
+                  trailing: setupStatusText(p),
+                  // The same why the preferences panel gives: the connection state when the app is
+                  // there but unusable, the backend's reason when it is not detected at all.
+                  detail: p['available'] == true
+                      ? (p['canCreate'] == false
+                            ? platformConnectionStatus(p)
+                            : null)
+                      : '${p['reason'] ?? 'Not available on this Mac'}',
+                ),
+            ],
+            onChanged: (value) => editSetup(() {
+              selectCoordinatorPlatform(value);
+              selectedNativeId = '';
+              search.clear();
+            }),
           ),
-        )
-        .toList();
+        );
+        final controls = stacked
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  picker,
+                  if (detect != null) ...[
+                    const SizedBox(height: 8),
+                    Align(alignment: Alignment.centerRight, child: detect),
+                  ],
+                ],
+              )
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  picker,
+                  if (detect != null) ...[const SizedBox(width: 8), detect],
+                ],
+              );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: fieldColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: line2),
+              ),
+              child: stacked
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        small('Coding app'),
+                        const SizedBox(height: 8),
+                        controls,
+                      ],
+                    )
+                  : Row(
+                      children: [small('Coding app'), const Spacer(), controls],
+                    ),
+            ),
+            if (account.isNotEmpty) ...[
+              const SizedBox(height: 7),
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: small(account),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  /// Readiness inside the picker, so the state is legible without a loose badge in the row.
+  Widget setupStatusPill(Map p, {bool compact = false}) {
+    final ok = p['available'] == true && p['canCreate'] != false;
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 8 : 10,
+        vertical: compact ? 3 : 4,
+      ),
+      decoration: BoxDecoration(
+        color: ok ? successWash : sand,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: compact ? 5 : 6,
+            height: compact ? 5 : 6,
+            decoration: BoxDecoration(
+              color: ok ? success : warning,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            runtimeReadiness(p),
+            style: TextStyle(
+              fontSize: compact ? 10.5 : 11,
+              color: ok ? success : warning,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Readiness of one runtime, in the only words this app uses for it.
+  ///
+  /// The coding app menu and the preferences panel both come through here, so the same runtime can
+  /// never be "not detected" in one place and "needs setup" in the other.
+  String runtimeReadiness(Map p) {
+    final ok = p['available'] == true && p['canCreate'] != false;
+    if (!ok) return 'Needs setup';
+    return p['executionMode'] == 'desktop' ? 'App ready' : 'Ready';
+  }
+
+  /// The same readiness as a bare word, for a menu row that has no space for the pill.
+  Widget setupStatusText(Map p) {
+    final ok = p['available'] == true && p['canCreate'] != false;
+    return Text(
+      runtimeReadiness(p),
+      style: TextStyle(fontSize: 10.5, color: ok ? success : warning),
+    );
+  }
+
+  Widget stepBadge(int number, String label) {
+    final done = setupStep > number;
+    final active = setupStep == number;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 20,
+          height: 20,
+          decoration: BoxDecoration(
+            color: done || active ? accent : Colors.transparent,
+            shape: BoxShape.circle,
+            border: Border.all(color: done || active ? accent : line),
+          ),
+          alignment: Alignment.center,
+          child: done
+              ? const Icon(Icons.check, size: 13, color: onAction)
+              : Text(
+                  '$number',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: active ? onAction : muted,
+                  ),
+                ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+            color: done || active ? ink : muted,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Three steps, with the middle one named for the path the owner picked.
+  Widget setupStepper() {
+    final labels = [
+      'Select type',
+      setupAction == 'new' ? 'Configure' : 'Choose session',
+      'Review',
+    ];
+    return Row(
+      children: [
+        stepBadge(1, labels[0]),
+        for (var i = 1; i < labels.length; i++) ...[
+          Expanded(
+            child: Container(
+              height: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              color: setupStep > i ? accent : line,
+            ),
+          ),
+          stepBadge(i + 1, labels[i]),
+        ],
+      ],
+    );
+  }
+
+  /// A path through the flow: either a new coordinator, or an existing session.
+  Widget setupTypeCard({
+    required bool selected,
+    required String title,
+    required String detail,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: coordinatorSubmitting ? null : onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+        decoration: BoxDecoration(
+          color: selected ? accentWash : canvas,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected ? accent : line2,
+            width: selected ? 1.4 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: selected ? accent : surface,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 17, color: selected ? onAction : muted),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  gap(2),
+                  small(detail),
+                ],
+              ),
+            ),
+            if (selected)
+              Container(
+                width: 22,
+                height: 22,
+                decoration: const BoxDecoration(
+                  color: accent,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.check, size: 14, color: onAction),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget setupStepOneBody() {
+    final available = (selectedPlatform?['sessions'] ?? [])
+        .cast<Map>()
+        .where((s) => s['available'] == true)
+        .length;
+    final cards = <Widget>[
+      setupTypeCard(
+        selected: setupAction == 'new',
+        title: 'Add coordinator',
+        detail: 'Set up a new coordinator',
+        icon: Icons.add,
+        onTap: () => editSetup(() => setupAction = 'new'),
+      ),
+      setupTypeCard(
+        selected: setupAction == 'existing',
+        title: 'Use existing session',
+        detail:
+            'Reuse a previous coding session${available > 0 ? ' · $available available' : ''}',
+        icon: Icons.history,
+        onTap: () => editSetup(() => setupAction = 'existing'),
+      ),
+    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            const Expanded(child: Text('Detected apps')),
-            spinButton('Check apps', 'Checking…', checkCodingApps),
-          ],
-        ),
-        gap(10),
-        if (detected.isEmpty)
-          small(
-            'No coding apps detected. Install Claude Code or Codex, then click Check apps.',
-          ),
         LayoutBuilder(
-          builder: (context, box) {
-            final capacity = box.maxWidth < 340
-                ? 1
-                : box.maxWidth < 640
-                ? 2
-                : 4;
-            final columns = detected.isEmpty
-                ? 1
-                : detected.length.clamp(1, capacity);
-            return Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                for (final p in detected)
-                  SizedBox(
-                    width: (box.maxWidth - 10 * (columns - 1)) / columns,
-                    child: appTile(p),
-                  ),
-              ],
-            );
-          },
+          builder: (context, box) => box.maxWidth < 560
+              ? Column(children: [cards[0], gap(10), cards[1]])
+              : Row(
+                  children: [
+                    Expanded(child: cards[0]),
+                    const SizedBox(width: 10),
+                    Expanded(child: cards[1]),
+                  ],
+                ),
         ),
-        if (selectedPlatform?['available'] == true &&
-            selectedPlatform?['connection'] != null) ...[
-          gap(10),
-          Row(
-            children: [
-              Icon(
-                selectedPlatform?['connection']['state'] == 'verified'
-                    ? Icons.verified_user_outlined
-                    : Icons.account_circle_outlined,
-                size: 15,
-                color: muted,
-              ),
-              const SizedBox(width: 8),
-              Expanded(child: small(selectedPlatform!['connection']['label'])),
-            ],
+        if (!setupPlatformReady) ...[
+          gap(12),
+          small(
+            selectedPlatform?['reason'] ?? 'This coding app is not ready. Detect apps, then choose it again.',
           ),
         ],
+      ],
+    );
+  }
+
+  Widget setupConfigureBody() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Configure coordinator',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        gap(4),
+        small('Give it a name and choose the working folder.'),
+        gap(16),
+        small('Name'),
+        gap(6),
+        TextField(
+          key: const ValueKey('coordinator-name'),
+          controller: customName,
+          decoration: const InputDecoration(
+            hintText: 'Give your coordinator a name',
+          ),
+          onChanged: (v) =>
+              editSetup(() => coordinatorNameEdited = v.trim().isNotEmpty),
+        ),
         gap(14),
-        if (setupAction == 'new') ...[
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: const Color(0x0df4f1ea),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+        small('Folder'),
+        gap(6),
+        Row(
+          children: [
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 11,
+                ),
+                decoration: BoxDecoration(
+                  color: fieldColor,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: line2),
+                ),
+                child: Row(
                   children: [
-                    small('Folder'),
-                    const SizedBox(width: 12),
+                    const Icon(Icons.folder_outlined, size: 15, color: muted),
+                    const SizedBox(width: 9),
                     Expanded(
                       child: Text(
-                        coordinatorFolderPreview,
+                        resolvedFolderPreview,
                         key: const ValueKey('coordinator-folder'),
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -2869,205 +3604,353 @@ extension _BridgeScreens on _DeskState {
                     ),
                   ],
                 ),
-                gap(4),
-                small(
-                  'Its own folder. It asks before reading your projects or other folders.',
-                ),
-              ],
-            ),
-          ),
-          if (platform == 'claude:desktop' &&
-              selectedPlatform?['available'] == true &&
-              selectedPlatform?['canCreate'] != false) ...[
-            gap(14),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: accentWash,
-                borderRadius: BorderRadius.circular(12),
               ),
-              child: Row(
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 116,
+              child: FfdSelect<String>(
+                key: const ValueKey('coordinator-folder-menu'),
+                value: selectedWorkspaceId,
+                enabled: !busy && !coordinatorSubmitting,
+                compact: true,
+                alignRight: true,
+                menuWidth: 340,
+                placeholder: 'Choose…',
+                leading: const Icon(Icons.folder_open, size: 15, color: ink2),
+                options: [
+                  const SelectOption(
+                    value: '',
+                    label: 'Its own private folder',
+                    leading: Icon(Icons.lock_outline, size: 15, color: muted),
+                  ),
+                  for (final w in setupProjects)
+                    SelectOption(
+                      value: '${w['id']}',
+                      label: '${w['label'] ?? w['name']}',
+                      detail: projectTail('${w['cwd']}'),
+                      leading: const Icon(
+                        Icons.folder_outlined,
+                        size: 15,
+                        color: muted,
+                      ),
+                    ),
+                  if (setupProjects.isEmpty &&
+                      selectedPlatform?['workspaceError'] != null)
+                    SelectOption(
+                      value: '__none',
+                      label: 'Project folders unavailable',
+                      detail: '${selectedPlatform?['workspaceError']}',
+                      enabled: false,
+                    ),
+                ],
+                onChanged: (value) =>
+                    editSetup(() => selectedWorkspaceId = value),
+              ),
+            ),
+          ],
+        ),
+        if (setupProjects.isNotEmpty) ...[
+          gap(6),
+          small(
+            '${setupProjects.length} folders this app has worked in, most recent first.',
+          ),
+        ],
+        gap(4),
+        small(
+          selectedWorkspaceId.isEmpty
+              ? 'Its own folder. It asks before reading your projects or other folders.'
+              : 'The coordinator works in this project. Its own notes stay in .farfromdesk.',
+        ),
+        if (platform.split(':').first == 'muse' &&
+            selectedWorkspaceId.isNotEmpty) ...[
+          gap(12),
+          Row(
+            children: [
+              Expanded(
+                child: settingText(
+                  'Load this project’s rules and skills',
+                  'Muse runs headless, so it cannot ask to trust the folder. Turn this off to ignore the project’s own instructions.',
+                ),
+              ),
+              Switch(
+                value: workspaceTrust,
+                onChanged: busy || coordinatorSubmitting
+                    ? null
+                    : (on) => editSetup(() => workspaceTrust = on),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget setupSessionBody() {
+    final query = search.text.trim().toLowerCase();
+    final entries = (selectedPlatform?['sessions'] ?? [])
+        .cast<Map>()
+        .where(
+          (s) => '${s['name']} ${s['cwd']} ${s['id']}'.toLowerCase().contains(
+            query,
+          ),
+        )
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.touch_app_outlined, size: 18, color: accent),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Confirm and send once in Claude',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        gap(4),
-                        small(
-                          'Claude opens a new chat in the coordinator folder with the setup message filled in. Confirm the folder, press Send, and FarFromDesk connects it automatically.',
-                        ),
-                      ],
-                    ),
+                  Text(
+                    'Select a session',
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
+                  gap(4),
+                  small('Pick a recent session to continue.'),
                 ],
               ),
             ),
           ],
-          gap(18),
-          Row(
+        ),
+        gap(14),
+        TextField(
+          controller: search,
+          decoration: const InputDecoration(
+            hintText: 'Search sessions by name or project',
+            prefixIcon: Icon(Icons.search, size: 17),
+          ),
+          onChanged: (_) => editSetup(() => visibleSessions = 30),
+        ),
+        gap(10),
+        Row(
+          children: [
+            small('${entries.length} saved sessions'),
+            const Spacer(),
+            small('Latest activity first'),
+          ],
+        ),
+        gap(8),
+        SizedBox(
+          height: 260,
+          child: ListView(
             children: [
-              const Text('Name', style: TextStyle(color: muted, fontSize: 13)),
-              const SizedBox(width: 14),
+              for (final s in entries.take(visibleSessions))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: setupSessionRow(s),
+                ),
+              if (entries.length > visibleSessions)
+                TextButton(
+                  onPressed: () => editSetup(() => visibleSessions += 30),
+                  child: const Text('Show 30 more'),
+                ),
+              if (entries.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: small(
+                    'No matching sessions. Refresh or try another name.',
+                  ),
+                ),
+            ],
+          ),
+        ),
+        gap(8),
+        small(
+          selectedNativeId.isEmpty
+              ? 'Select the session this coordinator should continue.'
+              : 'Finish active native turns before resuming this exact conversation.',
+        ),
+        gap(8),
+        small(
+          selectedPlatform?['provider'] == 'muse'
+              ? 'Muse keeps its own session history, so this continues the exact conversation you picked. Availability does not verify subscription limits.'
+              : 'Desktop keeps the selected chat’s account. CLI resume uses the account shown above. Availability does not verify subscription limits.',
+        ),
+      ],
+    );
+  }
+
+  Widget setupSessionRow(Map s) {
+    final selected = selectedNativeId == s['id'];
+    final usable = s['available'] == true;
+    final age = relativeTime(s['updatedAt']);
+    return Material(
+      color: selected ? accentWash : canvas,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: busy || !usable
+            ? null
+            : () => editSetup(() => selectedNativeId = '${s['id']}'),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: selected ? accent : line2),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                selected
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                size: 16,
+                color: selected ? accent : faint,
+              ),
+              const SizedBox(width: 12),
               Expanded(
-                child: TextField(
-                  key: const ValueKey('coordinator-name'),
-                  controller: customName,
-                  enabled: !busy,
-                  maxLength: 80,
-                  onChanged: (_) =>
-                      editSetup(() => coordinatorNameEdited = true),
-                  decoration: const InputDecoration(
-                    hintText: 'Give your coordinator a name',
-                    counterText: '',
-                    isDense: true,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      s['name'] ?? s['id'],
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    gap(3),
+                    Text(
+                      [
+                        if ('${s['model'] ?? ''}'.isNotEmpty) '${s['model']}',
+                        s['cwd'] ?? 'Project unavailable',
+                      ].join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: muted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: usable ? successWash : canvas,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  usable
+                      ? (platform.endsWith(':desktop')
+                            ? 'Native session'
+                            : 'Use this session')
+                      : 'Unavailable',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: usable ? success : muted,
                   ),
                 ),
               ),
+              if (age.isNotEmpty) ...[
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 52,
+                  child: Text(
+                    age,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 10.5, color: faint),
+                  ),
+                ),
+              ],
             ],
           ),
-        ] else ...[
-          TextField(
-            controller: search,
-            decoration: const InputDecoration(
-              hintText: 'Search sessions by name or project',
-            ),
-            onChanged: (_) => editSetup(() => visibleSessions = 30),
+        ),
+      ),
+    );
+  }
+
+  /// A summary the owner can check before anything is created.
+  Widget setupReviewBody() {
+    final session = (selectedPlatform?['sessions'] ?? [])
+        .cast<Map>()
+        .where((s) => s['id'] == selectedNativeId)
+        .toList();
+    final detail = setupAction == 'new'
+        ? resolvedFolderPreview
+        : (session.isEmpty
+              ? 'No session selected'
+              : '${session.first['name']} · ${session.first['cwd']}');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          setupAction == 'new' ? 'Review & add coordinator' : 'Review',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        gap(14),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: canvas,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: line2),
           ),
-          gap(10),
-          Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              small('${entries.length} saved chats'),
-              const Spacer(),
-              small('Latest activity first'),
-            ],
-          ),
-          gap(8),
-          SizedBox(
-            height: 220,
-            child: ListView(
-              children: [
-                for (final s in entries.take(visibleSessions))
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Material(
-                      color: canvas,
-                      borderRadius: BorderRadius.circular(10),
-                      child: InkWell(
-                        onTap: busy
-                            ? null
-                            : () => editSetup(() => selectedNativeId = s['id']),
-                        borderRadius: BorderRadius.circular(10),
-                        child: Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: selectedNativeId == s['id']
-                                  ? success
-                                  : line,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                selectedNativeId == s['id']
-                                    ? Icons.check_circle
-                                    : Icons.circle_outlined,
-                                size: 18,
-                                color: selectedNativeId == s['id']
-                                    ? success
-                                    : muted,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      s['name'] ?? s['id'],
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    gap(4),
-                                    Text(
-                                      s['cwd'] ?? 'Project unavailable',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: 11,
-                                        color: muted,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Text(
-                                s['available'] == true
-                                    ? (platform.endsWith(':desktop') ||
-                                              platform == 'claude:cli'
-                                          ? 'Native session'
-                                          : 'Resume in CLI')
-                                    : 'Unavailable',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: s['available'] == true
-                                      ? success
-                                      : muted,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+              Row(
+                children: [
+                  logoTile(
+                    providerBrand(selectedPlatform?['provider']),
+                    size: 30,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      customName.text.trim().isEmpty
+                          ? defaultCoordinatorName
+                          : customName.text.trim(),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
-                if (entries.length > visibleSessions)
-                  TextButton(
-                    onPressed: () => editSetup(() => visibleSessions += 30),
-                    child: const Text('Show 30 more'),
-                  ),
-                if (entries.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: small(
-                      'No matching sessions. Refresh or try another name.',
+                ],
+              ),
+              gap(12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  reviewChip(Icons.memory, platformName, ok: true),
+                  reviewChip(Icons.folder_outlined, detail),
+                  if (setupAction == 'existing')
+                    reviewChip(
+                      Icons.history,
+                      selectedNativeId.isEmpty
+                          ? 'No session'
+                          : 'Continues the selected session',
                     ),
-                  ),
-              ],
-            ),
+                  if (setupAction == 'new' &&
+                      platform.split(':').first == 'muse' &&
+                      selectedWorkspaceId.isNotEmpty)
+                    reviewChip(
+                      Icons.verified_outlined,
+                      workspaceTrust
+                          ? 'Project rules load'
+                          : 'Project rules ignored',
+                    ),
+                ],
+              ),
+            ],
           ),
-          gap(10),
+        ),
+        gap(10),
+        if (!setupReplace)
           small(
-            selectedNativeId.isEmpty
-                ? 'Select the coordinator for this connection.'
-                : 'Finish active native turns before resuming this exact conversation.',
-          ),
-          gap(8),
+            'Your current coordinators keep working until this one is ready.',
+          )
+        else
           small(
-            'Desktop keeps the selected chat’s account. CLI resume uses the account shown above. Availability does not verify subscription limits.',
+            'This replaces the existing $platformName coordinator. Its unfinished bridge requests close; native work may continue.',
           ),
-        ],
-        if (selectedPlatform?['available'] != true) ...[
-          gap(12),
-          small(
-            selectedPlatform?['reason'] ??
-                'Start the bridge and refresh to discover apps.',
-          ),
-        ],
         if (preferences['backgroundEnabled'] != true) ...[
           gap(12),
           button('Allow background access', enableBackground),
@@ -3076,49 +3959,30 @@ extension _BridgeScreens on _DeskState {
     );
   }
 
-  Widget masterActions() {
-    if (!platforms.any((p) => p['available'] == true)) {
-      return const SizedBox.shrink();
-    }
-    final existing = (selectedPlatform?['sessions'] ?? [])
-        .cast<Map>()
-        .where((s) => s['id'] == selectedNativeId && s['available'] == true)
-        .isNotEmpty;
-    final can =
-        preferences['backgroundEnabled'] == true &&
-        selectedPlatform?['available'] == true &&
-        !(status['masterSetup']?['operation']?['status'] == 'creating' &&
-            '${status['masterSetup']?['operation']?['provider']}:${status['masterSetup']?['operation']?['executionMode']}' ==
-                platform);
-    return Wrap(
-      spacing: 10,
-      runSpacing: 8,
-      children: [
-        button(
-          setupAction == 'new'
-              ? (List<Map>.from(status['coordinators'] ?? []).any(
-                      (c) =>
-                          '${c['provider']}:${c['executionMode']}' == platform,
-                    )
-                    ? 'Replace $platformName coordinator'
-                    : 'Create $platformName coordinator')
-              : 'Use selected session',
-          submitMaster,
-          primary: true,
-          enabled:
-              can &&
-              (setupAction == 'new'
-                  ? (selectedPlatform?['canCreate'] != false &&
-                        customName.text.trim().isNotEmpty)
-                  : existing),
-        ),
-        button(
-          setupAction == 'new' ? 'Use existing session' : 'Create new session',
-          () => editSetup(
-            () => setupAction = setupAction == 'new' ? 'existing' : 'new',
+  Widget reviewChip(IconData icon, String label, {bool ok = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: ok ? successWash : surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: line2),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: ok ? success : muted),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 260),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: ok ? success : ink2),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -3129,58 +3993,42 @@ extension _BridgeScreens on _DeskState {
       ].contains(status['masterSetup']?['operation']?['status']) &&
       !setupFormRequested;
 
-  Widget appTile(Map p) {
-    final id = '${p['provider']}:${p['executionMode']}',
-        selected = id == platform;
-    final desktop = p['executionMode'] == 'desktop';
-    final ok = p['available'] == true && p['canCreate'] != false;
-    return Material(
-      key: ValueKey('coordinator-platform-$id'),
-      color: selected ? const Color(0x1a86c9ad) : const Color(0x0af4f1ea),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(
-          color: selected ? accent : hairline,
-          width: selected ? 1.5 : 1,
-        ),
-      ),
-      child: InkWell(
-        customBorder: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
-        onTap: busy
-            ? null
-            : () => editSetup(() {
-                selectCoordinatorPlatform(id);
-                selectedNativeId = '';
-                visibleSessions = 30;
-                search.clear();
-              }),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              logoTile(
-                p['provider'] == 'claude' ? 'claude' : 'openai',
-                size: 34,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '${p['provider'] == 'claude' ? 'Claude' : 'Codex'} ${desktop ? 'Desktop' : 'CLI'}',
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              Text(
-                platformConnectionStatus(p),
-                style: TextStyle(fontSize: 11.5, color: ok ? muted : warning),
-              ),
-            ],
+  Widget setupFooter() {
+    final canAdvance = switch (setupStep) {
+      1 => true,
+      2 =>
+        setupAction == 'new'
+            ? customName.text.trim().isNotEmpty && setupPlatformReady
+            : selectedNativeId.isNotEmpty,
+      _ => true,
+    };
+    final blocked =
+        coordinatorSubmitting ||
+        (preferences['backgroundEnabled'] != true && setupStep == 3);
+    return Row(
+      children: [
+        if (setupStep > 1)
+          button(
+            'Back',
+            () => editSetup(() => setupStep = setupStep - 1),
+            icon: Icons.arrow_back,
           ),
+        const Spacer(),
+        button(
+          switch (setupStep) {
+            1 => 'Continue',
+            2 => 'Continue',
+            _ => setupReplace ? 'Replace coordinator' : 'Add coordinator',
+          },
+          switch (setupStep) {
+            3 => submitMaster,
+            _ => () => editSetup(() => setupStep = setupStep + 1),
+          },
+          primary: true,
+          icon: setupStep == 3 ? Icons.check : Icons.arrow_forward,
+          enabled: canAdvance && !blocked,
         ),
-      ),
+      ],
     );
   }
 
@@ -3197,39 +4045,55 @@ extension _BridgeScreens on _DeskState {
   }
 
   Future<void> submitMaster() async {
-    final parts = platform.split(':');
-    if (setupAction == 'new') {
-      await post('/api/master-create', {
-        'provider': parts[0],
-        'executionMode': parts[1],
-        'connectionRevision': selectedPlatform?['connection']?['revision'],
-        'name': customName.text.trim(),
-        'operationId': const Uuid().v4(),
-      });
-    } else {
-      final s = (selectedPlatform?['sessions'] ?? []).cast<Map>().firstWhere(
-        (s) => s['id'] == selectedNativeId,
-      );
-      if (!await confirm(
-        'Use the selected session as your coordinator?',
-        '${s['name']}\n${s['cwd']}\nSession: ${s['id']}\n\nThis existing session will receive your requests. Finish any active native turn first. Native project permissions stay intact. When replacing a coordinator, its unfinished bridge requests close; native work may continue.',
-      )) {
-        return;
+    if (coordinatorSubmitting) return;
+    editSetup(() => coordinatorSubmitting = true);
+    try {
+      var submitted = false;
+      Future<void> postSetup(String path, Map<String, dynamic> body) =>
+          act(() async {
+            await api.post(path, body);
+            submitted = true;
+          });
+      final parts = platform.split(':');
+      if (setupAction == 'new') {
+        await postSetup('/api/master-create', {
+          'provider': parts[0],
+          'executionMode': parts[1],
+          'connectionRevision': selectedPlatform?['connection']?['revision'],
+          'name': customName.text.trim(),
+          'operationId': const Uuid().v4(),
+          if (selectedWorkspaceId.isNotEmpty)
+            'workspaceId': selectedWorkspaceId,
+          if (parts[0] == 'muse' && selectedWorkspaceId.isNotEmpty)
+            'trustWorkspace': workspaceTrust,
+        });
+      } else {
+        final s = (selectedPlatform?['sessions'] ?? []).cast<Map>().firstWhere(
+          (s) => s['id'] == selectedNativeId,
+        );
+        if (!await confirm(
+          'Use the selected session as your coordinator?',
+          '${s['name']}\n${s['cwd']}\nSession: ${s['id']}\n\nThis existing session will receive your requests. Finish any active native turn first. Native project permissions stay intact. When replacing a coordinator, its unfinished bridge requests close; native work may continue.',
+        )) {
+          return;
+        }
+        await postSetup('/api/master-select', {
+          'provider': parts[0],
+          'executionMode': parts[1],
+          'connectionRevision': selectedPlatform?['connection']?['revision'],
+          'sessionId': selectedNativeId,
+          'operationId': const Uuid().v4(),
+        });
       }
-      await post('/api/master-select', {
-        'provider': parts[0],
-        'executionMode': parts[1],
-        'connectionRevision': selectedPlatform?['connection']?['revision'],
-        'sessionId': selectedNativeId,
-        'operationId': const Uuid().v4(),
+      // A finished submit returns to the coordinator list; setupActive keeps
+      // showing progress while a native start is still pending.
+      editSetup(() {
+        setupFormRequested = false;
+        if (submitted) addingCoordinator = false;
       });
+    } finally {
+      if (mounted) editSetup(() => coordinatorSubmitting = false);
     }
-    // A finished submit returns to the coordinator list; setupActive keeps
-    // showing progress while a native start is still pending.
-    editSetup(() {
-      setupFormRequested = false;
-      if (actionError == null) addingCoordinator = false;
-    });
   }
 
   List<Map> get allJobs {
@@ -3497,175 +4361,375 @@ extension _BridgeScreens on _DeskState {
     ),
   );
 
-  /// Settings groups: (title, subtitle, icon, cards). The pane shows them
-  /// under a sub-nav that scrolls to each group.
-  List<(String, String, IconData, List<Widget>)> settingsSections() {
-    return [
+  /// Settings sections. Each one is a real tab: only the selected section's
+  /// cards render, so a control can never sit off-screen behind a nav row that
+  /// claims you are somewhere else.
+  List<_SettingsSection> settingsSections() {
+    final serverMode = Map<String, dynamic>.from(
+      preferences['serverMode'] ?? const {},
+    );
+    final sections = <_SettingsSection>[
       (
-        'This $computer',
-        'Decide when FarFromDesk runs and how this $computer stays available.',
-        Icons.laptop_mac_rounded,
-        [
-          panel(
-            'On this $computer',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                settingRow(
-                  'Run in the background',
-                  'Receive tasks while the window is closed. Turning this off disconnects messaging and pauses forwarding.',
-                  Switch(
-                    value: preferences['backgroundEnabled'] == true,
-                    onChanged: busy
-                        ? null
-                        : (v) {
-                            if (v) {
-                              enableBackground();
-                            } else {
-                              post('/api/preferences', {
-                                'backgroundEnabled': false,
-                                'keepAwake': false,
-                              });
-                            }
-                          },
-                  ),
-                ),
-                const Divider(height: 1),
-                settingRow(
-                  'Open at login',
-                  'Launch FarFromDesk when you sign in to this $computer.',
-                  Switch(
-                    value: startup,
-                    onChanged: busy
-                        ? null
-                        : (v) => act(() async {
-                            await api.setStartup(v);
-                            startup = await api.startupEnabled();
-                          }),
-                  ),
-                ),
-                const Divider(height: 1),
-                settingRow(
-                  'Keep awake while locked',
-                  'Keep work running with the lid open, even when the screen is locked or off. Your password and lock screen stay enabled.',
-                  Switch(
-                    value: preferences['keepAwake'] == true,
-                    onChanged: busy || preferences['backgroundEnabled'] != true
-                        ? null
-                        : (v) async {
-                            if (!v ||
-                                await confirm(
-                                  'Keep this $computer awake while locked?',
-                                  'This uses battery and does not bypass your password, native approvals, manual sleep or lid-close sleep. Turn it off to restore normal idle sleep.',
-                                )) {
-                              await post('/api/preferences', {
-                                'backgroundEnabled': true,
-                                'keepAwake': v,
-                              });
-                            }
-                          },
-                  ),
-                ),
-                if (preferences['backgroundEnabled'] != true) ...[
-                  gap(10),
-                  small('Enable background access to use sleep prevention.'),
-                ],
-                if (preferences['assertionActive'] == true) ...[
-                  gap(10),
-                  tag('Keep-awake active · screen may lock', good: true),
-                ],
-                if (preferences['error'] != null) ...[
-                  gap(10),
-                  Text(
-                    preferences['error'],
-                    style: const TextStyle(fontSize: 11, color: warning),
-                  ),
-                ],
-              ],
+        id: 'this-mac',
+        title: 'This $computer',
+        subtitle:
+            'Control how FarFromDesk runs on this $computer and stays available.',
+        icon: Icons.laptop_mac_rounded,
+        badge: thisMacBadge(serverMode),
+        status: tag(
+          error == null ? 'Bridge running' : 'Bridge offline',
+          good: error == null,
+        ),
+        cards: thisMacCards(serverMode),
+      ),
+    ];
+    if (remoteSupported || status['macControl']?['supported'] == true) {
+      sections.add((
+        id: 'remote',
+        title: 'Remote control',
+        subtitle: 'Access and control this $computer from your phone.',
+        icon: Icons.phone_iphone_rounded,
+        badge: remoteBadge(),
+        status: remoteStateTag(),
+        cards: remoteControlPanels(),
+      ));
+    }
+    sections.add((
+      id: 'updates',
+      title: 'Updates',
+      subtitle:
+          'Keep FarFromDesk up to date with the latest features and fixes.',
+      icon: Icons.download_rounded,
+      badge: update.release != null
+          ? settingsChip('New', color: accent)
+          : update.problem != null
+          ? settingsDot(warning)
+          : null,
+      status: checkingUpdates ? tag('Checking', spinning: true) : null,
+      cards: updateCards(),
+    ));
+    return sections;
+  }
+
+  /// Server mode says on, on power, and the helper has stopped reporting, so
+  /// the setting is set but this Mac is not actually being kept awake.
+  bool serverModeHelperStale(Map<String, dynamic> serverMode) =>
+      serverMode['enabled'] == true &&
+      (serverMode['statusAgeMs'] as num? ?? 0) > 30000 &&
+      serverMode['active'] != true &&
+      serverMode['onAcPower'] != false;
+
+  /// Something here needs the owner: the bridge is down, a preference write
+  /// failed, or server mode stopped taking effect.
+  Widget? thisMacBadge(Map<String, dynamic> serverMode) =>
+      error != null ||
+          preferences['error'] != null ||
+          serverMode['error'] != null ||
+          serverModeHelperStale(serverMode)
+      ? settingsDot(warning)
+      : null;
+
+  Widget? remoteBadge() => switch (remoteLink['state'] ?? 'idle') {
+    'connected' => settingsDot(success),
+    'offered' || 'connecting' => settingsDot(warning),
+    _ => null,
+  };
+
+  Widget remoteStateTag() => switch (remoteLink['state'] ?? 'idle') {
+    'offered' => tag('Link sent', tint: warning),
+    'connecting' => tag('Connecting', spinning: true),
+    'connected' => tag('Connected', good: true),
+    _ => remotePasswordSet ? tag('Ready', good: true) : tag('Off'),
+  };
+
+  List<Widget> thisMacCards(Map<String, dynamic> serverMode) {
+    final background = preferences['backgroundEnabled'] == true;
+    final awake = preferences['keepAwake'] == true;
+    final enabled = serverMode['enabled'] == true;
+    return [
+      settingCard(
+        Icons.bolt_rounded,
+        'Run in the background',
+        'Receive tasks while the window is closed. Turning this off disconnects messaging and pauses forwarding.',
+        control: Switch(
+          key: const Key('setting-background'),
+          value: background,
+          onChanged: busy
+              ? null
+              : (v) {
+                  if (v) {
+                    enableBackground();
+                  } else {
+                    post('/api/preferences', {
+                      'backgroundEnabled': false,
+                      'keepAwake': false,
+                    });
+                  }
+                },
+        ),
+      ),
+      settingCard(
+        Icons.power_settings_new_rounded,
+        'Open at login',
+        'Launch FarFromDesk when you sign in to this $computer.',
+        control: Switch(
+          key: const Key('setting-startup'),
+          value: startup,
+          onChanged: busy
+              ? null
+              : (v) => act(() async {
+                  await api.setStartup(v);
+                  startup = await api.startupEnabled();
+                }),
+        ),
+      ),
+      settingCard(
+        Icons.lock_outline_rounded,
+        'Keep awake while locked',
+        'Keep work running with the lid open, even when the screen is locked or '
+            'off. Your password and lock screen stay enabled.',
+        control: Switch(
+          key: const Key('setting-keep-awake'),
+          value: awake,
+          onChanged: busy || !background
+              ? null
+              : (v) async {
+                  if (!v ||
+                      await confirm(
+                        'Keep this $computer awake while locked?',
+                        'This uses battery and does not bypass your password, '
+                            'native approvals, manual sleep or lid-close sleep. '
+                            'Turn it off to restore normal idle sleep.',
+                      )) {
+                    await post('/api/preferences', {
+                      'backgroundEnabled': true,
+                      'keepAwake': v,
+                    });
+                  }
+                },
+        ),
+        // State only. The consequences live in the row's own line and in the
+        // confirmation, so the card does not stack three paragraphs of prose.
+        footer: [
+          if (!background)
+            settingsChip('Needs background access', color: warning),
+          if (preferences['assertionActive'] == true)
+            tag('Keep-awake active · screen may lock', good: true),
+          if (preferences['error'] != null)
+            Text(
+              preferences['error'],
+              style: const TextStyle(fontSize: 11, color: warning),
             ),
-            trailing: tag(
-              error == null ? 'Bridge running' : 'Bridge offline',
-              good: error == null,
-            ),
-          ),
         ],
       ),
-      if (remoteSupported || status['macControl']?['supported'] == true)
-        (
-          'Remote control',
-          'Manage phone access and permissions for your selected app.',
-          Icons.phone_iphone_rounded,
-          remoteSupported
-              ? remoteControlPanels()
-              : [panel('Mac permissions', macControlPanel())],
+      settingCard(
+        Icons.laptop_mac_rounded,
+        'Keep running with the lid closed',
+        'Server mode keeps this $computer awake while it is plugged in, even '
+            'with the lid shut, so tasks keep going. Turning it on asks for an '
+            'administrator approval once.',
+        control: Switch(
+          key: const Key('setting-server-mode'),
+          value: enabled,
+          onChanged: busy || !background
+              ? null
+              : (v) async {
+                  if (v) {
+                    final proceed = await confirm(
+                      'Turn on server mode?',
+                      'This installs a small background helper with administrator '
+                          'approval. While it is on and the power cable is '
+                          'connected, this $computer will not sleep, and a closed '
+                          'lid gets warm. The helper restores normal sleep within '
+                          'minutes if FarFromDesk stops, the cable is unplugged, or '
+                          'you turn this off. It cannot log in for you after a '
+                          'restart when FileVault is on.',
+                      actionLabel: 'Turn on',
+                    );
+                    if (!proceed) return;
+                  }
+                  await post('/api/preferences', {
+                    'backgroundEnabled': true,
+                    'keepAwake': true,
+                    'serverMode': v,
+                  });
+                },
         ),
-      (
-        'Updates',
-        'Keep FarFromDesk current.',
-        Icons.download_rounded,
-        [
-          panel(
-            'App updates',
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        checkingUpdates
-                            ? 'Checking for updates…'
-                            : update.release != null
-                            ? 'Version ${update.release!.version} is available'
-                            : update.problem ??
-                                  (update.checkedAt == null
-                                      ? 'Checked when the app opens'
-                                      : 'You are up to date'),
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      gap(2),
-                      small(
-                        update.release != null
-                            ? 'Installs after your current work finishes.'
-                            : 'Updates are checked when the app opens, then every hour.',
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                OutlinedButton(
-                  onPressed: checkingUpdates || busy
-                      ? null
-                      : () => checkUpdates(manual: true),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (checkingUpdates) ...[
-                        SizedBox(width: 13, height: 13, child: spinner(ink)),
-                        const SizedBox(width: 8),
-                      ],
-                      Text(checkingUpdates ? 'Checking…' : 'Check for updates'),
-                    ],
-                  ),
-                ),
-                if (update.release != null) ...[
-                  const SizedBox(width: 10),
-                  button('Update now', showUpdate, primary: true),
-                ],
-              ],
-            ),
-            trailing: small('v$installedVersion'),
+        footer: [
+          small(
+            'The helper puts normal sleep back when you turn this off, unplug '
+            'the power, or quit FarFromDesk.',
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
-            child: small(
-              'This $computer and your agent provider must be online. Queued replies are retained during outages.',
+          if (enabled) ...[
+            gap(10),
+            // One line for the state and the heat advice together, the way the
+            // reference states it, instead of a pill plus a second paragraph.
+            if (serverMode['active'] == true)
+              settingsNote(
+                'Lid-closed sleep is off on power. Keep the vents clear for '
+                'proper airflow.',
+              )
+            else ...[
+              gap(7),
+              if (serverMode['onAcPower'] == false)
+                tag('Waiting for the power cable')
+              else if (serverModeHelperStale(serverMode))
+                tag('The sleep helper is not taking effect', tint: warning)
+              else
+                tag('Starting the sleep helper', spinning: true),
+              gap(7),
+              small(
+                serverModeHelperStale(serverMode)
+                    ? 'macOS is still set to sleep normally. Server mode needs the '
+                          'background helper; turn it off and on again to reinstall it.'
+                    : 'The helper puts normal sleep back if FarFromDesk stops or the '
+                          'power cable is unplugged.',
+              ),
+            ],
+          ],
+          if (serverMode['helperInstalled'] == true && !enabled) ...[
+            gap(5),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: const Key('setting-remove-helper'),
+                onPressed: busy
+                    ? null
+                    : () async {
+                        final proceed = await confirm(
+                          'Remove the server mode helper?',
+                          'This deletes the background helper and restores normal '
+                              'sleep. Nothing else is removed, and you can turn '
+                              'server mode on again later.',
+                          actionLabel: 'Remove',
+                        );
+                        if (!proceed) return;
+                        await post('/api/preferences', {
+                          'backgroundEnabled': background,
+                          'keepAwake': awake,
+                          'removeServerHelper': true,
+                        });
+                      },
+                child: const Text('Remove server mode helper'),
+              ),
             ),
-          ),
+          ],
+          if (serverMode['error'] != null) ...[
+            gap(7),
+            Text(
+              serverMode['error'],
+              style: const TextStyle(fontSize: 11, color: warning),
+            ),
+          ],
         ],
+      ),
+    ];
+  }
+
+  Widget updateStateMark() => Container(
+    width: 38,
+    height: 38,
+    alignment: Alignment.center,
+    decoration: const BoxDecoration(color: success, shape: BoxShape.circle),
+    child: const Icon(Icons.check_rounded, size: 22, color: onAction),
+  );
+
+  /// Update state, honestly: an unchecked feed is not evidence that the app is
+  /// current, so it says so instead of claiming you are up to date.
+  ///
+  /// The cadence in every sentence below is rendered from [updateSchedule],
+  /// which is the same value the checker obeys, so the pane cannot describe a
+  /// schedule the app is not actually keeping.
+  List<Widget> updateCards() {
+    final release = update.release;
+    final checked = update.checkedAt != null;
+    final upToDate = release == null && update.problem == null && checked;
+    final pending = release == null && update.problem == null && !checked;
+    final cadence = updateSchedule.label.toLowerCase();
+    return [
+      settingCard(
+        upToDate
+            ? Icons.verified_outlined
+            : release != null
+            ? Icons.system_update_alt_rounded
+            : pending
+            ? Icons.schedule_rounded
+            : Icons.error_outline_rounded,
+        upToDate
+            ? 'You are up to date'
+            : release != null
+            ? 'Version ${release.version} is available'
+            : pending
+            ? 'Not checked yet on this run'
+            : update.problem!,
+        upToDate
+            ? 'FarFromDesk v$installedVersion is the newest version for this $computer.'
+            : release != null
+            ? 'Installs after your current work finishes. Update now to start it sooner.'
+            : pending
+            ? 'Updates are checked when the app opens, then $cadence.'
+            : 'Nothing was changed. Try again, or check your internet connection.',
+        control: release != null
+            ? button('Update now', showUpdate, primary: true)
+            : upToDate
+            ? updateStateMark()
+            : null,
+      ),
+      // The design reference puts an "App updates" switch here. It is not built
+      // yet: this build cannot replace itself, and an automatic install would
+      // contradict the existing guarantee that updating always takes a click.
+      // Adding it is an open decision, not an oversight.
+      settingCard(
+        Icons.refresh_rounded,
+        'Check for updates',
+        'Manually check for a new version now instead of waiting.',
+        // Stays enabled while checking so the spinner renders at full strength
+        // instead of inside a greyed-out button. checkUpdates ignores a second
+        // press, so this cannot queue a duplicate check.
+        control: OutlinedButton(
+          key: const Key('setting-check-updates'),
+          onPressed: busy ? null : () => checkUpdates(manual: true),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (checkingUpdates) ...[
+                SizedBox(width: 13, height: 13, child: spinner(accent)),
+                const SizedBox(width: 8),
+              ],
+              Text(checkingUpdates ? 'Checking…' : 'Check now'),
+            ],
+          ),
+        ),
+      ),
+      settingCard(
+        Icons.event_repeat_rounded,
+        'Update schedule',
+        'Checked when the app opens, then $cadence. A manual check is allowed '
+            'once a minute.',
+        // FfdSelect, not Material's DropdownButton: the Material one installs a
+        // route that dims the window and centres itself, which is why it looked
+        // like a different app bolted onto this one. It needs a bounded width,
+        // because the widest option sets the trigger's natural size otherwise.
+        control: SizedBox(
+          width: 140,
+          child: FfdSelect<UpdateSchedule>(
+            key: const Key('setting-update-schedule'),
+            value: updateSchedule,
+            enabled: !busy,
+            compact: true,
+            alignRight: true,
+            menuWidth: 190,
+            options: [
+              for (final option in UpdateSchedule.values)
+                SelectOption(value: option, label: option.label),
+            ],
+            onChanged: setUpdateSchedule,
+          ),
+        ),
+      ),
+      settingsNote(
+        'Updates install after your current work finishes, so a running task is '
+        'never interrupted part-way.',
       ),
     ];
   }
@@ -3805,71 +4869,97 @@ extension _Overview on _DeskState {
   );
 
   Widget kpi(
-    IconData icon,
+    _MetricArtKind art,
     String label,
     String value,
     String note, {
     Color? noteTint,
     String? chip,
-  }) => studioCard(
-    padding: const EdgeInsets.all(16),
-    SizedBox(
-      height: 130,
-      child: Stack(
-        children: [
-          Positioned(
-            right: 0,
-            top: 15,
-            child: Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: (noteTint ?? accent).withValues(alpha: .07),
-                border: Border.all(
-                  color: (noteTint ?? accent).withValues(alpha: .22),
-                ),
-              ),
-              child: Icon(
-                icon,
-                size: 30,
-                color: (noteTint ?? accent).withValues(alpha: .75),
-              ),
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 13, color: muted)),
-              const SizedBox(height: 10),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w600,
-                  fontFeatures: [FontFeature.tabularFigures()],
-                ),
-              ),
-              const Spacer(),
-              Row(
+    bool attention = false,
+  }) => Container(
+    key: ValueKey('overview-metric-$label'),
+    padding: const EdgeInsets.fromLTRB(17, 16, 17, 15),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xff151514), Color(0xff101010)],
+      ),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: const Color(0xff292824)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (chip != null) ...[
-                    tag(chip, tint: noteTint ?? muted),
-                    const SizedBox(width: 8),
-                  ],
-                  Expanded(
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xffa8a7a3),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
                     child: Text(
-                      note,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12, color: faint),
+                      value,
+                      style: const TextStyle(
+                        fontSize: 29,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -1,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
                     ),
                   ),
                 ],
               ),
+            ),
+            const SizedBox(width: 3),
+            ExcludeSemantics(
+              child: SizedBox(
+                key: ValueKey('overview-metric-art-$label'),
+                width: 78,
+                height: 64,
+                child: CustomPaint(
+                  painter: _OverviewMetricPainter(art, attention: attention),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 20,
+          child: Row(
+            children: [
+              if (chip != null) ...[
+                tag(chip, tint: noteTint ?? muted),
+                const SizedBox(width: 7),
+              ],
+              Expanded(
+                child: Text(
+                  note,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: faint),
+                ),
+              ),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
     ),
   );
 
@@ -4020,7 +5110,7 @@ extension _Overview on _DeskState {
                 flex: 10,
                 child: pipeNode(
                   logoTile(
-                    main?['provider'] == 'claude' ? 'claude' : 'openai',
+                    providerBrand(main?['provider']),
                     size: 32,
                     dim: main == null,
                   ),
@@ -4493,31 +5583,32 @@ extension _Overview on _DeskState {
         builder: (context, box) {
           final tiles = [
             kpi(
-              Icons.inbox_outlined,
+              _MetricArtKind.requests,
               'Requests',
               '${week.length}',
               'last 7 days',
             ),
             kpi(
-              Icons.check_rounded,
+              _MetricArtKind.answered,
               'Answered',
               week.isEmpty ? '–' : '${(answered * 100 / week.length).round()}%',
               '$answered repl${answered == 1 ? 'y' : 'ies'}',
             ),
             kpi(
-              Icons.schedule_rounded,
+              _MetricArtKind.progress,
               'In progress',
               '$working',
               working == 0 ? 'nothing running' : 'sessions working now',
             ),
             kpi(
-              Icons.shield_outlined,
+              _MetricArtKind.attention,
               'Needs you',
               '$needs',
               needs == 0
                   ? 'nothing waiting'
                   : 'oldest ${clock(reviews.isEmpty ? now.millisecondsSinceEpoch : jobAt(reviews.last))}',
               chip: needs == 0 ? 'Clear' : 'Action',
+              attention: needs > 0,
               noteTint: needs == 0 ? success : warning,
             ),
           ];
@@ -4743,7 +5834,7 @@ extension _Onboarding on _DeskState {
               'Open the pairing link',
               confirming ? 'now' : 'pending',
             ),
-            ('Set up a coordinator', 'Claude or Codex', 'pending'),
+            ('Set up a coordinator', 'Claude, Codex or Muse Code', 'pending'),
           ]
         : [
             (
@@ -4757,7 +5848,7 @@ extension _Onboarding on _DeskState {
               hasChannelChoice ? 'now' : 'pending',
             ),
             ('Pick where replies go', 'Yourself or a private group', 'pending'),
-            ('Set up a coordinator', 'Claude or Codex', 'pending'),
+            ('Set up a coordinator', 'Claude, Codex or Muse Code', 'pending'),
           ];
     final right = !hasChannelChoice
         ? chooseCard()
@@ -5041,7 +6132,7 @@ extension _Welcome on _DeskState {
           step(
             Icons.visibility_outlined,
             'Set up a coordinator',
-            'Pick Claude or Codex to read your messages.',
+            'Pick Claude, Codex or Muse Code to read your messages.',
             const Text('After step 1', style: later),
             dim: true,
           ),

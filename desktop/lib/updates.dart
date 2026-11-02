@@ -66,6 +66,71 @@ class UpdateCheck {
   const UpdateCheck({this.release, this.problem, this.checkedAt});
 }
 
+/// How often the app may check for a new release without being asked.
+///
+/// The pane used to promise "every hour" while the checker quietly used six, so
+/// the number the owner read was not the number that ran. The only way that
+/// sentence and the behaviour can agree is for the cadence to be one value that
+/// the copy renders from and the checker obeys.
+enum UpdateSchedule {
+  hourly('hourly', 'Every hour', Duration(hours: 1)),
+  sixHourly('six-hourly', 'Every 6 hours', Duration(hours: 6)),
+  daily('daily', 'Every day', Duration(days: 1)),
+  weekly('weekly', 'Every week', Duration(days: 7));
+
+  const UpdateSchedule(this.id, this.label, this.interval);
+
+  final String id;
+  final String label;
+  final Duration interval;
+
+  /// Round-trips through a stored id rather than an index, so reordering or
+  /// inserting a value can never silently change what someone selected.
+  static UpdateSchedule fromId(Object? id) => values.firstWhere(
+    (s) => s.id == id,
+    orElse: () => UpdateSchedule.hourly,
+  );
+}
+
+/// The two choices the owner actually makes, kept apart from the release cache.
+///
+/// The cache is keyed by version and platform and is thrown away whenever either
+/// changes. A preference must outlive that, or installing an update would
+/// silently reset what someone picked.
+class UpdatePreferences {
+  UpdateSchedule schedule;
+  bool automatic;
+  UpdatePreferences({
+    this.schedule = UpdateSchedule.hourly,
+    this.automatic = true,
+  });
+
+  UpdatePreferences copyWith({UpdateSchedule? schedule, bool? automatic}) =>
+      UpdatePreferences(
+        schedule: schedule ?? this.schedule,
+        automatic: automatic ?? this.automatic,
+      );
+
+  Map<String, dynamic> toJson() => {
+    'schedule': schedule.id,
+    'automatic': automatic,
+  };
+
+  static UpdatePreferences fromJson(Object? data) {
+    if (data is! Map) return UpdatePreferences();
+    return UpdatePreferences(
+      schedule: UpdateSchedule.fromId(data['schedule']),
+      // A missing key means "never chosen", which keeps the documented default
+      // rather than reading as an explicit off.
+      automatic: data['automatic'] is bool ? data['automatic'] as bool : true,
+    );
+  }
+}
+
+/// A manual check is allowed on this floor regardless of the schedule, so
+/// pressing the button twice cannot hammer the release feed.
+const updateManualFloor = Duration(minutes: 1);
+
 bool trustedReleaseUrl(Uri url) =>
     url.scheme == 'https' &&
     url.host == 'github.com' &&
@@ -151,7 +216,8 @@ AppRelease? selectRelease(
   return best;
 }
 
-/// Bounded public metadata checks every six hours; never carries local credentials.
+/// Bounded public metadata checks on the owner's chosen cadence; never carries
+/// local credentials.
 class _FeedStatus implements Exception {
   final int code;
   const _FeedStatus(this.code);
@@ -180,6 +246,12 @@ class UpdateChecker {
   final DateTime Function() clock;
   final Future<void> Function(Map<String, dynamic>)? save;
   UpdateCheck latest = const UpdateCheck();
+
+  /// Both are read at check time, not captured at construction, so a change in
+  /// the pane takes effect on the next check instead of at the next launch.
+  UpdateSchedule schedule;
+  bool automatic;
+
   DateTime? attemptedAt;
   Future<UpdateCheck>? _pending;
   Object? _cachedData;
@@ -192,8 +264,16 @@ class UpdateChecker {
     http.Client Function()? clientFactory,
     DateTime Function()? clock,
     this.save,
+    this.schedule = UpdateSchedule.hourly,
+    this.automatic = true,
   }) : clientFactory = clientFactory ?? http.Client.new,
        clock = clock ?? DateTime.now;
+
+  /// Applies stored preferences without disturbing an in-flight check.
+  void applyPreferences(UpdatePreferences prefs) {
+    schedule = prefs.schedule;
+    automatic = prefs.automatic;
+  }
 
   void restore(Map<String, dynamic> cache) {
     try {
@@ -228,9 +308,9 @@ class UpdateChecker {
 
   Future<UpdateCheck> check({bool manual = false}) {
     if (_pending != null) return _pending!;
-    final interval = manual
-        ? const Duration(minutes: 1)
-        : const Duration(hours: 6);
+    // The schedule the pane shows is the schedule that runs. A manual press
+    // only ever gets the manual floor.
+    final interval = manual ? updateManualFloor : schedule.interval;
     if (_closed ||
         (attemptedAt != null &&
             !attemptedAt!.isAfter(clock()) &&

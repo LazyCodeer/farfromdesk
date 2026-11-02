@@ -12,7 +12,7 @@ export function ownerOnlyGroup(metadata:any,owners:string[]) {
 export type ChatPolicy={owners:()=>string[];ownedGroup:(jid:string)=>boolean};
 const EVENTS=['creds.update','connection.update','messages.upsert','messages.update','message-receipt.update'] as const;
 type GuardedEvent=typeof EVENTS[number];
-const CONTENT_KEYS=new Set(['text','document','fileName','mimetype','caption']);
+const CONTENT_KEYS=new Set(['text','document','image','fileName','mimetype','caption']);
 
 /** The only WhatsApp surface the app gets. A linked device can read and send in every chat,
  * so this is the one place that limits FarFromDesk to the owner's own chat and the
@@ -35,7 +35,8 @@ export class GuardedSocket {
     this.#raw.ev.on(event,filtered as any);
   }};
   sendMessage(jid:string,content:Record<string,unknown>,options:{messageId:string}) {
-    if(Object.keys(content).some(k=>!CONTENT_KEYS.has(k)))throw new Error('Blocked: only text and documents can be sent.');
+    if(Object.keys(content).some(k=>!CONTENT_KEYS.has(k)))throw new Error('Blocked: only text, documents and image previews can be sent.');
+    if('image' in content&&(!Buffer.isBuffer(content.image)||content.image.length>10_000_000||content.mimetype!=='image/jpeg'))throw new Error('Blocked: image previews require inline JPEG bytes under 10 MB.');
     return this.#raw.sendMessage(this.target(jid),content as any,{messageId:options.messageId});
   }
   relayMessage(jid:string,message:Parameters<WASocket['relayMessage']>[1],options:{messageId:string}){return this.#raw.relayMessage(this.target(jid),message,{messageId:options.messageId});}

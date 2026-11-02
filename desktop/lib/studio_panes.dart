@@ -13,6 +13,14 @@ extension _Panes on _DeskState {
       inboxPane(),
     2 => itemsBoard(),
     4 => settingsPane(),
+    5 when api.localEmail => Padding(
+      padding: const EdgeInsets.all(24),
+      child: LocalEmailScreen(gateway: api),
+    ),
+    6 when api.preview || const bool.fromEnvironment('FFD_ISOLATED_LOCAL') =>
+      api.preview
+          ? const SocialPreview()
+          : SocialScreen(key: socialKey, gateway: api),
     _ => null,
   };
 
@@ -33,11 +41,7 @@ extension _Panes on _DeskState {
   String sessionApp(String id) {
     final b = sessionBinding(id);
     if (b == null) return 'Not routed to a session';
-    final provider = switch (b['provider']) {
-      'claude' => 'Claude',
-      'codex' => 'Codex',
-      _ => 'Coding',
-    };
+    final provider = providerLabel(b['provider']);
     final mode = switch (b['executionMode']) {
       'desktop' => 'Desktop',
       'cli' => 'CLI',
@@ -894,9 +898,7 @@ extension _Panes on _DeskState {
               children: [
                 if (sessionBinding('${g['id']}') != null)
                   logoTile(
-                    sessionBinding('${g['id']}')?['provider'] == 'claude'
-                        ? 'claude'
-                        : 'openai',
+                    providerBrand(sessionBinding('${g['id']}')?['provider']),
                     size: 32,
                   )
                 else
@@ -1075,9 +1077,7 @@ extension _Panes on _DeskState {
                 ),
               if (sessionBinding(id) != null)
                 logoTile(
-                  sessionBinding(id)?['provider'] == 'claude'
-                      ? 'claude'
-                      : 'openai',
+                  providerBrand(sessionBinding(id)?['provider']),
                   size: 32,
                 ),
               const SizedBox(width: 10),
@@ -1204,14 +1204,14 @@ extension _Panes on _DeskState {
                     color: failed
                         ? danger.withValues(alpha: .08)
                         : fromYou
-                        ? const Color(0xff1d415b)
-                        : const Color(0xff141414),
+                        ? accentWash
+                        : raised,
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
                       color: failed
                           ? danger.withValues(alpha: .4)
                           : fromYou
-                          ? Colors.transparent
+                          ? accent.withValues(alpha: .3)
                           : line2,
                     ),
                   ),
@@ -1246,10 +1246,7 @@ extension _Panes on _DeskState {
                             ],
                           ),
                         ),
-                      SelectableText(
-                        inboxText(m['text']),
-                        style: const TextStyle(fontSize: 13, height: 1.5),
-                      ),
+                      ChatMessageText(inboxText(m['text'])),
                       if (failed && !unassigned)
                         TextButton(
                           onPressed: () => requestTimeline('${m['requestId']}'),
@@ -1726,121 +1723,355 @@ extension _Panes on _DeskState {
     );
   }
 
-  // Settings: a sub-nav that scrolls to each group of cards.
+  // Settings: a fixed sub-nav that switches panes. One section is on screen at
+  // a time, so the nav highlight always names what you are actually reading.
 
-  Widget settingsPane() {
-    final sections = settingsSections();
-    final body = SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(24, 22, 28, 40),
-      child: Align(
-        alignment: Alignment.topLeft,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
+  /// Rounded tile behind a settings icon. Only the section heading gets the warm
+  /// accent tile; the rows under it are neutral with a light icon, which is what
+  /// stops a page of settings reading as a wall of orange.
+  ///
+  /// The row tile is deliberately not square. Measured off the design reference
+  /// it is 53 x 45, and that height is what makes the card heights come out
+  /// right: with a 52-square tile the "Open at login" card grows to 87pt against
+  /// the reference's 76, because the tile rather than the text starts setting the
+  /// row height. The heading tile above is the larger, square one (56).
+  Widget settingsIconTile(
+    IconData icon, {
+    double size = 53,
+    double height = 45,
+    bool accentTile = false,
+  }) => Container(
+    width: size,
+    height: height,
+    decoration: BoxDecoration(
+      color: accentTile ? const Color(0x28ff6b2c) : const Color(0x0fffffff),
+      borderRadius: BorderRadius.circular(size * .3),
+    ),
+    child: Icon(
+      icon,
+      size: size * .46,
+      color: accentTile ? accent : ink,
+    ),
+  );
+
+  /// Small state word. Used where a full [tag] would compete with a control.
+  Widget settingsChip(String text, {Color color = muted}) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: .14),
+      borderRadius: BorderRadius.circular(999),
+    ),
+    child: Text(
+      text,
+      style: TextStyle(
+        fontSize: 10.5,
+        fontWeight: FontWeight.w600,
+        color: color,
+      ),
+    ),
+  );
+
+  Widget settingsDot(Color color) => Container(
+    width: 7,
+    height: 7,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
+
+  /// Heading for the selected section: tile, title, one line of context, and
+  /// the section's own status on the right, where it describes the section
+  /// rather than one row inside it.
+  Widget settingsHeading(
+    String title,
+    String subtitle,
+    IconData icon, {
+    Widget? status,
+  }) => Padding(
+    // 30, not 18: measured off the reference, where the first card sits 30.5pt
+    // below the heading tile. At 18 the heading looked like it was crowding the
+    // card it belongs to.
+    padding: const EdgeInsets.only(bottom: 30),
+    child: Row(
+      children: [
+        settingsIconTile(icon, size: 56, height: 56, accentTile: true),
+        const SizedBox(width: 16),
+        Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final s in sections) ...[
-                Padding(
-                  key: settingsKeys[s.$1] ??= GlobalKey(),
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        s.$1,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      gap(2),
-                      small(s.$2),
-                    ],
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 25,
+                  height: 1.15,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.5,
+                ),
+              ),
+              gap(5),
+              Text(
+                subtitle,
+                style: const TextStyle(fontSize: 13, height: 1.4, color: muted),
+              ),
+            ],
+          ),
+        ),
+        if (status != null) ...[const SizedBox(width: 16), status],
+      ],
+    ),
+  );
+
+  /// One setting: icon, title, the line that says what it does, the control,
+  /// and any detail that only matters once the setting is on.
+  Widget settingCard(
+    IconData icon,
+    String title,
+    String detail, {
+    Widget? control,
+    List<Widget> footer = const [],
+  }) => Container(
+    width: double.infinity,
+    // 6, not 10: the reference stacks its cards 6.3pt apart. Ten left visible
+    // gaps between cards while the cards themselves already had generous
+    // internal padding, so the page read as loose and long at the same time.
+    margin: const EdgeInsets.only(bottom: 6),
+    padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+    decoration: BoxDecoration(
+      color: toneCharcoal,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: line2),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            settingsIconTile(icon),
+            const SizedBox(width: 24),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  gap(3),
+                  Text(
+                    detail,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      height: 1.45,
+                      color: ink2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (control != null) ...[const SizedBox(width: 16), control],
+          ],
+        ),
+        if (footer.isNotEmpty) ...[
+          gap(14),
+          // Inset to the same column the title starts in: card padding + tile
+          // + gap, so it tracks the tile size above rather than being a number
+          // that has to be remembered separately.
+          Padding(
+            padding: const EdgeInsets.only(left: 97),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: footer,
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  /// Quiet strip for a caveat that belongs to the section, not to one row.
+  Widget settingsNote(
+    String text, {
+    IconData icon = Icons.info_outline_rounded,
+  }) => Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(top: 4),
+    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+    decoration: BoxDecoration(
+      color: const Color(0x0ff4f1ea),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: hairline),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: muted),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 12.5, height: 1.45, color: ink2),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  /// Heading for a group of cards inside one section, with its own one-line
+  /// explanation so a section can hold more than one group.
+  Widget settingsSubheading(String title, String detail) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        title,
+        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+      ),
+      gap(4),
+      small(detail),
+    ],
+  );
+
+  Widget settingsNavItem(_SettingsSection section, bool on) => Padding(
+    padding: const EdgeInsets.only(bottom: 3),
+    child: Material(
+      color: on ? accentWash : Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(
+          color: on ? accent.withValues(alpha: .5) : Colors.transparent,
+        ),
+      ),
+      child: InkWell(
+        key: Key('settings-tab-${section.id}'),
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => changeView(() => settingsTab = section.id),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 13),
+          child: Row(
+            children: [
+              Icon(section.icon, size: 18, color: on ? accent : muted),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  section.title,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: on ? FontWeight.w600 : FontWeight.w500,
+                    color: on ? ink : ink2,
                   ),
                 ),
-                ...s.$4,
-                gap(20),
+              ),
+              if (section.badge != null) ...[
+                const SizedBox(width: 8),
+                KeyedSubtree(
+                  key: Key('settings-badge-${section.id}'),
+                  child: section.badge!,
+                ),
               ],
             ],
           ),
         ),
       ),
-    );
-    return LayoutBuilder(
-      builder: (context, box) => box.maxWidth < 700
-          ? body
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(
-                  width: 160,
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(20, 22, 0, 20),
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(10, 0, 0, 16),
-                        child: Text(
-                          'Settings',
-                          style: Theme.of(context).textTheme.headlineLarge,
-                        ),
-                      ),
-                      for (final s in sections) settingsNavItem(s.$1, s.$3),
-                    ],
-                  ),
-                ),
-                Expanded(child: body),
-              ],
-            ),
-    );
-  }
+    ),
+  );
 
-  Widget settingsNavItem(String title, IconData icon) {
-    final on =
-        settingsTab == title ||
-        (settingsTab == 'This Mac' && title == 'This $computer');
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Material(
-        color: on ? const Color(0xff161616) : Colors.transparent,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(9),
-          side: BorderSide(color: on ? line2 : Colors.transparent),
-        ),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(9),
-          onTap: () {
-            changeView(() => settingsTab = title);
-            final target = settingsKeys[title]?.currentContext;
-            if (target != null) {
-              Scrollable.ensureVisible(
-                target,
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOut,
-              );
-            }
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-            child: Row(
-              children: [
-                Icon(icon, size: 16, color: on ? ink : faint),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    title,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w500,
-                      color: on ? ink : muted,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+  Widget settingsPane() {
+    final sections = settingsSections();
+    final current = sections.firstWhere(
+      (s) => s.id == settingsTab,
+      orElse: () => sections.first,
+    );
+    final nav = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Settings',
+          style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+            fontSize: 30,
+            height: 1.1,
+            letterSpacing: -.7,
           ),
         ),
-      ),
+        gap(9),
+        Text(
+          'Manage your $computer, remote access, and updates for FarFromDesk.',
+          style: const TextStyle(fontSize: 13, height: 1.5, color: muted),
+        ),
+        gap(20),
+        Container(
+          padding: const EdgeInsets.all(7),
+          decoration: BoxDecoration(
+            color: toneCharcoal,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: line2),
+          ),
+          child: Column(
+            children: [
+              for (final s in sections) settingsNavItem(s, s.id == current.id),
+            ],
+          ),
+        ),
+      ],
+    );
+    final body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        settingsHeading(
+          current.title,
+          current.subtitle,
+          current.icon,
+          status: current.status,
+        ),
+        ...current.cards,
+      ],
+    );
+    return LayoutBuilder(
+      builder: (context, box) {
+        if (box.maxWidth < 820) {
+          // Below this the tab column would squeeze the cards, so the nav
+          // stacks on top instead of disappearing the way the old one did.
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 34),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [nav, gap(26), body],
+            ),
+          );
+        }
+        // The nav is its own scroll column so it stays put while the pane scrolls: it
+        // is the only way to reach a section, so it must never scroll away.
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              width: 258,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(26, 22, 24, 30),
+                child: nav,
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                // 30 top, 24 right. The top matches the reference, which starts
+                // its first card 30.5pt below the pane edge. The right gutter
+                // was 36 against the reference's 24.3, so a full 12pt of
+                // content width was being thrown away - and the left stays 0
+                // because the nav column's own padding already sets that gap.
+                padding: const EdgeInsets.fromLTRB(0, 30, 24, 40),
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 980),
+                    child: body,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

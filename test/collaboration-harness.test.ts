@@ -12,6 +12,7 @@ process.env.WSB_STATE_DIR=root;process.env.FARFROMDESK_HOME=join(root,'home');
 test.after(()=>rmSync(root,{recursive:true,force:true}));
 const {Store}=await import('../src/store.js');
 const {CollaborationHarness}=await import('../src/collaboration-harness.js');
+const {ensureProviderSetupSchema}=await import('../src/provider-setup-barrier.js');
 type Scope=import('../src/collaboration-harness.js').CollaborationScope;
 type Binding=import('../src/store.js').Binding;
 
@@ -53,6 +54,15 @@ test('separate SQLite connections cannot both claim the same item',()=>{
   }finally{other.close();f.close();}
 });
 
+test('a session already running unrelated work cannot acquire an item claim',()=>{
+  const f=fixture();try {
+    f.store.enqueue('wa:unrelated',f.a,'Other work',f.owner);f.store.jobState('wa:unrelated','dispatched');
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'busy-session'),/session has active or uncertain/);
+    f.store.jobState('wa:unrelated','completed');
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'finished-reply-only'),/session has active or uncertain/);
+  }finally{f.close();}
+});
+
 test('simultaneous processes produce exactly one successful claim',async()=>{
   const f=fixture(),children:ChildProcess[]=[];
   try{
@@ -71,6 +81,26 @@ test('simultaneous processes produce exactly one successful claim',async()=>{
     const results=await Promise.race([Promise.all([a.result,b.result]),timeout]);
     assert.equal(results.filter(Boolean).length,1);
     assert.equal(f.ledger.history(f.request,f.itemId).filter(x=>x.kind==='claimed').length,1);
+  }finally{for(const child of children)child.kill();f.close();}
+});
+
+test('a setup reservation and an item claim cannot both win across processes',async()=>{
+  const f=fixture(),children:ChildProcess[]=[];try {
+    ensureProviderSetupSchema(f.store);
+    const run=(mode:string)=>{
+      const child=spawn(process.execPath,['--import','tsx','test/fixtures/provider-setup-race-worker.mts',f.db,mode,f.owner,f.request,String(f.itemId),f.a.id],{stdio:['ignore','ignore','ignore','ipc']});children.push(child);
+      let readyResolve!:()=>void,resultResolve!:(value:boolean)=>void;
+      const ready=new Promise<void>(r=>{readyResolve=r;}),result=new Promise<boolean>(r=>{resultResolve=r;});
+      child.on('message',(msg:any)=>{if(msg?.ready)readyResolve();else if(typeof msg?.ok==='boolean')resultResolve(msg.ok);});
+      return {child,ready,result};
+    };
+    const setup=run('setup'),claim=run('claim'),timeout=new Promise<never>((_,reject)=>{const t=setTimeout(()=>reject(Error('setup race workers timed out')),10000);t.unref();});
+    await Promise.race([Promise.all([setup.ready,claim.ready]),timeout]);setup.child.send?.('go');claim.child.send?.('go');
+    const results=await Promise.race([Promise.all([setup.result,claim.result]),timeout]);
+    assert.equal(results.filter(Boolean).length,1);
+    const reservations=f.store.db.prepare('SELECT count(*) n FROM collaboration_setup_barriers').get() as {n:number};
+    const claims=f.store.db.prepare('SELECT count(*) n FROM collaboration_claims WHERE token IS NOT NULL').get() as {n:number};
+    assert.equal(reservations.n+claims.n,1);
   }finally{for(const child of children)child.kill();f.close();}
 });
 
@@ -128,6 +158,71 @@ test('owner, item, binding and contract changes fail closed',()=>{
       assert.throws(()=>f.ledger.handoff(f.request,f.itemId,claim.token,f.b.id,'Done',`handoff-${change}`),/changed|unavailable/);
     }finally{f.close();}
   }
+});
+
+test('registered owner group uses its stored name and requires the current destination',()=>{
+  const f=fixture();try{
+    const group='123456@g.us';
+    f.store.set(`owned-group:${group}`,'My owner group');f.store.set('destination-jid',group);
+    f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run(group,f.request);
+    f.store.db.prepare('UPDATE item_owner_origins SET destination=? WHERE item_id=?').run(group,f.itemId);
+    f.scope.destination=group;
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'group-claim');
+    f.ledger.renew(f.request,f.itemId,claim.token,'group-renew');
+    f.ledger.release(f.request,f.itemId,claim.token,'group-release');
+    assert.deepEqual(f.ledger.history(f.request,f.itemId).map(x=>x.kind),['claimed','renewed','released']);
+    f.store.set('destination-jid','another@g.us');
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'group-wrong-destination'),/changed/);
+  }finally{f.close();}
+});
+
+test('revoking and restoring a group grant invalidates its existing claim',()=>{
+  const f=fixture();try{
+    const group='123456@g.us';
+    f.store.set(`owned-group:${group}`,'My owner group');f.store.set('destination-jid',group);
+    f.store.db.prepare('UPDATE inbox SET destination=? WHERE id=?').run(group,f.request);
+    f.store.db.prepare('UPDATE item_owner_origins SET destination=? WHERE item_id=?').run(group,f.itemId);
+    f.scope.destination=group;
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'group-claim');
+    f.store.db.prepare('DELETE FROM settings WHERE key=?').run(`owned-group:${group}`);
+    f.store.set(`owned-group:${group}`,'My owner group');
+    assert.throws(()=>f.ledger.renew(f.request,f.itemId,claim.token,'after-revoke'),/changed|unavailable/);
+    assert.throws(()=>f.ledger.release(f.request,f.itemId,claim.token,'after-revoke-release'),/changed|unavailable/);
+  }finally{f.close();}
+});
+
+test('owner and channel roundtrips invalidate claims and idempotent events',()=>{
+  for(const mode of ['owner','channel']){
+    const f=fixture();try{
+      const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'claim');
+      if(mode==='owner'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
+      else{f.store.set('control-channel','telegram');f.store.set('control-channel','whatsapp');}
+      assert.throws(()=>f.ledger.assertClaim(f.request,f.itemId,f.a.id,claim.token,claim.generation),/changed|unavailable/);
+      assert.throws(()=>f.ledger.release(f.request,f.itemId,claim.token,'release'),/changed|unavailable/);
+      assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.a.id,'claim'),/reused|changed/);
+      assert.deepEqual(f.ledger.history(f.request,f.itemId),[]);
+    }finally{f.close();}
+  }
+});
+
+test('old claims without an owner generation cannot be reused or released',()=>{
+  const f=fixture();try{
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'claim');
+    f.store.db.prepare('UPDATE collaboration_claims SET owner_generation=NULL WHERE item_id=?').run(f.itemId);
+    assert.throws(()=>f.ledger.assertClaim(f.request,f.itemId,f.a.id,claim.token,claim.generation),/changed|unavailable/);
+    assert.throws(()=>f.ledger.release(f.request,f.itemId,claim.token,'release'),/changed|unavailable/);
+    assert.throws(()=>f.ledger.claim(f.request,f.itemId,f.b.id,'other'),/changed/);
+  }finally{f.close();}
+});
+
+test('migration of old claim and event tables does not authorize their rows',()=>{
+  const f=fixture();try{
+    const claim=f.ledger.claim(f.request,f.itemId,f.a.id,'claim');
+    f.store.db.exec('ALTER TABLE collaboration_claims DROP COLUMN owner_generation; ALTER TABLE collaboration_events DROP COLUMN owner_generation');
+    const migrated=new CollaborationHarness(f.store,f.authority,f.clock);
+    assert.throws(()=>migrated.assertClaim(f.request,f.itemId,f.a.id,claim.token,claim.generation),/changed|unavailable/);
+    assert.deepEqual(migrated.history(f.request,f.itemId),[]);
+  }finally{f.close();}
 });
 
 test('new approved contract revisions can claim an idle item without mixing history',()=>{

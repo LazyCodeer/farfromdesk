@@ -35,6 +35,13 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
+  /// Settings is tabbed, so a test must select the section it asserts on
+  /// instead of relying on every section being rendered at once.
+  Future<void> openSettingsTab(WidgetTester tester, String id) async {
+    await tester.tap(find.byKey(Key('settings-tab-$id')));
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('Onboarding shows a rejected Telegram token error', (
     tester,
   ) async {
@@ -87,6 +94,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 3));
       await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
       await tester.ensureVisible(find.byKey(const Key('remote-password')));
       await tester.enterText(
         find.byKey(const Key('remote-password')),
@@ -119,6 +127,7 @@ void main() {
       final api = LegacyRemoteGateway();
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
       final entry = find.byKey(const Key('remote-desktop-settings'));
       await tester.ensureVisible(entry);
       await tester.tap(entry);
@@ -182,6 +191,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 3));
       await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
       expect(find.byKey(const Key('mac-control-enabled')), findsNothing);
       final check = find.byKey(const Key('mac-refresh-permission'));
       await tester.ensureVisible(check);
@@ -248,6 +258,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
+    await openSettingsTab(tester, 'remote');
     final field = find.byKey(const Key('remote-password'));
     await tester.ensureVisible(field);
     await tester.enterText(field, 'short');
@@ -289,6 +300,7 @@ void main() {
         ..captureTrusted = true;
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
       await tester.ensureVisible(find.text('Screen Recording'));
       expect(find.text('Allowed'), findsNWidgets(2));
       expect(
@@ -705,10 +717,13 @@ void main() {
       final dialog = find.byType(Dialog);
       Finder inDialogOnly(String text) =>
           find.descendant(of: dialog, matching: find.text(text));
-      expect(find.byKey(const ValueKey('coordinator-folder')), findsOneWidget);
-      expect(inDialogOnly('Add a coordinator'), findsOneWidget);
-      expect(inDialog('Use existing session'), findsOneWidget);
-      expect(inDialog('Create Codex CLI coordinator'), findsOneWidget);
+      expect(inDialogOnly('Add coordinator'), findsOneWidget);
+      expect(
+        inDialog('Reuse a previous coding session · 63 available'),
+        findsOneWidget,
+      );
+      expect(inDialog('Continue'), findsOneWidget);
+      expect(find.byKey(const ValueKey('coordinator-folder')), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1326,14 +1341,18 @@ void main() {
       await tester.ensureVisible(find.text('Use existing session'));
       await tester.tap(find.text('Use existing session'));
       await tester.pumpAndSettle();
-      expect(find.text('63 saved chats'), findsOneWidget);
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      expect(find.text('63 saved sessions'), findsOneWidget);
       await tester.enterText(find.byType(TextField).first, 'Website');
       await tester.pumpAndSettle();
-      expect(find.text('1 saved chats'), findsOneWidget);
+      expect(find.text('1 saved sessions'), findsOneWidget);
       await tester.tap(find.text('Website redesign').last);
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Use selected session'));
-      await tester.tap(find.text('Use selected session'));
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Add coordinator'));
+      await tester.tap(find.text('Add coordinator'));
       await tester.pumpAndSettle();
       expect(find.textContaining('codex-sample-0'), findsOneWidget);
       await tester.tap(find.text('Cancel'));
@@ -1357,23 +1376,29 @@ void main() {
       expect(find.text('Connected sessions'), findsNothing);
       await tester.tap(find.text('+ Add coordinator'));
       await tester.pumpAndSettle();
-      expect(find.text('Add a coordinator'), findsOneWidget);
+      expect(find.text('Add coordinator'), findsOneWidget);
       expect(find.text('Use existing session'), findsOneWidget);
       expect(find.text('Edit'), findsNothing);
       expect(find.text('Use automatic'), findsNothing);
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
       final nameField = find.byKey(const ValueKey('coordinator-name'));
       expect(
         tester.widget<TextField>(nameField).controller!.text,
         'FarFromDesk Orbit · Codex CLI',
       );
-      await tester.tap(find.text('Codex Desktop'));
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Codex Desktop').last);
       await tester.pumpAndSettle();
       expect(
         tester.widget<TextField>(nameField).controller!.text,
         'FarFromDesk Orbit · Codex Desktop',
       );
       await tester.enterText(nameField, 'Mission Control');
-      await tester.tap(find.text('Claude Desktop'));
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
       expect(
         tester.widget<TextField>(nameField).controller!.text,
@@ -1393,7 +1418,11 @@ void main() {
       expect(find.text('Run in the background'), findsOneWidget);
       expect(find.text('Open at login'), findsOneWidget);
       expect(find.text('Coding apps'), findsNothing);
-      expect(find.text('App updates'), findsOneWidget);
+      // Sections are tabs now, so a section that is not selected is not in the
+      // tree at all, which is the point of the change.
+      expect(find.text('Update schedule'), findsNothing);
+      await openSettingsTab(tester, 'updates');
+      expect(find.text('Update schedule'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -1431,31 +1460,24 @@ void main() {
       await tester.tap(find.text('+ Add coordinator'));
       await tester.pumpAndSettle();
       expect(find.text('Test CLI account'), findsOneWidget);
-      await tester.tap(
-        find.descendant(
-          of: find.byType(Dialog),
-          matching: find.text('Claude CLI'),
-        ),
-      );
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude CLI').last);
       await tester.pumpAndSettle();
       expect(find.text('CLI signed out · sign in to this CLI'), findsWidgets);
+      // A platform that is not ready cannot be added, so the flow stops at Configure.
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('coordinator-name')), findsOneWidget);
       expect(
         tester
-            .widget<FilledButton>(
-              find.widgetWithText(
-                FilledButton,
-                'Create Claude CLI coordinator',
-              ),
-            )
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Continue'))
             .onPressed,
         isNull,
       );
-      await tester.tap(
-        find.descendant(
-          of: find.byType(Dialog),
-          matching: find.text('Claude Desktop'),
-        ),
-      );
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude Desktop').last);
       await tester.pumpAndSettle();
       expect(
         find.text(
@@ -1472,10 +1494,10 @@ void main() {
       api.reversePlatforms = true;
       await tester.pump(const Duration(seconds: 4));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(
-        find.text('Create Claude Desktop coordinator'),
-      );
-      await tester.tap(find.text('Create Claude Desktop coordinator'));
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Add coordinator'));
+      await tester.tap(find.text('Add coordinator'));
       await tester.pumpAndSettle();
       expect(api.submitted?['name'], 'FarFromDesk Orbit · Claude Desktop');
       expect(api.submitted?['provider'], 'claude');
@@ -1483,13 +1505,71 @@ void main() {
       expect(api.submitted!.containsKey('workspaceId'), isFalse);
       expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
-      expect(find.text('Create Claude Desktop coordinator'), findsNothing);
+      expect(find.text('Add coordinator'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
+  Future<void> openAppPreferences(WidgetTester tester) async {
+    await tester.ensureVisible(find.text('Manage coordinators'));
+    await tester.tap(find.text('Manage coordinators'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
+    await tester.pumpAndSettle();
+  }
+
   testWidgets(
-    'Coordinator app preferences save Desktop without a launcher or session picker',
+    'Coding app preferences stage every choice, save once and keep Muse CLI-only',
+    (tester) async {
+      size(tester);
+      final api = PreferenceGateway();
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await openAppPreferences(tester);
+      final codex = find.byKey(const ValueKey('platform-runtime-codex'));
+      final claude = find.byKey(const ValueKey('platform-runtime-claude'));
+      // The panel counts the same runtimes the coding app picker lists, and states each app's
+      // own runtimes in the picker's words.
+      expect(find.text('Detected 5 coding runtimes'), findsOneWidget);
+      expect(find.text('CLI ready · Desktop app ready'), findsOneWidget);
+      expect(find.text('CLI needs setup · Desktop app ready'), findsOneWidget);
+      expect(find.byKey(const ValueKey('platform-runtime-muse')), findsNothing);
+      expect(find.text('Always CLI'), findsOneWidget);
+      // Nothing is written while the panel is open: choices wait for Save.
+      await tester.tap(codex);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Codex CLI').last);
+      await tester.pumpAndSettle();
+      expect(api.calls, isEmpty);
+      await tester.tap(claude);
+      await tester.pumpAndSettle();
+      // A mode that is not detected says so instead of being silently selectable.
+      expect(find.text('Terminal · Sign in required'), findsWidgets);
+      await tester.tap(find.text('Claude Desktop').last);
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.text('Choose Claude Desktop launcher'), findsNothing);
+      expect(api.calls, isEmpty);
+      await tester.tap(find.text('Save changes'));
+      await tester.pumpAndSettle();
+      expect(api.saved['codex']?['executionMode'], 'cli');
+      expect(api.saved['claude']?['executionMode'], 'desktop');
+      expect(api.saved['claude']!.containsKey('desktopParentId'), false);
+      expect(api.saved['claude']?['connectionRevision'], 'desktop-revision');
+      expect(api.calls, everyElement('/api/platform-preference'));
+      expect(api.calls.length, 2);
+      // Reopening shows what was stored, and the panel closes on save.
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
+      await tester.pumpAndSettle();
+      expect(find.text('Codex CLI'), findsOneWidget);
+      expect(find.text('Claude Desktop'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Coding app preferences sits beside Add coordinator on the right',
     (tester) async {
       size(tester);
       final api = PreferenceGateway();
@@ -1498,59 +1578,105 @@ void main() {
       await tester.ensureVisible(find.text('Manage coordinators'));
       await tester.tap(find.text('Manage coordinators'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
-      await tester.pumpAndSettle();
-      final codex = find.byKey(const ValueKey('platform-runtime-codex'));
-      final claude = find.byKey(const ValueKey('platform-runtime-claude'));
-      await tester.ensureVisible(codex);
-      expect(tester.widget<DropdownButton<String>>(codex).value, isNull);
-      await tester.tap(codex);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Codex CLI').last);
-      await tester.pumpAndSettle();
-      expect(api.saved['codex']?['executionMode'], 'cli');
-      expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
-      await tester.ensureVisible(claude);
-      await tester.tap(claude);
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<DropdownButton<String>>(claude)
-            .items!
-            .singleWhere((i) => i.value == 'cli')
-            .enabled,
-        false,
+      final prefsButton = find.widgetWithText(
+        OutlinedButton,
+        'Coding app preferences',
       );
-      await tester.tap(find.text('Claude Desktop').last);
-      await tester.pumpAndSettle();
-      expect(find.byType(AlertDialog), findsNothing);
-      expect(find.text('Choose Claude Desktop launcher'), findsNothing);
-      expect(api.saved['claude']?['executionMode'], 'desktop');
-      expect(api.saved['claude']!.containsKey('desktopParentId'), false);
-      expect(api.saved['claude']?['connectionRevision'], 'desktop-revision');
-      expect(api.saved['codex']?['executionMode'], 'cli');
-      expect(api.calls, everyElement('/api/platform-preference'));
-      expect(api.calls.length, 2);
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Manage coordinators'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
-      await tester.pumpAndSettle();
-      expect(tester.widget<DropdownButton<String>>(codex).value, 'cli');
-      expect(tester.widget<DropdownButton<String>>(claude).value, 'desktop');
+      final addButton = find.widgetWithText(FilledButton, '+ Add coordinator');
+      final prefs = tester.getRect(prefsButton);
+      final add = tester.getRect(addButton);
+      final row = tester.getRect(
+        find.ancestor(of: addButton, matching: find.byType(Row)).first,
+      );
+      // Preferences then the primary action, both pulled to the right edge of the row.
+      expect(add.left - prefs.right, closeTo(10, 0.5));
+      expect(prefs.right, lessThan(add.left));
+      expect(add.right, closeTo(row.right, 1));
+      // The description stays on the left, so it does not sit between the two buttons.
+      expect(
+        tester.getRect(find.textContaining('Create a new coordinator')).right,
+        lessThan(prefs.left),
+      );
       expect(tester.takeException(), isNull);
-      if (Platform.environment['FFD_CAPTURE_PLATFORMS'] == '1') {
-        await tester.ensureVisible(find.text('Coding platforms'));
-        await tester.pumpAndSettle();
-        await expectLater(
-          find.byType(Scaffold),
-          matchesGoldenFile('../../.local/platform-preferences.png'),
-        );
-      }
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('the picker and the panel describe one runtime the same way', (
+    tester,
+  ) async {
+    size(tester);
+    final api = PreferenceGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    // The panel says Claude's CLI needs setup.
+    await openAppPreferences(tester);
+    expect(find.text('CLI needs setup · Desktop app ready'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    // The coding app picker says the same thing about the same runtime, not a different word for it.
+    await tester.tap(find.text('+ Add coordinator'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+    await tester.pumpAndSettle();
+    final rows = find.ancestor(
+      of: find.text('Claude CLI'),
+      matching: find.byType(SingleChildScrollView),
+    );
+    expect(
+      find.descendant(of: rows.last, matching: find.text('Needs setup')),
+      findsOneWidget,
+    );
+    expect(find.text('Terminal · Sign in required'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Coding app preferences discard a staged choice on Cancel', (
+    tester,
+  ) async {
+    size(tester);
+    final api = PreferenceGateway();
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await openAppPreferences(tester);
+    await tester.tap(find.byKey(const ValueKey('platform-runtime-codex')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Codex CLI').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(api.calls, isEmpty);
+    expect(api.saved, isEmpty);
+    await tester.tap(find.byKey(const ValueKey('coordinator-coding-apps')));
+    await tester.pumpAndSettle();
+    expect(find.text('No preference'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('choosing No preference clears the stored choice explicitly', (
+    tester,
+  ) async {
+    size(tester);
+    final api = PreferenceGateway();
+    api.saved['codex'] = {'provider': 'codex', 'executionMode': 'cli'};
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await openAppPreferences(tester);
+    expect(find.text('Codex CLI'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('platform-runtime-codex')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('No preference').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save changes'));
+    await tester.pumpAndSettle();
+    expect(api.posted.single['executionMode'], 'none');
+    expect(api.saved.containsKey('codex'), isFalse);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'Multiple coordinators change default without replacing a session',
     (tester) async {
@@ -1579,13 +1705,27 @@ void main() {
 
 class PreferenceGateway extends ConnectionGateway {
   final saved = <String, Map<String, dynamic>>{};
+  final posted = <Map<String, dynamic>>[];
   @override
   Future<Map<String, dynamic>> get(String path) async {
     final data = await super.get(path);
     data['platformPreferences'] = saved.values.toList();
-    for (final option in data['masterSetup']['platforms']) {
+    final platforms = data['masterSetup']['platforms'] as List;
+    for (final option in platforms) {
       if (option['provider'] == 'claude') option['sessions'] = [];
     }
+    platforms.add({
+      'provider': 'muse',
+      'executionMode': 'cli',
+      'available': true,
+      'canCreate': true,
+      'connection': {
+        'state': 'verified',
+        'label': 'Muse Code CLI · local credential',
+        'revision': 'muse-revision',
+      },
+      'sessions': [],
+    });
     return data;
   }
 
@@ -1595,13 +1735,19 @@ class PreferenceGateway extends ConnectionGateway {
     Map<String, dynamic> data,
   ) async {
     if (path == '/api/platform-preference') {
-      saved[data['provider']] = {
-        ...data,
-        'connectionLabel':
-            'Selected ${data['provider']} ${data['executionMode']} account',
-        if (data['desktopParentId'] != null)
-          'launcherName': 'Personal desktop chat',
-      };
+      posted.add(data);
+      // Mirrors the backend: "none" clears the stored preference instead of being a third mode.
+      if (data['executionMode'] == 'none') {
+        saved.remove(data['provider']);
+      } else {
+        saved[data['provider']] = {
+          ...data,
+          'connectionLabel':
+              'Selected ${data['provider']} ${data['executionMode']} account',
+          if (data['desktopParentId'] != null)
+            'launcherName': 'Personal desktop chat',
+        };
+      }
     }
     return super.post(path, data);
   }

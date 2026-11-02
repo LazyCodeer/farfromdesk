@@ -19,7 +19,7 @@ const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
 rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(m)+'\\n');
  if(m.method==='config/read')send({id:m.id,result:{config:{model_provider:'openai'}}});
  else if(m.method==='thread/resume')send({id:m.id,result:{thread:{id:'${id}',cwd:process.cwd()}}});
- else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-1'}}});send({method:'item/completed',params:{threadId:'${id}',item:{type:'agentMessage',text:'Done',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${id}',turn:{id:'turn-1',status:'completed'}}});}
+ else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-1'}}});send({method:'item/completed',params:{threadId:'${id}',turnId:'turn-1',item:{type:'agentMessage',text:'Done',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${id}',turn:{id:'turn-1',status:'completed'}}});}
  else send({id:m.id,result:{}});
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=dir;process.env.WSB_CODEX_BIN=fake;
@@ -41,13 +41,13 @@ test('managed Codex restores persistent role on connection, sends native image p
     store.enqueue('wa:next',b,'Next task');await native.run(b,'Next task','wa:next');
     let requests=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));
     const resumes=requests.filter(r=>r.method==='thread/resume'),turns=requests.filter(r=>r.method==='turn/start');
-    assert.equal(resumes.length,1);assert.match(resumes[0].params.developerInstructions,/friendly, calm companion/);
+    assert.equal(resumes.length,1);assert.doesNotMatch(resumes[0].params.developerInstructions,/friendly, calm companion/);assert.match(readFileSync(/^Instructions: (.+)$/m.exec(resumes[0].params.developerInstructions)![1],'utf8'),/friendly, calm companion/);
     assert.equal(turns.length,2);assert.equal(turns[0].params.input[1].type,'localImage');
     assert.equal(turns[1].params.input.length,1);assert.match(turns[1].params.input[0].text,/Next task/);
     assert.doesNotMatch(turns[1].params.input[0].text,/role bootstrap|friendly, calm companion|Explain this image/);
     updateRole(store,b,'professional');store.enqueue('wa:style',b,'New style');await native.run(b,'New style','wa:style');
     requests=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));
-    assert.equal(requests.filter(r=>r.method==='thread/resume').length,2);assert.match(requests.filter(r=>r.method==='thread/resume')[1].params.developerInstructions,/concise and professional/);
+    assert.equal(requests.filter(r=>r.method==='thread/resume').length,2);assert.match(readFileSync(/^Instructions: (.+)$/m.exec(requests.filter(r=>r.method==='thread/resume')[1].params.developerInstructions)![1],'utf8'),/concise and professional/);
     assert.equal(store.job('wa:image')?.status,'completed');
   }finally{masters.close();native.close();approvals.cancel();store.close();}
 });

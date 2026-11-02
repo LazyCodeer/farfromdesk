@@ -1,3 +1,4 @@
+import {socialPreviewDeliveryState} from './social-preview.js';
 import { TELEGRAM_COMMANDS, telegramCommand } from './owner-commands.js';
 import { optionsMarkup } from './message-options.js';
 import { scheduleDeliveryState } from './schedules.js';
@@ -37,6 +38,7 @@ type Pairing={botId:number;secret:string;expires:number;candidate?:Candidate};
 export class Telegram {
   status='disconnected'; error?:string; menuError?:string; closed=true;
   private token?:string; private bot?:{id:number;username:string};
+  private resumeTimer?:NodeJS.Timeout; private resumeAttempts=0;
   private pairing?:Pairing;
   private controller?:AbortController; private timer?:NodeJS.Timeout;
   private flushing=false; private configuring=false; private generation=0;
@@ -45,7 +47,7 @@ export class Telegram {
   hasPendingIngress(){return this.receiving>0||this.media.size>0;}
   readonly artifacts:Artifacts;
   transcribe=transcribeAudio;
-  constructor(private store:Store,private router:Router,private root=stateDir,private fetcher:typeof fetch=fetch) {
+  constructor(private store:Store,private router:Router,private root=stateDir,private fetcher:typeof fetch=fetch,private retryBaseMs=30_000) {
     this.artifacts=new Artifacts(store,root);
   }
   private get path(){return join(this.root,'telegram-token');}
@@ -111,6 +113,7 @@ export class Telegram {
       await this.call('setMyCommands',{commands:TELEGRAM_COMMANDS,scope:{type:'all_private_chats'}},this.controller.signal).then(()=>{this.menuError=undefined;}).catch(()=>{this.menuError='Telegram command menu could not be updated. Typed commands still work.';});
       if(generation!==this.generation)return;
       this.timer=setInterval(()=>{void this.flush();},1500);this.timer.unref();
+      this.resumeAttempts=0;this.clearResumeTimer();
       void this.poll(this.controller.signal);
     }catch(e){if(generation===this.generation){this.status='disconnected';this.error=e instanceof TelegramError?e.message:e instanceof Error?e.message:'Telegram connection failed.';}throw e;}
     finally{this.configuring=false;}
@@ -125,14 +128,32 @@ export class Telegram {
     this.store.output(undefined,'✅ *Connected*\nYour Telegram account is linked. Ask me to show your sessions or check your work.',`telegram-paired:${randomBytes(8).toString('hex')}`,owner);
     return this.view();
   }
-  close() {++this.generation;this.closed=true;this.controller?.abort();clearInterval(this.timer);this.timer=undefined;for(const c of this.media)c.abort();}
+  close() {this.clearResumeTimer();++this.generation;this.closed=true;this.controller?.abort();clearInterval(this.timer);this.timer=undefined;for(const c of this.media)c.abort();}
   disconnect() {
     this.store.set('incoming-owner-generation',randomBytes(16).toString('hex'));++this.generation;this.close();this.clearPairing();this.token=undefined;this.bot=undefined;
     try{unlinkSync(this.path);}catch(e:any){if(e.code!=='ENOENT')throw new Error('Could not remove the Telegram token.');}
     for(const key of ['telegram-bot-id','telegram-username','telegram-user-id','telegram-owner-name','telegram-owner','telegram-paired-at'])this.store.db.prepare('DELETE FROM settings WHERE key=?').run(key);
     this.status='disconnected';this.error=undefined;
   }
-  async resume(){if(this.closed&&this.store.get('telegram-bot-id'))await this.connect();}
+  async resume(){
+    if(!this.closed||!this.store.get('telegram-bot-id'))return;
+    this.clearResumeTimer();
+    try{await this.connect();this.resumeAttempts=0;}
+    catch(e){this.scheduleResume(e);throw e;}
+  }
+  // A launch-time network blip must not park the owner in setup until they
+  // notice and click again. Retry quietly with backoff while a bot is saved.
+  // A rejected token, a webhook or a second poller needs a decision, not a retry.
+  private scheduleResume(error:unknown) {
+    if(!this.store.get('telegram-bot-id'))return;
+    if(error instanceof TelegramError&&[401,403,409].includes(error.code))return;
+    this.resumeAttempts=Math.min(this.resumeAttempts+1,6);
+    const wait=Math.min(300_000,this.retryBaseMs*2**(this.resumeAttempts-1));
+    this.clearResumeTimer();
+    this.resumeTimer=setTimeout(()=>{this.resumeTimer=undefined;void this.resume().catch(()=>{});},wait);
+    this.resumeTimer.unref?.();
+  }
+  private clearResumeTimer(){if(this.resumeTimer){clearTimeout(this.resumeTimer);this.resumeTimer=undefined;}}
   private async poll(signal:AbortSignal) {
     let failures=0;
     while(!signal.aborted&&!this.closed) {
@@ -192,7 +213,7 @@ export class Telegram {
     const owner=this.store.captureIncomingOwner(destination,'telegram');if(!owner)return;
     const quotedId=m.reply_to_message?.from?.id===this.bot.id&&validId(m.reply_to_message?.message_id)?telegramMessageId(this.bot.id,m.chat.id,m.reply_to_message.message_id):undefined;
     if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
-    const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice&&!m.document&&!m.photo,activityScope:{destination,owner:destination}};
+    const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice,activityScope:{destination,owner:destination}};
     await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,async()=>{
       const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
@@ -241,7 +262,11 @@ export class Telegram {
       else this.router.receiveAttachment(incoming,{kind:m.document?'document':'image',filename:downloaded!.filename,sha256:downloaded!.sha256,download:downloaded!},target!);
       this.store.db.prepare(`UPDATE ${table} SET status='processed' WHERE id=?`).run(incoming.id);
     }catch(e){
-      if(!this.closed&&this.store.incomingOwnerCurrent()){this.store.output(undefined,'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.',`telegram-media-error:${incoming.id}`,destination);this.store.remember(incoming.id);this.store.db.prepare(`UPDATE ${table} SET status='failed' WHERE id=?`).run(incoming.id);}
+      if(!this.closed&&this.store.incomingOwnerCurrent()){
+        const review='Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.';
+        const message=e instanceof Error&&e.message===review?review:'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.';
+        this.store.output(undefined,message,`telegram-media-error:${incoming.id}`,destination);this.store.remember(incoming.id);this.store.db.prepare(`UPDATE ${table} SET status='failed' WHERE id=?`).run(incoming.id);
+      }
     }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare(`UPDATE ${table} SET status='interrupted' WHERE id=? AND status='processing'`).run(incoming.id);downloaded?.dispose();}
   }
   async flush() {
@@ -256,6 +281,7 @@ export class Telegram {
       if(contractState==='invalid'){this.store.db.prepare("UPDATE outbox SET status='cancelled',error='Task contract expired or its owner changed.' WHERE id=?").run(row.id);return;}
       const destination=this.store.get('telegram-owner')!;
       if(row.destination!==destination){this.store.db.prepare("UPDATE outbox SET status='failed',error='Original Telegram account is not connected' WHERE id=?").run(row.id);return;}
+      if(socialPreviewDeliveryState(this.store,row.id)!=='ready')return;
       let body:Record<string,unknown>|FormData={chat_id:Number(this.store.get('telegram-user-id')),text:telegramHTML(row.body),parse_mode:'HTML',link_preview_options:{is_disabled:true}},method='sendMessage';
       const markup=optionsMarkup(this.store,row.id);if(markup)(body as Record<string,unknown>).reply_markup=markup;
       if(row.artifact_id){
@@ -267,7 +293,8 @@ export class Telegram {
           else bytes=Buffer.from(a.data);
           if(createHash('sha256').update(bytes).digest('hex')!==a.sha256)throw new Error();
           if(row.body.length>1024)throw new Error();
-          const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set('document',new Blob([new Uint8Array(bytes)],{type:a.mime}),a.filename);form.set('caption',row.body);body=form;method='sendDocument';
+          const photo=row.media_kind==='photo';if(photo&&(a.mime!=='image/jpeg'||bytes.length>10_000_000))throw new Error();
+          const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set(photo?'photo':'document',new Blob([new Uint8Array(bytes)],{type:a.mime}),a.filename);form.set('caption',row.body);body=form;method=photo?'sendPhoto':'sendDocument';
         }catch{this.store.db.prepare("UPDATE outbox SET status='failed',error='Document failed ownership, integrity or Telegram size checks (50 MB file, 1024 character caption)' WHERE id=?").run(row.id);return;}
       }
       if(this.closed||this.router.stopped||!this.store.incomingOwnerDelivery(row.id)||destination!==this.store.get('telegram-owner')||scheduleDeliveryState(this.store,row.id)!=='ready'||contractDeliveryState(this.router,row.id)!=='ready'||row.binding_id&&!this.store.binding(row.binding_id)?.enabled)return;

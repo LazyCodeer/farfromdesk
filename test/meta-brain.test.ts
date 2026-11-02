@@ -13,6 +13,8 @@ import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
 import { BrainMemory } from '../src/brain-memory.js';
+import {sessionSpecialty} from '../src/session-specialty.js';
+import {turnEnvelope} from '../src/roles.js';
 import { TaskContracts } from '../src/task-contracts.js';
 
 const decision=(provider:Interpretation['provider']='unspecified',normalized='Corrected wording'):Interpretation=>({intent:'task',provider,normalized,taskIds:[]});
@@ -389,7 +391,7 @@ test('brain wording is used only for chat and clarify, never dispatching work',a
   const f=fixture({...decision(),intent:'chat',reply:'Glad to help — send a task, or ask where are we.'});try{
     await f.router.receive({id:'wa:chat',text:'you are a legend'});
     assert.equal(f.store.jobs().length,0);assert.equal(f.router.brain.get('wa:chat')?.state,'answered');
-    assert.match(String((f.out().at(-1) as any).body),/Glad to help, send a task/);assert.doesNotMatch(String((f.out().at(-1) as any).body).split('\n')[1],/[—–]/);
+    assert.match(String((f.out().at(-1) as any).body),/Glad to help, send a task/);assert.doesNotMatch(String((f.out().at(-1) as any).body),/— FarFromDesk/);
     f.respond(async()=>({...decision(),intent:'clarify',reply:'What do you mean by ATC?'}));
     await f.router.receive({id:'wa:atc',text:'read ATC'});
     assert.equal(f.store.jobs().length,0);assert.match(String((f.out().at(-1) as any).body),/What do you mean by ATC\?/);
@@ -501,4 +503,59 @@ test('a plain-text Meta answer is retried once before failing',async()=>{
   let n=0;const text=()=>new Response(JSON.stringify({id:'r',created:0,model:'m',choices:[{index:0,finish_reason:'stop',message:{role:'assistant',content:'Hello!'}}]}),{headers:{'content-type':'application/json'}});
   const model=new MetaModel(async()=>++n===1?text():call('decide',decision()));
   assert.deepEqual(await model.interpret('synthetic-key',DEFAULT_BRAIN,{original:'Hello',source:'text',tasks:[]}),decision());assert.equal(n,2);
+});
+
+test('Brain preserves Social and Meta selection while forwarding original text and compact agent references',async()=>{
+ const f=fixture();try{
+  const send=(id:string,text:string)=>f.router.receive({id:`wa:${id}`,text,ownerIntent:true,ownerCommand:true});
+  f.store.set('social-image-provider','meta');
+  await send('select','/brain');await send('mode','/social');
+  const text='Create Instagram posts about cart recovery';
+  await send('social-task',text);
+  const job=f.store.job('wa:social-task');assert.ok(job);
+  assert.equal(job.body,text);assert.equal(sessionSpecialty(f.store,job.id)?.kind,'social');assert.equal(sessionSpecialty(f.store,job.id)?.imageProvider,'meta');
+  const prompt=turnEnvelope(f.store,f.store.binding(job.binding_id)!,text,job.id,{},[],f.dir).body;
+  assert.match(prompt,/via Brain.*Mode Social.*Meta API/);assert.match(prompt,/Agent: farfromdesk-social/);assert.doesNotMatch(prompt,/Social content specialist/);
+ }finally{f.close();}
+});
+test('Brain rejects a routing result if executor changes during interpretation',async()=>{
+ const f=fixture();try{
+  await f.router.receive({id:'wa:mode',text:'/social',ownerIntent:true,ownerCommand:true});
+  await f.router.receive({id:'wa:brain',text:'/brain',ownerIntent:true,ownerCommand:true});
+  f.respond(async()=>{f.store.set('active',f.claude.id);return decision();});
+  await f.router.receive({id:'wa:changed',text:'Create a post about cart recovery',ownerIntent:true,ownerCommand:true});
+  assert.equal(f.store.job('wa:changed'),undefined);
+  assert.match(f.router.brain.get('wa:changed')?.reason??'',/Executor or task mode changed/);
+ }finally{f.close();}
+});
+for(const provider of ['claude','codex'] as const)test(`selecting ${provider} preserves Social mode and Meta image source`,async()=>{
+ const f=fixture();try{
+  f.store.set('social-image-provider','meta');
+  await f.router.receive({id:'wa:mode',text:'/social',ownerIntent:true,ownerCommand:true});
+  await f.router.receive({id:'wa:executor',text:`/${provider}`,ownerIntent:true,ownerCommand:true});
+  await f.router.receive({id:'wa:create',text:'Create posts about cart recovery',ownerIntent:true,ownerCommand:true});
+  assert.equal(f.store.job('wa:create')?.binding_id,f[provider].id);
+  assert.equal(sessionSpecialty(f.store,'wa:create')?.imageProvider,'meta');
+  assert.match(String(f.out().find((x:any)=>x.source==='command:wa:executor:0')?.body),/Mode: Social.*Meta API/);
+ }finally{f.close();}
+});
+
+test('Brain clarification shows the request image choice and repeating it is idempotent',async()=>{
+ const f=fixture({...decision(),intent:'clarify',reply:'Which platforms and audience?'});try{
+  f.store.set('social-image-provider','meta');
+  await f.router.receive({id:'wa:brain',text:'/brain',ownerCommand:true,ownerIntent:true});
+  await f.router.receive({id:'wa:clarify-social',text:'Create a post using local SVG',ownerCommand:true,ownerIntent:true});
+  assert.equal(f.store.job('wa:clarify-social'),undefined);
+  assert.match(String(f.out().at(-1)?.body),/Mode: Social.*Local SVG/);
+  const n=f.out().length;
+  f.store.outputBrain('wa:clarify-social','Which platforms and audience?');assert.equal(f.out().length,n);
+ }finally{f.close();}
+});
+test('Brain rejects a result after task mode is changed while interpreting',async()=>{
+ const f=fixture();try{
+  await f.router.receive({id:'wa:brain',text:'/brain',ownerCommand:true,ownerIntent:true});
+  f.respond(async()=>{f.router.guidedModes.start(f.router,{id:'wa:changed-mode',text:'/research',ownerCommand:true,ownerIntent:true},'research');return decision();});
+  await f.router.receive({id:'wa:old-mode',text:'Create a carousel about cart recovery',ownerCommand:true,ownerIntent:true});
+  assert.equal(f.store.job('wa:old-mode'),undefined);assert.match(f.router.brain.get('wa:old-mode')?.reason??'',/task mode changed/);
+ }finally{f.close();}
 });

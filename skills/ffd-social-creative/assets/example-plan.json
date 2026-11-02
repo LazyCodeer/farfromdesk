@@ -1,0 +1,29 @@
+{
+  "mode": "svg",
+  "brand": {
+    "name": "Splice AI",
+    "logo": "spliceai",
+    "accent": "#4f46e5",
+    "background": "#111426",
+    "foreground": "#f6f7fb"
+  },
+  "slides": [
+    {
+      "layout": "illustration",
+      "illustration": "cart",
+      "tone": "dark",
+      "headline": "They left the cart. Keep talking.",
+      "body": "WhatsApp reminders. Helpful AI calls.",
+      "footer": "A verified order is a recovery.",
+      "eyebrow": "Cart recovery"
+    },
+    {
+      "layout": "illustration",
+      "illustration": "review",
+      "tone": "light",
+      "headline": "Verify before counting.",
+      "body": "Check the order in your store. Count confirmed purchases.",
+      "footer": "Give the unfinished checkout a useful next step."
+    }
+  ]
+}

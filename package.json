@@ -7,7 +7,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node script/package_social_skill.mjs",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "bridge": "node dist/cli.js",
@@ -24,14 +24,19 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "ai": "7.0.139",
+    "ipaddr.js": "^2.5.0",
     "livekit-client": "2.15.6",
     "livekit-server-sdk": "2.19.2",
+    "mailparser": "^3.14.1",
+    "parse5": "7.3.0",
     "pino": "^9.14.0",
     "qrcode": "^1.5.4",
+    "sharp": "0.35.5",
     "werift": "0.25.2",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.9.0",
     "@types/node": "^22.19.0",
     "@types/qrcode": "^1.5.6",
     "tsx": "^4.20.6",

@@ -20,9 +20,10 @@ if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt',email
 else if(m.method==='config/read')send({id:m.id,result:{config:{model_provider:'openai'}}});
 else if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd()}}});
 else if((m.method==='thread/read'||m.method==='thread/resume')){const path=require('node:path').join(process.cwd(),'fake-rollout.jsonl');require('node:fs').writeFileSync(path,'{}\\n');send({id:m.id,result:{thread:{id:'${nativeId}',cwd:process.cwd(),path}}});}
-else {send({id:m.id,result:{}});if(m.method==='turn/start'){send({method:'item/completed',params:{threadId:'${nativeId}',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{status:'completed'}}});}}
+else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-synthetic'}}});send({method:'item/completed',params:{threadId:'${nativeId}',turnId:'turn-synthetic',item:{type:'agentMessage',text:m.params.input?.[0]?.text==='pending-empty'?'':'I can help with that. The selected task is complete.',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'${nativeId}',turn:{id:'turn-synthetic',status:'completed'}}});}
+else send({id:m.id,result:{}});
 });`,{mode:0o700});
-process.env.WSB_STATE_DIR=join(dir,'state');process.env.FARFROMDESK_HOME=join(dir,'home');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');
+process.env.WSB_STATE_DIR=join(dir,'state');process.env.FARFROMDESK_HOME=join(dir,'home');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');process.env.MUSE_BIN=fake;process.env.MUSE_CONFIG_DIR=join(dir,'muse-config');
 const { Connections }=await import('../src/connections.js');
 const { Masters,codexDesktopInstalled,claudeDesktopInstalled,masterName,masterWorkspaces }=await import('../src/masters.js');
 const { Coordinator }=await import('../src/coordinator.js');
@@ -210,7 +211,7 @@ test('overlapping app refreshes publish each execution mode only once',async()=>
  const f=fixture();let reads=0;
  f.router.native.catalog=async()=>{reads++;await new Promise(r=>setTimeout(r,10));return {sessions:[{id:nativeId,name:'Desktop',cwd:dir,provider:'claude',executionMode:'desktop',available:true,status:'idle'}],cursor:null};};
  await Promise.all([f.masters.discover(),f.masters.discover(),f.masters.discover()]);
- assert.equal(reads,2);assert.equal(f.masters.platforms.length,4);assert.equal(new Set(f.masters.platforms.map(p=>p.provider+':'+p.executionMode)).size,4);
+ assert.equal(reads,3);assert.equal(f.masters.platforms.length,5);assert.equal(new Set(f.masters.platforms.map(p=>p.provider+':'+p.executionMode)).size,5);
 });
 
 test('another platform can set up independently; stable failed ID never creates again',async()=>{
@@ -330,6 +331,15 @@ test('platform preferences save independently, preserve requests and survive coo
   const next=f.store.register('replacement','claude','12121212-1212-4212-a212-121212121212',dir).binding;
   f.store.set(`execution-mode:${next.id}`,'cli');f.masters.activate(next);
   assert.deepEqual(f.masters.platformPreferences(),prefs);
+});
+test('clearing a preference returns a platform to no preference without inventing a mode',async()=>{
+  const f=fixture();await f.masters.discover();await f.masters.setPlatformPreference('codex','cli');
+  assert.equal(f.masters.platformPreferences().find(p=>p.provider==='codex')?.executionMode,'cli');
+  await f.masters.setPlatformPreference('codex','none');
+  assert.equal(f.masters.platformPreferences().find(p=>p.provider==='codex')?.executionMode,null);
+  assert.equal(f.store.get('platform-preference:codex'),undefined);
+  // Clearing still names a real platform: an unknown provider is refused, not silently ignored.
+  await assert.rejects(f.masters.setPlatformPreference('cursor' as any,'none'),/detected/);
 });
 test('platform preferences reject missing, unsupported and signed-out choices without changing a saved preference',async()=>{
   const f=fixture();await f.masters.discover();await f.masters.setPlatformPreference('codex','cli');

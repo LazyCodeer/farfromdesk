@@ -1,0 +1,13 @@
+{
+  "name": "ffd-social-creative",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "sharp": "0.35.5",
+    "zod": "^4.0.0"
+  }
+}

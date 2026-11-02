@@ -1,0 +1,65 @@
+[
+  {
+    "title": "Product launch carousel",
+    "description": "Showcase your product, key benefits and real use cases in a clean carousel.",
+    "platform": "Instagram",
+    "asset": "assets/social/template-0.jpg",
+    "text": "Instagram \u25cf Carousel Product launch carousel Showcase your product, key benefits and real use cases in a clean carousel. Launch Product Carousel \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Thought leadership article",
+    "description": "A long-form LinkedIn post with insights, industry trends and practical advice.",
+    "platform": "LinkedIn",
+    "asset": "assets/social/template-1.jpg",
+    "text": "LinkedIn \u25cf Article Thought leadership article A long-form LinkedIn post with insights, industry trends and practical advice. Thought leadership Education \u2726 Use template \u22ee"
+  },
+  {
+    "title": "X thread",
+    "description": "A concise, high-impact thread with actionable tips and examples.",
+    "platform": "X",
+    "asset": "assets/social/template-2.jpg",
+    "text": "X \u25cf Thread X thread A concise, high-impact thread with actionable tips and examples. Tips Education Thread \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Behind the scenes video",
+    "description": "A short, relatable video showing how your business uses AI in real life.",
+    "platform": "TikTok",
+    "asset": "assets/social/template-3.jpg",
+    "text": "TikTok \u25cf Short video Behind the scenes video A short, relatable video showing how your business uses AI in real life. Behind the scenes Use case Brand \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Educational video script",
+    "description": "A step-by-step video script to educate your audience and drive interest.",
+    "platform": "YouTube",
+    "asset": "assets/social/template-4.jpg",
+    "text": "YouTube \u25cf Video script Educational video script A step-by-step video script to educate your audience and drive interest. Tutorial Education Product \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Benefit-focused post",
+    "description": "A clean, visual post highlighting a key benefit with a simple message.",
+    "platform": "Instagram",
+    "asset": "assets/social/template-5.jpg",
+    "text": "Instagram \u25cf Single image Benefit-focused post A clean, visual post highlighting a key benefit with a simple message. Benefit Product Conversion \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Company update",
+    "description": "Share an important milestone with your community.",
+    "platform": "LinkedIn",
+    "asset": "assets/social/template-6.jpg",
+    "text": "LinkedIn \u25cf Company update Company update Share an important milestone with your community. Launch Product Carousel \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Community poll",
+    "description": "Learn what matters most to your audience.",
+    "platform": "X",
+    "asset": "assets/social/template-7.jpg",
+    "text": "X \u25cf Poll Community poll Learn what matters most to your audience. Thought leadership Education \u2726 Use template \u22ee"
+  },
+  {
+    "title": "Trend / meme",
+    "description": "Bring a timely, relatable idea to life.",
+    "platform": "TikTok",
+    "asset": "assets/social/template-8.jpg",
+    "text": "TikTok \u25cf Trend / meme Trend / meme Bring a timely, relatable idea to life. Tips Education Thread \u2726 Use template \u22ee"
+  }
+]

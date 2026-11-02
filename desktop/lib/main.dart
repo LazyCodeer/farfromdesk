@@ -28,16 +28,18 @@ Future<void> launchDesktop({
 }) async {
   WidgetsFlutterBinding.ensureInitialized();
   traceStartup('mounting UI');
+  final closeGuard = DesktopCloseGuard();
   runApp(
     FarFromDeskApp(
       gateway: gateway,
+      closeGuard: closeGuard,
       initialize: () async {
         // Native window configuration may wait on rendering. Mount and submit
         // the first Flutter frame before awaiting any window platform calls.
         await WidgetsBinding.instance.endOfFrame;
         traceStartup('first frame submitted; initializing window');
         await windowManager.ensureInitialized();
-        windowManager.addListener(_Lifecycle(gateway));
+        windowManager.addListener(_Lifecycle(gateway, closeGuard));
         await windowManager.setPreventClose(true);
         traceStartup('configuring window');
         await windowManager.waitUntilReadyToShow(
@@ -62,18 +64,28 @@ Future<void> launchDesktop({
 
 class _Lifecycle extends WindowListener {
   final Gateway gateway;
-  _Lifecycle(this.gateway);
+  final DesktopCloseGuard closeGuard;
+  bool closing = false;
+  _Lifecycle(this.gateway, this.closeGuard);
   @override
   void onWindowClose() async {
+    if (closing) return;
+    closing = true;
     try {
-      final s = await gateway.get('/api/status');
-      if (s['preferences']?['backgroundEnabled'] != true) {
-        await gateway.post('/api/shutdown', {});
+      if (!await closeGuard.allowClose()) return;
+      try {
+        final s = await gateway.get('/api/status');
+        if (s['preferences']?['backgroundEnabled'] != true) {
+          await gateway.post('/api/shutdown', {});
+        }
+      } catch (_) {
+        /* Never kill an unknown process or another installed service. */
       }
-    } catch (_) {
-      /* Never kill an unknown process or another installed service. */
+      await windowManager.destroy();
+      exit(0);
+    } finally {
+      closeGuard.release();
+      closing = false;
     }
-    await windowManager.destroy();
-    exit(0);
   }
 }

@@ -1,19 +1,29 @@
+import { existsSync } from 'node:fs';
+import { basename } from 'node:path';
+import { homedir } from 'node:os';
 import { createOptions, selectOption } from './message-options.js';
 import { hash, type Binding } from './store.js';
 import type { Router, Incoming } from './router.js';
 import { brainPolicy } from './meta-brain-config.js';
 import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 import { errorCode } from './request-events.js';
+import { runMuse } from './muse-session.js';
 
 export const TELEGRAM_COMMANDS=[
   {command:'claude',description:'Talk to your Claude coordinator'},
   {command:'codex',description:'Talk to your Codex coordinator'},
   {command:'brain',description:'Use the Meta brain, without fallback'},
+  {command:'muse',description:'Run Muse Code on this project'},
   {command:'screen',description:'Open the password-protected Mac viewer'},
   {command:'back',description:'Return to normal routing'},
   {command:'help',description:'Commands and current target'},
   {command:'sessions',description:'Show your sessions'},
   {command:'status',description:'Show current activity'},
+  {command:'checkrun',description:'Observe one public GitHub check run'},
+  {command:'reach',description:'Search public GitHub or web sources'},
+  {command:'research',description:'Research public sources'},
+  {command:'jobs',description:'Find jobs with your selected session'},
+  {command:'social',description:'Create social drafts with your selected session'},
 ];
 export function telegramCommand(text:string,username:string):string|null {
   const m=/^\s*\/([a-z][a-z0-9_]*)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(text);
@@ -73,6 +83,26 @@ function defaultSession(r:Router,provider:string):Binding {
   if(!b||!candidates(r,provider).some(x=>x.id===b!.id))throw Error(`No ${label} coordinator is connected. Connect one in the FarFromDesk desktop app, Coding platforms.${list}`);
   return b;
 }
+/** The folder Muse Code works in: an explicit setting, else the session you are talking to. */
+function museWorkspace(r:Router) {
+  const configured=r.store.get('muse-workspace');
+  if(configured&&existsSync(configured))return configured;
+  const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
+  if(target?.kind==='session'){const b=r.store.binding(target.id);if(b?.cwd)return b.cwd;}
+  const master=r.store.get('master'),b=master?r.store.binding(master):undefined;
+  return b?.cwd??homedir();
+}
+/** One prompt, one finished run. A run that did not finish is reported, never passed off as an answer. */
+async function museCommand(r:Router,m:Incoming,arg:string) {
+  const cwd=museWorkspace(r),key=`muse-session:${cwd}`,label=basename(cwd)||cwd;
+  if(!arg)return `Muse Code is ready in ${label}. Send /muse followed by the task. It continues the same Muse session in this folder; /muse reset starts a new one.`;
+  if(arg.toLowerCase()==='reset'){r.store.set(key,'');return 'The next /muse starts a fresh Muse session in this folder.';}
+  const destination=r.store.destination();
+  if(destination)r.store.output(undefined,`🧠 Muse is working in ${label}.`,`muse-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
+  const result=await runMuse({prompt:arg,cwd,sessionId:r.store.get(key)||null,timeoutMs:20*60*1000});
+  if(result.sessionId)r.store.set(key,result.sessionId);
+  return result.text.slice(0,20000);
+}
 function name(r:Router,b:Binding){return (r.store.get(`name:${b.id}`)??b.alias).replace(/[\r\n*_`]/g,' ').slice(0,80);}
 export function currentTarget(r:Router) {
   const t=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
@@ -88,10 +118,17 @@ export function currentTarget(r:Router) {
 }
 export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined> {
   if(!authenticatedOwner(r,m)||!m.ownerCommand||m.quotedId||m.source==='voice')return;
-  const match=/^\/(claude|codex|brain|screen|back|help)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
+  const match=/^\/(claude|codex|brain|screen|back|help|reach|muse)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
+  if(cmd==='reach'){
+    const claimed=r.store.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(`reach-direct-claim:${m.id}`,'started');
+    if(!claimed.changes)return 'This research request was already used or interrupted. Send a new request to try again.';
+    try{return await r.reach(m.text,()=>!r.stopped&&r.store.incomingOwnerCurrent()&&authenticatedOwner(r,m));}
+    finally{try{r.store.set(`reach-direct-claim:${m.id}`,'finished');}catch{}}
+  }
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
-  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.`;
+  if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.${r.store.controlChannel()==='whatsapp'?'\n\nTo bind an approved GitHub check, use /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.':''}`;
+  if(cmd==='muse')return museCommand(r,m,arg);
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Settings > Remote control in FarFromDesk.':'Screen viewing is unavailable in this build. Open Settings > Remote control in FarFromDesk on your Mac.';
@@ -184,11 +221,47 @@ export async function routeOwnerTarget(r:Router,m:Incoming):Promise<boolean> {
 }
 export function clearOwnerTarget(r:Router){clear(r);}
 
-export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
-  if(!authenticatedOwner(r,m)||m.quotedId)return;
-  const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;if(!target)return;
-  if(target.kind==='brain')throw Error('Meta brain mode accepts text and voice. Choose /claude or /codex for a file, or quote the intended session reply.');
-  return session(r,target);
+/** Resolve the selected destination with the same identity checks as direct chat. */
+export function specialtyTarget(r:Router,m:Incoming):Binding {
+  if(!authenticatedOwner(r,m)||m.quotedId||(m.source==='voice'?m.ownerIntent!==true:m.ownerCommand!==true))throw Error('Send this request as a new message in your own chat.');
+  const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
+  if(target?.kind==='brain')throw Error('Choose a Codex or Claude session before starting this task.');
+  if(target?.kind==='session')return session(r,target);
+  const directKey=`direct:${r.store.destination()??'owner'}`,raw=r.store.get(directKey);
+  if(raw){
+    let direct:{bindingId:string;at:number};try{direct=JSON.parse(raw);}catch{throw Error('The selected session changed. Select it again.');}
+    if(typeof direct.bindingId!=='string'||!Number.isFinite(direct.at))throw Error('The selected session changed. Select it again.');
+    if(Date.now()-direct.at<=DIRECT_IDLE_MS){
+      const b=r.store.binding(direct.bindingId);
+      if(!b?.enabled||r.coordinator?.isCoordinator(b.id)||!enabled(r,b.provider)||r.store.get(`native-history-error:${b.id}`))throw Error('Your chosen session is paused or unavailable. Select it again. Nothing was sent elsewhere.');
+      r.store.set(directKey,JSON.stringify({...direct,at:Date.now()}));
+      return b;
+    }
+    endDirect(r.store);
+  }
+  const b=r.store.binding(r.store.get('active')??r.store.get('master')??'');
+  if(!b)throw Error('Choose a connected Codex or Claude session first.');
+  return session(r,{kind:'session',id:b.id,identity:identity(r,b)});
 }
 
-export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|screen|back|help)(?:\s|$)/i.test(text.trim());
+export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
+  if(!authenticatedOwner(r,m)||m.quotedId)return;
+  const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
+  if(target){
+    if(target.kind==='brain')throw Error('Meta brain mode accepts text and voice. Choose /claude or /codex for a file, or quote the intended session reply.');
+    return session(r,target);
+  }
+  // /talk selects an exact direct session even when it is not in the selected
+  // list. Never fall through to an unrelated active session while it is valid.
+  const directKey=`direct:${r.store.destination()??'owner'}`,raw=r.store.get(directKey);if(!raw)return;
+  let direct:{bindingId:string;at:number};try{direct=JSON.parse(raw);}catch{throw Error('The selected session changed. Select it again.');}
+  if(typeof direct.bindingId!=='string'||!Number.isFinite(direct.at))throw Error('The selected session changed. Select it again.');
+  if(Date.now()-direct.at>DIRECT_IDLE_MS){endDirect(r.store);return;}
+  const b=r.store.binding(direct.bindingId);
+  if(!b?.enabled||r.coordinator?.isCoordinator(b.id)||!enabled(r,b.provider)||r.store.get(`native-history-error:${b.id}`))throw Error('Your chosen session is paused or unavailable. Select it again. Nothing was sent elsewhere.');
+  return b;
+}
+
+export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|screen|back|help|reach|research|jobs|social)(?:\s|$)/i.test(text.trim());
+
+export function brainSelected(r:Router):boolean {try{return JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='brain';}catch{return false;}}

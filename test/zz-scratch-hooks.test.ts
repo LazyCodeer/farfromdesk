@@ -1,0 +1,196 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync,rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:net';
+import { request as httpRequest } from 'node:http';
+
+test('local HTTP boundary, scoped replies and native hook contract',async()=>{
+  const temp=mkdtempSync(join(tmpdir(),'wsb-http-'));
+  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+  process.env.WSB_STATE_DIR=temp;process.env.WSB_PORT=String(port);
+  const [{Store},{Router},{Approvals},{serve,saveBindingCredentials},{handleHook,drainHooks}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/hooks.js')]);
+  const store=new Store(':memory:'),approvals=new Approvals(store);
+  const router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
+  const a=store.register('test-a','codex','11111111-1111-4111-a111-111111111111','/tmp'),b=store.register('test-b','claude','22222222-2222-4222-a222-222222222222','/tmp');
+  saveBindingCredentials(a.binding,a.token);saveBindingCredentials(b.binding,b.token);
+  let logoutCalls=0,pauseCalls=0;
+  const wa={status:'not paired',logout:async()=>{logoutCalls++;}} as any;
+  const browser={run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);assert.equal(input.action,'discover');return {matches:0};}};
+  let macTrusted=true,macEnabled=false,macCalls=0;
+  let permissionGate:Promise<void>|undefined,permissionEntered:(()=>void)|undefined;
+  const macControl={configure:(enabled:boolean)=>{macEnabled=enabled;return {enabled};},view:()=>({enabled:macEnabled}),status:async()=>{if(permissionGate){const gate=permissionGate;permissionGate=undefined;permissionEntered?.();await gate;}return {supported:true,trusted:macTrusted};},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,trusted:macTrusted,enabled:macEnabled};if(input.action==='stop')return {stopped:true};macCalls++;if(input.action==='capture')return {captured:true,pngBase64:Buffer.from([137,80,78,71,13,10,26,10]).toString('base64'),frame:[-1920,125,800,600]};assert.equal(input.action,'discover');return {apps:[]};},stop:()=>{}};
+  let desktopCalls=0,desktopStops=0;
+  const desktopControl={view:()=>({supported:true}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,enabled:macEnabled};if(input.action==='stop'){desktopStops++;return {stopped:true};}desktopCalls++;assert.equal(input.action,'list_apps');return {apps:[]};}};
+  const services={desktopControl,browser,macControl,masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
+  const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
+  const url=`http://127.0.0.1:${port}`;
+  try {
+    for(const path of ['/','/app.js','/style.css']) {
+      const retired=await fetch(url+path);
+      assert.equal(retired.status,410);
+      assert.match((await retired.json()).error,/retired/);
+    }
+    {const r=await fetch(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token'}});console.error('BODY',r.status,await r.text());}
+    assert.equal((await fetch(url+'/api/status')).status,401);
+    assert.equal((await fetch(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Origin:'https://evil.example'}})).status,403);
+    const wrongHost=await new Promise<number|undefined>((resolve,reject)=>{const req=httpRequest(url+'/api/status',{headers:{Authorization:'Bearer test-admin-token',Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
+    assert.equal(wrongHost,403);
+    assert.equal((await fetch(url+'/api/status',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,403);
+    for(const endpoint of ['/api/mac-control','/api/control-channel','/api/control-channel/disconnect','/api/telegram/connect','/api/telegram/confirm','/api/telegram/disconnect','/api/voice-model','/api/platform-preference','/api/preferences','/api/group-create','/api/destination','/api/master-create','/api/master-select','/api/master-select-desktop','/api/master-recover','/api/master-abandon','/api/request-review','/api/request-review-bulk','/api/request-cleanup','/api/logout','/api/desktop/document','/api/desktop/connect-sessions','/api/shutdown','/api/update-shutdown']) {
+      assert.equal((await fetch(url+endpoint,{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:'{}'})).status,403);
+    }
+    router.busy.add(a.binding.id);
+    const updateBlocked=await fetch(url+'/api/update-shutdown',{method:'POST',headers:{Authorization:'Bearer test-admin-token','Content-Type':'application/json'},body:'{}'});
+    assert.equal(updateBlocked.status,400);assert.equal(router.stopped,false);
+    router.busy.delete(a.binding.id);
+    store.enqueue('job-a',a.binding,'Task A');store.enqueue('job-b',b.binding,'Task B');
+    const reply=(d:any)=>fetch(url+'/api/session/reply',{method:'POST',headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id,'Content-Type':'application/json'},body:JSON.stringify(d)});
+    assert.equal((await reply({text:'Done without request identity',kind:'final'})).status,400);
+    assert.equal(store.job('job-a')?.status,'queued');
+    assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,0);
+    assert.equal((await reply({text:'Done',requestId:'job-b',kind:'final'})).status,400);
+    assert.equal((await reply({text:'',requestId:'job-a',kind:'final'})).status,400);
+    assert.equal((await reply({text:'My exact response',requestId:'job-a',kind:'final',eventId:'same'})).status,200);
+    assert.equal(store.job('job-a')?.status,'completed');
+    await handleHook('codex',{session_id:'unregistered',hook_event_name:'Stop',last_assistant_message:'Must not leave'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);
+    await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);
+    await handleHook('claude',{session_id:b.binding.native_id,hook_event_name:'Stop',turn_id:'turn-1',last_assistant_message:'Exact native final'});drainHooks(store);assert.equal(store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);assert.equal(store.unlinkedHooks().length,1);
+    const permission=handleHook('codex',{session_id:a.binding.native_id,hook_event_name:'PermissionRequest',tool_name:'Bash',tool_input:{command:'echo test'}});
+    for(let i=0;i<50&&!approvals.pending.size;i++)await new Promise(r=>setTimeout(r,10));
+    assert.equal(approvals.pending.size,1);assert.equal([...approvals.pending.values()][0].source,'session');approvals.answer([...approvals.pending.keys()][0],'deny','approval');
+    assert.deepEqual(await permission,{hookSpecificOutput:{hookEventName:'PermissionRequest',decision:{behavior:'deny'}}});
+    const post=(path:string,data:any,token=a.token,id=a.binding.id)=>fetch(url+path,{method:'POST',headers:{Authorization:`Bearer ${token}`,'X-Binding-Id':id,'Content-Type':'application/json'},body:JSON.stringify(data)});
+    store.enqueue('review-me',b.binding,'Review test');store.jobState('review-me','submitted');
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'submitted',confirmed:true})).status,403);
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'submitted'},'test-admin-token')).status,400);
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'uncertain',confirmed:true},'test-admin-token')).status,400);
+    assert.equal((await post('/api/request-review',{requestId:'review-me',expectedStatus:'submitted',confirmed:true},'test-admin-token')).status,200);
+    assert.equal(store.job('review-me')?.status,'reviewed');
+    assert.equal((await post('/api/request-cleanup',{enabled:true,afterHours:1},'test-admin-token')).status,400);
+    assert.equal((await post('/api/request-cleanup',{enabled:false,afterHours:72},'test-admin-token')).status,200);
+    assert.equal(store.get('cleanup-hours'),'72');assert.equal(store.get('cleanup-enabled'),'false');
+    const bulkIds=['http-bulk-a','http-bulk-b'];
+    for(const id of bulkIds){store.enqueue(id,b.binding,'Harmless test');store.jobState(id,'uncertain');}
+    const requests=bulkIds.map(id=>{const j=store.job(id)!;return {requestId:id,expectedStatus:j.status,expectedUpdatedAt:j.updated_at};});
+    assert.equal((await post('/api/request-review-bulk',{requests},'test-admin-token')).status,400);
+    const bulk=await post('/api/request-review-bulk',{requests,confirmed:true},'test-admin-token');assert.equal(bulk.status,200);assert.equal((await bulk.json()).closed,2);
+    store.set('whatsapp-owner','123@s.whatsapp.net');
+    const doc={bindingId:a.binding.id,requestId:'job-a',filename:'review.html',base64:Buffer.from('<html>Review</html>').toString('base64')};
+    assert.equal((await post('/api/artifacts/prepare',doc)).status,403);
+    assert.equal((await post('/api/audio-config',{})).status,403);
+    assert.equal((await post('/api/desktop/document',doc,'test-admin-token')).status,400);
+    assert.equal((await post('/api/desktop/document',{...doc,confirmed:true,requestId:'job-b'},'test-admin-token')).status,400);
+    const prep=await post('/api/artifacts/prepare',doc,'test-admin-token');assert.equal(prep.status,200);
+    const artifactId=(await prep.json()).artifactId;
+    assert.equal((await post('/api/session/document',{requestId:'job-b',artifactId})).status,400);
+    assert.equal((await post('/api/session/document',{requestId:'job-b',artifactId},b.token,b.binding.id)).status,400);
+    assert.equal((await post('/api/session/document',{requestId:'job-a',artifactId:'/etc/passwd'})).status,400);
+    const sent=await post('/api/session/document',{requestId:'job-a',artifactId,caption:'Review'});assert.equal(sent.status,200);
+    const delivery=await sent.json();assert.equal(delivery.status,'queued');
+    const again=await post('/api/session/document',{requestId:'job-a',artifactId,caption:'Review'});assert.equal((await again.json()).id,delivery.id);
+    const deliveryUrl=url+'/api/session/delivery?id='+delivery.id;
+    assert.equal((await fetch(deliveryUrl,{headers:{Authorization:`Bearer ${b.token}`,'X-Binding-Id':b.binding.id}})).status,400);
+    assert.equal((await fetch(deliveryUrl,{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,200);
+    const desktopSent=await post('/api/desktop/document',{...doc,filename:'desktop-review.html',confirmed:true,caption:'Reviewed by owner'},'test-admin-token');assert.equal(desktopSent.status,200);assert.equal((await desktopSent.json()).status,'queued');
+    assert.equal((await post('/api/logout',{},'test-admin-token')).status,400);assert.equal(logoutCalls,0);
+    assert.equal((await post('/api/logout',{confirmed:true},'test-admin-token')).status,200);assert.equal(logoutCalls,1);assert.equal(pauseCalls,1);assert.equal(wa.status,'logged out');
+    wa.logout=async()=>{throw new Error('Simulated unlink failure');};
+    assert.equal((await post('/api/logout',{confirmed:true},'test-admin-token')).status,400);assert.equal(pauseCalls,2);
+    const {Coordinator}=await import('../src/coordinator.js');
+    store.set('master',a.binding.id);store.enqueue('wa:connect-owner',a.binding,'Work on the exact Claude session');
+    const ownWorker=store.register('same-connection-worker','codex','77777777-7777-4777-a777-777777777777','/tmp');
+    router.native.catalog=async()=>({sessions:[{id:ownWorker.binding.native_id,provider:'codex',name:'API project',cwd:'/tmp',status:'running',available:true}],cursor:null}) as any;
+    router.native.validate=async()=>{};
+    router.coordinator=new Coordinator(store,router.native,router,()=>{});
+    // Browser commands remain coordinator/request-scoped, never admin or cross-session shortcuts.
+    // This fixture injects the adapter at server creation; actual browser access stays out of tests.
+    // A stop received while a permission check is pending must cancel that request,
+    // for both the Mac and desktop control entry points.
+    for(const [endpoint,action] of [['/api/master/mac-control','discover'],['/api/master/desktop-control','list_apps']]){
+      let release!:()=>void,entered!:()=>void;
+      permissionGate=new Promise<void>(r=>{release=r;});
+      const started=new Promise<void>(r=>{entered=r;});permissionEntered=entered;
+      const pending=post(endpoint,{requestId:'wa:connect-owner',action});
+      await started;
+      assert.equal((await post(endpoint,{requestId:'wa:connect-owner',action:'stop'})).status,200);
+      release();assert.equal((await pending).status,400);
+      assert.equal(macCalls,0);assert.equal(desktopCalls,0);
+    }
+    // Status and actions derive their availability from the same native grant.
+    const statusRequest={requestId:'wa:connect-owner',action:'status'};
+    for(const endpoint of ['/api/master/mac-control','/api/master/desktop-control']){
+      macEnabled=false;macTrusted=true;
+      const allowed=await post(endpoint,statusRequest);assert.equal(allowed.status,200);assert.equal((await allowed.json()).enabled,true);
+      macTrusted=false;
+      const denied=await post(endpoint,statusRequest);assert.equal(denied.status,200);assert.equal((await denied.json()).enabled,false);
+    }
+    const statusStops=desktopStops;
+    const desktopRequest={requestId:'wa:connect-owner',action:'list_apps'};
+    assert.equal((await post('/api/master/desktop-control',desktopRequest,b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/desktop-control',desktopRequest,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/desktop-control',{...desktopRequest,requestId:'report:fake'})).status,400);
+    assert.equal(desktopCalls,0);
+    macTrusted=false;
+    assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,400);
+    assert.equal(desktopCalls,0);
+    macTrusted=true;
+    assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,200);
+    assert.equal(desktopCalls,1);
+    macTrusted=false;
+    assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,400);
+    assert.equal(desktopCalls,1);assert.equal(macEnabled,false);assert.equal(desktopStops,statusStops+1);
+    macTrusted=true;
+    assert.equal((await post('/api/mac-control',{action:'disable'},'test-admin-token')).status,200);
+    assert.equal(desktopStops,statusStops+2);
+    const connect={requestId:'wa:connect-owner',targets:[`codex:${ownWorker.binding.native_id}`]};
+    assert.equal((await post('/api/master/connect',connect,b.token,b.binding.id)).status,403);
+    for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/connect',connect,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/connect',{...connect,requestId:'report:fake'})).status,400);
+    const browserRequest={requestId:'wa:connect-owner',action:'discover'};
+    assert.equal((await post('/api/master/browser',browserRequest,b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/browser',browserRequest,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/browser',{...browserRequest,requestId:'report:fake'})).status,400);
+    assert.equal((await post('/api/master/browser',browserRequest)).status,200);
+    assert.equal((await post('/api/master/mac-control',browserRequest,b.token,b.binding.id)).status,403);
+    assert.equal((await post('/api/master/mac-control',browserRequest,'test-admin-token')).status,403);
+    assert.equal((await post('/api/master/mac-control',{...browserRequest,requestId:'report:fake'})).status,400);
+    macTrusted=false;
+    assert.equal((await post('/api/master/mac-control',browserRequest)).status,400);
+    macTrusted=true;
+    assert.equal((await post('/api/master/mac-control',browserRequest)).status,200);
+    const captureRequest={requestId:'wa:connect-owner',action:'capture',windowRef:'11111111-1111-4111-a111-111111111111'};
+    assert.equal((await post('/api/master/mac-control',captureRequest,b.token,b.binding.id)).status,403);
+    const capture=await post('/api/master/mac-control',captureRequest);assert.equal(capture.status,200);const screenshot=await capture.json();assert.equal(screenshot.pngBase64,undefined);assert.equal(typeof screenshot.artifactId,'string');assert.equal(screenshot.delivery,'prepared, not sent');
+    const screenshotReply=await post('/api/session/document',{requestId:'wa:connect-owner',artifactId:screenshot.artifactId,caption:'Fixture screenshot'});assert.equal(screenshotReply.status,200);assert.equal((await screenshotReply.json()).status,'queued');
+
+    router.stopped=true;
+    assert.equal((await post('/api/master/mac-control',browserRequest)).status,400);
+    router.stopped=false;
+
+    store.enqueue('wa:closed-browser',a.binding,'Read selected page');store.jobState('wa:closed-browser','done');
+    assert.equal((await post('/api/master/browser',{...browserRequest,requestId:'wa:closed-browser'})).status,400);
+    const connected=await post('/api/master/connect',connect);assert.equal(connected.status,200);
+    assert.equal((await connected.json()).sessions[0].id,ownWorker.binding.id);
+    const list=await fetch(url+'/api/master/sessions?search=API',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}});
+    assert.equal(list.status,200);const listed=await list.json();assert.equal(listed.sessions[0].target,`codex:cli:${ownWorker.binding.native_id}`);assert.equal(listed.page,0);
+    assert.equal((await fetch(url+'/api/master/sessions?page=-1',{headers:{Authorization:`Bearer ${a.token}`,'X-Binding-Id':a.binding.id}})).status,400);
+    const replacement=store.register('other-master','codex','33333333-3333-4333-a333-333333333333','/tmp');router.coordinator.registry.register(replacement.binding);
+    assert.equal((await post('/api/master/connect',connect)).status,403);
+    store.set('whatsapp-owner','owner@s.whatsapp.net');store.enqueue('choice-http',a.binding,'Choose test','owner@s.whatsapp.net');
+    const choices={choices:[{id:'inspect',label:'Inspect'},{id:'wait',label:'Wait'}],expiresInSeconds:60};
+    assert.equal((await reply({text:'Choose',requestId:'job-b',kind:'progress',options:choices})).status,400);
+    assert.equal((await reply({text:'Choose',requestId:'choice-http',kind:'progress',options:{choices:[]}})).status,400);
+    const optionReply=await reply({text:'Choose',requestId:'choice-http',kind:'progress',options:choices});assert.equal(optionReply.status,200,await optionReply.text());
+    assert.equal(store.db.prepare('SELECT count(*) AS n FROM message_options').get()!.n,1);
+    store.enable(a.binding.id,false);assert.equal((await post('/api/session/document',{requestId:'job-a',artifactId})).status,401);
+    const pendingBefore=store.pendingJobs().map(j=>j.id);
+    let shutdownRequested=false;server.once('ffd-shutdown',()=>{shutdownRequested=true;});
+    const updateReady=await fetch(url+'/api/update-shutdown',{method:'POST',headers:{Authorization:'Bearer test-admin-token','Content-Type':'application/json'},body:'{}'});
+    assert.equal(updateReady.status,200);assert.equal(router.stopped,true);
+    await new Promise(r=>setImmediate(r));assert.equal(shutdownRequested,true);
+    assert.deepEqual(store.pendingJobs().map(j=>j.id),pendingBefore);
+  } finally {router.stopped=true;approvals.cancel();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));store.close();rmSync(temp,{recursive:true});}
+});

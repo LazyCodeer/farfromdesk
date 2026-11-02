@@ -1,0 +1,4 @@
+interface:
+  display_name: "FarFromDesk Local Development"
+  short_description: "Continue, test and package FarFromDesk Local"
+  default_prompt: "Use $ffd-local-development to continue the FarFromDesk Local work from its current verified source and test the requested changes."

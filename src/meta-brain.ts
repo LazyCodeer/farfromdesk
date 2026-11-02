@@ -1,3 +1,9 @@
+import {researchSpecialty} from './research-agent.js';
+import {jobsSpecialty} from './jobs-agent.js';
+import {captureGuidedResearchRequest} from './agent-reach-request.js';
+import {bindSessionSpecialty,prepareSpecialties,specialtyEpoch,markPendingSpecialty} from './session-specialty.js';
+import {socialSpecialty} from './social-agent.js';
+import {requestedSocialImageProvider} from './social-image-provider.js';
 import { BrainMemory } from './brain-memory.js';
 import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
@@ -288,10 +294,17 @@ export class MetaBrain {
     if(prior){if(prior.original!==m.text||prior.destination!==this.store.destination())throw new Error('Owner event identity was reused.');if(prior.state==='interpreting')this.stop(m.id,'Interpretation was interrupted. No automatic retry was made; send a new message when ready.');return true;}
     this.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run(m.id,m.text,m.source??'text',this.store.destination(),Date.now());
     const revoked=()=>{if(this.store.incomingOwnerCurrent())return false;this.store.db.prepare("UPDATE brain_tasks SET state='blocked',permission='denied',reason='Owner connection changed; no automatic retry' WHERE id=? AND state='interpreting'").run(m.id);return true;};
+    prepareSpecialties(this.store);
+    const mode=router.guidedModes.get(router,m);
+    if(mode?.kind==='social')mode.imageProvider=requestedSocialImageProvider(m.text)??mode.imageProvider??'local';
+    const routingSnapshot=()=>JSON.stringify([specialtyEpoch(this.store),router.guidedModes.get(router,m)]);
+    const routingAtStart=routingSnapshot();
+    if(mode)this.store.set(`brain-mode:${m.id}`,router.guidedModes.summary(router,m));
+    const routingChanged=()=>{if(routingSnapshot()===routingAtStart)return false;this.stop(m.id,'Executor or task mode changed while Brain was routing. Nothing was sent; send a new message.');return true;};
     this.memory.synchronize();
     let handled:boolean;
     try{handled=await this.localIntent(router,m);}catch(e){if(revoked())return true;throw e;}
-    if(revoked())return true;if(handled)return true;
+    if(revoked()||routingChanged())return true;if(handled)return true;
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
@@ -300,10 +313,10 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
-      if(revoked())return true;
+      if(revoked()||routingChanged())return true;
       const raw=(e as {code?:unknown})?.code,code=typeof raw==='string'?raw:errorCode(e);
       this.store.event(m.id,'brain_interpretation_failed',{code,durationMs:Date.now()-interpretationStarted});
       if(this.get(m.id)?.state!=='interpreting')return true;
@@ -318,7 +331,7 @@ export class MetaBrain {
         :code==='timeout'?'Meta took too long to answer. Send your message again.'
         :'Meta could not read that message right now. Send it again in a moment.');return true;
     }
-    if(revoked()||this.get(m.id)?.state!=='interpreting')return true;
+    if(revoked()||this.get(m.id)?.state!=='interpreting'||routingChanged())return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);
     this.announce(m);
     if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
@@ -403,17 +416,27 @@ export class MetaBrain {
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
       if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);
     }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
-    this.send(router,m.id,m.text,target,coordinator,topic);
+    this.send(router,m.id,m.text,target,coordinator,topic,m);
     return true;
   }
   private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}
-  private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>) {
+  private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming) {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
       // Queue original verbatim. Normalized wording is advisory ledger data, never an authorization source.
       // A pre-existing topic must be linked before a contract binds the request to an item.
       if(topic){const linked=this.store.itemOf(id);if(linked&&linked!==topic.id)throw new Error('Request belongs to another item.');this.memory.link(id,topic.id);}
+      const mode=incoming?router.guidedModes.get(router,incoming):undefined;
+      if(mode&&incoming)captureGuidedResearchRequest(this.store,router,incoming,mode.kind);
+      const provider=mode?.kind==='social'?(requestedSocialImageProvider(text)??mode.imageProvider??'local'):undefined;
+      const instructions=mode?(mode.kind==='social'?socialSpecialty(provider):mode.kind==='research'?researchSpecialty():jobsSpecialty()):undefined;
+      if(mode&&instructions)markPendingSpecialty(this.store,id,target,mode.kind,instructions,text,provider);
+      this.store.set(`brain-routed:${id}`,'true');
       router.queue(id,target,text);
+      if(mode){
+        bindSessionSpecialty(this.store,id,target,mode.kind,instructions!,provider);
+        if(mode.kind==='social'){mode.imageProvider=provider;router.guidedModes.end(mode,router,incoming!);}
+      }
       const existing=this.store.itemOf(id);
       const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,text));
       this.memory.link(id,item.id);

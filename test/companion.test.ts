@@ -81,7 +81,7 @@ test('a fresh update asks the owning worker once, status only, and its reply is 
     // A late reply lands on the item under its number.
     f.router.channelReply(f.worker,'✅ *Export fixed*\n- Tests pass.','final','tg:2');
     assert.match(f.c.items().show(1),/Billing API reported: Export fixed/);
-    assert.match(f.last(),/^\*#1 · /);
+    assert.match(f.last(),/🔖 #1/);
     assert.ok(f.store.job(child));
     // Worker answers become part of the companion's working memory for the next message.
     await f.send('tg:9','so what is next',{...task,intent:'clarify'});

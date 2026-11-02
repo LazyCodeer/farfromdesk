@@ -6,7 +6,7 @@ import { brainPolicy, META_ENDPOINT } from './meta-brain-config.js';
 import type { Router, Incoming } from './router.js';
 import { authenticatedOwner } from './owner-commands.js';
 import { briefDestinationValid,briefTargetIdentity } from './brief-dispatch-guard.js';
-import type { Store } from './store.js';
+import type { Store,IncomingOwner } from './store.js';
 import { metaObserver,type MetaObserver } from './meta-timeline.js';
 
 type Entry={kind:'item'|'approval'|'pr'|'info';id:number|string;title:string;status:string;reason:string;section:'done'|'needs'|'today';binding?:string|null;target?:string;identity?:string;category?:string;urgency?:string;ageHours?:number;idleHours?:number;sessionState?:string};
@@ -64,7 +64,8 @@ export class MorningBrief {
   constructor(private store:Store,private router:Router,private writer:Writer=writeBrief,private clock:()=>number=Date.now,private prReader:PrReader=readPr){
     store.db.exec(`CREATE TABLE IF NOT EXISTS morning_briefs(destination TEXT NOT NULL,owner TEXT NOT NULL,day TEXT NOT NULL,source TEXT UNIQUE NOT NULL,entries TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(destination,owner,day));
       CREATE TABLE IF NOT EXISTS morning_brief_deferrals(destination TEXT NOT NULL,owner TEXT NOT NULL,item_id INTEGER NOT NULL,until_day TEXT NOT NULL,PRIMARY KEY(destination,owner,item_id));
-      CREATE TABLE IF NOT EXISTS morning_brief_attempts(destination TEXT NOT NULL,owner TEXT NOT NULL,day TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,PRIMARY KEY(destination,owner,day));`);
+      CREATE TABLE IF NOT EXISTS morning_brief_attempts(destination TEXT NOT NULL,owner TEXT NOT NULL,day TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,PRIMARY KEY(destination,owner,day));
+      CREATE TABLE IF NOT EXISTS morning_brief_failure_safe(outbox_id TEXT PRIMARY KEY);`);
   }
   private config(){return {zone:this.store.get('morning-brief-zone')??'Asia/Kolkata',time:this.store.get('morning-brief-time')??'08:00'};}
   private scopedBoard(destination:string,owner:string,only?:number){
@@ -73,16 +74,36 @@ export class MorningBrief {
     // Filter before the board's limit so legacy rows cannot starve proven work.
     return this.router.brain.memory.board(destination,only,owner);
   }
-  private failureNotice(destination:string,owner:string,day:string){
-    if(!validDestination(this.store,destination,owner))return;
-    this.store.output(undefined,'The morning brief could not be prepared after several tries. Check Brain settings, then send /brief retry.',`morning-brief-error:${source(destination,owner,day)}`,destination,{kind:'system',origin:'system',plain:true});
+  private failureNotice(destination:string,owner:string,day:string,origin:IncomingOwner){
+    if(!validDestination(this.store,destination,owner)||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return;
+    const notice=`morning-brief-error:${source(destination,owner,day)}`;
+    this.store.db.exec('SAVEPOINT brief_failure_notice');
+    try{
+      const created=this.store.incomingOwnerContext.run(origin,()=>this.store.output(undefined,'The morning brief could not be prepared after several tries. Check Brain settings, then send /brief retry.',notice,destination,{kind:'system',origin:'system',plain:true}));
+      if(created)this.store.db.prepare('INSERT INTO morning_brief_failure_safe SELECT id FROM outbox WHERE source=?').run(`${notice}:0`);
+      this.store.db.exec('RELEASE brief_failure_notice');
+    }catch(e){this.store.db.exec('ROLLBACK TO brief_failure_notice; RELEASE brief_failure_notice');throw e;}
+  }
+  /** Only an explicit retry can re-arm a cancellation known never to have been sent. */
+  private rearmFailureNotice(destination:string,owner:string,day:string){
+    const notice=`morning-brief-error:${source(destination,owner,day)}`;
+    this.store.db.exec('SAVEPOINT brief_failure_rearm');
+    try{
+      const row=this.store.db.prepare('SELECT id,status,attempts,sent_at,delivered_at,read_at,wa_message,error FROM outbox WHERE source=? AND destination=?').get(`${notice}:0`,destination) as {id:string;status:string;attempts:number;sent_at:number|null;delivered_at:number|null;read_at:number|null;wa_message:string|null;error:string|null}|undefined;
+      if(row&&this.store.db.prepare('SELECT 1 FROM morning_brief_failure_safe WHERE outbox_id=?').get(row.id)&&row.status==='cancelled'&&row.attempts===0&&row.sent_at===null&&row.delivered_at===null&&row.read_at===null&&row.wa_message===null&&
+        ['Morning brief owner or destination changed','Original owner connection changed.'].includes(row.error??'')&&!this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${notice}:1`)){
+        const removed=this.store.db.prepare("DELETE FROM outbox WHERE id=? AND status='cancelled' AND attempts=0 AND sent_at IS NULL AND delivered_at IS NULL AND read_at IS NULL AND wa_message IS NULL").run(row.id);
+        if(removed.changes){this.store.db.prepare('DELETE FROM morning_brief_failure_safe WHERE outbox_id=?').run(row.id);this.store.db.prepare('DELETE FROM incoming_owner_outbox WHERE outbox_id=?').run(row.id);this.store.db.prepare('DELETE FROM reply_receipts WHERE source=?').run(notice);}
+      }
+      this.store.db.exec('RELEASE brief_failure_rearm');
+    }catch(e){this.store.db.exec('ROLLBACK TO brief_failure_rearm; RELEASE brief_failure_rearm');throw e;}
   }
   private recoverUnsent(destination:string,owner:string,day:string){
     this.store.db.exec('SAVEPOINT brief_recover_unsent');
     try{
       const row=this.store.db.prepare(`SELECT b.source,o.status,o.attempts,o.sent_at,o.wa_message,o.error FROM morning_briefs b
         JOIN outbox o ON o.source=b.source||':0' WHERE b.destination=? AND b.owner=? AND b.day=?`).get(destination,owner,day) as {source:string;status:string;attempts:number;sent_at:number|null;wa_message:string|null;error:string|null}|undefined;
-      if(!row||row.status!=='cancelled'||row.attempts!==0||row.sent_at||row.wa_message||row.error!=='Morning brief owner or destination changed'||this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${row.source}:1`)){this.store.db.exec('RELEASE brief_recover_unsent');return false;}
+      if(!row||row.status!=='cancelled'||row.attempts!==0||row.sent_at||row.wa_message||!['Morning brief owner or destination changed','Original owner connection changed.'].includes(row.error??'')||this.store.db.prepare('SELECT 1 FROM outbox WHERE source=?').get(`${row.source}:1`)){this.store.db.exec('RELEASE brief_recover_unsent');return false;}
       this.store.db.prepare('DELETE FROM morning_briefs WHERE destination=? AND owner=? AND day=? AND source=?').run(destination,owner,day,row.source);
       this.store.db.prepare('DELETE FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').run(destination,owner,day);
       this.store.db.exec('RELEASE brief_recover_unsent');return true;
@@ -136,6 +157,9 @@ export class MorningBrief {
   async request(destination:string,mode:'scheduled'|'first-message',now=this.clock(),canSend?:()=>boolean){
     const owner=this.store.ownerFor(destination),policy=brainPolicy(this.store),key=this.router.brain.secret.read();
     if(this.router.stopped||!owner||!validDestination(this.store,destination,owner)||!policy.enabled||!policy.allowStatus||!key||canSend&&!canSend())return false;
+    const existing=this.store.incomingOwnerContext.getStore(),origin=existing??this.store.captureIncomingOwner(destination,'whatsapp');
+    if(!origin||!origin.generation||origin.channel!=='whatsapp'||origin.owner!==owner||origin.destination!==destination||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return false;
+    const ownerCurrent=()=>this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent())&&validDestination(this.store,destination,owner);
     const cfg=this.config();let local:ReturnType<typeof localTime>;
     try {local=localTime(now,cfg.zone);}catch{return false;}
     const time=/^(\d\d):(\d\d)$/.exec(cfg.time);if(!time||Number(time[1])>23||Number(time[2])>59)return false;
@@ -144,7 +168,7 @@ export class MorningBrief {
     if(this.pending.has(id))return false;
     if(this.store.db.prepare('SELECT 1 FROM morning_briefs WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date)&&!this.recoverUnsent(destination,owner,local.date))return false;
     const attempt=this.store.db.prepare('SELECT attempts,next_at FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date) as {attempts:number;next_at:number}|undefined;
-    if(attempt?.attempts&&attempt.attempts>=3){this.failureNotice(destination,owner,local.date);return false;}
+    if(attempt?.attempts&&attempt.attempts>=3){this.failureNotice(destination,owner,local.date,origin);return false;}
     if(attempt&&now<attempt.next_at)return false;
     const count=(attempt?.attempts??0)+1,wait=count===1?60_000:count===2?300_000:900_000;
     this.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?) ON CONFLICT(destination,owner,day) DO UPDATE SET attempts=excluded.attempts,next_at=excluded.next_at').run(destination,owner,local.date,count,now+wait);
@@ -152,6 +176,9 @@ export class MorningBrief {
     this.pending.add(id);
     try {
       let entries=this.snapshot(destination,owner,local.date,now);const prs=await this.mergedPrs(destination,local.date,cfg.zone);
+      // A revoked owner cannot authorize a new model request after PR lookup.
+      const beforeModel=this.config(),modelPolicy=brainPolicy(this.store);
+      if(!ownerCurrent()||this.router.stopped||!modelPolicy.enabled||!modelPolicy.allowStatus||this.router.brain.secret.read()!==key||beforeModel.zone!==cfg.zone||beforeModel.time!==cfg.time||localTime(this.clock(),cfg.zone).date!==local.date||canSend&&!canSend()){undoAttempt();return false;}
       entries.push(...prs.entries.slice(0,3));
       // Prompts and item text can contain secrets. Only controlled classifications and
       // numeric item IDs leave this process; owner-facing text is assembled locally.
@@ -160,7 +187,7 @@ export class MorningBrief {
         ...(e.kind==='item'?{category:e.category,urgency:e.urgency,ageHours:e.ageHours,idleHours:e.idleHours,sessionState:e.sessionState}:{})}));
       const result=await this.writer({entries:modelEntries,date:local.date},key,metaObserver(this.store,'briefed',destination,owner));
       const current=this.config();
-      if(this.router.stopped||!validDestination(this.store,destination,owner)||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus||this.router.brain.secret.read()!==key||current.zone!==cfg.zone||current.time!==cfg.time||localTime(this.clock(),cfg.zone).date!==local.date||canSend&&!canSend()){undoAttempt();return false;}
+      if(this.router.stopped||!ownerCurrent()||!brainPolicy(this.store).enabled||!brainPolicy(this.store).allowStatus||this.router.brain.secret.read()!==key||current.zone!==cfg.zone||current.time!==cfg.time||localTime(this.clock(),cfg.zone).date!==local.date||canSend&&!canSend()){undoAttempt();return false;}
       // A pending permission or task may have changed while the model was thinking.
       // Build both the displayed lines and their numbered targets from fresh local state.
       entries=this.snapshot(destination,owner,local.date,this.clock());entries.push(...prs.entries.slice(0,3));
@@ -184,10 +211,10 @@ export class MorningBrief {
       try {
         const deliverySource=`${id}:${randomUUID()}`;
         this.store.db.prepare('INSERT INTO morning_briefs(destination,owner,day,source,entries,created_at) VALUES(?,?,?,?,?,?)').run(destination,owner,local.date,deliverySource,JSON.stringify(ordered),now);
-        this.store.output(undefined,text,deliverySource,destination,{kind:'system',origin:'system',plain:true});
+        this.store.incomingOwnerContext.run(origin,()=>this.store.output(undefined,text,deliverySource,destination,{kind:'system',origin:'system',plain:true}));
         this.store.db.exec('RELEASE morning_brief');return true;
       }catch(e){this.store.db.exec('ROLLBACK TO morning_brief; RELEASE morning_brief');throw e;}
-    }catch{try{if(count>=3)this.failureNotice(destination,owner,local.date);}catch{}return false;}finally{this.pending.delete(id);}
+    }catch{try{if(!ownerCurrent())undoAttempt();else if(count>=3)this.failureNotice(destination,owner,local.date,origin);}catch{}return false;}finally{this.pending.delete(id);}
   }
   tick(now=this.clock()) {const destination=this.store.destination();if(destination)void this.request(destination,'scheduled',now).catch(()=>{});}
   firstMessage(m:Incoming){if(authenticatedOwner(this.router,m)&&!/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination();if(destination)void this.request(destination,'first-message').catch(()=>{});}}
@@ -208,6 +235,7 @@ export class MorningBrief {
       if(/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination()!,owner=this.store.ownerFor(destination)!,day=localTime(this.clock(),this.config().zone).date;
         if(!validDestination(this.store,destination,owner))return {reply:'The morning brief is unavailable in this chat.'};
         if(this.store.db.prepare('SELECT 1 FROM morning_briefs WHERE destination=? AND owner=? AND day=?').get(destination,owner,day)&&!this.recoverUnsent(destination,owner,day))return {reply:'Today’s brief was already queued or its delivery cannot be confirmed. Check the chat before retrying.'};
+        this.rearmFailureNotice(destination,owner,day);
         this.store.db.prepare('DELETE FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').run(destination,owner,day);
         void this.request(destination,'first-message').catch(()=>{});return {reply:'I will retry today’s morning brief.'};}
       const time=/^\/brief\s+time\s+(\d{2}):(\d{2})$/i.exec(m.text.trim());
@@ -249,10 +277,16 @@ export class MorningBrief {
 }
 
 /** Recheck persisted owner at the actual transport boundary, not just when queued. */
-export function canDeliverBrief(store:Store,row:{source:string;destination:string|null;request_id?:string|null},connectedOwner:string|undefined,now=Date.now()){
+export function canDeliverBrief(store:Store,row:{id?:string;source:string;destination:string|null;request_id?:string|null},connectedOwner:string|undefined,now=Date.now()){
+  if(row.source.startsWith('morning-brief:')||row.source.startsWith('morning-brief-error:')){
+    // Background briefs have no inherited input context, so require the
+    // explicit epoch-bound outbox record. Old unbound notices fail closed.
+    const origin=row.id?store.db.prepare('SELECT owner,destination,channel,generation FROM incoming_owner_outbox WHERE outbox_id=?').get(row.id) as IncomingOwner|undefined:undefined;
+    if(!origin||origin.channel!=='whatsapp'||origin.owner!==connectedOwner||origin.destination!==row.destination||!origin.generation||!store.incomingOwnerDelivery(row.id!))return false;
+  }
   if(row.request_id){
-    const guard=store.db.prepare('SELECT owner,destination FROM brief_dispatch_guards WHERE request_id=?').get(row.request_id) as {owner:string;destination:string}|undefined;
-    if(guard&&(!connectedOwner||guard.owner!==connectedOwner||guard.destination!==row.destination||!briefDestinationValid(store,guard.destination,guard.owner)))return false;
+    const guard=store.db.prepare('SELECT owner,destination,owner_generation FROM brief_dispatch_guards WHERE request_id=?').get(row.request_id) as {owner:string;destination:string;owner_generation:string|null}|undefined;
+    if(guard&&(!guard.owner_generation||guard.owner_generation!==(store.get('incoming-owner-generation')??'')||!connectedOwner||guard.owner!==connectedOwner||guard.destination!==row.destination||!briefDestinationValid(store,guard.destination,guard.owner)))return false;
   }
   if(row.source.startsWith('morning-brief-error:')){
     if(!connectedOwner||!row.destination||!validDestination(store,row.destination,connectedOwner))return false;
@@ -262,6 +296,8 @@ export function canDeliverBrief(store:Store,row:{source:string;destination:strin
     if(!connectedOwner||!row.destination||!validDestination(store,row.destination,connectedOwner))return false;
     const match=/^brief-action(?:-error)?:(wa:.+):\d+$/.exec(row.source);if(!match)return false;
     const origin=store.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(match[1]) as {owner:string;destination:string}|undefined;
+    const guard=store.db.prepare('SELECT owner_generation FROM brief_dispatch_guards WHERE request_id=?').get(match[1]) as {owner_generation:string|null}|undefined;
+    if(guard&&(!guard.owner_generation||guard.owner_generation!==(store.get('incoming-owner-generation')??'')))return false;
     return !!origin&&origin.owner===connectedOwner&&origin.destination===row.destination;
   }
   if(!row.source.startsWith('morning-brief:'))return true;

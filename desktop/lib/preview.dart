@@ -32,7 +32,9 @@ class PreviewGateway extends Gateway {
     'items',
     'brain',
     'settings',
-  ].indexOf(screen).clamp(0, 4);
+    'email',
+    'social',
+  ].indexOf(screen).clamp(0, 6);
   String flow = 'empty';
   String whatsappState = 'disconnected';
   bool chosen = false;
@@ -48,6 +50,7 @@ class PreviewGateway extends Gateway {
       'telegram-connected',
       'telegram-expired',
       'telegram-error',
+      'telegram-offline',
     ];
     flow = flows.contains(value) ? value : 'whatsapp-connected';
     chosen = flow != 'empty';
@@ -167,11 +170,15 @@ class PreviewGateway extends Gateway {
           'controlChannel': controlChannel,
           'telegram': {
             'status': telegramState,
-            'configured': telegramState != 'disconnected',
+            'configured':
+                flow == 'telegram-offline' || telegramState != 'disconnected',
             'username': 'ffd_sample_bot',
-            'ownerId': '123456789',
+            // The backend only stores an owner id after the account is confirmed.
+            if (telegramState != 'pairing' && telegramState != 'confirm')
+              'ownerId': '123456789',
             'ownerName': 'Alex',
             if (flow == 'telegram-error') 'error': 'Telegram could not connect. Check your bot token and internet connection, then try again.',
+            if (flow == 'telegram-offline') 'error': 'Telegram could not complete the request. Check your connection and try again.',
             if (flow == 'telegram-expired') 'error': 'This pairing link expired. Reconnect to get a new private link.',
             if (telegramState == 'pairing')
               'pairingUrl': 'https://t.me/ffd_sample_bot?start=preview',
@@ -182,7 +189,8 @@ class PreviewGateway extends Gateway {
           'whatsapp': {
             'status': whatsappState,
             if (whatsappState == 'pairing') 'qr': previewQr,
-            'phoneNumber': '+15551234567',
+            // Only a paired account reports a number, matching the backend.
+            if (whatsappState == 'connected') 'phoneNumber': '+15551234567',
           },
           'destination': {'kind': 'self', 'name': 'Message yourself'},
           'master': flow == 'empty' || fixture == 'onboarding'

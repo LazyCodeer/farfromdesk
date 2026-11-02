@@ -19,7 +19,7 @@ export function nativeCommand(binary: string, args: string[], platform = process
     for(const root of [...(env.PATH||'').split(':').filter(p=>posix.isAbsolute(p)),posix.join(home,'.local/bin'),'/opt/homebrew/bin','/usr/local/bin',...versions]) {
       const candidate=posix.join(root,binary);if(exists(candidate))return {binary:candidate,args};
     }
-    if(platform==='darwin'&&binary==='codex')for(const folder of ['/Applications',posix.join(home,'Applications')])for(const app of ['Codex','ChatGPT'])for(const sub of ['codex','codex-cli/codex']){
+    if(platform==='darwin'&&binary==='codex')for(const folder of ['/Applications',posix.join(home,'Applications')])for(const app of ['Codex','ChatGPT'])for(const sub of ['codex','codex-cli/codex','codex-cli/CodexCLI.app/Contents/MacOS/codex']){
       const candidate=posix.join(folder,app+'.app','Contents/Resources',sub);if(exists(candidate))return {binary:candidate,args};
     }
     return {binary,args};

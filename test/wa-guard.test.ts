@@ -35,7 +35,7 @@ test('sending, relaying and group lookups outside your chat and your group are b
   assert.throws(()=>f.sock.sendMessage('999@s.whatsapp.net',{text:'x'},{messageId:'3'}),/only sends to your own chat/);
   assert.throws(()=>f.sock.sendMessage('family@g.us',{text:'x'},{messageId:'4'}),/only sends to your own chat/);
   assert.throws(()=>f.sock.relayMessage('family@g.us',{} as any,{messageId:'5'}),/only sends/);
-  assert.throws(()=>f.sock.sendMessage(ME,{text:'x',forward:{}} as any,{messageId:'6'}),/only text and documents/);
+  assert.throws(()=>f.sock.sendMessage(ME,{text:'x',forward:{}} as any,{messageId:'6'}),/only text, documents and image previews/);
   assert.throws(()=>f.sock.groupMetadata('family@g.us'),/not registered/);
   assert.throws(()=>f.sock.groupCreate('Team',['999@s.whatsapp.net']),/just you/);
   assert.deepEqual(f.sent.map(s=>s[1]),[ME,GROUP]);
@@ -46,4 +46,11 @@ test('group listing only ever returns groups where you are the only member',asyn
   assert.deepEqual(Object.keys(await f.sock.groupFetchAllParticipating()),[GROUP]);
   assert.equal((f.sock as any).raw,undefined);assert.equal((f.sock as any).readMessages,undefined);
   assert.equal((f.sock as any).chatModify,undefined);
+});
+
+test('photo preview guard accepts inline JPEG bytes and rejects remote images and other recipients',async()=>{
+ const f=fixture();
+ await f.sock.sendMessage(ME,{image:Buffer.from([255,216,255]),mimetype:'image/jpeg',caption:'Post'},{messageId:'photo'});
+ assert.throws(()=>f.sock.sendMessage(ME,{image:{url:'https://example.com/photo.jpg'},mimetype:'image/jpeg'},{messageId:'remote'}),/inline JPEG/);
+ assert.throws(()=>f.sock.sendMessage('999@s.whatsapp.net',{image:Buffer.from([255,216,255]),mimetype:'image/jpeg'},{messageId:'other'}),/only sends/);
 });

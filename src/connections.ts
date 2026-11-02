@@ -3,24 +3,27 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, readFileSync } from 'node:fs';
 import { codexBin, claudeBin } from './config.js';
 import { nativeCommand } from './platform.js';
 import { CodexSession } from './codex-session.js';
+import { museAuthPath, museBinary, museConfigDir } from './muse-paths.js';
 import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-provider.js';
 import type { Binding, Provider, Store } from './store.js';
 import type { ExecutionMode } from './desktop-claude.js';
+import { codexProfileHome } from './codex-profile.js';
 
 const exec=promisify(execFile);
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const canonical=(path:string)=>{try{return realpathSync(path);}catch{return path;}};
+export { museAuthPath } from './muse-paths.js';
 export type Connection = {id:string;provider:Provider;executionMode:ExecutionMode;state:'verified'|'configured'|'signed-out'|'unknown'|'native';label:string;revision:string;accountKey?:string};
 export const usableCLIConnection = (connection: Pick<Connection,'state'>) => connection.state==='verified'||connection.state==='configured';
 export type SessionRoute={provider:Provider;executionMode:ExecutionMode;transport:'managed-cli'|'native-session';profileId:string;accountKey?:string;accountScope?:string;label:string};
 export function connectionProfile(provider:Provider,mode:ExecutionMode,env=process.env) {
   const home=homedir();
   const root=mode==='desktop'&&provider==='claude'?join(home,'Library/Application Support/Claude'):
-    provider==='codex'?(env.CODEX_HOME??join(home,'.codex')):(env.CLAUDE_CONFIG_DIR??join(home,'.claude'));
+    provider==='codex'?codexProfileHome(env):provider==='muse'?museConfigDir(env):(env.CLAUDE_CONFIG_DIR??join(home,'.claude'));
   return `${provider}:${mode}:${digest(canonical(root)).slice(0,20)}`;
 }
 function maskedEmail(value:unknown) {
@@ -31,7 +34,7 @@ function maskedEmail(value:unknown) {
 /** Only these identity fields leave the native status response; never return credentials. */
 export function accountStatus(provider:Provider,response:any,env=process.env,configurationKey?:string):Pick<Connection,'state'|'label'|'accountKey'> {
   const row=provider==='codex'?response?.account:response;
-  if(provider==='claude'&&(!row||typeof row.loggedIn!=='boolean'))return {state:'unknown',label:'CLI authentication response unavailable · click Check apps to retry'};
+  if(provider==='claude'&&(!row||typeof row.loggedIn!=='boolean'))return {state:'unknown',label:'CLI authentication response unavailable · click Detect apps to retry'};
   if(!row||(provider==='claude'&&row.loggedIn===false))return {state:'signed-out',label:'CLI signed out · sign in to this CLI'};
   const method=provider==='codex'?row.type:row.authMethod;
   // Claude reports token/API/local-provider configuration without an email or account ID.
@@ -62,7 +65,23 @@ export async function probeClaudeAccount(binary:string,cwd:string,env:NodeJS.Pro
   if(before!==after)throw new Error('Claude provider configuration changed during its check. Retry.');
   return accountStatus('claude',JSON.parse(stdout),env,after);
 }
+export async function probeMuseAccount(cwd:string,env:NodeJS.ProcessEnv=process.env,
+  dependencies:{execute?:typeof exec}={}):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
+  const directory=existsSync(cwd)?cwd:homedir(),auth=museAuthPath(env);
+  // Muse has no account identity to pin: presence of its own credential file plus the
+  // provider names it lists is the whole profile. Never read a secret out of it.
+  let providers:string[]=[];
+  if(existsSync(auth))try{const data=JSON.parse(readFileSync(auth,'utf8'));if(data?.providers&&typeof data.providers==='object')providers=Object.keys(data.providers).sort();}catch{return {state:'unknown',label:'Muse Code credential could not be read · sign in to this CLI again'};}
+  else return {state:'signed-out',label:'Muse Code signed out · sign in to this CLI'};
+  if(!providers.length)return {state:'signed-out',label:'Muse Code signed out · sign in to this CLI'};
+  // A credential without its CLI cannot run a turn; check the exact binary headlessly.
+  const command=nativeCommand(museBinary(),['--version'],process.platform,env);
+  try {await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env,timeout:12000,maxBuffer:65536,windowsHide:true});}
+  catch{return {state:'unknown',label:'Muse Code CLI unavailable · install it with the Meta installer, then retry'};}
+  return {state:'verified',label:'Muse Code CLI · local credential',accountKey:digest(['muse',canonical(auth),providers])};
+}
 export async function probeAccount(provider:Provider,cwd:string):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
+  if(provider==='muse')return probeMuseAccount(cwd);
   if(provider==='claude')return probeClaudeAccount(claudeBin,cwd);
   const runtime=new CodexSession(codexBin,existsSync(cwd)?cwd:homedir(),async()=>{throw new Error('Account checks cannot approve operations.');});
   const timer=setTimeout(()=>runtime.close(),12000);
@@ -89,11 +108,18 @@ export class Connections {
     const id=connectionProfile(provider,mode),key=id+':'+canonical(cwd);
     const cached=this.cache.get(key);if(!fresh&&cached&&cached.until>Date.now())return {...cached.value};
     const existing=this.pending.get(key);if(existing)return {...await existing};
+    // Local's selected profile may be the owner's everyday Codex profile.
+    // Background discovery must not launch an app-server in it. An explicit
+    // Detect apps request or an owner-initiated operation can request a fresh probe.
+    if(!fresh&&provider==='codex'&&mode==='cli'&&process.env.FFD_ISOLATED_LOCAL==='1') {
+      const status={state:'unknown' as const,label:'Detect apps to verify the selected Codex profile.'};
+      return {id,provider,executionMode:mode,...status,revision:digest([id,status])};
+    }
     if(this.pending.size>=8)throw new Error('CLI account checks are busy. Retry this exact connection shortly.');
     const task=(async()=>{
       let status:Pick<Connection,'state'|'label'|'accountKey'>={state:'native',label:'Uses the selected desktop chat’s account · identity not exposed'};
       let failed=false;
-      if(mode==='cli')try{status=await this.probe(provider,cwd);}catch{failed=true;status={state:'unknown',label:'CLI account check unavailable · click Check apps to retry'};}
+      if(mode==='cli')try{status=await this.probe(provider,cwd);}catch{failed=true;status={state:'unknown',label:'CLI account check unavailable · click Detect apps to retry'};}
       const value={id,provider,executionMode:mode,...status,revision:digest([id,status])};
       this.cache.set(key,{until:failed?Infinity:Date.now()+15000,value});while(this.cache.size>64)this.cache.delete(this.cache.keys().next().value!);
       return value;
@@ -106,19 +132,23 @@ export class Connections {
     const route=await this.prepare(b,mode,managed,accountScope,expectedRevision);this.save(b,route);return route;
   }
   async prepare(b:Pick<Binding,'provider'|'cwd'>,mode:ExecutionMode,managed:boolean,accountScope?:string,expectedRevision?:string) {
+    // Muse runs only through the bridge's headless CLI; it has no app session to hand a turn to.
+    if(b.provider==='muse'&&mode!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');
     const c=managed||expectedRevision?await this.read(b.provider,managed?'cli':mode,true,b.cwd):
       {id:connectionProfile(b.provider,mode),state:'native' as const,label:'Existing native session account',revision:'',accountKey:undefined};
     // A preview made outside a project is not sufficient for project-specific CLI config.
     if(expectedRevision&&expectedRevision!==c.revision)throw new Error('Connection changed since selection. Review the account and select again.');
     if(managed&&!usableCLIConnection(c))throw new Error(c.label+'. Sign in or configure this CLI, then select it again.');
     const route:SessionRoute={provider:b.provider,executionMode:mode,transport:managed?'managed-cli':'native-session',profileId:c.id,
-      accountKey:managed?c.accountKey:undefined,accountScope,label:managed?c.label:`${b.provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'} · existing session account`};
+      accountKey:managed?c.accountKey:undefined,accountScope,label:managed?c.label:`${b.provider==='claude'?'Claude':b.provider==='muse'?'Muse Code':'Codex'} ${mode==='desktop'?'Desktop':'CLI'} · existing session account`};
     return route;
   }
   async assert(b:Binding) {
     const route=this.route(b);if(!route)return;
     if(route.provider!==b.provider||route.executionMode!==this.store.get(`execution-mode:${b.id}`)||route.profileId!==connectionProfile(b.provider,route.executionMode))
       throw new Error('Session connection changed. Select its original platform/profile again; no fallback was used.');
+    // Never let a Muse binding reach the Codex/Claude app queues: it has one CLI transport only.
+    if(b.provider==='muse'&&route.transport!=='managed-cli')throw new Error('Muse Code has no app session. Select its CLI connection again.');
     if(route.transport==='managed-cli') {
       const current=await this.read(b.provider,'cli',true,b.cwd);
       if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new Error('CLI account or provider changed. Review and reselect this session before sending more work. No other account was used.');

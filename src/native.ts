@@ -3,14 +3,14 @@ import { scopedBridgeCommand } from './reply-args.js';
 import { ensureFfd } from './ffd.js';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync,writeFileSync,unlinkSync,renameSync } from 'node:fs';
+import { existsSync,mkdirSync,writeFileSync,unlinkSync,renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
 import { portableAgents } from './platform.js';
-import type { Store,Binding } from './store.js';
+import type { Store,Binding,Provider } from './store.js';
 import type { Approvals } from './approvals.js';
 import { turnEnvelope,roleConfig } from './roles.js';
 import { Attachments } from './attachments.js';
@@ -20,6 +20,9 @@ import { SessionActivation,DesktopReadinessError,openCodexDesktop } from './sess
 import { Connections, usableCLIConnection } from './connections.js';
 import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
+import {codexProfileEnvironment,codexProfileHome} from './codex-profile.js';
+import {museDataHome} from './muse-paths.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
@@ -81,8 +84,8 @@ export class NativeAgents {
     try{await runtime.initialize();return await observeCodexRequest(runtime,b,job.id);}finally{clearTimeout(timer);runtime.close();}
   }
   private async desktopConfig() {this.writeTransportConfig(await claudeDiscoveryBinary(claudeBin));}
-  async catalog(provider:'codex'|'claude',cursor?:string,options:{fresh?:boolean}={}):Promise<{sessions:Session[];cursor:string|null}> {
-    if(this.deniedCatalogs.has(provider))throw new Error('File access was denied. Review FarFromDesk in System Settings → Privacy & Security → Files and Folders, then click Check apps.');
+  async catalog(provider:Provider,cursor?:string,options:{fresh?:boolean}={}):Promise<{sessions:Session[];cursor:string|null}> {
+    if(this.deniedCatalogs.has(provider))throw new Error('File access was denied. Review FarFromDesk in System Settings → Privacy & Security → Files and Folders, then click Detect apps.');
     const key=provider+':'+(cursor??''),now=Date.now();
     for(const [key,value] of this.catalogCache)if(value.expires<=now)this.catalogCache.delete(key);
     const cached=this.catalogCache.get(key);
@@ -109,7 +112,29 @@ export class NativeAgents {
     }
     return structuredClone(await task);
   }
-  protected async readCatalog(provider:'codex'|'claude',cursor?:string,fresh=false):Promise<{sessions:Session[];cursor:string|null}> {
+  /**
+   * Muse publishes every session it retained in a local index, the way Claude publishes
+   * ~/.claude/projects. Read it read-only: the CLI owns the file, its schema and its locks.
+   */
+  private async museCatalog():Promise<Session[]> {
+    const file=join(museDataHome(),'session-index.db');
+    if(!existsSync(file))return [];
+    let db:DatabaseSync;
+    try{db=new DatabaseSync(file,{readOnly:true});}catch{return [];}
+    try {
+      const rows=db.prepare(`SELECT session_id,workspace_root,model_id,COALESCE(session_name,title,first_user_prompt) AS name,updated_at_us,prompt_count
+        FROM sessions WHERE workspace_root IS NOT NULL AND COALESCE(msp_kind,'')!='subagent' ORDER BY updated_at_us DESC LIMIT 50`).all() as any[];
+      return rows.map((row:any)=>{
+        const name=String(row.name??'').replace(/\s+/g,' ').trim().slice(0,120)||String(row.session_id);
+        const model=typeof row.model_id==='string'&&row.model_id?row.model_id:'Muse';
+        return {id:String(row.session_id),provider:'muse' as const,cwd:String(row.workspace_root),name,
+          status:`Muse session · ${model}${row.prompt_count?` · ${row.prompt_count} turns`:''}`,model,executionMode:'cli' as const,available:true,
+          updatedAt:row.updated_at_us?Math.floor(Number(row.updated_at_us)/1000):undefined};
+      });
+    } finally {db.close();}
+  }
+  protected async readCatalog(provider:Provider,cursor?:string,fresh=false):Promise<{sessions:Session[];cursor:string|null}> {
+    if(provider==='muse')return {sessions:await this.museCatalog(),cursor:null};
     if(provider==='claude') {
       const [history,desktopHistory,desktopPids,,cliConnection]=await Promise.all([
         claudeHistory(join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')),
@@ -134,7 +159,7 @@ export class NativeAgents {
       for(const [id,row] of all)all.set(id,{...row,liveDiscoveryComplete:liveComplete});
       return {sessions:[...all.values()].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)),cursor:null};
     }
-    const db=new DatabaseSync(join(process.env.CODEX_HOME??join(homedir(),'.codex'),'state_5.sqlite'),{readOnly:true});
+    const db=new DatabaseSync(join(codexProfileHome(),'state_5.sqlite'),{readOnly:true});
     try {
       const offset=Number(cursor??0);if(!Number.isInteger(offset)||offset<0)throw new Error('Invalid cursor');
       const rows=db.prepare('SELECT id,COALESCE(NULLIF(name,\'\'),title) AS name,cwd,updated_at,rollout_path FROM threads WHERE archived=0 AND agent_path IS NULL AND source NOT LIKE \'%subagent%\' ORDER BY updated_at DESC,id LIMIT 51 OFFSET ?').all(offset);
@@ -152,14 +177,14 @@ export class NativeAgents {
       })),cursor:rows.length>50?String(offset+50):null};
     } finally {db.close();}
   }
-  async validate(provider:'codex'|'claude',id:string,cwd:string) {
+  async validate(provider:Provider,id:string,cwd:string) {
     await this.validateSessions([{provider,id,cwd}]);
   }
-  async validateSessions(sessions:{provider:'codex'|'claude';id:string;cwd:string;executionMode?:'desktop'|'cli'}[]) {
+  async validateSessions(sessions:{provider:Provider;id:string;cwd:string;executionMode?:'desktop'|'cli'}[]) {
     const claude=sessions.filter(s=>s.provider==='claude');
     if(claude.length){const c=await this.catalog('claude',undefined,{fresh:true});for(const s of claude)if(!c.sessions.some((row:any)=>row.id===s.id&&sameProject(row.cwd,s.cwd)&&(!s.executionMode||row.executionMode===s.executionMode)))throw new Error('This exact Claude session could not be found in that project.');}
     const codex=sessions.filter(s=>s.provider==='codex');if(!codex.length)return;
-    const db=new DatabaseSync(join(process.env.CODEX_HOME??join(homedir(),'.codex'),'state_5.sqlite'),{readOnly:true});
+    const db=new DatabaseSync(join(codexProfileHome(),'state_5.sqlite'),{readOnly:true});
     try {for(const s of codex){
       const row=db.prepare('SELECT rollout_path FROM threads WHERE id=? AND cwd=? AND archived=0 AND agent_path IS NULL AND source NOT LIKE \'%subagent%\'').get(s.id,s.cwd);
       if(!row)throw new Error('No matching existing Codex chat in this project.');
@@ -189,6 +214,8 @@ export class NativeAgents {
     this.beforeRun?.(b);
     await verify(this.connections.assert(b));
     let route=this.connections.route(b);
+    // Muse has no app queue and no native chat hand-off: the bridge runs its CLI or nothing.
+    if(b.provider==='muse'&&route?.transport!=='managed-cli')throw new Error('Muse Code runs only on its managed CLI connection. Review it in Coding platforms before sending.');
     const managedFlags=this.store.get(`managed-codex:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true'||this.store.get(`managed-worker:${b.id}`)==='true';
     if(!route) {
       if(guarded)throw new DispatchNotSubmittedError('The request was not sent because this session has no verified connection. Select its exact connection in the app first.');
@@ -240,7 +267,7 @@ export class NativeAgents {
     const attachments=this.store.job(jobId)?new Attachments(this.store).references(b,jobId,true):[];
     // CLI-reply sessions get the farfromdesk skill and its ffd launcher; a coordinator in its own folder also auto-loads the skill.
     const support=this.store.get(`master-support:${b.id}`),ownFolder=support?.startsWith(coordinatorHome+'/');
-    const reply=managed?{tool:'whatsapp_reply'}:ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
+    const reply=managed?(b.provider==='muse'?{tool:'final answer'}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');
@@ -268,11 +295,14 @@ export class NativeAgents {
       this.beforeDispatch?.(b,jobId);
       // Longer than the helper's own 30-second wait on codex queue, so the helper records the outcome itself.
       handedOff=true;
-      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024});
+      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024,...(b.provider==='codex'?{env:codexProfileEnvironment()}:{})});
       const r=JSON.parse(stdout);
       if(r.status!=='submitted'&&r.status!=='received')throw new Error(`Native delivery is ${r.status??'unconfirmed'}. Reference ${id}`);
       envelope.acknowledge();
       this.store.audit('native-submitted',b.id,id);
+      // "Accepted by the queue" is the only thing this hand-off proves. Record it, and keep the
+      // best-known app liveness beside it, so Activity can tell queued from running later.
+      this.store.event(jobId,'delivery_accepted',{transport:b.provider==='codex'?'codex-queue':'claude-socket',appRunning:this.store.get(`app-running:${b.provider}`)!=='false'});
       if(b.provider==='codex') {
         try{await this.wakeCodex(b.native_id);}
         catch{throw new Error('Message is saved in the Codex queue, but Desktop could not be opened. Open this exact chat to continue; do not resend the message.');}
@@ -291,7 +321,11 @@ export class NativeAgents {
     }
   }
   async sendDesktopCreation(sessionId:string,file:string) {
+    return withProviderSetup(this.store,'desktop-submit',()=>this.sendDesktopCreationScoped(sessionId,file));
+  }
+  private async sendDesktopCreationScoped(sessionId:string,file:string) {
     await this.desktopConfig();
+    assertProviderSetup(this.store);
     const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{timeout:30000,maxBuffer:1024*1024});
     const receipt=JSON.parse(stdout);
     if(receipt.status!=='submitted'&&receipt.status!=='received')throw new Error('Desktop creation submission could not be confirmed. Do not resubmit.');

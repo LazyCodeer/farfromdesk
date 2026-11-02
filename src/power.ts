@@ -3,6 +3,7 @@ import type { Store } from './store.js';
 import type { Router } from './router.js';
 import type { Telegram } from './telegram.js';
 import type { WhatsApp } from './whatsapp.js';
+import type { ServerMode } from './server-mode.js';
 import { join } from 'node:path';
 
 export function spawnPowerAssertion(pid:number):ChildProcess {
@@ -17,16 +18,26 @@ export function spawnPowerAssertion(pid:number):ChildProcess {
 export class PowerPolicy {
   child?:ChildProcess;
   error?:string;
-  constructor(private store:Store,private router:Router,private wa:WhatsApp,private spawnAssertion:(pid:number)=>ChildProcess=spawnPowerAssertion,private telegram?:Telegram) {
+  constructor(private store:Store,private router:Router,private wa:WhatsApp,private spawnAssertion:(pid:number)=>ChildProcess=spawnPowerAssertion,private telegram?:Telegram,private serverMode?:ServerMode) {
     // Preserve earlier explicit background-use consent; fresh installs default off.
     if(store.get('background-enabled')===undefined)store.set('background-enabled',store.get('whatsapp-owner')?'true':'false');
     router.stopped=!this.enabled;
   }
   get enabled(){return this.store.get('background-enabled')==='true';}
-  view(){return {backgroundEnabled:this.enabled,keepAwake:this.store.get('keep-awake')==='true',assertionActive:!!this.child,error:this.error};}
-  async update(backgroundEnabled:boolean,keepAwake:boolean) {
+  get lidClosedEnabled(){return this.serverMode?.enabled===true;}
+  view(){return {backgroundEnabled:this.enabled,keepAwake:this.store.get('keep-awake')==='true',assertionActive:!!this.child,error:this.error,serverMode:this.serverMode?.view()??null};}
+  async update(backgroundEnabled:boolean,keepAwake:boolean,serverMode?:boolean) {
+    if(!backgroundEnabled&&this.serverMode?.enabled)await this.serverMode.setEnabled(false);
+    const wantServer=serverMode===true||(serverMode===undefined&&this.lidClosedEnabled);
+    if(wantServer&&!backgroundEnabled)throw new Error('Allow background operation before enabling server mode.');
+    if(serverMode!==undefined&&serverMode!==this.lidClosedEnabled)await this.serverMode?.setEnabled(serverMode);
+    // Server mode is a stronger promise than keep-awake, so it implies it.
+    const effectiveKeepAwake=backgroundEnabled&&(keepAwake||wantServer);
+    // Explicit pause revokes in-flight errands; ordinary service shutdown is
+    // different and retains safely queued messages for restart recovery.
+    if(!backgroundEnabled&&!this.router.stopped)this.router.errands.invalidateAuthority();
     this.store.set('background-enabled',String(backgroundEnabled));
-    this.store.set('keep-awake',String(backgroundEnabled&&keepAwake));
+    this.store.set('keep-awake',String(effectiveKeepAwake));
     this.router.stopped=!backgroundEnabled;
     this.apply();
     if(!backgroundEnabled){this.router.approvals.cancel();this.wa.close();this.wa.status='paused';this.telegram?.close();if(this.telegram)this.telegram.status='paused';}
@@ -42,5 +53,7 @@ export class PowerPolicy {
     child.on('error',()=>{if(this.child===child){this.child=undefined;this.error='The operating system could not enable idle-sleep prevention.';}});
     child.on('exit',()=>{if(this.child===child){this.child=undefined;this.error='Keep-awake stopped. Retrying within a minute while enabled.';}});
   }
-  close(){this.child?.kill();this.child=undefined;}
+  close(){this.child?.kill();this.child=undefined;this.serverMode?.close();}
+  refreshServerMode(){return this.serverMode?.refresh();}
+  removeServerHelper(){return this.serverMode?.removeHelper();}
 }

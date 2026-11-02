@@ -74,6 +74,15 @@ test('unknown senders, bots, groups and edited updates cannot dispatch; duplicat
     f.store.set('control-channel','telegram');f.router.stopped=true;await f.tg.receive(f.message(8,'paused'));assert.equal(f.store.jobs().length,1);
   }finally{f.close();}
 });
+test('Telegram job search receives a clear response without dispatching a task',async()=>{
+  const f=fixture();try{
+    await f.pair();await f.tg.receive(f.message(25,'greenhouse jobs; board=example; role=Flutter; location=Bangalore'));
+    assert.equal(f.store.jobs().length,0);await f.tg.flush();
+    const sent=f.calls.filter(c=>c.method==='sendMessage').at(-1);
+    assert.match(sent?.body.text??'',/Job search is available in WhatsApp/);
+    assert.equal(sent?.body.chat_id,owner);
+  }finally{f.close();}
+});
 test('reply delivery and quoted follow-up stay in the exact bot chat, isolated from WhatsApp',async()=>{
   const f=fixture();try{await f.pair();const dest=telegramDestination(bot,owner);
     f.store.set('whatsapp-owner','wa@s.whatsapp.net');f.store.output(f.binding,'WA only','wa-out','wa@s.whatsapp.net');
@@ -216,7 +225,7 @@ test('command menu and bot suffixes preserve existing commands and reject other 
   const f=fixture();try{
     await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
     assert.deepEqual(menu.scope,{type:'all_private_chats'});
-    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','screen','back','help','sessions','status']);
+    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','muse','screen','back','help','sessions','status','checkrun','reach','research','jobs','social']);
     await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
     await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);
@@ -226,6 +235,19 @@ test('command menu and bot suffixes preserve existing commands and reject other 
     await f.tg.receive(f.message(96,'/cloud'));assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),target);
     await f.tg.receive(f.message(94,'/back'));await f.tg.receive(f.message(95,'/status@ffd_test_bot'));
     assert.equal(f.store.get(`owner-target:${telegramDestination(bot,owner)}`),'null');
+  }finally{f.close();}
+});
+
+test('public check requests from the paired Telegram owner stay bound to that chat',async()=>{
+  const f=fixture();try{
+    await f.pair();const sha='a'.repeat(40);let requests=0;
+    f.router.publicCheckFetch=async()=>{requests++;return Response.json({id:19,name:'Backend checks',head_sha:sha,status:'completed',conclusion:'success',completed_at:'2026-10-29T10:00:00Z'});};
+    await f.tg.receive(f.message(500,`/checkrun example/project 19 ${sha} Backend checks`,other));
+    await f.tg.receive(f.message(501,`/checkrun example/project 19 ${sha} Backend checks`));
+    assert.equal(requests,1);
+    const row=f.store.db.prepare("SELECT * FROM outbox WHERE source=?").get(`command:${telegramMessageId(bot,owner,501)}:0`) as any;
+    assert.equal(row.destination,telegramDestination(bot,owner));assert.equal(f.store.incomingOwnerDelivery(row.id),true);
+    assert.match(row.body,/does not verify your task/);
   }finally{f.close();}
 });
 
@@ -474,6 +496,74 @@ test('bare /claude on Telegram switches to the default coordinator with one plai
   await f.tg.receive(f.message(1300,'/claude'));for(let i=0;i<3;i++)await f.tg.flush();
   assert.equal(JSON.parse(f.store.get(`owner-target:${telegramDestination(bot,owner)}`)!).id,c.id);
   const sent=f.calls.filter(x=>x.method==='sendMessage').at(-1)!.body;
-  assert.equal(sent.text,'Now talking to atlas Super Ai. /back to leave.');assert.equal(sent.reply_markup,undefined);assert.equal(f.store.jobs().length,0);
+  assert.equal(sent.text,'Now talking to atlas Super Ai. /back to leave.\n\nMode: General');assert.equal(sent.reply_markup,undefined);assert.equal(f.store.jobs().length,0);
  }finally{f.close();}
+});
+
+test('photo preview uses Telegram sendPhoto with caption and respects existing ownership checks',async()=>{
+ const f=fixture();try{
+  await f.pair();await f.tg.receive(f.message(100,'Make a post'));
+  const job=f.store.jobs()[0],a=new Artifacts(f.store);
+  const sharp=(await import('sharp')).default;const bytes=await sharp({create:{width:1080,height:1350,channels:3,background:'#7744aa'}}).jpeg().toBuffer();
+  const image=a.prepare(f.binding,job.id,'preview.jpg',bytes.toString('base64'));a.reply(f.binding,job.id,image.artifactId,'Instagram\n\nReady to review','photo');
+  await f.tg.flush();
+  const photo=f.calls.find(c=>c.method==='sendPhoto');assert.ok(photo);assert.equal(photo.body.get('caption'),'Instagram\n\nReady to review');assert.ok(photo.body.get('photo'));assert.equal(photo.body.get('document'),null);
+ }finally{f.close();}
+});
+
+test('a transient connect failure retries by itself instead of waiting for a click', async () => {
+  const root=mkdtempSync(join(tmpdir(),'ffd-telegram-retry-'));
+  const store=new Store(join(root,'test.sqlite'));
+  let tg:Telegram|undefined;
+  try {
+    store.set('telegram-bot-id',String(bot));
+    store.set('telegram-owner',telegramDestination(bot,owner));
+    writeFileSync(join(root,'telegram-token'),token,{mode:0o600});
+    let attempts=0;
+    const fetcher:typeof fetch=async url=>{
+      if(String(url).endsWith('/getMe')){attempts++;throw new Error('network unreachable');}
+      return Response.json({ok:true,result:true});
+    };
+    tg=new Telegram(store,{} as any,root,fetcher,20);
+    await assert.rejects(tg.resume(),/Telegram could not complete the request/);
+    assert.equal(attempts,1,'the first attempt must fail once');
+    assert.equal(tg.view().status,'disconnected');
+    assert.match(String(tg.view().error),/could not complete/);
+    await new Promise(resolve=>setTimeout(resolve,120));
+    assert.ok(attempts>1,`expected a quiet retry, saw ${attempts} attempt(s)`);
+  } finally { tg?.close(); store.close(); rmSync(root,{recursive:true,force:true}); }
+});
+
+test('a rejected bot token is not retried, because it needs the owner', async () => {
+  const root=mkdtempSync(join(tmpdir(),'ffd-telegram-retry-'));
+  const store=new Store(join(root,'test.sqlite'));
+  let tg:Telegram|undefined;
+  try {
+    store.set('telegram-bot-id',String(bot));
+    writeFileSync(join(root,'telegram-token'),token,{mode:0o600});
+    let attempts=0;
+    const fetcher:typeof fetch=async url=>{
+      if(!String(url).endsWith('/getMe'))return Response.json({ok:true,result:true});
+      attempts++;
+      return Response.json({ok:false,error_code:401,description:'Unauthorized'},{status:401});
+    };
+    tg=new Telegram(store,{} as any,root,fetcher,10);
+    await assert.rejects(tg.resume(),/rejected this bot token/);
+    await new Promise(resolve=>setTimeout(resolve,60));
+    assert.equal(attempts,1,'a rejected token must not be retried');
+    assert.match(String(tg.view().error),/rejected this bot token/);
+  } finally { tg?.close(); store.close(); rmSync(root,{recursive:true,force:true}); }
+});
+
+test('resume stays quiet when no bot was ever saved', async () => {
+  const root=mkdtempSync(join(tmpdir(),'ffd-telegram-retry-'));
+  const store=new Store(join(root,'test.sqlite'));
+  let tg:Telegram|undefined;
+  try {
+    let calls=0;
+    const fetcher:typeof fetch=async ()=>{calls++;return Response.json({ok:true,result:true});};
+    tg=new Telegram(store,{} as any,root,fetcher,10);
+    await tg.resume();
+    assert.equal(calls,0);
+  } finally { tg?.close(); store.close(); rmSync(root,{recursive:true,force:true}); }
 });
