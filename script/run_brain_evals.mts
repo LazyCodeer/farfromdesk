@@ -76,6 +76,7 @@ const files = [
   'test/app-tools-embed.test.ts',
   'test/brain-conversation.test.ts',
   'test/brain-sessions.test.ts',
+  'test/brain-fanout.test.ts',
 ];
 const root = fileURLToPath(new URL('..', import.meta.url));
 console.log('');

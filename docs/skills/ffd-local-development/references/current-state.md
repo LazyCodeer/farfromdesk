@@ -1676,8 +1676,16 @@ the chat, so both sessions are offered the front app's tools. Authentication is 
 fixture: the second chat is an `owned-group:` + `destination-jid` one, because owner commands are
 refused from anywhere else.
 
-The multi-session harness is built at this level. A subagent harness is not, and `indexSignature`
-is prepared for an embedding cache that does not exist yet.
+The multi-session harness is built at this level. `test/brain-fanout.test.ts` is the fan-out half:
+it runs two authenticated sessions against the **real** `DesktopControl` over a fake driver that
+holds `run_steps` open until the test releases it, so the serialisation being tested is the
+shipped one rather than a stub. It pins what a second session gets while the Mac is busy: one
+action at a time (peak in-flight 1), the loser is answered with "I am already doing something on
+your Mac. Let that finish, then ask me again." instead of being dropped or wrongly told it
+succeeded, the completion lands in the chat that acted and the refusal in the chat that asked,
+and each session's `brain-device-last:<destination>` holds its own outcome — including the
+loser's `ok:false` row, which is written on failure too. What is still missing is an embedding
+cache: `indexSignature` is prepared for one that does not exist yet.
 
 `npm run evals:live` (`script/live_transcript.mjs`, `--dry` to check the plumbing) replays the
 same turns against the running app through `POST /api/inbox-send`, then waits and prints what the
