@@ -15,8 +15,8 @@ This is an ignored copied snapshot under the parent repository, not a Git worktr
 
 Installed testing app: `/Users/sagar/Applications/FarFromDesk Local.app`
 Bundle ID: `com.codecylabs.farfromdesk.localtest`
-Last installed version: **2357** (another session's `local-delivery-choice-2357`, built on top of this change and carrying it; 2356 was the Settings change described at the end of this file)
-Backend build ID: `local-delivery-choice-2357`
+Last installed version: **2362** (`local-driver-permission-model-2362`)
+Backend build ID: `local-driver-permission-model-2362`
 The UI/backend/helpers were observed running from that path. Unauthenticated loopback health returned 401 as expected; this alone does not verify authenticated owner features. The isolated package smoke did verify authenticated startup.
 
 Main app: `/Users/sagar/Applications/FarFromDesk.app`, untouched by this work.
@@ -1147,4 +1147,49 @@ three candidates in order: the build-time `FFD_OWNER_HOME` define, `/Users/$USER
 then `$HOME`, skipping anything inside the Local state, and refusing with an
 actionable message (naming the define) when none works. `ffd ship` passes
 `FFD_OWNER_HOME=$HOME`. Five tests in `local_state_guard_test.dart` cover it.
+
+## 2362 — the driver's rows are capabilities, not grants (`local-driver-permission-model-2362`)
+
+Settings showed "Desktop driver access" and "Desktop driver screen access" as two more
+permissions to give. They are not permissions, and there is no way to give them. Three
+measurements settled it:
+
+- `cua-driver permissions grant`, the vendor's documented path, hard-codes
+  `/Applications/CuaDriver.app` and fails here: "Didn't detect the CuaDriver daemon:
+  launching `/Applications/CuaDriver.app` exited Some(1)". That bundle is the vendor's
+  installer, not something this package ships.
+- Asked through our embedded daemon (`cua-driver call check_permissions '{"prompt":false}'
+  --socket /tmp/ffd-cua-*/driver.sock`), the driver explains itself: `attribution: "host"`,
+  `embedded: true`, `host_bundle_id: com.codecylabs.farfromdesk.localtest.accessibility`,
+  and "No separate driver grant exists or is needed ... the driver never raises its own
+  prompt."
+- Its `accessibility` boolean cannot be trusted: with every grant in place it reported
+  `false` while `get_window_state` through the same driver returned a window's
+  accessibility tree (`element_count: 13`).
+
+What changed: `capabilityProbe()` in `src/desktop-control.ts` makes one harmless read
+(`list_windows`) through the driver, cached 15 s and forced by the row's Test button;
+`/api/status` refreshes it while the preflight disagrees, and
+`POST /api/desktop-control-permission {action:'check'|'probe'}` serves the pane. The two
+rows are now "Drive another app" (decided by that read) and "See any window" (that read
+plus Screen Recording), carry the driver's own reason when it fails, and offer the pane
+that really decides them, the app's own Accessibility. `requireDesktopPermission()` asks
+the preflight first and refuses only when a live read also fails, so desktop control is
+no longer blocked on a machine where everything is granted.
+
+**Correction to the earlier 2356 section and to my first explanation:** the driver rows
+were never a second pair of TCC grants. macOS records them against FarFromDesk itself.
+
+macOS 27 also raises a **"Device Control and Data Access"** prompt that names
+FarFromDesk Local (not the driver, not the helper). It has to be answered or the grant
+never settles.
+
+Verified: desktop suite 237 pass / 1 skipped / 2 fail (the known social_preview pair);
+`desktop-control.test.ts` 14 pass including two new cases for the probe, its cache and a
+forced re-test; `tsc` clean (it caught a `permissionReport()` nullability the test runner
+did not); installed 2362, signed with the Apple Development identity, health 401 at 95 s,
+and the live driver read returns 18 windows, so the row reads Allowed in the installed
+app. Renders of both states are beside the build. One backend suite failure appeared while
+the desktop suite ran in parallel and passed alone: a 5 ms timer test, now warned about by
+`ffd test backend`.
 

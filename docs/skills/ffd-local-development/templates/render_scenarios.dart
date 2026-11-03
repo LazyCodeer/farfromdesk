@@ -36,6 +36,7 @@ class _Scenario {
     // driver has not been probed, which is the state the page shows as "Checking…";
     // pass `driver: null` explicitly to render it.
     this.driver = const [false, true],
+    this.driverCapability = const {'ok': true, 'detail': null},
     this.scrollKey,
   });
   final String screen;
@@ -47,6 +48,9 @@ class _Scenario {
   final bool? captureTrusted;
   final String? macError;
   final List<bool>? driver;
+  /// The result of actually trying the driver, which is what decides the two driver
+  /// rows in the pane. Null renders the "Checking…" state.
+  final Map<String, dynamic>? driverCapability;
   final String? scrollKey;
 }
 
@@ -61,6 +65,15 @@ const _scenarios = <String, _Scenario>{
     scrollKey: 'remote-password-change',
   ),
   'remote-driver-checking': _Scenario(driver: null),
+  'remote-driver-failed': _Scenario(
+    macTrusted: false,
+    captureTrusted: true,
+    driver: [false, true],
+    driverCapability: const {
+      'ok': false,
+      'detail': 'AX_DENIED: not allowed to read windows',
+    },
+  ),
   'remote-permissions-missing': _Scenario(
     macTrusted: false,
     captureTrusted: false,
@@ -102,6 +115,7 @@ class _RenderGateway extends PreviewGateway {
       };
       final driver = scenario.driver;
       data['desktopControl'] = {
+        'capability': scenario.driverCapability,
         'supported': true,
         'enabled': driver != null && driver[0],
         'permission': driver == null
