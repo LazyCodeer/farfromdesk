@@ -46,6 +46,11 @@ prints, whatever failed before it.
   the real event loop a turn (`tester.runAsync` + one more pump). The earlier
   hand-written harness only looked correct because its first test warmed the image
   cache for the others. If a logo is missing from a render, this is why.
+- **Do not run the backend and desktop suites at the same time.** Several backend
+  tests drive 5 ms timers and wait 40 ms for the result (`receipt-honesty.test.ts` is
+  one). Under a parallel `flutter test` they miss a notice and report a failure that
+  disappears when the file is run alone. `ffd test backend` now warns when a flutter
+  test looks to be running, because a false "NEW FAILURE" costs more than the wait.
 - **A `set -e` + `pipefail` install script dies silently.** `pgrep ... | head -2`
   kept the pipe status, so the install aborted before printing `health=` and
   `rollback=` when the backend had not started within 40 seconds, and the operator
@@ -201,6 +206,42 @@ The install and rollback paths deliberately do not re-sign: a copied bundle keep
 signature, and re-signing it ad-hoc would change the requirement its grant was stored
 against. They only repair a signature that the copy itself broke, and then with the
 same identity.
+
+### The desktop driver's rows are not grants (3 November 2026)
+
+The Settings page used to show "Desktop driver access" and "Desktop driver screen
+access" as if they were two more permissions the owner had to give. They are not, and
+there is no way to give them. Measured, in order:
+
+- `cua-driver permissions grant`, the vendor's documented grant path, hard-codes
+  `/Applications/CuaDriver.app` and fails here with "Didn't detect the CuaDriver
+  daemon: launching `/Applications/CuaDriver.app` exited Some(1)". That bundle is the
+  vendor's own installer, not something this package ships.
+- Asked through our embedded daemon, the driver answers with its own explanation:
+
+  ```
+  "attribution": "host", "embedded": true,
+  "host_bundle_id": "com.codecylabs.farfromdesk.localtest.accessibility",
+  "note": "Embedded mode: these booleans reflect the HOST app's TCC grant (the driver
+           is a child in the host's responsibility chain). No separate driver grant
+           exists or is needed. If a permission is NOT granted, the host app must
+           request it - the driver never raises its own prompt."
+  ```
+- Its `accessibility` boolean is therefore not trustworthy: with every grant in place
+  it reported `false` while `get_window_state` through the same driver returned a
+  window's accessibility tree (`element_count: 13`). A preflight that can say no while
+  the work succeeds must never be the gate.
+
+So the two rows are now capability-tested: `capabilityProbe()` makes one harmless read
+(`list_windows`) through the driver, cached for 15 s and forced by the row's Test
+button, and the row says Allowed when that read works. `requireDesktopPermission()`
+asks the preflight first and only refuses when a live read also fails, quoting the
+driver's own reason. Deciding this by preflight alone had desktop control refusing
+work that succeeded.
+
+macOS 27 adds a third layer on top of the two toggles: a **"Device Control and Data
+Access"** prompt that names **FarFromDesk Local** (not the driver, and not the
+helper). If it is on screen waiting, answer it, or the grant never settles.
 
 ### What build_accessibility_helper.py does about the helper side
 

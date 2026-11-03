@@ -95,3 +95,38 @@ test('a native driver restart invalidates cached tokens even if token strings ar
   await assert.rejects(f.service.run('owner',{action:'click',windowRef:w,snapshotId:read.snapshotId,controlId:control.controlId,actionId:randomUUID()}),/driver restarted/);
   assert.equal(f.calls.some(c=>c.name==='click'),false);
 });
+test('access is decided by trying the driver, because its own preflight is not trustworthy',async()=>{
+  // Measured on 3 November with every macOS grant in place: check_permissions said
+  // accessibility:false while an accessibility read through the same driver returned
+  // a window's tree. In embedded mode the driver is a child of our helper, so macOS
+  // records the grant against FarFromDesk and the driver has none of its own.
+  let windowsCalls=0;
+  const driver={call:async(name:string)=>{
+    if(name==='check_permissions')return {accessibility:false,screen_recording:true,source:'host'};
+    if(name==='list_windows'){windowsCalls++;return {windows:[]};}
+    return {};
+  },stop:()=>{}};
+  const service=new DesktopControl({get:()=> 'true',set:()=>{}},driver as any,async()=>({}),'darwin');
+  assert.equal((await service.permissionReport()).accessibility,false);
+  const capability=await service.capabilityProbe();
+  assert.equal(capability.ok,true);
+  assert.equal(capability.detail,null);
+  assert.equal((service.view() as any).capability.ok,true);
+  // The three-second status poll must not spawn the driver for a fresh test.
+  await service.capabilityProbe(15000);
+  assert.equal(windowsCalls,1);
+  // A forced test asks again, which is what the row's Test button does.
+  await service.capabilityProbe(0,true);
+  assert.equal(windowsCalls,2);
+});
+test('a driver that cannot read reports why',async()=>{
+  const driver={call:async(name:string)=>{
+    if(name==='check_permissions')return {accessibility:false,screen_recording:false};
+    if(name==='list_windows')throw new Error('AX_DENIED: not allowed to read windows');
+    return {};
+  },stop:()=>{}};
+  const service=new DesktopControl({get:()=> 'true',set:()=>{}},driver as any,async()=>({}),'darwin');
+  const capability=await service.capabilityProbe();
+  assert.equal(capability.ok,false);
+  assert.match(String(capability.detail),/AX_DENIED/);
+});

@@ -296,31 +296,72 @@ void main() {
         ..trusted = true
         ..captureTrusted = true
         ..driverAccessibility = false
-        ..driverScreenRecording = true;
+        ..driverScreenRecording = true
+        // The preflight says the driver is not allowed, and the driver works anyway.
+        // That is what was measured on a real machine: check_permissions reported
+        // accessibility:false while an accessibility read through the same driver
+        // returned a window's tree.
+        ..driverCapability = {'ok': true, 'detail': null, 'checkedAt': 1};
       await tester.pumpWidget(FarFromDeskApp(gateway: api));
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 3));
       await tester.pumpAndSettle();
       await openSettingsTab(tester, 'remote');
-      await tester.ensureVisible(find.text('Desktop driver access'));
-      expect(find.text('Desktop driver access'), findsOneWidget);
-      expect(find.text('Desktop driver screen access'), findsOneWidget);
-      // One list, so the driver's grants cannot disagree with a second section
-      // three headings away, and there is no per-session allowlist to explain.
+      await tester.ensureVisible(find.text('Drive another app'));
+      expect(find.text('Drive another app'), findsOneWidget);
+      expect(find.text('See any window'), findsOneWidget);
+      // The driver rows are capabilities with a test, not grants with a pane.
+      expect(find.text('Desktop driver access'), findsNothing);
+      expect(find.text('Desktop driver screen access'), findsNothing);
       expect(find.text('Desktop control'), findsNothing);
       expect(find.text('Sessions allowed to control this Mac'), findsNothing);
-      expect(find.text('Allowed'), findsNWidgets(3));
-      expect(find.text('Not allowed'), findsOneWidget);
-      expect(
-        find.byKey(const Key('mac-refresh-driver-access')),
-        findsOneWidget,
-      );
-      // Only the helper's grants can open a System Settings pane.
+      expect(find.text('Allowed'), findsNWidgets(4));
+      expect(find.text('Not allowed'), findsNothing);
+      // A row that works offers no System Settings button, because there is no grant
+      // to change: the driver follows the app's own Accessibility.
       expect(find.byKey(const Key('mac-open-driver-access')), findsNothing);
+      expect(find.byKey(const Key('mac-refresh-driver-access')), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('a driver that cannot read says why and is re-tested on request', (
+    tester,
+  ) async {
+    size(tester);
+    final api = MacControlGateway()
+      ..trusted = true
+      ..captureTrusted = true
+      ..driverAccessibility = false
+      ..driverScreenRecording = true
+      ..driverCapability = {
+        'ok': false,
+        'detail': 'AX_DENIED: not allowed to read windows',
+        'checkedAt': 1,
+      };
+    await tester.pumpWidget(FarFromDeskApp(gateway: api));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    await openSettingsTab(tester, 'remote');
+    await tester.ensureVisible(find.text('Drive another app'));
+    // The reason the driver gave is shown, not a demand to go and find a grant that
+    // does not exist.
+    expect(find.textContaining('AX_DENIED'), findsOneWidget);
+    expect(find.textContaining('follows the Accessibility row above'), findsOneWidget);
+    // A failing row does offer the pane that really decides it.
+    expect(find.byKey(const Key('mac-open-driver-access')), findsOneWidget);
+
+    // The row's Test button asks the backend to try the driver again.
+    await tester.tap(find.byKey(const Key('mac-refresh-driver-access')));
+    await tester.pumpAndSettle();
+    expect(api.driverProbes, 1);
+    expect(find.textContaining('Tested just now'), findsOneWidget);
+    expect(find.text('Not allowed'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('Remote password shows one state at a time', (tester) async {
     size(tester);
@@ -2253,6 +2294,13 @@ class MacControlGateway extends PreviewGateway {
   /// backend reports until its status call has read the driver's grants.
   bool? driverAccessibility;
   bool? driverScreenRecording;
+  /// What a driver test would find. Null means the driver has not been tested yet,
+  /// which is the state the backend reports before its first read.
+  Map<String, dynamic>? driverCapability;
+  /// What the next probe finds. Defaults to a working driver, which is the case the
+  /// rows exist to stop misreporting.
+  Map<String, dynamic>? driverProbeResult;
+  int driverProbes = 0;
   Future<Map<String, dynamic>> status(String path) async {
     final data = await super.get(path);
     if (path == '/api/status') {
@@ -2288,7 +2336,8 @@ class MacControlGateway extends PreviewGateway {
   };
 
   /// `permission` is null until something has read the driver, exactly like the
-  /// backend, which returns null there until the probe has run.
+  /// backend, which returns null there until the probe has run. `capability` is the
+  /// result of actually trying the driver, which is what decides the two rows.
   Map<String, dynamic> get driverView => {
     'supported': true,
     'enabled': enabled,
@@ -2300,6 +2349,7 @@ class MacControlGateway extends PreviewGateway {
             'source': 'synthetic test fixture',
             'checkedAt': 0,
           },
+    'capability': driverCapability,
   };
 
   @override
@@ -2326,6 +2376,14 @@ class MacControlGateway extends PreviewGateway {
         captureTrusted ??= false;
       }
       return view;
+    }
+    if (path == '/api/desktop-control-permission') {
+      driverProbes++;
+      // A probe tries the driver, so it may succeed while the preflight still says
+      // the driver is not allowed. That is the case this fixture exists to model.
+      driverCapability =
+          driverProbeResult ?? {'ok': true, 'detail': null, 'checkedAt': 1};
+      return {'permission': driverView['permission'], 'capability': driverCapability};
     }
     return super.post(path, data);
   }

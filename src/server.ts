@@ -101,12 +101,19 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     const permission=syncMacPermission(await macControl.status());
     if(!permission.enabled)throw new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow Accessibility in macOS System Settings.');
   };
-  // Desktop control runs through the vendored driver, which is its own TCC subject.
-  // Gating it on the Accessibility helper's status blocked the capable path whenever
-  // an unrelated helper was untrusted, and reported the wrong grant to the owner.
+  // Desktop control runs through the vendored driver. In embedded mode that driver
+  // is a child of our own helper, so macOS records the grant against FarFromDesk
+  // and the driver has no separate grant of its own. Its preflight boolean can read
+  // false while the path works (measured on 3 November: `accessibility: false` with
+  // the app allowed and an accessibility read returning 13 elements), so it cannot
+  // be the gate by itself. Ask it, and when it says no, prove the truth with a live
+  // read through the driver before refusing.
   const requireDesktopPermission=async()=>{
     const permission=await desktopControl.permissionReport();
-    if(!permission?.accessibility)throw new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow FarFromDesk under Privacy & Security > Accessibility, then retry. This grant belongs to the desktop driver, not the Remote control helper.');
+    if(permission?.accessibility)return;
+    const capability=await desktopControl.capabilityProbe(5000);
+    if(capability.ok)return;
+    throw new Error(`ACCESSIBILITY_PERMISSION_REQUIRED: the desktop driver cannot read this Mac${capability.detail?` (${capability.detail})`:''}. Allow FarFromDesk under Privacy & Security > Accessibility, then retry.`);
   };
   const phoneRemote=new PhoneRemoteService({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))});
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
@@ -478,9 +485,19 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const result=d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):syncMacPermission(d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));
         json(res,200,result);return;
       }
-      // The driver's own grant status. Which sessions may drive the Mac is decided
-      // by macOS permission alone, so there is no allowlist to read or write here.
-      if(path==='/api/desktop-control-permission'&&req.method==='POST'){json(res,200,{permission:await desktopControl.permissionReport()});return;}
+      // The driver's own grant status, and whether it can actually read this Mac.
+      // Which sessions may drive the Mac is decided by macOS permission alone, so
+      // there is no allowlist to read or write here.
+      if(path==='/api/desktop-control-permission'&&req.method==='POST'){
+        const d=await body(req);
+        const action=typeof d.action==='string'?d.action:'check';
+        if(action!=='check'&&action!=='probe')throw new Error('Choose check or probe.');
+        const permission=await desktopControl.permissionReport(15000);
+        // A forced probe is the only way to re-test after the owner changes a grant,
+        // and the only honest answer when the preflight says no.
+        const capability=await desktopControl.capabilityProbe(15000,action==='probe');
+        json(res,200,{permission,capability});return;
+      }
       if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/update-shutdown'&&req.method==='POST') {
         await body(req);
@@ -582,7 +599,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/master-abandon'&&req.method==='POST') {const d=await body(req);if(!services)throw new Error('Update the service.');json(res,200,services.masters.abandon(d.operationId));return;}
       if(path==='/api/status'&&req.method==='GET') {
         const c=router.coordinator;
-        await desktopControl.permissionReport(15000);
+        const driverPermission=await desktopControl.permissionReport(15000);
+        // The pane must not show "Not allowed" for a path that works. The preflight
+        // is cached for 15s and only re-tested while it disagrees with reality.
+        if(!driverPermission.accessibility)await desktopControl.capabilityProbe(15000);
         json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {

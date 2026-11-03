@@ -93,8 +93,22 @@ export class DesktopControl {
    * called from the status endpoint.
    */
   private permission:{accessibility:boolean;screenRecording:boolean;source:string|null;checkedAt:number}|null=null;
+  /**
+   * Whether the driver can actually read the desktop, proven by a harmless call
+   * rather than by a preflight.
+   *
+   * `check_permissions` is not trustworthy as a gate in embedded mode. Measured on
+   * 3 November with every macOS grant in place and the driver listing apps and
+   * windows successfully, it still reported `accessibility: false`. Its own `source`
+   * block says the booleans "reflect the HOST app's TCC grant (the driver is a child
+   * in the host's responsibility chain. No separate driver grant exists or is
+   * needed)", so the boolean is a second-hand reading of something we can check
+   * directly. A read through the driver is the only answer that means anything.
+   */
+  private capability:{ok:boolean;detail:string|null;checkedAt:number}|null=null;
+  private capabilityPending?:Promise<{ok:boolean;detail:string|null}>;
   constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now){}
-  view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',driverVersion:'0.38.0',browserAdapters:Object.keys(desktopBrowsers),actions:desktopActions,permission:this.permission};}
+  view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',driverVersion:'0.38.0',browserAdapters:Object.keys(desktopBrowsers),actions:desktopActions,permission:this.permission,capability:this.capability};}
   /**
    * Read-only driver permission probe.
    *
@@ -115,6 +129,26 @@ export class DesktopControl {
       // pane must not imply a grant it could not confirm.
       catch{this.permission={accessibility:false,screenRecording:false,source:null,checkedAt:this.now()};}
     return this.permission;
+  }
+  /**
+   * Ask the driver to read one thing. Read-only, idempotent, and no target, so it
+   * can never disturb the owner's screen. Never runs while an action is in flight.
+   * Cached like the preflight so the pane and the gate cannot each spawn the driver.
+   */
+  async capabilityProbe(maxAgeMs=15000,force=false){
+    if(!force&&maxAgeMs>0&&this.capability&&this.now()-this.capability.checkedAt<maxAgeMs)return {ok:this.capability.ok,detail:this.capability.detail};
+    if(this.capabilityPending)return this.capabilityPending;
+    if(this.pending)return this.capability?{ok:this.capability.ok,detail:this.capability.detail}:{ok:false,detail:'The driver is busy with an action right now.'};
+    this.capabilityPending=(async()=>{
+      try{
+        await this.driver.call('list_windows',{});
+        this.capability={ok:true,detail:null,checkedAt:this.now()};
+      }catch(error){
+        this.capability={ok:false,detail:String((error as Error)?.message??error).slice(0,300),checkedAt:this.now()};
+      }
+      return {ok:this.capability!.ok,detail:this.capability!.detail};
+    })().finally(()=>{this.capabilityPending=undefined;});
+    return this.capabilityPending;
   }
   stop(){this.generation++;this.refs.clear();this.pending?.abort();this.driver.stop();return {stopped:true,warning:'Already-delivered actions may have taken effect. Inspect before retrying.'};}
   private save(r:Ref){while(this.refs.size>=1000)this.refs.delete(this.refs.keys().next().value!);const id=randomUUID();this.refs.set(id,r);return id;}

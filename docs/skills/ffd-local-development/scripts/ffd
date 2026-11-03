@@ -232,6 +232,10 @@ cmd_test_backend() {
     esac
   done
   step "backend suite"
+  # Several backend tests drive 5ms timers; under a parallel flutter test they miss
+  # their second notice and report a failure that vanishes when run alone.
+  local also; also="$(pgrep -fl 'flutter_tools|flutter_tester|frontend_server' 2>/dev/null || true)"
+  [ -n "$also" ] && note "a flutter test looks to be running: expect false NEW FAILURES from the 5ms timer tests"
   ( cd "$FFD_SOURCE" && npm test ) > /tmp/ffd-backend.log 2>&1
   local status=$?
   grep '^not ok' /tmp/ffd-backend.log | sed -E 's/^not ok [0-9]+ - //' | sort > /tmp/ffd-backend-fails.txt

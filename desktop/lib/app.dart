@@ -191,6 +191,9 @@ class _DeskState extends State<Desk> {
   bool autoUpdate = true;
   DateTime macCheckedAt = DateTime(0);
   bool macChecking = false;
+  /// Set while the desktop driver is being tested, so the two driver rows show one
+  /// spinner and a second press cannot stack.
+  bool driverChecking = false;
   Map<String, dynamic> remoteLink = {}, phoneRemote = {}, legacyRemote = {};
   List<dynamic> phoneApps = [], phoneWindows = [];
   int? phonePid, phoneWindowId;
@@ -701,6 +704,41 @@ class _DeskState extends State<Desk> {
       // The next poll shows the backend's own error state.
     } finally {
       if (mounted) setState(() => macChecking = false);
+    }
+  }
+
+  /// Try the desktop driver and report what happened.
+  ///
+  /// The driver's own permission preflight is not trustworthy in embedded mode: it
+  /// was measured saying `accessibility: false` while a read through the same driver
+  /// returned a window's accessibility tree. So the driver rows in Settings are
+  /// decided by this test, which asks the backend to make one harmless read.
+  Future<void> probeDriverAccess() async {
+    if (driverChecking) return;
+    if (mounted) setState(() => driverChecking = true);
+    try {
+      final next = await api.post('/api/desktop-control-permission', {
+        'action': 'probe',
+      });
+      if (mounted) {
+        // Merge, never replace: the response carries the permission and the test,
+        // and a partial answer must not wipe what the status poll already knew.
+        final previous = Map<String, dynamic>.from(
+          status['desktopControl'] ?? {},
+        );
+        setState(
+          () => status['desktopControl'] = {
+            ...previous,
+            ...next,
+            'permission': next['permission'] ?? previous['permission'],
+            'capability': next['capability'] ?? previous['capability'],
+          },
+        );
+      }
+    } catch (_) {
+      // The next poll shows the backend's own error state.
+    } finally {
+      if (mounted) setState(() => driverChecking = false);
     }
   }
 
