@@ -1366,3 +1366,41 @@ Stale claims this corrected, all of which had said the capability was absent:
 
 The `screens.dart` wording ships with the next build, since it is Flutter UI text.
 
+## 2381 — the lid locks, and a locked Mac hands over the link (`local-local-lid-lock-2381`)
+
+The owner closed the lid with `Require password` set to Immediately and the Mac stayed
+unlocked, which is the finding recorded above: the lock follows display sleep, never the
+clamshell. Two pieces close it, one in each direction.
+
+**The helper locks the screen.** Helper version 3 reads `AppleClamshellState` each pass and
+runs `pmset displaysleepnow` on the open-to-closed transition. Once per close, and only
+while the decision is `ok|grace`: on battery the Mac sleeps by itself and a stopped app
+restores normal sleep, so in both of those cases the lock arrives without help.
+`previous_lid` starts empty rather than `open`, so a helper that comes up with the lid
+already shut locks on its first pass. `SERVER_MODE_HELPER_VERSION` is 3 so the guard
+replaces a version 2 helper on the next enable. `test/server-mode.test.ts` is 25 tests.
+
+**A locked Mac refuses screen actions and sends the link.** `src/session-lock.ts` holds
+`sessionLocked()` and `screenLockGate()`, wired into `/api/master/desktop-control`,
+`/api/master/mac-control` and `/api/session/desktop-control` beside the permission gate.
+Synthetic input does reach a locked Mac, which is the problem: it lands on the lock screen,
+and typed text most likely lands in the Mac password field. So the action stops and the
+owner is sent the same link and code `control my screen` sends, which the remote session
+can use to type the Mac password at the lock screen. `stop`, `status` and
+`check_permissions` stay allowed so a locked Mac can still be diagnosed. A missing probe,
+an unset remote password, a host that will not start and a failed delivery all still refuse
+the action, and the message names which one happened. Because each new link invalidates
+the last, one link stands for 60 s so a retry loop cannot bury the owner in dead links.
+`test/session-lock.test.ts` is 9 tests.
+
+Two honest limits. The helper is replaced on **enable**, not on launch, so a machine that
+already had server mode on keeps version 2 until the owner turns the setting off and on
+once, which costs one administrator prompt; the alternative was an admin dialog appearing
+at login where nobody is looking. And `native/session-state` is a compiled binary that
+exists only in an installed payload, not in the source checkout, so running the backend
+straight from `src/` leaves the gate inert.
+
+Validation: 2380 staged and installed at 17:51 without the cooldown, so 2381 was built to
+carry it. `tsc --noEmit` clean, `flutter analyze` clean, backend suite 1750 pass with the
+12 known failures and no new ones.
+
