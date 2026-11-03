@@ -143,10 +143,11 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   return result.text.slice(0,20000);
 }
 /**
- * One prompt, one finished turn, one brand-new Cursor chat. Measured behaviour: the deeplink only
- * prefills an open Cursor window - it never opens one and never submits - so Cursor has to be open
- * (and, unless it auto-runs, the owner has to press Enter). `runCursorTurn` waits for `turn_ended` and
- * rejects on timeout, so an unpicked delivery is reported as unfinished, not as an answer. Cursor's
+ * One prompt, one finished turn, one brand-new Cursor chat. The deeplink only prefills the Composer
+ * and never opens a window. Measured: Cursor submitted and answered four delivered prompts by itself,
+ * but the same surface later ignored every prompt for two hours, so submission is Cursor's own
+ * behaviour and cannot be relied on. `runCursorTurn` waits for `turn_ended` and rejects on timeout, so
+ * an unpicked delivery is reported as unfinished, not as an answer. Cursor's
  * deeplink has no chat id and cannot be aimed at an existing chat, so there is no session to continue
  * and no folder to choose. `workspace` is deliberately never passed: a name that matches no open
  * Cursor window is silently ignored. The returned chat id is display-only.

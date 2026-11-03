@@ -180,9 +180,10 @@ export class Masters {
   }
   /**
    * One app-driven channel entry: Cursor runs the turn inside its signed-in desktop app, reached
-   * through the prompt deeplink, so there is no CLI binary to shell out to. Measured behaviour: the
-   * deeplink only prefills an open Cursor window - it never opens a window and never submits - so a
-   * delivery needs the owner to have Cursor open (and, unless their Cursor auto-runs, to press Enter).
+   * through the prompt deeplink, so there is no CLI binary to shell out to. The deeplink handler only
+   * prefills the Composer and never opens a window. Measured: on this install Cursor then submitted
+   * the prefilled prompt and answered it with nobody at the keyboard, but the same surface later went
+   * inert for two hours with no error at all, so a delivery can never be assumed - see `runCursorTurn`.
    * The app bundle is the whole availability check; a missing bundle is a missing run, not a missing
    * credential.
    */
@@ -590,15 +591,16 @@ export class Masters {
       return;
     }
     if(b.provider==='cursor') {
-      // One completed app turn per request. Measured behaviour: opening the deeplink only prefills an
-      // open Cursor window - it never opens one and never submits - so this needs the owner to have
-      // Cursor open (and, unless their Cursor auto-runs, to press Enter). `runCursorTurn` then waits for
-      // the transcript's `turn_ended` record and rejects on timeout, so a delivery that nobody picks up
-      // is reported as unfinished rather than as an answer. The deeplink has no chat-id parameter, so
-      // every request is a new chat and cannot continue an earlier one; the returned chat id is stored
-      // for audit and display only. Cursor reports no usage, so none is emitted. `workspace` is
-      // deliberately not passed: a name that matches no open Cursor window is silently ignored and the
-      // prompt is then never submitted.
+      // One completed app turn per request. The deeplink only prefills the Composer - it never opens a
+      // window. Measured: Cursor submitted and answered four delivered prompts on its own, but the same
+      // surface then took no prompt at all for two hours, so submission is Cursor's own behaviour and
+      // cannot be relied on. `runCursorTurn` waits for the transcript's `turn_ended` record and rejects
+      // on timeout, so a delivery that is never picked up is reported as unfinished rather than as an
+      // answer. The deeplink has no chat-id parameter, so every request is a new chat and cannot
+      // continue an earlier one; the returned chat id is stored for audit and display only. Cursor
+      // reports no usage, so none is emitted. `workspace` is deliberately not passed: a name that
+      // matches no open Cursor window is silently ignored, which is the likeliest cause of the inert
+      // window we measured, and the prompt is then never submitted.
       const key=`cursor-chat:${b.id}`;
       handedOff=true;
       const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs}));

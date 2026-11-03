@@ -77,16 +77,21 @@ outside is a prompt prefill. Verified on this machine against Cursor 3.27.22:
 
 Measured delivery behaviour — this is the part that decides how it must be described:
 
-- Three prompts delivered at 18:40, 18:45 and 18:48 **did** run to completion with a Cursor window
-  open, each producing a transcript with a finished turn.
-- After that window closed, six later deliveries — including a 123-character prompt — produced no
-  chat, no transcript and no entry in the chat list, and `open -a Cursor` did not bring a window back.
+- Four prompts delivered at 18:40:17, 18:45:19, 18:48:19 and 21:03:35 **did** run to completion on
+  their own, each in a brand-new chat, with nobody at the keyboard and nothing on our side opening,
+  closing or focusing a window. The 21:03 one answered 15–30 s after `open` returned.
+- Between 18:49 and 21:03 no delivery was picked up at all: six prompts of 2675, 2023, 1021, 707, 407
+  and 123 characters produced no chat, no transcript and no chat-list row, with no error recorded
+  anywhere — so it was not a length limit but a transport that had gone quiet.
+- The surface then came back on its own at 21:03, with no change on our side.
 
-So Cursor support is a **prefill hand-off, not unattended delivery**: the bridge sends the prompt, then
-waits for a transcript to show a finished turn. If the owner has no Cursor window open, or their Cursor
-does not auto-run a prefilled prompt, nothing happens and the run fails with a clear timeout instead of
+So Cursor's Composer **does** submit and answer a prefilled prompt on this install, but that cannot be
+relied on: the same surface ignored everything for two hours without emitting a single error. Cursor
+support is therefore a **hand-off with no delivery guarantee** — the bridge sends the prompt and waits
+for a transcript to show a finished turn, and a delivery nobody picks up fails as a timeout instead of
 being reported as an answer. `workspace=` is never sent, because routing to a workspace needs an open
-project window and silently does nothing without one.
+project window and is silently ignored without one; that is the likeliest explanation for the quiet
+window, since the inert stretch began right after a `workspace=`-routed probe, but it is not proven.
 
 Cursor's CLI (`agent`, installed separately at `~/.local/bin/agent`, `agent -p --output-format
 stream-json --resume`) is the autonomous path and needs its own login; it is the next step if Cursor
