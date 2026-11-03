@@ -68,6 +68,13 @@ test in `test/desktop-assist.test.ts`.
   inherit)`. Background delivery acts on a window, so an action batch now names the
   resolved window, and `press_key` requires an app like every other action rather than
   accepting a bare key.
+- "what is in Comet right now" then answered "Comet is not in the list of open apps I
+  can see right now", twice, while `list_windows` reported twelve Comet windows. The
+  target list and the resolver both read `get_accessibility_tree`, which lists on-screen
+  windows only, so a minimized or other-Space window made a running app look absent.
+  Both now take window titles from `list_windows`, which also lists those. A second
+  transient failure in the same span, "Meta could not read that message", was the Meta
+  API and not this code: an immediate retry succeeded.
 
 ## Who acts on the Mac follows the owner's selection
 

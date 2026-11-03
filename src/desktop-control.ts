@@ -202,15 +202,23 @@ export class DesktopControl {
       return {action:plan.action,ok:result?.ok===true,observation:result?.observation?.summary??result?.observation?.message??null,diff:String(result?.observation?.state?.tree_diff??'').slice(0,1200)||null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
-  /** Resolve an app by name or bundle id, and optionally one of its windows by title. */
+  /**
+   * Resolve an app by name or bundle id, and optionally one of its windows by title.
+   *
+   * Windows come from `list_windows`, not from the tree: the tree lists windows that are on
+   * screen, so a minimized or other-Space window of a running app was invisible and the app
+   * was reported as having nothing to read. Measured live: Comet had twelve windows and only
+   * the tree's on-screen ones were visible to this resolver.
+   */
   private async resolve(app?:string,window?:string){
     if(!app)return undefined;
-    const tree=await this.driver.call('get_accessibility_tree',{});
     const needle=app.toLowerCase();
-    const target=(tree?.apps??[]).find((a:any)=>String(a.name??'').toLowerCase()===needle||String(a.bundle_id??'').toLowerCase()===needle)
-      ??(tree?.apps??[]).find((a:any)=>String(a.name??'').toLowerCase().includes(needle)||String(a.bundle_id??'').toLowerCase().includes(needle));
+    const [apps,wins]=await Promise.all([this.driver.call('get_accessibility_tree',{}),this.driver.call('list_windows',{})]);
+    const close=(value:unknown)=>{const v=String(value??'').toLowerCase();return v===needle||v.includes(needle);};
+    const all=(wins?.windows??[]) as any[];
+    const target=(apps?.apps??[]).find((a:any)=>close(a.name)||close(a.bundle_id))??all.find((w:any)=>close(w.app_name));
     if(!target)return undefined;
-    const windows=(tree?.windows??[]).filter((w:any)=>w.pid===target.pid);
+    const windows=all.filter((w:any)=>w.pid===target.pid);
     // A Chromium app holds several chrome-less windows beside the real one, and picking the
     // first read a menu bar instead of the page. A titled window is the one the owner means.
     const named=windows.filter((w:any)=>String(w.title??'').trim());
@@ -224,14 +232,17 @@ export class DesktopControl {
    */
   async targets(maxAgeMs=10000){
     if(maxAgeMs>0&&this.targetCache&&this.now()-this.targetCache.checkedAt<maxAgeMs)return this.targetCache.value;
-    const tree=await this.driver.call('get_accessibility_tree',{});
+    // Window titles come from `list_windows`, which also returns minimized and other-Space
+    // windows. The tree's on-screen-only view omitted a running app entirely, so the owner
+    // was told an app they could see was not there.
+    const [apps,wins]=await Promise.all([this.driver.call('get_accessibility_tree',{}),this.driver.call('list_windows',{})]);
     const byPid=new Map<number,string[]>();
-    for(const w of tree?.windows??[]){
+    for(const w of wins?.windows??[]){
       const title=String(w?.title??'').slice(0,90);
       if(!title)continue;
       byPid.set(w.pid,[...(byPid.get(w.pid)??[]),title]);
     }
-    const value=(tree?.apps??[]).map((a:any)=>({name:String(a.name??''),bundleId:String(a.bundle_id??''),windows:byPid.get(a.pid)??[]}))
+    const value=(apps?.apps??[]).map((a:any)=>({name:String(a.name??''),bundleId:String(a.bundle_id??''),windows:byPid.get(a.pid)??[]}))
       .filter((a:any)=>a.windows.length).slice(0,40);
     this.targetCache={value,checkedAt:this.now()};
     return value;
