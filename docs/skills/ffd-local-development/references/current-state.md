@@ -4,9 +4,9 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2390** (`local-local-note-find-2390`, installed 2026-11-04 03:01, health 401
-after 30s). 2390 carries the read-only `notes_find` tool and the read/write split; the
-fan-out harness after it is test-only, so it needs no new build.
+app is **2391** (`local-local-embed-cache-2391`, installed 2026-11-04 03:23, health 401
+after 26s). 2391 carries the read-only `notes_find` tool, the read/write split, and the
+embedding doc-vector cache (28 lines on a cold turn, 1 after).
 
 ## Source and installation
 
@@ -1700,8 +1700,9 @@ prove that instead of trusting the comment.
 `npm run evals:live` (`script/live_transcript.mjs`, `--dry` to check the plumbing) replays the
 same turns against the running app through `POST /api/inbox-send`, then waits and prints what the
 app answered. That is the human half of the harness: the tests replay a transcript against a fake
-driver, this one replays it against the Mac. Verified live on 2389 with "Could you open notes"
--> "Opened Notes and brought it to the front."
+driver, this one replays it against the Mac. Verified live on 2391 with "Could you open notes"
+-> "Opened Notes and brought it to the front." and "Write a note that the embedding cache check
+at 5pm" -> "Wrote the note in Notes.", with the note read back from the Notes window afterwards.
 
 **Known retrieval limit, measured:** the Notes tool's examples include the owner's own note
 sentence "tomorrow meeting at 10pm woth ashitosh", so a calendar request for a meeting with
