@@ -13,7 +13,8 @@ answer. A new provider is only possible when that agent offers all three of:
    answer rather than screen-scraping a terminal UI;
 3. a **way to continue the same conversation** (a session id, a resume id, or a readable local store).
 
-Plus a fourth that is not about flags: **the vendor permits it**. Antigravity fails that test.
+Plus a fourth that is not about flags: **the vendor permits it**. Antigravity needs that question asked,
+and Google's own Remote Control may already answer it - see the Antigravity section.
 
 ## What FarFromDesk supports
 
@@ -107,7 +108,7 @@ a session at all.
 | --- | --- | --- | --- | --- |
 | **DeepSeek Harness** `dsh` | `--profile headless` | `--json` NDJSON | `--session-id` | **Tier 1, implemented** |
 | **Cursor** `agent` | `agent -p` | `--output-format json\|stream-json` | `--resume [chatId]`, `--continue`, `agent create-chat` | **Tier 1 CLI, not yet wired** (needs its own login); the desktop app is wired instead, as a prefill hand-off — see above |
-| **Antigravity** `agy` | `agy -p` | `--output-format json\|stream-json`, stdin streaming | `-c`, `--conversation <id>` | **Tier 2, licence blocker — see below** |
+| **Antigravity** `agy` | `agy -p` | `--output-format json\|stream-json`, stdin streaming | `-c`, `--conversation <id>` | **Tier 2**; wrapping `agy` on a consumer plan is unsupported — see below |
 | **GitHub Copilot CLI** `copilot` | `copilot -p` | `--output-format=json` | `--resume`, `--continue` | **Tier 1**; needs explicit permission flags or approvals are denied silently |
 | **OpenCode** | `opencode run` | `--format json` | `--continue`, `--session <id>` | **Tier 1**; `opencode.db` is a readable local store |
 | **Factory Droid** `droid` | `droid exec` | `-o json\|stream-json` | `--resume`, `exec -s <id>` | **Tier 1** |
@@ -122,19 +123,50 @@ a session at all.
 | **Continue** `cn` | `cn -p` | `--format json` | `--resume` | Tier 2; upstream repository archived |
 | **Roo Code** `roo` | `roo --print` | `--output-format json` | `--session-id` | Tier 2; extension shut down 2026-05-15 |
 | **Devin** `devin` | `devin -p` | none for `-p` | `-c`, `-r` | Tier 2; no JSON on a one-shot run |
-| **Antigravity app / IDE** | none | none | GUI picker | **Tier 3** |
+| **Antigravity app / IDE** | none | none | none | **Tier 3** to write ourselves - but Google's own Remote Control already drives sessions from a browser, so there is nothing to build |
 | **Windsurf** | none | none | none | **Tier 3** |
 | **Zed** | none | none | none | **Tier 3**; Zed is an ACP *client*, it cannot be driven |
 | **Replit Agent** | none locally | MCP only | none | **Tier 3**; cloud only |
 
-### The Antigravity blocker
+### The Antigravity question, quoted exactly
 
-Google's own FAQ says Antigravity CLI headless mode "is intended for direct scripting and CI
-workflows. Wrapping `agy` inside third-party coding agents or applications … is not supported under
-consumer plans," and that driving it with a third-party app can suspend the account. The supported
-route is a Gemini API key (`"modelProvider": "gemini"` + `GEMINI_API_KEY`) or Google Cloud ADC, not
-the owner's Antigravity login. That is a product decision for the owner, not an implementation
-detail, so Antigravity is **not** wired in this change.
+Two different clauses are in play and my earlier one-line summary blurred them. Verbatim:
+
+- **Terms of Service** (`antigravity.google/terms`): "You must not abuse, harm, interfere with, or
+  disrupt the Service. This includes, but is not limited to, using the Service in connection with
+  products not provided by us. **Using third party software, tools, or services to access the Service
+  (e.g. using OpenClaw with Antigravity OAuth) is a breach of this Agreement.** Such actions may be
+  grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts."
+- **FAQ, the CLI clause**: "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting
+  and CI workflows. **Wrapping `agy` inside third-party coding agents or applications**, or automating
+  account rotation, is not supported under consumer plans."
+
+Both examples describe reusing an Antigravity **login/OAuth** to power someone else's agent, or wrapping
+`agy`. Reading a session the owner is already having, in Antigravity's own signed-in UI, with the owner
+typing, is not either of those things - but "using the Service in connection with products not provided
+by us" is broad, and it sits under an abuse/interference heading. This is the owner's call to make, not
+an implementation detail, so nothing is wired. (Not legal advice; the text above is the text.)
+
+**The question is largely moot, though, because Google ships the feature itself.** Antigravity **Remote
+Control** (App and CLI) "allows you to securely connect to and drive your Antigravity desktop sessions
+and CLI instances running across your machines from any web browser": sign in with the same Google
+account, pick the machine, and you can "view active conversations, start new agent tasks, review
+implementation plans, and inspect artifacts", with push notifications on mobile when a task completes
+or needs input. That is the same "use their session, their real interface" model, first-party and
+sanctioned - so the honest recommendation is to use Remote Control and build nothing.
+
+If integration inside FarFromDesk is still wanted, the sanctioned surfaces are:
+
+| Surface | What it gives | Notes |
+| --- | --- | --- |
+| **Remote Control** | drive and watch App/CLI sessions from a browser | Google-hosted dashboard at `antigravity.google.com`; no documented API to embed |
+| **Lifecycle hooks** | `hooks.json` (`~/.gemini/config/hooks.json`, or `.agents/hooks.json` per workspace) firing `PreToolUse` / `PostToolUse` | a supported extension point, so a bridge could *observe* activity; App data dir is `~/.gemini/antigravity` |
+| **Antigravity SDK** | `pip install google-antigravity`, `Agent` + `LocalAgentConfig`, runs on `GEMINI_API_KEY` or Vertex (`vertex=True`) | the credential Google actually recommends for third-party agents; also a Gemini API "Antigravity Agent" REST/gRPC API |
+
+Unverified, because **Antigravity is not installed on this machine** (no App, no `agy`; only `~/.gemini`
+from Gemini CLI): whether the App writes conversation bodies to disk at all. The CLI keeps conversation
+bodies **server-side** - `--continue` "queries the backend to verify the conversation still exists" - so
+do not plan on reading Antigravity history from local files.
 
 ## How to add the next provider
 
