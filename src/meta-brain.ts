@@ -170,18 +170,44 @@ export class MetaBrain {
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(id);
     this.store.outputBrain(id,text);
   }
+  /**
+   * What the owner sees for "where are we" and for one task's status.
+   *
+   * Measured live, one task's status read "#1 open TextEdit and type hello (FarFromDesk
+   * coordinator setup): in progress, sent to session; no reply yet." The facts are the
+   * same; nothing in it looks like a message. One task gets a heading and a line per
+   * fact, several tasks get one line each, which is the shape the companion instructions
+   * already ask for. A task whose session can no longer answer keeps its own sentence,
+   * because that sentence carries the two things the owner can do next.
+   */
   private statusText(items:ReturnType<BrainMemory['board']>,router:Router) {
-    return items.map(i=>{
+    const rows:{ref:string;title:string;session?:string;state:string;asked?:string}[]=[];
+    const notes:string[]=[];
+    for(const i of items){
       const latest=i.jobs[0];
       let native:any;try{native=latest?JSON.parse(this.store.get(`brain-native:${latest.id}`)??'null'):null;}catch{}
       const observed=native&&Date.now()-native.at<30000?(native.status==='interrupted'?'Native turn interrupted; no automatic retry':native.status==='failed'?'Native turn failed; check the session':native.status==='completed'?'Native turn ended; no recorded answer':undefined):undefined;
       const approval=latest&&[...router.approvals.pending.values()].some(p=>p.binding.id===latest.binding_id);
-      const stale=this.memory.attention(i);if(stale)return stale;
-      const b=this.store.binding(String(latest?.binding_id??i.binding_id)),session=b?` (${this.store.get(`name:${b.id}`)??b.alias})`:'';
+      const stale=this.memory.attention(i);if(stale){notes.push(stale);continue;}
+      const b=this.store.binding(String(latest?.binding_id??i.binding_id));
+      const session=b?String(this.store.get(`name:${b.id}`)??b.alias):undefined;
       const asked=latest?.outcome==='blocked'?this.store.get(`blocked-text:${latest.id}`):undefined;
       const state=approval?'waiting for your native approval':observed??i.executionState;
-      return `#${i.id} ${i.title.slice(0,80)}${session}: ${i.status}${state===i.status?'':`, ${state}`}.${asked?` It asked: "${asked}"`:''}`;
-    }).join('\n')||'No matching tracked tasks.';
+      rows.push({ref:`#${i.id}`,title:i.title.slice(0,80),...(session?{session}:{}),state:i.status+(state===i.status?'':', '+state),...(asked?{asked:String(asked).slice(0,200)}:{})});
+    }
+    const out:string[]=[];
+    if(rows.length===1){
+      const r=rows[0]!;
+      out.push(`📋 *${r.ref} ${r.title}*`);
+      if(r.session)out.push(`- Session: ${r.session}`);
+      out.push(`- State: ${r.state}`);
+      if(r.asked)out.push(`- It asked: "${r.asked}"`);
+    }else if(rows.length){
+      out.push(`📋 *${rows.length} tasks*`);
+      for(const r of rows)out.push(`- *${r.ref}* ${r.title}${[r.session,r.state].filter(Boolean).length?` · ${[r.session,r.state].filter(Boolean).join(' · ')}`:''}${r.asked?` · it asked: "${r.asked}"`:''}`);
+    }
+    out.push(...notes);
+    return out.join('\n')||'No matching tracked tasks.';
   }
   /** Fast paths are literal, read-only owner intents. They never reinterpret consent. */
   private async localIntent(router:Router,m:Incoming) {
@@ -324,6 +350,9 @@ export class MetaBrain {
     const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
     const outcome=await runDevicePlan(this.deviceControl(),plan,`brain:${m.id}`,authorize);
     if(router.stopped||this.get(m.id)?.state!=='interpreting')return true;
+    // Codes only: a request event excludes driver text by design, and the owner's reason
+    // is a sentence written for them, not the log line.
+    this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
     this.store.outputBrain(m.id,[outcome.line,...(outcome.evidence?[outcome.evidence]:[])].join('\n\n').slice(0,900));
     return true;
@@ -436,7 +465,14 @@ export class MetaBrain {
       }
       this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
       // Model selects relevant rows; only deterministic persisted evidence supplies claims.
-      this.store.outputBrain(m.id,rows.length?rows.map(t=>`${t.original.replace(/\s+/g,' ').slice(0,100)}: ${t.status}${t.coordinator_id?` (${this.store.binding(t.coordinator_id)?.alias??'saved coordinator'})`:''}${t.evidence.children.length?`; delegated: ${t.evidence.children.map(child=>`${this.store.binding(String(child.binding_id))?.alias??'saved session'} ${child.status}${child.outcome?` (${child.outcome}, reported)`:''}`).join(', ')}`:''}`).join('\n'):'No matching tracked tasks.');return true;
+      // Same reason as `statusText`: the facts are unchanged, the layout is the owner's.
+      const listed=rows.map(t=>{
+        const title=t.original.replace(/\s+/g,' ').slice(0,100);
+        const alias=t.coordinator_id?this.store.binding(t.coordinator_id)?.alias??'a saved session':undefined;
+        const child=t.evidence.children.map(c=>`${this.store.binding(String(c.binding_id))?.alias??'a saved session'} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
+        return `- ${title}${title.length>=100?'...':''} · ${t.status}${alias?` · ${alias}`:''}${child?` · delegated to ${child}`:''}`;
+      });
+      this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):'No matching tracked tasks.');return true;
     }
     if(!policy.allowRouting){this.stop(m.id,'Routing is disabled by your Meta brain policy.');return true;}
     const c=router.coordinator;if(!c){this.stop(m.id,'Connect an existing coordinator in Coding platforms first.');return true;}

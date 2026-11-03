@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DevicePlan, devicePlanIssue, deviceOutcome, deviceRefusal, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, type DeviceControl } from '../src/brain-device.js';
+import { DevicePlan, devicePlanIssue, deviceFailureCode, deviceOutcome, deviceRefusal, plainCause, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, type DeviceControl } from '../src/brain-device.js';
+import { safeEventDetails } from '../src/request-events.js';
 import { Interpretation } from '../src/meta-model.js';
 
 test('a plan accepts only the documented fields', () => {
@@ -51,6 +52,38 @@ test('a refusal names the grant the owner has to change', () => {
   assert.ok(deviceRefusal(new Error('E'.repeat(500))).length <= 300, 'the refusal stays short');
 });
 
+test('the driver envelopes never reach the owner', () => {
+  // Measured live: these exact two strings were the whole reply.
+  assert.match(deviceRefusal(new Error('MCP error -32000: Connection closed')), /lost the connection/i);
+  const envelope = deviceRefusal(new Error('DESKTOP_NATIVE_REFUSED: run_steps rejected before running anything: observe: `pid` and `window_id` are required (no step names a window to inherit from)'));
+  assert.doesNotMatch(envelope, /window_id|DESKTOP_NATIVE_REFUSED/);
+  assert.doesNotMatch(envelope, /"type"/);
+  assert.match(envelope, /could not do that/i);
+  // Recognized plain prose from the helper is kept: it is the only thing that says why.
+  assert.equal(deviceRefusal(new Error('DESKTOP_NATIVE_REFUSED: no element matched a button named Send')), 'I could not do that: no element matched a button named Send.');
+  assert.equal(plainCause('MCP error -32000: Connection closed'), 'the helper could not complete it');
+});
+
+test('a failed action reports a sentence and a code, never the driver raw', () => {
+  const failed = deviceOutcome({ action: 'click', app: 'Comet', name: 'Send' }, { ok: false, observation: '[{"type":"text","text":"observe: pid required"}]' });
+  assert.equal(failed.ok, false);
+  assert.doesNotMatch(failed.line, /"type"|pid/);
+  assert.match(failed.line, /I could not do that in Comet/);
+  // The log gets a code, not the text: request events exclude driver and provider words.
+  assert.equal(failed.code, 'driver_refused');
+  assert.equal(deviceFailureCode(new Error('MCP error -32000: Connection closed')), 'driver_unavailable');
+  assert.equal(deviceFailureCode(new Error('DESKTOP_NATIVE_REFUSED: nope')), 'driver_refused');
+  assert.equal(deviceFailureCode(new Error('DESKTOP_APP_NOT_RUNNING: Comet')), 'target_unavailable');
+  assert.equal(deviceFailureCode(new Error('ACCESSIBILITY_PERMISSION_REQUIRED: x')), 'permission_required');
+  assert.equal(deviceFailureCode(new Error('who knows')), 'unknown');
+});
+
+test('a device failure is recorded as a code, never as the driver words', () => {
+  // A refused action must still leave a trace that can be read back later.
+  assert.deepEqual(safeEventDetails({ action: 'press_key', outcome: 'blocked', code: 'driver_unavailable' }), { action: 'press_key', outcome: 'blocked', code: 'driver_unavailable' });
+  assert.deepEqual(safeEventDetails({ action: 'press_key', outcome: 'blocked', detail: 'MCP error -32000: Connection closed' }), { action: 'press_key', outcome: 'blocked' });
+});
+
 test('the tree is summarized for a phone', () => {
   const tree = ['- [0] AXWindow "Inbox"', '  - [1] AXGroup', '  - [2] AXButton "Compose" [actions=[press]]', '  - [3] AXButton "Compose" [actions=[press]]', '  - [4] AXStaticText = "Unread"'].join('\n');
   const summary = summarizeTree(tree);
@@ -59,6 +92,22 @@ test('the tree is summarized for a phone', () => {
   assert.equal(summary.split('Compose').length - 1, 1, 'repeats are dropped');
   assert.equal(/AXGroup|actions=|\[\d\]/.test(summary), false, 'vocabulary and ids are dropped');
   assert.ok(summarizeTree(Array.from({ length: 60 }, (_, i) => `- [${i}] AXButton "b${i}"`).join('\n')).length <= 700);
+  // One label per line: a semicolon run is a wall to parse on a phone.
+  assert.equal(summary, '- Compose\n- Unread');
+});
+
+test('a window summary is content, not the menu bar', () => {
+  // Measured live: "what is in Comet right now" answered with the menu bar only.
+  const tree = ['- [0] AXWindow "Private Email"',
+    '  - [1] AXMenuBar', '    - [2] AXMenuBarItem "Apple"', '    - [3] AXMenuBarItem "File"', '    - [4] AXMenuBarItem "Edit"', '    - [5] AXMenuBarItem "View"', '    - [6] AXMenuBarItem "Help"',
+    '  - [7] AXToolbar', '    - [8] AXButton "Reload"',
+    '  - [9] AXStaticText = "AWS Free Tier limit alert"'].join('\n');
+  const summary = summarizeTree(tree);
+  assert.doesNotMatch(summary, /^Apple|^File$/m);
+  assert.doesNotMatch(summary, /Reload/, 'the toolbar is chrome too');
+  assert.match(summary, /AWS Free Tier limit alert/);
+  // Bounded: a page with 250 elements must not become a 250-line message.
+  assert.equal(summarizeTree(Array.from({ length: 250 }, (_, i) => `- [${i}] AXStaticText = "row ${i}"`).join('\n')).split('\n').length, 8);
 });
 
 test('the plan reaches the driver without undefined fields', async () => {

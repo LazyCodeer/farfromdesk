@@ -2,6 +2,7 @@ import {specialtyPresentation} from './session-specialty.js';
 import { initializeOptions, createOptions, parseMessageOptions } from './message-options.js';
 import { cancelObsoleteCoordinatorUpdates } from './coordinator-updates.js';
 import { toWhatsApp } from './whatsapp-format.js';
+import { ownerReply } from './brain-reply.js';
 import { formatWhatsAppMessage, sessionMeta } from './coordinator-experience.js';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -435,6 +436,9 @@ export class Store {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
     if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
     const mode=this.get(`brain-mode:${requestId}`);if(mode)text+='\n\n'+mode;
+    // Every brain answer leaves through here, so this is where the owner's format is
+    // applied: driver bookkeeping dropped, label dumps bulleted, long lines wrapped.
+    text=ownerReply(text);
     const prior=this.db.prepare('SELECT request_id,text_hash,binding_id FROM reply_receipts WHERE source=?').get(source) as any;
     if(prior){if(prior.request_id!==requestId||prior.text_hash!==hash(text)||prior.binding_id!==null)throw new Error('Brain reply identity was reused');return false;}
     this.db.exec('SAVEPOINT brain_output');

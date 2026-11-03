@@ -146,12 +146,52 @@ the driver needs its two, and `cua-driver permissions status` reads back the tru
     Accessibility:    granted
     Screen Recording: granted
 
+## What the owner receives back
+
+Facts are written where the action happens, and the owner's layout is applied once, at the
+single point every brain answer passes through (`store.outputBrain` calls `ownerReply` in
+`src/brain-reply.ts`). A producer states what happened; it does not decide how a message
+looks.
+
+Measured live, before that split, four shapes reached the chat:
+
+    Pressed escape in Comet.
+
+    full read (no usable earlier read of this window to diff against)
+
+    I read Comet (Private Email - business email hosting by Namecheap).
+
+    Apple; Comet; File; Edit; View; Assistant; History; Bookmarks; Profiles; Tab; Window; Help
+
+    I could not do that on your Mac: DESKTOP_NATIVE_REFUSED: [{"type":"text","text":"run_steps rejected ..."}]
+
+So the rules are:
+
+- A short confirmation stays one line. "Opened Comet." needs no heading and no bullets.
+- Anything with more than one fact is a short first line and then a list, one item per
+  line, capped at eight for a window read and ten for a dump.
+- The driver's bookkeeping lines are dropped, not rewritten. A reply that is nothing but
+  bookkeeping keeps its own words, because an empty answer would fail the reply receipt's
+  identity check and hide that something did happen.
+- A semicolon run of four or more parts is a list its writer forgot to break.
+- The driver's own text never goes to the owner. `refusalText` keeps the sentence out of
+  the MCP content envelope, `plainCause` drops machine markers, and the raw message is
+  replaced by a diagnostic code (`driver_unavailable`, `driver_refused`, `driver_busy`,
+  `target_unavailable`) recorded as a `device_action` event. Request events exclude driver
+  and provider text by design, so the owner's reason and the log's reason are deliberately
+  two different strings.
+- Window chrome is not content. The menu bar and everything under a toolbar are dropped:
+  on a browser window they were the entire answer to "what is in Comet right now".
+- Long dashes, control characters and bidi overrides are removed before the message is
+  queued. The formatter is idempotent, since the receipt hashes the text.
+
 ## Live test
 
     1. Settings, Remote control: allow Accessibility and Screen Recording.
     2. Send /brain, so the brain is the selected platform.
     3. Send "open Comet" and expect "Opened Comet."
-    4. Send "what is on my screen" and expect the window's labels.
+    4. Send "what is on my screen" and expect the page's labels, one per line, without
+       the menu bar and without any "full read" or "no change since" line.
     5. Send "press escape".
     6. Send /codex and repeat step 3: the session gets it, not the brain.
 

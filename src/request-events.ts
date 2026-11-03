@@ -16,14 +16,14 @@ export function errorCode(error:unknown) {
   if(/session.*(?:paused|missing)|selected session changed|not been connected/i.test(text))return 'routing_unavailable';
   return 'unknown';
 }
-const codes=new Set(['configuration_missing','authentication_required','timeout','cancelled','no_speech','integrity_failed','unsupported_format','permission_required','routing_unavailable','provider_rejected','provider_unavailable','invalid_response','unknown']);
+const codes=new Set(['configuration_missing','authentication_required','timeout','cancelled','no_speech','integrity_failed','unsupported_format','permission_required','routing_unavailable','provider_rejected','provider_unavailable','invalid_response','driver_unavailable','driver_refused','driver_busy','target_unavailable','unknown']);
 export function safeEventDetails(input:Record<string,unknown>={}) {
   const result:Record<string,string|number|boolean>={};
   for(const key of ['durationMs','audioSeconds','inputTokens','outputTokens','costUsd']) {
     const value=input[key];if(typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1e12)result[key]=value;
   }
   if(typeof input.code==='string')result.code=codes.has(input.code)?input.code:'unknown';
-  for(const [key,values] of Object.entries({stage:['download','decode','transcribe','route'],outcome:['done','blocked','reviewed','cancelled'],provider:['codex','claude','muse'],state:['started','completed','failed'],engine:['whisper.cpp','deepgram','assemblyai','meta'],model:['bundled','custom']})) {
+  for(const [key,values] of Object.entries({stage:['download','decode','transcribe','route'],outcome:['done','blocked','reviewed','cancelled'],provider:['codex','claude','muse'],state:['started','completed','failed'],engine:['whisper.cpp','deepgram','assemblyai','meta'],model:['bundled','custom'],action:['open_app','read_window','click','type','press_key']})) {
     if(typeof input[key]==='string'&&values.includes(input[key] as string))result[key]=input[key] as string;
   }
   return result;

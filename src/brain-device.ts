@@ -48,24 +48,89 @@ export type DeviceOutcome = {
   line: string;
   /** Evidence for the composer: what was read, or what changed. */
   evidence: string | null;
+  /**
+   * Why a refusal happened, as one of the diagnostic codes. Deliberately not the driver's
+   * own words: request events exclude provider and driver text by design, so the owner's
+   * reason and the log's reason are two different strings.
+   */
+  code?: string;
 };
+
+/** Classify a driver failure for the event log. Codes only, never the message. */
+export function deviceFailureCode(error: unknown): string {
+  const text = String((error as Error)?.message ?? error);
+  if (/mcp error|connection closed|econn|socket hang|terminated/i.test(text)) return 'driver_unavailable';
+  if (/ACCESSIBILITY_PERMISSION_REQUIRED|MAC_CONTROL_DISABLED|SENSITIVE_TARGET/.test(text)) return 'permission_required';
+  if (text.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'target_unavailable';
+  if (text.startsWith('DESKTOP_BUSY')) return 'driver_busy';
+  if (text.startsWith('DESKTOP_STOPPED')) return 'cancelled';
+  return text.startsWith('DESKTOP_NATIVE_REFUSED') ? 'driver_refused' : 'unknown';
+}
+
+/**
+ * Window chrome. A menu bar holds no page content, and on a browser window its labels
+ * were the entire summary the owner received: "Apple; Comet; File; Edit; View; ..." and
+ * nothing about the page they asked to see. Only bars whose every descendant is chrome
+ * belong here: a scroll area or a splitter wraps the content itself.
+ */
+const CHROME = /^AX(?:MenuBar|MenuBarItem|Menu|MenuItem|MenuButton|Toolbar)$/;
 
 /**
  * Turn the driver's markdown tree into something readable on a phone.
  *
  * Roles, element ids and indentation are dropped: the owner wants the labels, and
- * accessibility vocabulary in a chat message is noise. Order is preserved because
- * it is the only thing that hints at layout.
+ * accessibility vocabulary in a chat message is noise. One label per line, because a
+ * semicolon-joined run of fourteen labels is a wall to parse. Order is preserved
+ * because it is the only thing that hints at layout.
+ *
+ * Everything under a chrome row is chrome: a toolbar's Reload button says as little about
+ * the page as the menu bar does, and the tree's indentation is what carries that.
  */
-export function summarizeTree(markdown: string, limit = 14): string {
-  const rows = String(markdown).split('\n')
-    .map(line => line.replace(/^\s*-\s*\[\d+\]\s*/, '').trim())
-    .filter(line => line && !/^AX(Group|Unknown|Splitter|Window)\b/.test(line))
-    .map(line => line.replace(/^AX\w+\s*/, '').replace(/\s*\[actions=.*$/, '').replace(/\s*\(.*\)$/, '').replace(/^"|"$/g, '').trim())
-    .filter(line => line.length > 1);
-  const seen = new Set<string>(); const out: string[] = [];
-  for (const row of rows) { if (seen.has(row)) continue; seen.add(row); out.push(row); if (out.length >= limit) break; }
-  return out.join('; ').slice(0, 700);
+export function summarizeTree(markdown: string, limit = 8): string {
+  const rows: string[] = [];
+  let chromeIndent: number | null = null;
+  for (const line of String(markdown).split('\n')) {
+    const match = /^(\s*)-\s*\[\d+\]\s+(AX\w+)\s*([\s\S]*)$/.exec(line);
+    if (!match) continue;
+    const indent = match[1]!.length;
+    if (chromeIndent !== null) {
+      if (indent > chromeIndent) continue;
+      chromeIndent = null;
+    }
+    if (match[2] === 'AXWindow') continue;   // the caller's line already names the window
+    if (CHROME.test(match[2]!)) {
+      chromeIndent = indent;
+      continue;
+    }
+    const label = match[3]!
+      .replace(/\s*\[actions=.*$/, '')
+      .replace(/\s*\((?:[^()]*)\)\s*$/, '')
+      .replace(/^[=:]\s*/, '')
+      .replace(/^"|"$/g, '')
+      .trim();
+    if (label.length < 2) continue;
+    rows.push(label.length > 90 ? label.slice(0, 89).trimEnd() + '...' : label);
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    if (seen.has(row)) continue;
+    seen.add(row);
+    out.push(row);
+    if (out.length >= limit) break;
+  }
+  return out.map(row => `- ${row}`).join('\n').slice(0, 700);
+}
+
+/**
+ * Driver text is machine output. Keep the part that reads as a sentence; never pass on
+ * JSON, an MCP transport error or an internal id, all of which reached the owner live.
+ */
+export function plainCause(value: unknown): string {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'the helper did not say why';
+  if (/mcp error|desktop_native|desktop_stopped|desktop_busy|\bpid\b|window_id|econn|socket hang|timed? ?out/i.test(text)) return 'the helper could not complete it';
+  return (text.split(/(?<=\.)\s/)[0] ?? text).slice(0, 160);
 }
 
 /** One factual sentence. The composer may rephrase it; it may not contradict it. */
@@ -78,9 +143,11 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
   }
   if (plan.action === 'read_window') {
     if (!result?.tree) return { ok: false, line: `I could not read ${app}.`, evidence: null };
-    return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree) };
+    return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree) || null };
   }
-  if (!result?.ok) return { ok: false, line: `I could not do that in ${app}: ${result?.observation ?? 'the driver refused it'}.`, evidence: null };
+  if (!result?.ok) {
+    return { ok: false, line: `I could not do that in ${app}: ${plainCause(result?.observation ?? result?.message ?? '')}.`, evidence: null, code: 'driver_refused' };
+  }
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };
 }
@@ -88,15 +155,22 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
 /**
  * A refusal has to name the exact missing grant. "It did not work" sends the owner
  * looking in the wrong place, and the two macOS grants belong to different binaries.
+ *
+ * The driver's own text never goes through: measured live, a bare keypress refusal read
+ * "I could not do that on your Mac: DESKTOP_NATIVE_REFUSED: [{"type":"text","text":...}]".
  */
 export function deviceRefusal(error: unknown): string {
   const message = String((error as Error)?.message ?? error);
   if (message.startsWith('ACCESSIBILITY_PERMISSION_REQUIRED')) return 'I cannot control apps yet: Accessibility is not granted to FarFromDesk Local. Open Settings, Remote control, allow Accessibility, then ask me again.';
   if (message.startsWith('MAC_CONTROL_DISABLED')) return 'Desktop control is switched off in Settings. Turn on Remote control, then ask me again.';
   if (message.startsWith('SENSITIVE_TARGET')) return 'I am not allowed to drive System Settings, keychain or password apps.';
-  if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app is running but has no open window, so there is nothing to read yet.';
+  if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app has no open window right now, so there is nothing to act on yet.';
   if (message.startsWith('DESKTOP_MACOS_ONLY')) return 'I can only control apps on macOS.';
-  return `I could not do that on your Mac: ${message.slice(0, 200)}`;
+  if (message.startsWith('DESKTOP_BUSY')) return 'I am already doing something on your Mac. Let that finish, then ask me again.';
+  if (message.startsWith('DESKTOP_STOPPED')) return 'I stopped that action. Nothing else was tried.';
+  if (/mcp error|connection closed|\beconn|socket hang|network|terminated/i.test(message)) return 'I lost the connection to the desktop helper just then, so I cannot say what happened. Check the app, then ask me again.';
+  if (message.startsWith('DESKTOP_NATIVE_REFUSED')) return `I could not do that: ${plainCause(message.slice('DESKTOP_NATIVE_REFUSED:'.length))}.`;
+  return `I could not do that on your Mac: ${plainCause(message)}.`;
 }
 
 /** Execute one plan and report facts, never a claim the driver did not make. */
@@ -108,7 +182,9 @@ export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, sc
     const result = await control.assist(scope, assist, authorize);
     return deviceOutcome(plan, result);
   } catch (error) {
-    return { ok: false, line: deviceRefusal(error), evidence: null };
+    // The owner gets a sentence and a code; the driver's own words stay out of both the
+    // message and the event log.
+    return { ok: false, line: deviceRefusal(error), evidence: null, code: deviceFailureCode(error) };
   }
 }
 /**
