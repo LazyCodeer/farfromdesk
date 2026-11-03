@@ -85,9 +85,15 @@ const CHROME = /^AX(?:MenuBar|MenuBarItem|Menu|MenuItem|MenuButton|Toolbar)$/;
  *
  * Everything under a chrome row is chrome: a toolbar's Reload button says as little about
  * the page as the menu bar does, and the tree's indentation is what carries that.
+ *
+ * `skip` is the window title, which the caller's own line already states: measured live,
+ * the first bullet of a mail window repeated it, so one of eight slots was spent saying
+ * nothing new.
  */
-export function summarizeTree(markdown: string, limit = 8): string {
+export function summarizeTree(markdown: string, limit = 8, skip?: string | null): string {
   const rows: string[] = [];
+  const fold = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const title = fold(String(skip ?? ''));
   let chromeIndent: number | null = null;
   for (const line of String(markdown).split('\n')) {
     const match = /^(\s*)-\s*\[\d+\]\s+(AX\w+)\s*([\s\S]*)$/.exec(line);
@@ -109,6 +115,9 @@ export function summarizeTree(markdown: string, limit = 8): string {
       .replace(/^"|"$/g, '')
       .trim();
     if (label.length < 2) continue;
+    // A heading that repeats the window title, with or without the icon the title carries.
+    const folded = fold(label);
+    if (title && folded.length > 8 && (title.includes(folded) || folded.includes(title))) continue;
     rows.push(label.length > 90 ? label.slice(0, 89).trimEnd() + '...' : label);
   }
   const seen = new Set<string>();
@@ -123,13 +132,27 @@ export function summarizeTree(markdown: string, limit = 8): string {
 }
 
 /**
- * Driver text is machine output. Keep the part that reads as a sentence; never pass on
- * JSON, an MCP transport error or an internal id, all of which reached the owner live.
+ * Driver text is machine output. A refusal sentence has to be written, not forwarded:
+ * measured live, a click that matched nothing read "I could not do that: run_steps:
+ * step 1 of 1 failed; 0 step(s) ran before it, 0 not run 1..". So known phrasings become
+ * owner words, machine markers become a generic cause, and only plain prose survives as
+ * itself.
  */
+/** A target the owner named beats a generic sentence: "I could not find "Send" in Comet." */
+const MATCHED_NOTHING = 'nothing there matched that name';
+const CAUSES: [RegExp, string][] = [
+  [/no element|not found|no match|did not match|nothing matched|no such/i, MATCHED_NOTHING],
+  [/ambiguous|more than one|multiple/i, 'more than one thing matched, so I did nothing'],
+  [/not focused|not front|foreground|background/i, 'the window would not take it in the background'],
+  [/denied|refused|not allowed|not permitted/i, 'the helper refused it'],
+  [/timed? ?out/i, 'it took too long'],
+  [/step \d+ of \d+ failed|\d+ step\(s\)|not run/i, 'the action did not complete'],
+];
 export function plainCause(value: unknown): string {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!text) return 'the helper did not say why';
-  if (/mcp error|desktop_native|desktop_stopped|desktop_busy|\bpid\b|window_id|econn|socket hang|timed? ?out/i.test(text)) return 'the helper could not complete it';
+  if (/mcp error|desktop_native|desktop_stopped|desktop_busy|\bpid\b|window_id|econn|socket hang/i.test(text)) return 'the helper could not complete it';
+  for (const [pattern, cause] of CAUSES) if (pattern.test(text)) return cause;
   return (text.split(/(?<=\.)\s/)[0] ?? text).slice(0, 160);
 }
 
@@ -143,10 +166,16 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
   }
   if (plan.action === 'read_window') {
     if (!result?.tree) return { ok: false, line: `I could not read ${app}.`, evidence: null };
-    return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree) || null };
+    return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree, 8, result?.window) || null };
   }
   if (!result?.ok) {
-    return { ok: false, line: `I could not do that in ${app}: ${plainCause(result?.observation ?? result?.message ?? '')}.`, evidence: null, code: 'driver_refused' };
+    const cause = plainCause(result?.observation ?? result?.message ?? '');
+    const wanted = plan.name ?? plan.role;
+    if (cause === MATCHED_NOTHING && wanted) {
+      const what = plan.name ? `"${plan.name}"` : `that ${plan.role}`;
+      return { ok: false, line: `I could not find ${what} in ${app}. Nothing was clicked or typed.`, evidence: null, code: 'driver_refused' };
+    }
+    return { ok: false, line: `I could not do that in ${app}: ${cause}.`, evidence: null, code: 'driver_refused' };
   }
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };

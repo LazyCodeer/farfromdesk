@@ -40,7 +40,11 @@ test('the driver result is reported, not the model guess', () => {
   assert.equal(deviceOutcome({ action: 'read_window', app: 'Comet' }, { app: 'Comet', tree: '' }).ok, false);
   assert.equal(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: true }).line, 'Clicked in Comet.');
   assert.equal(deviceOutcome({ action: 'press_key', app: 'Comet', key: 'escape' }, { ok: true }).line, 'Pressed escape in Comet.');
-  assert.match(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: false, observation: 'no element matched' }).line, /no element matched/);
+  assert.match(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: false, observation: 'no element matched' }).line, /nothing there matched/);
+  // A target the owner named is used in the sentence: "nothing matched" alone leaves them
+  // wondering what was looked for.
+  assert.equal(deviceOutcome({ action: 'click', app: 'Comet', name: 'Send' }, { ok: false, observation: 'no element matched' }).line, 'I could not find "Send" in Comet. Nothing was clicked or typed.');
+  assert.equal(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: false, observation: 'run_steps: step 1 of 1 failed; 0 step(s) ran before it, 0 not run 1.' }).line, 'I could not do that in Comet: the action did not complete.');
 });
 
 test('a refusal names the grant the owner has to change', () => {
@@ -59,8 +63,8 @@ test('the driver envelopes never reach the owner', () => {
   assert.doesNotMatch(envelope, /window_id|DESKTOP_NATIVE_REFUSED/);
   assert.doesNotMatch(envelope, /"type"/);
   assert.match(envelope, /could not do that/i);
-  // Recognized plain prose from the helper is kept: it is the only thing that says why.
-  assert.equal(deviceRefusal(new Error('DESKTOP_NATIVE_REFUSED: no element matched a button named Send')), 'I could not do that: no element matched a button named Send.');
+  // Recognized phrasings become owner words rather than the helper's own.
+  assert.equal(deviceRefusal(new Error('DESKTOP_NATIVE_REFUSED: no element matched a button named Send')), 'I could not do that: nothing there matched that name.');
   assert.equal(plainCause('MCP error -32000: Connection closed'), 'the helper could not complete it');
 });
 
@@ -108,6 +112,14 @@ test('a window summary is content, not the menu bar', () => {
   assert.match(summary, /AWS Free Tier limit alert/);
   // Bounded: a page with 250 elements must not become a 250-line message.
   assert.equal(summarizeTree(Array.from({ length: 250 }, (_, i) => `- [${i}] AXStaticText = "row ${i}"`).join('\n')).split('\n').length, 8);
+});
+
+test('a heading that repeats the window title is not a second bullet', () => {
+  // Measured live: of eight bullets on a mail window, the first one repeated the title the
+  // sentence above it had already given, icon and all.
+  const tree = ['- [0] AXWindow "Private Email 🔊"', '  - [1] AXStaticText = "Private Email"', '  - [2] AXButton "Compose"'].join('\n');
+  assert.equal(summarizeTree(tree, 8, 'Private Email 🔊'), '- Compose');
+  assert.equal(summarizeTree(tree, 8, 'Something Else'), '- Private Email\n- Compose');
 });
 
 test('the plan reaches the driver without undefined fields', async () => {

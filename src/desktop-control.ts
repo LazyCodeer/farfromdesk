@@ -207,7 +207,9 @@ export class DesktopControl {
       const ok=result?.ok===true;
       const counts=result?.observation?.state?.diff_counts;
       const total=counts?Number(counts.added??0)+Number(counts.changed??0)+Number(counts.removed??0):0;
-      return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,changes:ok&&total?`The window changed (${total} element${total===1?'':'s'}).`:null};
+      // "Something visibly changed" is the owner's fact; the element count is build detail
+      // and reads like a diff line in a chat message.
+      return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,changes:ok&&total?'The window changed.':null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
   /**
