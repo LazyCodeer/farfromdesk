@@ -107,8 +107,10 @@ export interface ToolMatch {
 const WRITE_VERBS = new Set(['write', 'jot', 'save', 'note', 'remind', 'remember', 'record', 'log', 'capture', 'forget', 'hold', 'keep']);
 // Copulas are deliberately absent: "my head is full" is not a read. Every word here names a
 // question the owner is asking, so a sentence that merely contains "is" or "does" stays
-// undecided and is left to the scores.
-const READ_VERBS = new Set(['find', 'search', 'look', 'where', 'read', 'show', 'list', 'tell', 'what', 'which']);
+// undecided and is left to the scores. "list" is deliberately absent too: it is the noun in
+// "put call the plumber on my reminders list", which the Reminders pack measured as a read
+// request and pointed away from the writing tool.
+const READ_VERBS = new Set(['find', 'search', 'look', 'where', 'read', 'show', 'tell', 'what', 'which']);
 
 export function intentPolarity(text: string): 'write' | 'read' | undefined {
   for (const word of text.toLowerCase().split(/[^a-z0-9]+/)) {

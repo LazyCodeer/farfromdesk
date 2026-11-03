@@ -222,6 +222,81 @@ const calendarListEvents: AppTool = {
   },
 };
 
+
+const remindersAdd: AppTool = {
+  name: 'reminders_add',
+  pack: 'reminders',
+  app: 'Reminders',
+  bundleId: 'com.apple.reminders',
+  description:
+    'Add one reminder to Apple Reminders, with a name and an optional list and due time. Use this ' +
+    'when the owner asks for something to go on their reminders or checklist and the app ' +
+    'is Reminders. It creates the reminder in the default list unless the owner named a list, and ' +
+    'it never completes, deletes, moves or renames anything. A due time has to be written as ' +
+    'YYYY-MM-DD HH:MM:SS, so work out the real date and time before calling it; leave it empty ' +
+    'when the owner did not say when. Returns the name Reminders reports back.',
+  args: [
+    { name: 'title', description: 'What the reminder says, in the owner\'s words.', required: true },
+    { name: 'list', description: 'Which list to add it to. Leave empty to use the default list.' },
+    { name: 'due', description: 'When it is due, as YYYY-MM-DD HH:MM:SS. Leave empty when the owner did not say.' },
+  ],
+  examples: [
+    'add pick up the batteries to my reminders',
+    'put call the plumber on my reminders list for friday at 9',
+    'add pick up the dry cleaning to my reminders list',
+  ],
+  // "task" and "todo" are deliberately not keywords: this product calls coding work a task, and
+  // "add a checks column to task_contracts" matched the reminder tool when they were.
+  keywords: ['reminder', 'reminders', 'checklist', 'pick up', 'due'],
+  writes: true,
+  plan: args => {
+    const target = args.list?.trim() ? `list ${asStr(args.list.trim())}` : 'default list';
+    const due = String(args.due ?? '').trim();
+    const when = due ? appleDateAssign('d1', due) : '';
+    const properties = due
+      ? `{name:${asStr(String(args.title ?? ''))}, due date:d1}`
+      : `{name:${asStr(String(args.title ?? ''))}}`;
+    return {
+      kind: 'osascript',
+      script:
+        when +
+        `tell application "Reminders"\n` +
+        `  set newReminder to make new reminder at end of reminders of ${target} with properties ${properties}\n` +
+        `  return name of newReminder\n` +
+        `end tell\n`,
+    };
+  },
+};
+
+const remindersList: AppTool = {
+  name: 'reminders_list',
+  pack: 'reminders',
+  app: 'Reminders',
+  bundleId: 'com.apple.reminders',
+  description:
+    'List the reminder lists in Apple Reminders with how many reminders in each are still open. ' +
+    'Use this when the owner asks what is on their reminders, what they have to do, or which ' +
+    'lists exist. It only counts; it never reads a reminder body, never completes anything and ' +
+    'never opens a window. Returns one line per list, or says that there are no lists.',
+  args: [],
+  examples: ['what is on my reminders', 'what do i have to do', 'show my reminder lists'],
+  keywords: ['reminders', 'lists', 'how many', 'what do i have', 'anything', 'open', 'today'],
+  writes: false,
+  plan: () => ({
+    kind: 'osascript',
+    script:
+      `tell application "Reminders"\n` +
+      `  set lines to {}\n` +
+      `  repeat with l in lists\n` +
+      `    set openCount to count of (reminders of l whose completed is false)\n` +
+      `    set end of lines to (name of l) & ": " & openCount & " open"\n` +
+      `  end repeat\n` +
+      `  if (count of lines) is 0 then return "no reminder lists"\n` +
+      `  return lines\n` +
+      `end tell\n`,
+  }),
+};
+
 export const PACKS: AppPack[] = [
   {
     id: 'notes',
@@ -236,6 +311,13 @@ export const PACKS: AppPack[] = [
     bundleId: 'com.apple.iCal',
     summary: 'Add an event and read what is coming up in Apple Calendar.',
     tools: [calendarCreateEvent, calendarListEvents],
+  },
+  {
+    id: 'reminders',
+    app: 'Reminders',
+    bundleId: 'com.apple.reminders',
+    summary: 'Add one reminder, and count what is still open in Apple Reminders.',
+    tools: [remindersAdd, remindersList],
   },
 ];
 

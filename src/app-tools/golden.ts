@@ -56,6 +56,9 @@ export const GOLDEN: GoldenUtterance[] = [
   { text: 'open the PR', tool: null, note: 'looks like open_app, resolves to nothing' },
   { text: 'add a dark theme to the settings page', tool: null, note: 'coding request' },
   { text: 'notes', tool: null, note: 'a bare app name is not a request' },
+  { text: 'add oat milk to my reminders', tool: 'reminders_add', note: 'names the app' },
+  { text: 'put call the plumber on my reminders list for friday at 9am', tool: 'reminders_add', note: 'names the list it belongs in' },
+  { text: 'what reminders do i have open', tool: 'reminders_list', note: 'asks for the lists, not for one reminder' },
 ];
 
 /** The tool names the set refers to, for a pack-coverage check. */

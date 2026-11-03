@@ -145,9 +145,10 @@ test('an app that is named but not acted on does not become a tool call', () => 
 });
 
 test('the pack list tells the owner what is installed', () => {
-  assert.deepEqual(PACKS.map(pack => pack.id), ['notes', 'calendar']);
+  assert.deepEqual(PACKS.map(pack => pack.id), ['notes', 'calendar', 'reminders']);
   assert.equal(packFor('notes')?.app, 'Notes');
   assert.equal(packFor('Calendar')?.id, 'calendar');
+  assert.equal(packFor('Reminders')?.app, 'Reminders');
   assert.equal(packFor('Cursor'), undefined);
   assert.ok(PACKS.every(pack => pack.summary.length > 20));
 });
@@ -189,13 +190,15 @@ test('a tool that only reads never carries a step that changes the Mac', () => {
 /**
  * The AppleScript tools must at least compile against the app's own dictionary. This needs no
  * Automation grant (`osacompile` only reads the .sdef in the app), so it runs everywhere and
- * catches a script that would fail the first time the owner asked for it. Calendar and Notes
- * are the two packs with osascript plans; the steps plans are covered by the driver tests.
+ * catches a script that would fail the first time the owner asked for it. Notes, Calendar and
+ * Reminders carry osascript plans; the steps plan is covered by the driver tests.
  */
 const SCRIPT_SAMPLES: Record<string, Record<string, string>> = {
   notes_find: { query: 'the roof' },
   calendar_create_event: { title: 'Call Ashitosh', start: '2026-11-05 17:00:00', end: '2026-11-05 17:30:00' },
   calendar_list_events: { days: '7' },
+  reminders_add: { title: 'Buy oat milk', due: '2026-11-06 09:00:00' },
+  reminders_list: {},
 };
 
 test('every AppleScript tool compiles against its app dictionary', { skip: process.platform !== 'darwin' ? 'macOS only' : false }, () => {
@@ -213,6 +216,21 @@ test('every AppleScript tool compiles against its app dictionary', { skip: proce
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The tools that write into the owner's apps may only create. Nothing in the reviewed set is
+ * allowed to complete, delete, move or rename something the owner already has, because a plan
+ * that touches existing data is a different decision than "add this".
+ */
+test('a writing AppleScript plan only creates', () => {
+  for (const tool of allPackTools()) {
+    if (!tool.writes) continue;
+    const planned = tool.plan(SCRIPT_SAMPLES[tool.name] ?? {});
+    if (planned.kind !== 'osascript') continue;
+    assert.match(planned.script, /make new /, `${tool.name} does not create anything`);
+    assert.doesNotMatch(planned.script, /\b(?:delete|remove|complete|completed|move|rename)\b/i, `${tool.name} touches something that already exists`);
   }
 });
 

@@ -21,4 +21,6 @@ export const PARAPHRASES: GoldenUtterance[] = [
   { text: 'what does my Friday look like', app: 'Calendar', tool: 'calendar_list_events', note: 'asking to see the schedule without saying schedule' },
   { text: 'am I busy tomorrow', app: 'Calendar', tool: 'calendar_list_events', note: 'busy is the only signal' },
   { text: 'is anything booked on Friday', app: 'Calendar', tool: 'calendar_list_events', note: 'booked belongs to the app, but on its own it is a weak match' },
+  { text: 'make sure I pick up the dry cleaning', app: 'Reminders', tool: 'reminders_add', note: 'a chore with no reminder vocabulary' },
+  { text: 'anything I have to do today', app: 'Reminders', tool: 'reminders_list', note: 'asks for the list without naming it' },
 ];
