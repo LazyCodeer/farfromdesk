@@ -14,8 +14,8 @@ A real Git worktree on branch `codex/local-desktop-work` (PR #49), shared with o
 
 Installed testing app: `/Users/sagar/Applications/FarFromDesk Local.app`
 Bundle ID: `com.codecylabs.farfromdesk.localtest`
-Last installed version: **2379** (`local-local-lid-grace-2379`)
-Backend build ID: `local-local-lid-grace-2379`
+Last installed version: **2385** (`local-local-app-tools-2385`)
+Backend build ID: `local-local-app-tools-2385`
 The UI/backend/helpers were observed running from that path. Unauthenticated loopback health returned 401 as expected; this alone does not verify authenticated owner features. The isolated package smoke did verify authenticated startup.
 
 Main app: `/Users/sagar/Applications/FarFromDesk.app`, untouched by this work.
@@ -1474,7 +1474,8 @@ Three separate causes, each read from the live `bridge.sqlite` before it was fix
    right now" on the clarify branch. Nothing compared that sentence to the driver.
 3. **Writing into an app had no path at all** unless the owner typed "in Notes": the
    deterministic `type` pattern requires the app name, and the model may not name an app
-   outside `devices`. That part is still a capability gap, not a routing bug.
+   outside `devices`. Fixed by the reviewed app tool packs (see "App tool packs" below): a
+   bare write into Notes now runs a written-down sequence instead of a blind type.
 
 What changed:
 
@@ -1501,3 +1502,74 @@ subsystem-command one); the other two (ordinary talk about the app is not replac
 bare "write the failing test" keeps its contract review) pass on both, and guard the new
 rules from over-reaching. Full suite 1780 pass / 12 known failures / 4 skipped.
 
+## App tool packs: reviewed tools per app, and intent-to-tool retrieval (3 November 2026)
+
+The owner's direction: "we can give it pre-built tools so that it doesn't have to find
+everything on the runtime... Suppose I am working on the Notes app, it should load that tool
+of the Notes app and then it can use it in the runtime."
+
+**Why it was needed, measured live.** On build 2384 the replayed transcript
+"Could you open notes" -> "Write a notes about tomorrow meeting at 10pm woth ashitosh"
+answered **"Typed in Notes."** while the text had landed in the Notes *search field*: the
+window was titled `Search - No Results` and the tree held `AXTextField = "Tomorrow meeting
+at 10pm"`. The reply was a claim no code had verified.
+
+**What the pack holds.** The exact sequence that was proven live with the driver's own
+`run_steps`: `press_key escape` (leave the search field), `click {role:"AXButton",
+name:"New Note"}`, `type_text {role:"AXTextArea", text:...}`. Two measured details are
+encoded: a name-only click on "New Note" is refused because two elements match it (an
+`AXButton` and an `AXMenuItem`), so the role is required; and the whole batch needs a named
+window, because the driver refuses an observation it cannot attach to one.
+
+**Code.**
+- `src/app-tools/types.ts`: `AppTool` (name, pack, app, bundleId, description, args,
+  examples, keywords, `plan`), `AppToolPlan` = driver steps or an AppleScript.
+- `src/app-tools/packs.ts`: `notes_create_note`, `notes_search`, `calendar_create_event`,
+  `calendar_list_events`, plus `toolByName`, `packFor`, `appleDate` (refuses anything that is
+  not `YYYY-MM-DD HH:MM:SS`) and `asStr` (AppleScript escaping).
+- `src/app-tools/retrieve.ts`: `tokenize`, `toolText` (pack + name + app + description + arg
+  names and descriptions + examples + keywords), IDF indexing, and `selectTools(text,{app,k,
+  minScore})`. A tool is only in play when the owner named the app or the pack, or the app is
+  the one in front, and at least one matched token is not the app name. Without that gate
+  "add a retry to the sync loop" matched a calendar tool on the word "add"; it now returns
+  nothing, and a bare "notes" is not a request to do anything.
+- `src/desktop-control.ts`: `packTool(scope,name,args,authorize)` runs one pack tool behind
+  the same gates as `assist`, in the background, and returns only what the driver reported.
+  An AppleScript tool reports `-1743` as `AUTOMATION_PERMISSION_REQUIRED` and names the exact
+  System Settings pane; its own text never reaches the owner.
+- `src/brain-device.ts`: the plan gains `action:"app_tool"` with `tool` and `args`, plus
+  `notesWritePlan(app,body)`, which picks the Notes pack tool when the app is Notes and keeps
+  the old `type` plan for every other app, so "write this where I am" does not become
+  Notes-only. `deviceOutcome` maps a pack result to one permitted sentence ("Wrote the note in
+  Notes.") and a failure to the ordinary refusal path.
+- `src/meta-brain.ts`: the bare-write branch (`"now write the notes"`) now goes through
+  `notesWritePlan`.
+
+**Live verification on build 2385 (2026-11-03 20:47).** Replayed through the app's own
+`POST /api/inbox-send`:
+- "Could you open notes" -> "Opened Notes and brought it to the front." (`list_apps` shows
+  Notes `active:true`).
+- "Write a notes about tomorrow meeting at 10pm woth ashitosh" -> "Wrote the note in Notes."
+  and the window then read `Notes - 8 notes` (was 7) with a list row
+  `AXStaticText = "tomorrow meeting at 10pm woth ashitosh"` at 8:47 PM, note id
+  `26B530F2-75CC-47BA-9B6B-52244E5914F5`. The claim and the fact now agree.
+- "Show me all apps" -> the 15-app inventory. The first attempt failed with "Meta could not
+  read that message right now." and the retry succeeded, so that was a transient model call,
+  not routing.
+
+**Tests.** `test/app-tools.test.ts` (9) asserts the pack invariants the research calls
+decisive (unique `pack_`-prefixed names, at least three sentences with "Use this when" and an
+explicit negative, two owner examples, four keywords, every argument described) and the
+retrieval positives and negatives. `test/brain-device.test.ts` and `test/desktop-assist.test.ts`
+cover the plan, the refusal codes, the whole step batch in one background call, and the
+"unknown tool or missing argument is refused before the driver acts" case.
+`test/brain-conversation.test.ts` now asserts the transcript takes the pack tool with the
+owner's words verbatim. Full suite 1812 pass / 12 known failures / 4 skipped.
+
+**Not done yet.** Calendar tools are written and unit-tested but never run live, and the first
+run will raise the macOS Automation permission prompt. `notes_search` is not exercised live
+either. Retrieval is lexical only: an on-device `NLEmbedding` probe measured 4/8 top-1 and 6/8
+top-3 on 16 tool descriptions (and ranked the right note tool 7th), with true-match cosines
+overlapping the best false match, so embeddings will be a pre-filter at most and never the
+only router. Nothing yet sends a retrieved tool list to the model, and the golden set,
+recall@5 gate and multi-session harness are still to build.
