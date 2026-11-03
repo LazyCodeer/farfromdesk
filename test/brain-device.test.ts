@@ -143,6 +143,7 @@ test('a read shows the labels, not the accessibility plumbing', () => {
     'selector:(null)]]',
     '        - AXStaticText = "tomorrow meeting at 10pm woth ashitosh"',
     '      - [6] AXButton "New Note"',
+    '      - [7] AXRow  help="Perform press or select Return to open note."]',
   ].join('\n');
   const clean = stripAxMetadata(raw);
   assert.doesNotMatch(clean, /\[id=|\[actions=|selector:/);

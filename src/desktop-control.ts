@@ -60,6 +60,9 @@ export function stripAxMetadata(tree:string):string{
     .replace(/\[actions=\[[\s\S]*?\]\]/g,'')
     .replace(/\[actions=[^\n]*/g,'')
     .replace(/\[id=[^\]]*\]/g,'')
+    // The help attribute arrives with a stray bracket of its own: measured live, a Notes row
+    // rendered as `- [7] AXRow  help="Perform press or select Return to open note."]`.
+    .replace(/\s+help="[^"]*"\]?/g,'')
     .replace(/[ \t]+$/gm,'')
     .replace(/\n{3,}/g,'\n\n')
     .trim();
