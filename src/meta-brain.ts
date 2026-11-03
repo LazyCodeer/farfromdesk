@@ -9,7 +9,7 @@ import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret, type BrainPolicy } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
-import { runDevicePlan, deviceTargets, type DeviceControl } from './brain-device.js';
+import { runDevicePlan, deviceTargets, detectDevicePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
@@ -298,6 +298,15 @@ export class MetaBrain {
   private async runDevice(router:Router,m:Incoming,decision:Interpretation,policy:BrainPolicy){
     const plan=decision.device;
     if(!plan){this.stop(m.id,'Tell me the one thing to do on your Mac, like "open Comet" or "press escape".','clarification');return true;}
+    return await this.executeDevice(router,m,plan,policy);
+  }
+  /**
+   * Execute one device plan and report facts.
+   *
+   * Shared by the model path and the deterministic one, so both obey the same selection
+   * rule and produce the same reply.
+   */
+  private async executeDevice(router:Router,m:Incoming,plan:DevicePlan,policy:BrainPolicy){
     if(!brainSelected(router)){this.stop(m.id,'Your messages are going to a session right now, not to me. Send /brain and ask again, or send this to the session with /codex or /claude. Nothing was sent.','clarification');return true;}
     const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
     const outcome=await runDevicePlan(this.deviceControl(),plan,`brain:${m.id}`,authorize);
@@ -341,6 +350,13 @@ export class MetaBrain {
     // aimed at a session never starts the desktop driver.
     const mine=brainSelected(router);
     const devices=mine?await deviceTargets(this.deviceControl()):undefined;
+    // An unambiguous device command is executed in code, before the model is asked: the
+    // measured failure was the model choosing coding work for "press escape in Comet",
+    // which turned a Mac request into a task-contract review.
+    if(mine){
+      const direct=detectDevicePlan(m.text,devices??[]);
+      if(direct)return await this.executeDevice(router,m,direct,policy);
+    }
     try {
       const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.

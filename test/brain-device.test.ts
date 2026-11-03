@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DevicePlan, devicePlanIssue, deviceOutcome, deviceRefusal, runDevicePlan, summarizeTree, type DeviceControl } from '../src/brain-device.js';
+import { DevicePlan, devicePlanIssue, deviceOutcome, deviceRefusal, runDevicePlan, summarizeTree, detectDevicePlan, type DeviceControl } from '../src/brain-device.js';
 import { Interpretation } from '../src/meta-model.js';
 
 test('a plan accepts only the documented fields', () => {
@@ -98,4 +98,31 @@ test('the model can express a device action and nothing else can sneak in', () =
   assert.throws(() => Interpretation.parse({ intent: 'device', normalized: 'x', provider: 'unspecified', taskIds: [], device: { action: 'open_app', app: 'Comet', command: 'id' } }));
   // A device intent with no plan is still valid input: the brain asks instead of acting.
   assert.equal(Interpretation.parse({ intent: 'device', normalized: 'x', provider: 'unspecified', taskIds: [] }).device, undefined);
+});
+const OPEN_APPS = [{ name: 'Comet' }, { name: 'Notes' }];
+
+test('an unambiguous device command is detected without the model', () => {
+  assert.deepEqual(detectDevicePlan('open Comet', OPEN_APPS), { action: 'open_app', app: 'Comet' });
+  assert.deepEqual(detectDevicePlan('Open Comet.', OPEN_APPS), { action: 'open_app', app: 'Comet' });
+  assert.deepEqual(detectDevicePlan('what is in Comet right now', OPEN_APPS), { action: 'read_window', app: 'Comet' });
+  assert.deepEqual(detectDevicePlan('read Notes', OPEN_APPS), { action: 'read_window', app: 'Notes' });
+  assert.deepEqual(detectDevicePlan('press escape in Comet', OPEN_APPS), { action: 'press_key', app: 'Comet', key: 'escape' });
+  assert.deepEqual(detectDevicePlan('press enter in Comet', OPEN_APPS), { action: 'press_key', app: 'Comet', key: 'return' });
+  assert.deepEqual(detectDevicePlan('click Compose in Comet', OPEN_APPS), { action: 'click', app: 'Comet', name: 'Compose' });
+  assert.deepEqual(detectDevicePlan('type hello there in Notes', OPEN_APPS), { action: 'type', app: 'Notes', text: 'hello there' });
+});
+
+test('a command that is not unmistakably a device command is left to the model', () => {
+  // A key with no app has nowhere to land in the background.
+  assert.equal(detectDevicePlan('press escape', OPEN_APPS), null);
+  // An app that is not open right now: the model may still choose to open it.
+  assert.equal(detectDevicePlan('open Notes', [{ name: 'Comet' }]), null);
+  // Coding work that merely contains a device verb must not be hijacked.
+  assert.equal(detectDevicePlan('open the PR', OPEN_APPS), null);
+  assert.equal(detectDevicePlan('fix the failing tests in Comet', OPEN_APPS), null);
+  assert.equal(detectDevicePlan('read the build log from yesterday', OPEN_APPS), null);
+  assert.equal(detectDevicePlan('find the file I opened in Comet', OPEN_APPS), null);
+  // Owner commands are commands, not device requests.
+  assert.equal(detectDevicePlan('/open Comet', OPEN_APPS), null);
+  assert.equal(detectDevicePlan('   ', OPEN_APPS), null);
 });

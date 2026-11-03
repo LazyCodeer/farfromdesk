@@ -95,3 +95,25 @@ test('a missing grant reaches the owner as the thing to change, never as a queue
     assert.equal(t.store.job('local:dev-f'), undefined, 'a device request is never dispatched');
   } finally { t.done(); }
 });
+test('an unambiguous device command never asks the model', async () => {
+  // The model is told to answer "task" for everything, which is the exact failure measured
+  // live: "press escape in Comet" was classified as coding work. Nothing may reach it.
+  const t = fixture({ intent: 'task', provider: 'unspecified', normalized: 'open Comet', taskIds: [] }, { action: 'open_app', app: 'Comet', running: true, windowReady: true });
+  try {
+    t.select({ kind: 'brain' });
+    assert.equal(await t.brain.handle(router(t.store), { id: 'local:dev-g', text: 'open Comet' } as any), true);
+    assert.equal(t.seen.length, 0, 'the model must not be consulted');
+    assert.deepEqual(t.calls, [{ action: 'open_app', app: 'Comet' }]);
+    assert.match(String(t.outbox()[0]?.body ?? ''), /Opened Comet\./);
+    assert.equal(t.brain.get('local:dev-g')?.state, 'answered');
+  } finally { t.done(); }
+});
+
+test('the deterministic path still refuses when a session is selected', async () => {
+  const t = fixture({ intent: 'task', provider: 'unspecified', normalized: 'open Comet', taskIds: [] }, { action: 'open_app', app: 'Comet', running: true, windowReady: true });
+  try {
+    t.select({ kind: 'session', id: 'synthetic-session', identity: 'x' });
+    await t.brain.handle(router(t.store), { id: 'local:dev-h', text: 'open Comet' } as any).catch(() => undefined);
+    assert.equal(t.calls.length, 0, 'a session selection must not let the brain touch the Mac');
+  } finally { t.done(); }
+});

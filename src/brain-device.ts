@@ -111,3 +111,51 @@ export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, sc
     return { ok: false, line: deviceRefusal(error), evidence: null };
   }
 }
+/**
+ * Deterministic device commands.
+ *
+ * Measured: "open Comet" was classified correctly while "press escape in Comet" was
+ * classified as coding work and turned into a task-contract review, so the model's
+ * intent choice is the unreliable part. An explicit device verb on an app that is open
+ * right now needs no classification at all, so this decides it in code, before the
+ * model is asked, and the model is never consulted for it.
+ *
+ * Deliberately conservative: the app must match the live target list exactly after
+ * filler is removed. "open the PR" and "open Notes" (no window) do not match, so they
+ * still go to the model rather than being hijacked.
+ */
+const FILLER = /\b(?:right now|at the moment|currently|for me|please|now|the)\b/g;
+const tidy = (value: string) => value.toLowerCase().replace(/[.!?,;:]+$/, '').replace(FILLER, ' ').replace(/\s+/g, ' ').trim();
+
+const PATTERNS: { action: DevicePlan['action']; pattern: RegExp }[] = [
+  { action: 'press_key', pattern: /^(?:press|hit) (return|enter|escape|esc|tab|up|down|left|right)(?: (?:in|on) (.+))?$/i },
+  { action: 'type', pattern: /^(?:type|enter|write) (.+?) (?:in|into|on) (.+)$/i },
+  { action: 'click', pattern: /^(?:click|press|tap|hit) (.+?) (?:in|on) (.+)$/i },
+  { action: 'read_window', pattern: /^(?:read|show me|what(?:'s| is) (?:in|on)) (.+)$/i },
+  { action: 'open_app', pattern: /^(?:open|launch|start|switch to|go to|focus) (.+)$/i },
+];
+const KEYS: Record<string, string> = { enter: 'return', esc: 'escape' };
+
+export function detectDevicePlan(text: string, targets: { name: string }[]): DevicePlan | null {
+  const raw = text.trim();
+  if (!raw || raw.startsWith('/') || raw.length > 200) return null;
+  const known = (value: string) => targets.find(x => tidy(x.name) === tidy(value))?.name;
+  for (const { action, pattern } of PATTERNS) {
+    // Exec against the owner's text, not a lowercased copy, so a clicked label keeps its case.
+    const match = pattern.exec(raw);
+    if (!match) continue;
+    if (action === 'press_key') {
+      const app = match[2] ? known(match[2]) : undefined;
+      if (!app) return null;
+      return { action, app, key: (KEYS[match[1]] ?? match[1]) as DevicePlan['key'] };
+    }
+    if (action === 'read_window' || action === 'open_app') {
+      const app = known(match[1]);
+      return app ? { action, app } : null;
+    }
+    const app = known(match[2]);
+    if (!app) return null;
+    return action === 'click' ? { action, app, name: match[1].trim().slice(0, 160) } : { action, app, text: match[1].trim().slice(0, 1200) };
+  }
+  return null;
+}

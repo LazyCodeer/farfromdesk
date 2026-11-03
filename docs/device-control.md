@@ -76,6 +76,30 @@ test in `test/desktop-assist.test.ts`.
   transient failure in the same span, "Meta could not read that message", was the Meta
   API and not this code: an immediate retry succeeded.
 
+## Obvious commands do not ask the model
+
+`detectDevicePlan` runs before inference, for an explicit device verb on an app that is
+open right now, and when it fires the model is never consulted. This exists because the
+measured failure was the model's intent choice, not the execution path: "open Comet" was
+classified correctly while "press escape in Comet" was classified as coding work and
+turned into a task-contract review, which is a Meta call and an owner-facing question for
+what should have been one keypress.
+
+It is deliberately conservative, because a false positive would hijack real coding work.
+The app must match the live target list exactly after filler words are removed, so
+
+    "open Comet"                  detected
+    "press escape in Comet"       detected
+    "click Compose in Comet"      detected
+    "type hello there in Notes"   detected
+    "open the PR"                 not detected, the model still decides
+    "fix the failing tests in Comet"  not detected
+    "open Notes" with no Notes window  not detected
+    "press escape" with no app    not detected, a background key has nowhere to land
+
+Everything it does not claim still goes to the model, so the device intent in the schema
+remains the fallback rather than the only route.
+
 ## Who acts on the Mac follows the owner's selection
 
 There is no second setting. `/brain` already persists `{kind:'brain'}` and
