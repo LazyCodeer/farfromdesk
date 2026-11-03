@@ -4,10 +4,11 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2392** (`local-local-tool-guards-2392`, installed 2026-11-04 03:37, health 401
-after 28s). 2392 carries the read-only `notes_find` tool, the read/write split, the embedding
-doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, and
-locale-proof calendar dates.
+app is **2394** (`local-local-forget-todo-2394`, installed 2026-11-04 03:58, health 401
+after 27s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
+doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
+calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
+"don't let me forget to ...".
 
 ## Source and installation
 
@@ -1663,11 +1664,23 @@ Two rules came out of it, both tested.
   (`appleDateAssign`'s exact text and that no plan contains `date "`), and every osascript plan
   is compiled with `osacompile` on every run.
 
-- Example sentences must not be shared between a read tool and a write tool. Two collisions were
-  measured, both of which put the wrong tool first: the note-search example reused the create
-  tool's "the roof is leaking" sentence, and the calendar-create example contains "Ashitosh",
-  which is also in the owner's note sentence. The first was fixed by rewording; the second is
-  still there and is the one remaining wrong-first row.
+- A person's name is not tool vocabulary. Two example collisions were measured, both of which put
+  the wrong tool first: the note-search example reused the create tool's "the roof is leaking"
+  sentence, and the calendar-create example carried "Ashitosh" in the sentence and in the `title`
+  description. The second meant a note request about the same person ("don't let me forget to call
+  Ashitosh") matched the calendar tool at 2.71 against the note tool's 2.10. The name is gone from
+  the tool's example and its `title` description; the create tool's description now covers a plan
+  the owner *states* rather than asks for ("seeing someone on Friday"), which is a real vocabulary
+  gap the name had been papering over, and the live sentence stays only in the golden set where it
+  belongs. A test asserts no pack's description, examples, keywords or args mention the name.
+  Measured: paraphrase wrong-first 1 -> 0, lexical recall@1 0.8 -> 0.9, widened recall@1 1.
+
+- The owner says "don't let me forget to X". Live on 2393 that phrase reached the task board (the
+  model read `add_todo` correctly) and was refused by the literal check with 'To save without
+  starting work, say "Add todo: …".' The check in `src/brain-memory.ts` now also accepts
+  `don't (let me) forget ...`, and 2394 answers "Saved #2: call Ashitosh. Status: not started. No
+  session was dispatched." "remind me to X" is deliberately not added there: the schedule lane
+  claims that phrasing first (its reply source is `schedule-reply:`), which the test records.
 
 **Not done yet.** Calendar tools are written and unit-tested but never run live, and the first
 run will raise the macOS Automation permission prompt. `notes_find` is in the same position: its
@@ -1681,10 +1694,11 @@ on 2386-2389, where the model picked the reviewed tool it was offered.
 `npm run evals` (`script/run_brain_evals.mts`) is the gate: it prints the retrieval scoreboard
 both lexical and embedding-widened, runs the four brain eval files, and exits non-zero when a
 number falls below what was measured. Measured on 3 November: golden 25 (15 with a tool, 10 quiet)
-at recall@1/3/5 = 1 with wrong-first 0, paraphrases lexical 0.8/0.9/0.9 and 0.9/1.0/1.0 widened
-with one wrong-first row, 25 transcript tests green. The paraphrase set is gated too, not just
+at recall@1/3/5 = 1 with wrong-first 0, paraphrases lexical 0.9/0.9/0.9 and 1.0/1.0/1.0 widened
+with no wrong-first row, 31 transcript tests green. The paraphrase set is gated too, not just
 printed, because it is the one that keeps the embedding layer honest; the floor it has to stay
-above is 8 of 10 lexically, so the set does not quietly become easy.
+above is 9 of 10 lexically and 10 of 10 with embeddings, and no row may be answered with the wrong
+tool, so the set does not quietly become easy.
 
 `test/brain-sessions.test.ts` runs two sessions through one router and one brain, because
 everything per-chat is keyed by destination and a per-session bug is invisible in a suite that
@@ -1724,6 +1738,6 @@ at 5pm" -> "Wrote the note in Notes.", with the note read back from the Notes wi
 
 **Known retrieval limit, measured:** the Notes tool's examples include the owner's own note
 sentence "tomorrow meeting at 10pm woth ashitosh", so a calendar request for a meeting with
-Ashitosh still matches the Notes tool. The calendar tool ranks first, and the list is a shortlist
-for the model rather than a decision, so this is a ranking wart and not the failure it would be
-if the list were sent as the answer.
+Ashitosh also matches the Notes tool. The calendar tool ranks first and no golden or paraphrase
+row is wrong-first from it, and the list is a shortlist for the model rather than a decision, so
+this is a ranking wart and not the failure it would be if the list were sent as the answer.
