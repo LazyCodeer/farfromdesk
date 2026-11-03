@@ -4,7 +4,7 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2379** (`local-local-lid-grace-2379`).
+app is **2389** (`local-local-read-help-2389`).
 
 ## Source and installation
 
@@ -1630,10 +1630,16 @@ Two rules came out of it, both tested.
   incidental words "look" and "number" once the Notes search tool was gone.
 - Invariant test: every `type_text` step in any pack must name a role or a name. That is the check
   that would have caught the untargeted keystroke before it ran.
+- A read spends its character budget on labels: `stripAxMetadata` in `src/desktop-control.ts`
+  removes `[id=...]` and multi-line `[actions=[...]]` blobs before the 6000-character slice, and
+  the tree reader accepts the unnumbered rows the driver uses for plain text. Verified live on
+  2389: "find my note about the roof" answered "I read Notes (Notes)." with the real note titles
+  instead of eight lines of `ICMNoteListCell` ids.
 
 **Not done yet.** Calendar tools are written and unit-tested but never run live, and the first
 run will raise the macOS Automation permission prompt. Finding an existing note has no reviewed
 tool at all. The shortlist wiring is unit-tested at transcript level (`test/brain-conversation.test.ts`:
-the offer, the argument names, the clock, and that a coding app gets no list). The multi-session/
-subagent harness is not built, and `indexSignature` is prepared for an embedding cache that does
-not exist yet.
+the offer, the argument names, the clock, and that a coding app gets no list) and was watched live
+on 2386-2389, where the model picked the reviewed tool it was offered. The multi-session/subagent
+harness is not built, and `indexSignature` is prepared for an embedding cache that does not exist
+yet.
