@@ -236,9 +236,12 @@ export class DesktopControl {
     return {...target,window_id:picked?.window_id??null,windowTitle:picked?.title??null};
   }
   /**
-   * What the owner could name right now: running apps that actually have a window,
-   * with the window titles. Spans windows only, never page content, so it is safe
-   * to put in a prompt.
+   * What the owner could name right now: running apps, with the window titles they have.
+   * Spans windows only, never page content, so it is safe to put in a prompt.
+   *
+   * A running app with no titled window is kept, with an empty window list. Dropping it
+   * told the brain a running app was absent, and the model turned that absence into
+   * "Notes is not open right now" while Notes was running (measured 2026-11-03).
    */
   async targets(maxAgeMs=10000){
     if(maxAgeMs>0&&this.targetCache&&this.now()-this.targetCache.checkedAt<maxAgeMs)return this.targetCache.value;
@@ -253,7 +256,7 @@ export class DesktopControl {
       byPid.set(w.pid,[...(byPid.get(w.pid)??[]),title]);
     }
     const value=(apps?.apps??[]).map((a:any)=>({name:String(a.name??''),bundleId:String(a.bundle_id??''),windows:byPid.get(a.pid)??[]}))
-      .filter((a:any)=>a.windows.length).slice(0,40);
+      .filter((a:any)=>a.name).slice(0,40);
     this.targetCache={value,checkedAt:this.now()};
     return value;
   }

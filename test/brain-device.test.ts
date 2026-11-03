@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DevicePlan, devicePlanIssue, deviceFailureCode, deviceOutcome, deviceRefusal, plainCause, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, type DeviceControl } from '../src/brain-device.js';
+import { DevicePlan, devicePlanIssue, deviceFailureCode, deviceOutcome, deviceRefusal, plainCause, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, appInventoryRequest, authoringRequest, notesAuthoringRequest, authoringText, type DeviceControl } from '../src/brain-device.js';
 import { safeEventDetails } from '../src/request-events.js';
 import { Interpretation } from '../src/meta-model.js';
 
@@ -268,4 +268,40 @@ test('the router can tell a device-shaped message without a driver call', () => 
   assert.equal(deviceVerbLike('list my codex sessions'), false);
   assert.equal(deviceVerbLike('/open Comet'), false);
   assert.equal(deviceVerbLike('   '), false);
+});
+
+test('an app inventory is a device turn, and so is a bare request to write', () => {
+  for (const text of ['Show me opened apps', 'show me all apps', 'List apps', 'what apps are open', 'Which applications are running right now?', 'show apps']) {
+    assert.equal(appInventoryRequest(text), true, text);
+  }
+  // Coding work and ordinary chat must not be claimed, or the contract review is skipped.
+  for (const text of ['open the PR', 'fix the failing tests', 'list my codex sessions', 'where are we', 'show me the diff', 'list files']) {
+    assert.equal(appInventoryRequest(text), false, text);
+  }
+  assert.equal(authoringRequest('Write a notes about tomorrow meeting at 10pm woth ashitosh'), true);
+  assert.equal(authoringRequest('now write the notes'), true);
+  assert.equal(authoringRequest('type hello in Notes'), true);
+  // Verbs that open coding work far more often than they write into an app stay out.
+  assert.equal(authoringRequest('add a dark theme to the settings page'), false);
+  assert.equal(authoringRequest('create a new session for this'), false);
+  assert.equal(authoringRequest('save the last change'), false);
+  assert.equal(authoringRequest('fix the failing tests'), false);
+  assert.equal(authoringRequest('/write the notes'), false);
+  // Only a named note is claimed without an app; a bare coding write keeps its review.
+  for (const text of ['Write a notes about tomorrow meeting at 10pm woth ashitosh', 'now write the notes', 'note that the roof is leaking']) {
+    assert.equal(notesAuthoringRequest(text), true, text);
+  }
+  for (const text of ['write the failing test', 'write unit tests for the parser', 'type hello']) {
+    assert.equal(notesAuthoringRequest(text), false, text);
+  }
+});
+
+test('a bare write keeps the owner words verbatim and drops only the filler', () => {
+  assert.equal(authoringText('Write a notes about tomorrow meeting at 10pm woth ashitosh'), 'tomorrow meeting at 10pm woth ashitosh');
+  assert.equal(authoringText('write a note: buy milk'), 'buy milk');
+  assert.equal(authoringText('note that the roof is leaking'), 'the roof is leaking');
+  assert.equal(authoringText('please jot down call the plumber'), 'call the plumber');
+  assert.equal(authoringText('write'), undefined);
+  // Nothing is rewritten: a typo is what the owner asked to be written.
+  assert.equal(authoringText('append teh invoice number'), 'teh invoice number');
 });

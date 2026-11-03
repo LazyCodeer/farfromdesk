@@ -1449,3 +1449,50 @@ Three things that matter for agent reliability, all measured:
    accepted without a verifiable effect. The documented remedy is one `deliveryMode:
    foreground` retry, which brings the window forward and is visible to the owner.
 
+## Why a Mac request became a code review (3 November 2026)
+
+Two live companion transcripts failed in the same shape. "Show me opened apps" and
+"Can you open the notes" were followed by "Write a notes about tomorrow meeting" and
+"Yes make it open", and the brain answered with task-contract language ("I could not
+update the contract. Please send the correction again.", "Please review this task before
+it starts.") or with a sentence no code contains ("Notes is not open right now").
+
+Three separate causes, each read from the live `bridge.sqlite` before it was fixed:
+
+1. **The task-contract flow ran first and claimed almost everything.** `src/router.ts:450`
+   consults `TaskContracts.shouldHandle`, and `src/task-contracts.ts:97` returns true for
+   every message while a contract is pending. The only guard in front of it was
+   `MetaBrain.claimsDevice`, which required a resolvable app, so an inventory request and
+   any answer such as "Yes make it open" fell into the coding classifier
+   (`src/task-contract-model.ts:35`, a prompt with no Mac concept). Its `pass` decision on
+   an edit then answered "I could not update the contract" (`src/task-contracts.ts:163`),
+   which is why two turns in a row said it.
+2. **A running app with no titled window was invisible.** `DesktopControl.targets()`
+   dropped every app without a window, and the prompt is told that `devices` is what is
+   open on the Mac and that naming anything else must become `clarify`. So a running Notes
+   with no window left the model no legal plan, and it wrote its own "Notes is not open
+   right now" on the clarify branch. Nothing compared that sentence to the driver.
+3. **Writing into an app had no path at all** unless the owner typed "in Notes": the
+   deterministic `type` pattern requires the app name, and the model may not name an app
+   outside `devices`. That part is still a capability gap, not a routing bug.
+
+What changed:
+
+- `claimsDevice` now claims an app inventory and a note-writing follow-up that names no
+  app, and `MetaBrain.awaitingAnswer` stops the contract flow from taking the answer to a
+  question the brain itself asked. A `pass` on the edit path is now returned as
+  `{kind: 'pass'}` instead of being answered and consumed, so a pending contract no longer
+  swallows unrelated turns.
+- `targets()` keeps running apps with an empty window list, and the prompt says a listed
+  app with no windows is open but has not drawn one.
+- `executeDevice` saves what the driver reported per destination, and that sentence
+  replaces model prose when the reply describes the state of the app the driver just
+  handled. Ordinary talk about the app is left alone; the fact expires after ten minutes.
+
+Evidence, with the harness at `test/brain-conversation.test.ts` replayed against the tree
+before the fix (`git archive HEAD` into a scratch copy, HEAD `210abd2`) and after it:
+**the four transcript tests fail before it and pass after**; the other two (ordinary talk
+about the app is not replaced, and a bare "write the failing test" keeps its contract
+review) pass on both, and guard the new rules from over-reaching. Full suite 1779 pass /
+12 known failures / 4 skipped.
+

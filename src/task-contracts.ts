@@ -159,8 +159,11 @@ export class TaskContracts {
       const decision=ContractDecision.parse(await this.interpret(this.secret.read()??'',pending.review_text,[...edits,edit],metaObserver(this.store,'contracted',pending.destination,pending.owner)));
       if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
       if(!contextValid(r,pending)||hash(this.secret.read()??'')!==pending.key_hash){this.answer(m,'The task or connection changed. Send the task again. Nothing was sent.');return {kind:'handled'};}
-      // Once offered, editing never silently bypasses approval even if the model returns pass.
-      if(decision.kind!=='contract'){this.answer(m,'I could not update the contract. Please send the correction again.');return {kind:'handled'};}
+      // An edit that does not classify as a contract change is not consumed: the message
+      // continues to the router. Answering here swallowed unrelated turns while a contract
+      // was pending ("Show me opened apps" answered "I could not update the contract",
+      // measured 2026-11-03). Nothing is approved or dispatched on this path.
+      if(decision.kind!=='contract')return {kind:'pass'};
       const revision=pending.revision+1,draft=this.draft(decision,pending.id,revision);
       this.store.db.exec('SAVEPOINT contract_edit');
       try{

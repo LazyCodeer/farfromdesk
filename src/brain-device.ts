@@ -35,8 +35,9 @@ export function devicePlanIssue(plan: DevicePlan): string | null {
 }
 
 /**
- * Bounded, and never the owner's own words. Only what has a window right now, so
- * the model names something that exists instead of guessing.
+ * Bounded, and never the owner's own words. Every running app, including one that has
+ * not drawn a titled window yet: hiding it made the model answer "that app is not open"
+ * about an app the driver had just opened. An app with no windows is open, not absent.
  */
 export async function deviceTargets(control: DeviceControl): Promise<{ name: string; bundleId: string; windows: string[] }[]> {
   return await control.targets(10000).catch(() => []);
@@ -280,8 +281,9 @@ export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, sc
  * model is asked, and the model is never consulted for it.
  *
  * Deliberately conservative: the app must match the live target list exactly after
- * filler is removed. "open the PR" and "open Notes" (no window) do not match, so they
- * still go to the model rather than being hijacked.
+ * filler is removed. "open the PR" does not match, so it still goes to the model rather
+ * than being hijacked. An app that is running without a titled window IS a target: it used
+ * to be dropped from the list, and "open Notes" was then left to the model.
  */
 const FILLER = /\b(?:right now|at the moment|currently|for me|please|now|the)\b/g;
 const tidy = (value: string) => value.toLowerCase().replace(/[.!?,;:]+$/, '').replace(FILLER, ' ').replace(/\s+/g, ' ').trim();
@@ -300,6 +302,65 @@ export function deviceVerbLike(text: string): boolean {
   const raw = text.trim();
   if (!raw || raw.startsWith('/') || raw.length > 200) return false;
   return PATTERNS.some(({ pattern }) => pattern.test(raw));
+}
+
+/**
+ * Shapes that must never reach the coding-task classifier even though no plan can be
+ * built from them yet.
+ *
+ * Measured live on 2026-11-03. "Show me opened apps" is device-shaped but resolves to no
+ * plan, so `claimsDevice` said no and the task-contract flow claimed it, answering
+ * "I could not update the contract" twice in a row while a contract was pending. "Write a
+ * notes about tomorrow meeting" is not device-shaped at all, so the same classifier turned
+ * an app request into a code review. Both are device turns however the app list is read.
+ */
+const APP_INVENTORY = /^(?:please\s+)?(?:show|list|what(?:'s| is| are)?|which)(?:\s+me)?(?:\s+(?:all|any|the|my|open|opened|running|available))*\s*(?:apps?|applications?)(?:\s+(?:are|is))?(?:\s+[a-z]+)*[?.!]?$/i;
+// Deliberately narrow: "add", "save", "create" and "record" open coding tasks far more
+// often than they write into an app, and a coding task must keep its contract review.
+const AUTHORING = /^(?:(?:now|then|also|please|ok|okay|and)\s+)*(?:write|type|enter|note|jot|dictate|append)\b/i;
+
+/** "show me opened apps", "list apps", "what apps are open": an inventory, not a task. */
+export function appInventoryRequest(text: string): boolean {
+  const raw = text.trim();
+  if (!raw || raw.startsWith('/') || raw.length > 200) return false;
+  return APP_INVENTORY.test(raw);
+}
+
+/**
+ * A request to put text somewhere. On its own it names no app, so the caller decides
+ * whether the owner has just used one; only then is it answerable as a device action.
+ */
+export function authoringRequest(text: string): boolean {
+  const raw = text.trim();
+  if (!raw || raw.startsWith('/') || raw.length > 200) return false;
+  return AUTHORING.test(raw);
+}
+
+/**
+ * The one bare-write shape that is claimed as a device turn: the owner names a note as
+ * where the text goes.
+ *
+ * "write the failing test" is authoring and coding work at once. Only "notes" tells them
+ * apart, so only that reaches the Mac without an app name; everything else keeps the
+ * contract review it had before.
+ */
+export function notesAuthoringRequest(text: string): boolean {
+  return authoringRequest(text) && /\bnotes?\b/i.test(text);
+}
+
+/**
+ * The text a bare "write ..." asks to put into the app the owner just used, with the verb
+ * and the filler removed. Kept literal: the owner's own words and typos are what they
+ * asked to be written, so nothing here rewrites them.
+ */
+export function authoringText(text: string): string | undefined {
+  const raw = text.trim()
+    .replace(/^(?:(?:now|then|also|please|ok|okay|and)\s+)*(?:write|type|enter|notes|note|jot|dictate|append)\b\s*/i, '')
+    .replace(/^down\s+/i, '')
+    .replace(/^(?:(?:a|an|the)\s+)?(?:notes|note)\s*(?:about|that|saying|to say|:)?\s*/i, '')
+    .replace(/^(?:that\s+|:\s*)/i, '')
+    .trim();
+  return raw ? raw.slice(0, 1200) : undefined;
 }
 
 export function detectDevicePlan(text: string, targets: { name: string }[]): DevicePlan | null {

@@ -9,13 +9,16 @@ import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret, type BrainPolicy } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
-import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, type DeviceControl, type DevicePlan } from './brain-device.js';
+import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, type DeviceControl, type DevicePlan } from './brain-device.js';
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
+
+/** How long a driver report stays usable as the fact behind a later question about the same app. */
+const DEVICE_FACT_MS=10*60_000;
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
@@ -322,8 +325,45 @@ export class MetaBrain {
    * so only device-shaped messages ever touch the driver, and its target list is cached.
    */
   async claimsDevice(router:Router,text:string):Promise<boolean>{
-    if(!brainPolicy(this.store).enabled||!brainSelected(router)||!deviceVerbLike(text))return false;
+    if(!brainPolicy(this.store).enabled||!brainSelected(router))return false;
+    // Two shapes must be claimed before any plan exists, or the contract flow takes them:
+    // an inventory request ("show me opened apps") and a follow-up about the app just used
+    // ("now write the notes"). Both reached the coding classifier on 2026-11-03 and came
+    // back as "I could not update the contract".
+    if(appInventoryRequest(text))return true;
+    if(notesAuthoringRequest(text)&&this.lastDeviceApp())return true;
+    if(!deviceVerbLike(text))return false;
     try{return detectDevicePlan(text,await deviceTargets(this.deviceControl()))!==null;}catch{return false;}
+  }
+  /**
+   * The brain asked a question and the owner's next message is the answer.
+   *
+   * The router must know this before it hands the message to the task-contract flow: a
+   * pending contract used to answer every turn, so "Yes make it open" (the answer to a
+   * device question) became a coding contract and the two turns after it were swallowed
+   * as contract edits (measured 2026-11-03).
+   */
+  awaitingAnswer(destination:string):boolean{return (this.store.db.prepare('SELECT state FROM brain_tasks WHERE destination IS ? ORDER BY created_at DESC LIMIT 1').get(destination) as {state?:string}|undefined)?.state==='clarification';}
+  /** The app the owner last reached on this Mac, so a follow-up needs no app name. */
+  lastDeviceApp():string|undefined{return this.deviceFact()?.app;}
+  /**
+   * The last thing the driver reported on this Mac, kept per destination. The model is
+   * shown the app so a bare "write the notes" can name it, and the sentence is reused
+   * verbatim when model prose would otherwise re-describe the same app from memory.
+   * Expires, because app state an hour old is not a fact any more.
+   */
+  private deviceFact(){const raw=this.store.get(`brain-device-last:${this.store.destination()}`);if(!raw)return undefined;try{const v=JSON.parse(raw) as {app?:unknown;line?:unknown;ok?:unknown;at?:unknown};if(typeof v.line!=='string'||typeof v.at!=='number'||Date.now()-v.at>DEVICE_FACT_MS)return undefined;return {app:typeof v.app==='string'&&v.app?v.app:undefined,line:v.line,ok:v.ok===true};}catch{return undefined;}}
+  /**
+   * The driver's own sentence, when it is the one that should answer.
+   *
+   * The model has no app state of its own, so a reply that describes app state for the
+   * app the driver just handled is replaced by what the driver reported. Ordinary prose is
+   * left alone: only a state word in the model's reply makes it a claim about the Mac.
+   */
+  private deviceFactLine(m:Incoming,reply:string){
+    const fact=this.deviceFact();if(!fact)return undefined;
+    if(fact.app&&!m.text.toLowerCase().includes(fact.app.toLowerCase()))return undefined;
+    return /\b(?:open|opened|closed|running|launch(?:ed|ing)?|ready|drawn|window|displayed)\b/i.test(reply)?fact.line:undefined;
   }
   /** The driver is started on first use: a brain that never controls the Mac never starts it. */
   private deviceControl():DeviceControl {return this.device??=this.injectedDevice??new DesktopControl(this.store);}
@@ -353,6 +393,7 @@ export class MetaBrain {
     // Codes only: a request event excludes driver text by design, and the owner's reason
     // is a sentence written for them, not the log line.
     this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});
+    this.store.set(`brain-device-last:${this.store.destination()}`,JSON.stringify({app:plan.app??null,line:outcome.line,ok:outcome.ok,at:Date.now()}));
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
     this.store.outputBrain(m.id,[outcome.line,...(outcome.evidence?[outcome.evidence]:[])].join('\n\n').slice(0,900));
     return true;
@@ -395,16 +436,22 @@ export class MetaBrain {
     // An unambiguous device command is executed in code, before the model is asked: the
     // measured failure was the model choosing coding work for "press escape in Comet",
     // which turned a Mac request into a task-contract review.
+    const last=mine?this.lastDeviceApp():undefined;
     if(mine){
       const direct=detectDevicePlan(m.text,devices??[]);
       if(direct)return await this.executeDevice(router,m,direct,policy);
+      // "now write the notes" names no app, so no pattern can match it. The app the owner
+      // last used is the target; the text is theirs verbatim. Nothing is invented: if the
+      // driver cannot reach that app, its report is what the owner reads.
+      const written=notesAuthoringRequest(m.text)?authoringText(m.text):undefined;
+      if(written&&last)return await this.executeDevice(router,m,{action:'type',app:last,text:written},policy);
     }
     try {
       const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;
@@ -429,7 +476,7 @@ export class MetaBrain {
     // Model wording is only allowed for questions and small talk; claims always come from saved data.
     // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
     // once. A second copy would silently stop applying when that one changes.
-    const said=(decision.reply??'').trim().slice(0,400);
+    const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,400);
     if(decision.intent==='clarify') {this.stop(m.id,said||'Please clarify the task and which coding platform you want. Nothing has been dispatched.','clarification');return true;}
     if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,said||'Send a task, or ask where are we.');return true;}
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);
