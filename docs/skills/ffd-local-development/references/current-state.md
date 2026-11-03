@@ -1372,13 +1372,24 @@ The owner closed the lid with `Require password` set to Immediately and the Mac 
 unlocked, which is the finding recorded above: the lock follows display sleep, never the
 clamshell. Two pieces close it, one in each direction.
 
-**The helper locks the screen.** Helper version 3 reads `AppleClamshellState` each pass and
+**The helper locks the screen.** Helper version 4 reads `AppleClamshellState` each pass and
 runs `pmset displaysleepnow` on the open-to-closed transition. Once per close, and only
 while the decision is `ok|grace`: on battery the Mac sleeps by itself and a stopped app
 restores normal sleep, so in both of those cases the lock arrives without help.
 `previous_lid` starts empty rather than `open`, so a helper that comes up with the lid
-already shut locks on its first pass. `SERVER_MODE_HELPER_VERSION` is 3 so the guard
-replaces a version 2 helper on the next enable. `test/server-mode.test.ts` is 25 tests.
+already shut locks on its first pass. `SERVER_MODE_HELPER_VERSION` is 4 so the guard
+replaces an older helper on the next enable. `test/server-mode.test.ts` is 26 tests.
+
+**Version 3 did not work, and the reason matters.** It hardcoded `/usr/bin/ioreg`. ioreg is
+in `/usr/sbin`, so `lid_state()` returned `unknown` on every single pass, the lock never
+fired once, and nothing anywhere said so: the watch loop turned a missing tool into a
+silent no-op. The fakes in the test file all inject their own tool paths, so no test could
+see it, and 25 green tests said nothing. Found by running the installed helper live against
+the real lid and noticing there was no log line at all. Version 4 fixes the path, logs once
+when the lid cannot be read, and the suite now asserts that every absolute tool path the
+helper hardcodes exists on this machine, which is the check that would have caught it.
+Measured after the fix, with the lid shut: `lid closed; display off so macOS locks the
+screen`, and `session-state` went `UNLOCKED` to `SESSION_LOCKED` within five seconds.
 
 **A locked Mac refuses screen actions and sends the link.** `src/session-lock.ts` holds
 `sessionLocked()` and `screenLockGate()`, wired into `/api/master/desktop-control`,
@@ -1391,16 +1402,18 @@ can use to type the Mac password at the lock screen. `stop`, `status` and
 an unset remote password, a host that will not start and a failed delivery all still refuse
 the action, and the message names which one happened. Because each new link invalidates
 the last, one link stands for 60 s so a retry loop cannot bury the owner in dead links.
-`test/session-lock.test.ts` is 9 tests.
+`test/session-lock.test.ts` is 9 tests, and the installed build was checked live against a
+locked Mac: `sessionLocked` returned `true`.
 
 Two honest limits. The helper is replaced on **enable**, not on launch, so a machine that
-already had server mode on keeps version 2 until the owner turns the setting off and on
-once, which costs one administrator prompt; the alternative was an admin dialog appearing
-at login where nobody is looking. And `native/session-state` is a compiled binary that
-exists only in an installed payload, not in the source checkout, so running the backend
-straight from `src/` leaves the gate inert.
+already had server mode on keeps the old helper until the owner turns the setting off and
+on once, which costs one administrator prompt; the alternative was an admin dialog
+appearing at login where nobody is looking. And `native/session-state` is a compiled
+binary that exists only in an installed payload, not in the source checkout, so running
+the backend straight from `src/` leaves the gate inert.
 
-Validation: 2380 staged and installed at 17:51 without the cooldown, so 2381 was built to
-carry it. `tsc --noEmit` clean, `flutter analyze` clean, backend suite 1750 pass with the
-12 known failures and no new ones.
+Validation: 2380 staged and installed at 17:51 without the link cooldown, 2381 at 17:54
+with it, and 2382 with helper version 4 after the lid lock was measured working.
+`tsc --noEmit` clean, `flutter analyze` clean, backend suite 1750 pass with the 12 known
+failures and no new ones.
 
