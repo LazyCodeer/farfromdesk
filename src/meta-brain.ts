@@ -13,12 +13,26 @@ import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInve
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
+import { shortlistTools } from './app-tools/retrieve.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
 
 /** How long a driver report stays usable as the fact behind a later question about the same app. */
 const DEVICE_FACT_MS=10*60_000;
+
+/**
+ * The owner's local clock as one fact for the model.
+ *
+ * "put a meeting on my calendar tomorrow at 5" needs an exact date and the model has no clock of
+ * its own, so "tomorrow" would otherwise be guessed. The weekday rides along because that is how
+ * the owner says it, and the wall-clock format matches what the calendar tool accepts.
+ */
+export function localStamp(date:Date=new Date()):string{
+  const pad=(n:number)=>String(n).padStart(2,'0');
+  const weekday=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getDay()];
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${weekday}`;
+}
 
 /**
  * The words the owner can type for each coding platform, and the platform each maps to.
@@ -382,6 +396,27 @@ export class MetaBrain {
   /** The app the owner last reached on this Mac, so a follow-up needs no app name. */
   lastDeviceApp():string|undefined{return this.deviceFact()?.app;}
   /**
+   * The reviewed tools worth sending for this message, or undefined when none apply.
+   *
+   * Why a shortlist at all: the driver exposes 62 tools and the selector research is uniform
+   * that accuracy falls past roughly 30 in one prompt, so the model is never handed the whole
+   * surface. It gets the reviewed tools for the app the owner is in, which is also what makes
+   * "remind me to buy milk later" reachable while Notes is on screen.
+   *
+   * Order and size come from `shortlistTools`: the lexical scorer decides, and on-device
+   * embeddings may only append candidates for that same app. A failure here is never fatal:
+   * the model simply gets no tool list and falls back to the actions it already had.
+   */
+  private async reviewedTools(text:string):Promise<{name:string;app:string;summary:string;args:{name:string;description:string;required:boolean}[];examples:string[]}[]|undefined>{
+    try{
+      const control=this.deviceControl();
+      const front=await control.activeApp?.();
+      const shortlist=await shortlistTools(text,{app:front});
+      if(!shortlist.length)return undefined;
+      return shortlist.map(entry=>({name:entry.tool.name,app:entry.tool.app,summary:entry.tool.description,args:entry.tool.args.map(arg=>({name:arg.name,description:arg.description,required:Boolean(arg.required)})),examples:entry.tool.examples}));
+    }catch{return undefined;}
+  }
+  /**
    * The last thing the driver reported on this Mac, kept per destination. The model is
    * shown the app so a bare "write the notes" can name it, and the sentence is reused
    * verbatim when model prose would otherwise re-describe the same app from memory.
@@ -468,6 +503,9 @@ export class MetaBrain {
     // aimed at a session never starts the desktop driver.
     const mine=brainSelected(router);
     const devices=mine?await deviceTargets(this.deviceControl()):undefined;
+    // Only the reviewed tools for the app in front are offered, and only when the owner's
+    // message matches them. The model picks from that list or falls back to the five actions.
+    const appTools=mine?await this.reviewedTools(m.text):undefined;
     // An unambiguous device command is executed in code, before the model is asked: the
     // measured failure was the model choosing coding work for "press escape in Comet",
     // which turned a Mac request into a task-contract review.
@@ -488,7 +526,7 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;

@@ -33,6 +33,8 @@ export type DeviceControl = {
   targets(maxAgeMs?: number): Promise<{ name: string; bundleId: string; windows: string[] }[]>;
   /** Optional so older fakes and callers keep working; an app tool needs it. */
   packTool?(scope: string, name: string, args: Record<string, string>, authorize?: () => void): Promise<any>;
+  /** Optional: the app in front, used only to widen the reviewed-tool shortlist. */
+  activeApp?(): Promise<string | undefined>;
 };
 
 /** What each action cannot do without. A missing field is a refusal, not a crash. */

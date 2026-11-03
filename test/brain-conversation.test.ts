@@ -12,8 +12,10 @@ import { Approvals } from '../src/approvals.js';
 import { MetaBrain } from '../src/meta-brain.js';
 import { DEFAULT_BRAIN, MetaSecret, saveBrainConfig } from '../src/meta-brain-config.js';
 import { TaskContracts } from '../src/task-contracts.js';
+import { toolByName } from '../src/app-tools/packs.js';
 import type { ContractDecision } from '../src/task-contract-model.js';
 import type { Interpretation } from '../src/meta-model.js';
+import { BRAIN_PROMPT } from '../src/meta-model.js';
 
 /**
  * Transcript-level evals for the brain.
@@ -50,12 +52,20 @@ function fixture() {
   // Notes is running with no titled window: the live shape that made the model say Notes
   // was not open. It must still be a target, and the driver's sentence is the fact.
   const targets = [{ name: 'Notes', bundleId: 'com.apple.Notes', windows: [] }, { name: 'Comet', bundleId: 'ai.perplexity.comet', windows: ['Inbox'] }];
+  // The app the owner is in decides which reviewed tools are offered, so a transcript can
+  // change it the way switching apps would.
+  let front: string | undefined = 'Notes';
   const device = {
     assist: async (_s: string, plan: any) => { calls.push(plan); return { app: plan.app, running: true, windowReady: false, ...(plan.action === 'open_app' ? {} : { ok: true }) }; },
     targets: async () => targets,
+    activeApp: async () => front,
     // A reviewed app tool is recorded next to the raw plans, so a transcript can assert that
     // the pack did the write instead of a blind type.
-    packTool: async (_s: string, name: string, args: any) => { calls.push({ action: 'app_tool', tool: name, app: 'Notes', args }); return { action: 'app_tool', tool: name, app: 'Notes', ok: true, window: 'Notes' }; },
+    packTool: async (_s: string, name: string, args: any) => {
+      const app = toolByName(name)?.app ?? 'Notes';
+      calls.push({ action: 'app_tool', tool: name, app, args });
+      return { action: 'app_tool', tool: name, app, ok: true, window: app };
+    },
   };
   r.brain = new MetaBrain(store, secret, model as any, device as any);
   let decisions: ContractDecision[] = [];
@@ -68,6 +78,7 @@ function fixture() {
   const rows = (table: string) => store.db.prepare(`SELECT * FROM ${table}`).all() as any[];
   return {
     store, r, send, last, rows, calls, seen,
+    setFront: (app: string | undefined) => { front = app; },
     replies: (...v: Interpretation[]) => { replies = v; },
     decisions: (...v: ContractDecision[]) => { decisions = v; },
     markSent: () => store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run(),
@@ -180,4 +191,44 @@ test('a command for another subsystem is not an answer to a pending contract', a
     assert.notEqual(f.last(), '', 'the command produced an answer of its own');
     assert.equal(f.rows('task_contracts').filter(c => c.state === 'pending').length, 1, 'the command did not invalidate the contract');
   } finally { f.close(); }
+});
+
+test('a reviewed tool for the app in front is offered, and the plan the model picks runs it', async () => {
+  // The owner is in Calendar and asks for something in their own words. The reviewed calendar
+  // tool is offered for that one message, the model picks it with the real argument names, and
+  // the deterministic sentence for the result is what the owner reads.
+  const f = fixture(); try {
+    f.setFront('Calendar');
+    f.replies({
+      intent: 'device', provider: 'unspecified', normalized: 'put a meeting on my calendar', taskIds: [],
+      device: { action: 'app_tool', tool: 'calendar_create_event', args: { title: 'Call Ashitosh', start: '2026-11-04 17:00:00', end: '2026-11-04 17:30:00' } },
+    } as Interpretation);
+    await f.send('1', 'put a meeting on my calendar tomorrow at 5');
+    assert.deepEqual(f.calls[0], { action: 'app_tool', tool: 'calendar_create_event', app: 'Calendar', args: { title: 'Call Ashitosh', start: '2026-11-04 17:00:00', end: '2026-11-04 17:30:00' } });
+    assert.match(f.last(), /Added it to Calendar/);
+    const offered = f.seen[0]?.appTools ?? [];
+    assert.ok(offered.some((t: any) => t.name === 'calendar_create_event'), 'the calendar tool was offered');
+    assert.ok(Array.isArray(offered[0]?.args) && offered[0].args.length > 0, 'the offer carries the argument names');
+    assert.match(String(f.seen[0]?.now ?? ''), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \w+$/, 'the model was given the clock it needs for "tomorrow"');
+  } finally { f.close(); }
+});
+
+test('no reviewed tools are offered when the owner is not in one of those apps', async () => {
+  // The shortlist is scoped to the app in front, so coding work in another app never sees it.
+  const f = fixture(); try {
+    f.setFront('Cursor');
+    f.replies(chat('Fine.'));
+    await f.send('1', 'how are you');
+    assert.equal(f.seen[0]?.appTools, undefined, 'nothing was offered');
+    assert.equal(f.calls.length, 0, 'nothing was run on the Mac');
+  } finally { f.close(); }
+});
+
+test('the prompt tells the model how to use the offered tools and the clock', () => {
+  // The offered list is only usable if the prompt names it, the action, and the rule that a
+  // date has to be worked out from now. This is the other half of the wiring.
+  assert.match(BRAIN_PROMPT, /appTools/);
+  assert.match(BRAIN_PROMPT, /app_tool: tool \(a name from appTools\)/);
+  assert.match(BRAIN_PROMPT, /Never use a tool name that is not in appTools/);
+  assert.match(BRAIN_PROMPT, /now: the current local date and time/);
 });

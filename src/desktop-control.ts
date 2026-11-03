@@ -340,6 +340,22 @@ export class DesktopControl {
     this.targetCache={value,checkedAt:this.now()};
     return value;
   }
+  /**
+   * The app the owner is looking at, if the driver can say.
+   *
+   * `get_accessibility_tree` lists running apps without saying which is in front, so this asks
+   * the driver's own app list, where the frontmost one is flagged. A failure is not an error
+   * and never blocks a message: without an answer the reviewed-tool shortlist falls back to the
+   * apps the owner actually names.
+   */
+  async activeApp():Promise<string|undefined>{
+    try{
+      const result=await this.driver.call('list_apps',{});
+      const list=(result?.apps??result??[]) as any[];
+      const front=list.find((app:any)=>app?.active===true||app?.frontmost===true);
+      return front?String(front.name??'').trim()||undefined:undefined;
+    }catch{return undefined;}
+  }
   stop(){this.generation++;this.refs.clear();this.pending?.abort();this.driver.stop();return {stopped:true,warning:'Already-delivered actions may have taken effect. Inspect before retrying.'};}
   private save(r:Ref){while(this.refs.size>=1000)this.refs.delete(this.refs.keys().next().value!);const id=randomUUID();this.refs.set(id,r);return id;}
   private ref(scope:string,id?:string){const r=id?this.refs.get(id):undefined;if(!r||r.scope!==scope||r.expires<=this.now())throw new Error('DESKTOP_TARGET_STALE: Discover targets for this request again.');return r;}
