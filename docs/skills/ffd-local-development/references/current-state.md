@@ -4,9 +4,10 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2391** (`local-local-embed-cache-2391`, installed 2026-11-04 03:23, health 401
-after 26s). 2391 carries the read-only `notes_find` tool, the read/write split, and the
-embedding doc-vector cache (28 lines on a cold turn, 1 after).
+app is **2392** (`local-local-tool-guards-2392`, installed 2026-11-04 03:37, health 401
+after 28s). 2392 carries the read-only `notes_find` tool, the read/write split, the embedding
+doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, and
+locale-proof calendar dates.
 
 ## Source and installation
 
@@ -1717,7 +1718,7 @@ prove that instead of trusting the comment.
 `npm run evals:live` (`script/live_transcript.mjs`, `--dry` to check the plumbing) replays the
 same turns against the running app through `POST /api/inbox-send`, then waits and prints what the
 app answered. That is the human half of the harness: the tests replay a transcript against a fake
-driver, this one replays it against the Mac. Verified live on 2391 with "Could you open notes"
+driver, this one replays it against the Mac. Verified live on 2392 with "Could you open notes"
 -> "Opened Notes and brought it to the front." and "Write a note that the embedding cache check
 at 5pm" -> "Wrote the note in Notes.", with the note read back from the Notes window afterwards.
 
