@@ -7,7 +7,7 @@ import {requestedSocialImageProvider} from './social-image-provider.js';
 import { BrainMemory } from './brain-memory.js';
 import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
-import { brainPolicy, brainView, MetaSecret, type BrainPolicy } from './meta-brain-config.js';
+import { brainPolicy, brainView, MetaSecret, type BrainPolicy, type BrainProvider } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
 import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
 import { DesktopControl } from './desktop-control.js';
@@ -19,6 +19,40 @@ import { metaObserver } from './meta-timeline.js';
 
 /** How long a driver report stays usable as the fact behind a later question about the same app. */
 const DEVICE_FACT_MS=10*60_000;
+
+/**
+ * The words the owner can type for each coding platform, and the platform each maps to.
+ * Every place that reads a platform out of owner text must use these: a platform missing here is
+ * invisible to routing, so the owner naming it still lands on the default coordinator instead.
+ * Longest spelling first, because the alternation stops at the first match.
+ */
+const PLATFORM_WORDS:ReadonlyArray<readonly [BrainProvider,readonly string[]]>=[
+  ['codex',['codex']],
+  ['claude',['claude']],
+  ['muse',['muse code','muse']],
+  ['deepseek',['deepseek harness','deepseek']],
+  ['cursor',['cursor']],
+];
+const PLATFORM_ALTERNATION=PLATFORM_WORDS.flatMap(([,words])=>words).join('|');
+/** Any spoken platform name. */
+const PLATFORM_RE=new RegExp(`\\b(?:${PLATFORM_ALTERNATION})\\b`,'i');
+const PLATFORM_RE_ALL=new RegExp(`\\b(?:${PLATFORM_ALTERNATION})\\b`,'gi');
+/**
+ * Fast-path phrasings that carry a platform name. These must be built with the RegExp constructor:
+ * a regex literal never interpolates ${...}, so a platform name spliced into a literal silently
+ * matches nothing at all - the phrase then falls through to the model instead of the fast path.
+ */
+const RECENT_RE=new RegExp(`^(?:please )?(?:list|show|give me)(?: all)?(?: my| the)? (${PLATFORM_ALTERNATION}) sessions?(?: in| from)? (?:the )?last (\\d{1,3}) (?:h|hr|hrs|hra|hours?)$`,'i');
+const STATUS_ONE_RE=new RegExp(`^(?:the )?(?:${PLATFORM_ALTERNATION}) one i want to know the update$`,'i');
+/** The platform a spoken name refers to, or undefined when the word isn't a platform. */
+function platformProvider(word:string|undefined):BrainProvider|undefined {
+  const w=(word??'').toLowerCase();
+  return PLATFORM_WORDS.find(([,words])=>words.includes(w))?.[0];
+}
+/** Every distinct platform named in owner text, in the order first mentioned. */
+function namedPlatforms(text:string):BrainProvider[] {
+  return [...new Set((text.match(PLATFORM_RE_ALL)??[]).map(w=>platformProvider(w)).filter((p):p is BrainProvider=>!!p))];
+}
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
@@ -144,7 +178,7 @@ export class MetaBrain {
     try{target=this.memory.owner(item,router);}catch(e){return answer(`#${item.id} ${item.title}: ${(e as Error).message}`);}
     if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider)||(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id)))
       return answer(`#${item.id} ${item.title}: its session isn't connected, so I can't ask it. Connect it in the app, or send the task again.`);
-    const named=[...new Set((original.match(/\b(?:codex|claude)\b/gi)??[]).map(v=>v.toLowerCase()))];
+    const named=namedPlatforms(original);
     if(named.length>1||(named.length===1&&named[0]!==target.provider))return answer('This item belongs to another platform. Please clarify which owning session you want to ask. Nothing was sent.');
     const proxy=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
     if(!proxy?.enabled||c.registry.identity(proxy).key!==c.registry.entry(proxy.id)?.key)return answer(`#${item.id} ${item.title}: the account or app behind its session changed, so I didn't ask it. Review it in Coding platforms first.`);
@@ -225,9 +259,9 @@ export class MetaBrain {
       const waiting=board.filter(i=>i.status==='waiting on owner'||i.status==='blocked');
       return answer(waiting.length?`Hi! ${waiting.length===1?'One item needs':`${waiting.length} items need`} you: ${waiting.slice(0,3).map(i=>`#${i.id} ${i.title}`).join(', ')}. Ask for your items, an update, or tell me what you want done.`:'Hi! Ask for your items, a task update, or tell me what you want done.');
     }
-    const recent=/^(?:please )?(?:list|show|give me)(?: all)?(?: my| the)? (codex|claude) sessions?(?: in| from)? (?:the )?last (\d{1,3}) (?:h|hr|hrs|hra|hours?)$/.exec(text);
+    const recent=RECENT_RE.exec(text);
     const list=/^(?:please )?(?:list|show|give me)(?: all)?(?: of)?(?: my| the)? (?:items|tasks)(?: list)?$/.test(text);
-    const status=/^(?:any update(?:s)?(?: from that session)?|(?:what(?: is|'s) )?(?:the )?(?:status|progress)(?: of (?:that|it))?|(?:the )?(codex|claude) one i want to know the update)$/.test(text);
+    const status=/^(?:any update(?:s)?(?: from that session)?|(?:what(?: is|'s) )?(?:the )?(?:status|progress)(?: of (?:that|it))?)$/.test(text)||STATUS_ONE_RE.test(text);
     const watch=/^(?:(?:okay|ok)[, ]+)?(?:please )?(?:let me know|notify me) (?:once|when) (?:it(?:'s| is|ls)?|that(?:'s| is)?) (?:done|finished|complete)$/.test(text);
     const cancel=/^(?:stop|cancel) (?:the )?(?:notification|notifications|follow-up)$/.test(text);
     const numeric=/^\d+$/.test(text);
@@ -245,7 +279,8 @@ export class MetaBrain {
     if(recent||list)this.clearChoice();
     if(!policy.allowStatus){this.stop(m.id,'Status summaries and follow-up notifications are disabled in Meta Settings.');return true;}
     if(recent){
-      const provider=recent[1] as 'codex'|'claude',hours=Number(recent[2]);
+      const provider=platformProvider(recent[1]),hours=Number(recent[2]);
+      if(!provider)return answer('Choose a coding platform to list sessions for.');
       if(!hours||hours>168)return answer('Choose a time range between 1 and 168 hours.');
       if(!policy.providers.includes(provider)||!router.coordinator?.enabled().includes(provider))return answer('That coding platform is disabled in Settings.');
       try{return answer(await router.coordinator.recentSessions(provider,Date.now()-hours*3600000));}
@@ -264,7 +299,7 @@ export class MetaBrain {
       selected=board.filter(i=>mentioned.includes(i.id));
       if(!selected.length)return answer(`I can't find ${mentioned.length===1?`item #${mentioned[0]}`:'those items'} in this chat. Ask for your items to see the current codes.`);
     }else{
-      const provider=/\b(codex|claude)\b/.exec(text)?.[1];
+      const provider=platformProvider(PLATFORM_RE.exec(text)?.[0]);
       if(provider)selected=board.filter(i=>i.jobs.some(j=>this.store.binding(String(j.binding_id))?.provider===provider));
       if(!selected.length&&board.length===1)selected=board;
     }
@@ -530,20 +565,20 @@ export class MetaBrain {
     let target:Binding|undefined,coordinator:Binding|undefined,topic:ReturnType<BrainMemory['resolve']>|undefined;
     try {
       // The original text, never cleaned-up consent, controls explicit platform constraints.
-      const named=[...new Set((m.text.match(/\b(?:codex|claude)\b/gi)??[]).map(v=>v.toLowerCase()))];
+      const named=namedPlatforms(m.text);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
       // Display names and aliases of any length name a session: "UX", "开发", "claude-proxy" as surely as "Payments API".
       const norm=(t:string)=>t.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
       const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
       const hit=(n:string)=>/[^\x00-\x7f]/.test(n)?said.includes(n):new RegExp(`(?:^|[^a-z0-9])${esc(n)}(?:[^a-z0-9]|$)`).test(said);
-      const mentioned=this.memory.candidates(router).filter(b=>[this.label(b),b.alias].map(norm).some(n=>n&&n!=='codex'&&n!=='claude'&&hit(n)));
+      const mentioned=this.memory.candidates(router).filter(b=>[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
       if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
       const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
-      const destinationWord=/\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|codex|claude|anywhere|anyone|someone|elsewhere)\b|[发给派]/;
+      const destinationWord=new RegExp(`\\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
       const ambiguous=mentioned.length>0||said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.

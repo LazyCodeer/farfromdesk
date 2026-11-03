@@ -45,6 +45,9 @@ class MetaBrainPanel extends StatefulWidget {
   final Future<void> Function() onSaved;
   final VoidCallback? openItems;
   final String? activityScope;
+
+  /// Providers the owner has set up, so switching Brain routing on allows what actually exists.
+  final List<String> platforms;
   const MetaBrainPanel({
     super.key,
     required this.gateway,
@@ -52,6 +55,7 @@ class MetaBrainPanel extends StatefulWidget {
     required this.onSaved,
     this.openItems,
     this.activityScope,
+    this.platforms = const [],
   });
   @override
   State<MetaBrainPanel> createState() => _MetaBrainPanelState();
@@ -734,7 +738,9 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                               enabled = v;
                               if (v) {
                                 routing = summaries = management = true;
-                                providers = {'codex', 'claude'};
+                                // Allow the platforms this Mac actually has a coordinator for.
+                                // Naming two of them here denied every platform added later.
+                                providers = {...providers, ...widget.platforms};
                               }
                             });
                             save();

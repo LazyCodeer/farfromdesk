@@ -2675,8 +2675,10 @@ extension _BridgeScreens on _DeskState {
     return entries;
   }
 
+  /// How a coordinator runs, in the owner's words. Cursor is the desktop app: its turns are
+  /// handed to the Cursor window, so "CLI" would name a program this coordinator never uses.
   String appName(Map entry) =>
-      '${providerLabel(entry['provider'])} · ${entry['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}';
+      '${providerLabel(entry['provider'])} · ${entry['executionMode'] == 'desktop' || entry['provider'] == 'cursor' ? 'Desktop' : 'CLI'}';
 
   Widget coordinatorRow(
     Map entry,
@@ -4853,6 +4855,10 @@ extension _BrainAndItems on _DeskState {
     gateway: api,
     saved: Map<String, dynamic>.from(status['metaBrain'] ?? {}),
     activityScope: status['metaTimelineScope'] as String?,
+    platforms: ((status['apps'] as List?) ?? const [])
+        .where((a) => a is Map && a['enabled'] == true)
+        .map((a) => '${(a as Map)['provider']}')
+        .toList(),
     onSaved: refresh,
     openItems: () => go(2),
   );
