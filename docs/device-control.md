@@ -76,6 +76,33 @@ test in `test/desktop-assist.test.ts`.
   transient failure in the same span, "Meta could not read that message", was the Meta
   API and not this code: an immediate retry succeeded.
 
+## What the second and third live tests found
+
+Reading a real browser window eight times on the owner's Mac produced one window read per
+round, each finding something the previous round had not:
+
+    - Apple; Comet; File; Edit; View; Assistant; History; Bookmarks; Profiles; Tab; Window; Help
+    - Private Email - business email hosting by Namecheap   (the title again, icon and all)
+    - Deployment name / Deployment name" = "claude-fable-5-1"
+    - 1:13 / PM / (Raise hand (ctrl + ⌘ + h))
+    - 1:05 PM
+
+so `summarizeTree` now drops the menu bar and everything under a toolbar, drops a heading
+that repeats the window title, reads a field as `label: value` once, and leaves out clocks,
+counters, keyboard shortcuts and labels shorter than three characters. A field that later
+arrives with its value drops the bare label.
+
+A refused click was also read back as "I could not do that: nothing there matched that
+name", which never says what was looked for. `refusalLine` takes the plan as well as the
+driver text, so the sentence names the owner's own target, on both the thrown and the
+reported path.
+
+One behaviour is deliberately left as it is: the driver connection dropped twice during
+these tests, and the owner got "I lost the connection to the desktop helper just then, so I
+cannot say what happened. Check the app, then ask me again." The next action reconnected
+and succeeded, and a write action is never replayed automatically, so the honest report
+costs one message and cannot double-execute.
+
 ## The device router runs before the contract review
 
 Found by database forensics, not by reading the code: the failing message never reached the
