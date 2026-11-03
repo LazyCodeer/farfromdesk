@@ -9,6 +9,7 @@ import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 import { errorCode } from './request-events.js';
 import { runMuse } from './muse-session.js';
 import { runDsh } from './dsh-session.js';
+import { runCursorTurn } from './cursor-desktop.js';
 
 export const TELEGRAM_COMMANDS=[
   {command:'claude',description:'Talk to your Claude coordinator'},
@@ -16,6 +17,7 @@ export const TELEGRAM_COMMANDS=[
   {command:'brain',description:'Use the Meta brain, without fallback'},
   {command:'muse',description:'Run Muse Code on this project'},
   {command:'deepseek',description:'Run DeepSeek Harness on this project'},
+  {command:'cursor',description:'Run Cursor on this project'},
   {command:'screen',description:'Open the password-protected Mac viewer'},
   {command:'back',description:'Return to normal routing'},
   {command:'help',description:'Commands and current target'},
@@ -140,6 +142,22 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   if(result.sessionId)r.store.set(key,result.sessionId);
   return result.text.slice(0,20000);
 }
+/**
+ * One prompt, one finished turn, one brand-new Cursor chat. Measured behaviour: the deeplink only
+ * prefills an open Cursor window - it never opens one and never submits - so Cursor has to be open
+ * (and, unless it auto-runs, the owner has to press Enter). `runCursorTurn` waits for `turn_ended` and
+ * rejects on timeout, so an unpicked delivery is reported as unfinished, not as an answer. Cursor's
+ * deeplink has no chat id and cannot be aimed at an existing chat, so there is no session to continue
+ * and no folder to choose. `workspace` is deliberately never passed: a name that matches no open
+ * Cursor window is silently ignored. The returned chat id is display-only.
+ */
+async function cursorCommand(r:Router,m:Incoming,arg:string) {
+  if(!arg)return 'Cursor is ready. Send /cursor followed by the task. Cursor must be open on the Mac, and each run starts a new Cursor chat; it cannot continue an earlier one.';
+  const destination=r.store.destination();
+  if(destination)r.store.output(undefined,'🖱️ Cursor is working.','cursor-progress:'+m.id,destination,{kind:'system',origin:'system',plain:true});
+  const result=await runCursorTurn({prompt:arg,timeoutMs:10*60*1000});
+  return result.text.slice(0,20000);
+}
 function name(r:Router,b:Binding){return (r.store.get(`name:${b.id}`)??b.alias).replace(/[\r\n*_`]/g,' ').slice(0,80);}
 export function currentTarget(r:Router) {
   const t=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
@@ -155,7 +173,7 @@ export function currentTarget(r:Router) {
 }
 export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined> {
   if(!authenticatedOwner(r,m)||!m.ownerCommand||m.quotedId||m.source==='voice')return;
-  const match=/^\/(claude|codex|brain|screen|back|help|reach|muse|deepseek)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
+  const match=/^\/(claude|codex|brain|screen|back|help|reach|muse|deepseek|cursor)(?:\s+(.*))?$/i.exec(m.text.trim());if(!match)return;
   const cmd=match[1].toLowerCase(),arg=(match[2]??'').trim();
   if(cmd==='reach'){
     const claimed=r.store.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(`reach-direct-claim:${m.id}`,'started');
@@ -167,6 +185,7 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.${r.store.controlChannel()==='whatsapp'?'\n\nTo bind an approved GitHub check, use /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.':''}`;
   if(cmd==='muse')return museCommand(r,m,arg);
   if(cmd==='deepseek')return deepseekCommand(r,m,arg);
+  if(cmd==='cursor')return cursorCommand(r,m,arg);
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Settings > Remote control in FarFromDesk.':'Screen viewing is unavailable in this build. Open Settings > Remote control in FarFromDesk on your Mac.';
@@ -305,6 +324,6 @@ export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
  * list is not merely unknown: it skips its own handler and falls through to the generic
  * slash-command reply, so it looks like the bridge did not understand ordinary words.
  */
-export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|muse|deepseek|screen|back|help|reach|research|jobs|social)(?:\s|$)/i.test(text.trim());
+export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|muse|deepseek|cursor|screen|back|help|reach|research|jobs|social)(?:\s|$)/i.test(text.trim());
 
 export function brainSelected(r:Router):boolean {try{return JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='brain';}catch{return false;}}

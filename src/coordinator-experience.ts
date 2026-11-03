@@ -17,13 +17,14 @@ export function closedAfterQueueText(name:string) {
   return `📴 ${name||'The app'} closed since. Your message stays queued and runs when the app reopens.`;
 }
 
-export function providerIcon(provider:string|undefined) { return provider==='claude'?'✳️':provider==='muse'?'🧠':provider==='deepseek'?'🐳':'🤖'; }
+export function providerIcon(provider:string|undefined) { return provider==='claude'?'✳️':provider==='muse'?'🧠':provider==='deepseek'?'🐳':provider==='cursor'?'🖱️':'🤖'; }
 
 /** Short label for notices: "Claude Desktop" rather than the full chat title. */
 export function sessionShortName(store:Store,b?:Binding) {
   if(!b)return '';
   if(b.provider==='muse')return 'Muse Code';
   if(b.provider==='deepseek')return 'DeepSeek Harness';
+  if(b.provider==='cursor')return 'Cursor';
   return `${b.provider==='claude'?'Claude':'Codex'} ${store.get(`execution-mode:${b.id}`)==='desktop'?'Desktop':'CLI'}`;
 }
 

@@ -57,7 +57,7 @@ export function parseQuestionChoices(question:string):QuestionChoice[] {
   });
 }
 export function appName(provider:string|undefined) {
-  return provider==='claude'?'Claude':provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':'the coding app';
+  return provider==='claude'?'Claude':provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'the coding app';
 }
 function sessionLine(store:Store,binding:Binding) {
   const meta=sessionMeta(store,binding);

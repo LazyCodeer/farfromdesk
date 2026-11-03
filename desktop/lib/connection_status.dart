@@ -5,6 +5,7 @@ String providerLabel(Object? provider) => switch ('${provider ?? ''}') {
   'codex' => 'Codex',
   'muse' => 'Muse Code',
   'deepseek' => 'DeepSeek Harness',
+  'cursor' => 'Cursor',
   _ => 'Coding',
 };
 
@@ -13,6 +14,7 @@ String providerBrand(Object? provider) => switch ('${provider ?? ''}') {
   'claude' => 'claude',
   'muse' => 'muse',
   'deepseek' => 'deepseek',
+  'cursor' => 'cursor',
   _ => 'openai',
 };
 

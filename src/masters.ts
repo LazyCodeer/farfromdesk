@@ -33,6 +33,8 @@ import { scopedBridgeCommand } from './reply-args.js';
 import { openCodexDesktop } from './session-activation.js';
 import { museBinary, runMuse } from './muse-session.js';
 import { dshBinary, runDsh } from './dsh-session.js';
+import { runCursorTurn } from './cursor-desktop.js';
+import { cursorAppBinary } from './cursor-paths.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
@@ -40,10 +42,13 @@ const root=fileURLToPath(new URL('..',import.meta.url));
 const masterMode=(provider:Provider,value:unknown):ExecutionMode=>{
   if(provider==='muse'){if(value!==undefined&&value!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');return 'cli';}
   if(provider==='deepseek'){if(value!==undefined&&value!=='cli')throw new Error('DeepSeek Harness has only a CLI connection. Choose CLI.');return 'cli';}
+  // Cursor is driven through its desktop app but runs channel-mode, so a requested Desktop mode is refused too.
+  if(provider==='cursor'){if(value!==undefined&&value!=='cli')throw new Error('Cursor is driven through its desktop app, so choose the CLI/channel connection.');return 'cli';}
   return provider==='codex'&&value==='desktop'?'desktop':executionMode(provider,value);
 };
 const museTurnTimeoutMs=20*60*1000;
 const deepseekTurnTimeoutMs=20*60*1000;
+const cursorTurnTimeoutMs=10*60*1000;
 const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
 export function codexDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
@@ -55,7 +60,7 @@ export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
   if(value!==undefined&&typeof value!=='string')throw new Error('Session name must be text.');
   const name=(value as string|undefined)?.trim()??'';
   if(name.length>80||/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name))throw new Error('Use a session name of up to 80 characters without control characters.');
-  return name||`FarFromDesk Orbit · ${provider==='claude'?'Claude':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
+  return name||`FarFromDesk Orbit · ${provider==='claude'?'Claude':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
 }
 // Workspace identity includes runtime and account; folder names are display only.
 export function coordinatorFolder(operationId:string,name:string) {
@@ -173,6 +178,21 @@ export class Masters {
     catch{platform.reason='DeepSeek Harness CLI unavailable. Install it, then try again.';}
     return platform;
   }
+  /**
+   * One app-driven channel entry: Cursor runs the turn inside its signed-in desktop app, reached
+   * through the prompt deeplink, so there is no CLI binary to shell out to. Measured behaviour: the
+   * deeplink only prefills an open Cursor window - it never opens a window and never submits - so a
+   * delivery needs the owner to have Cursor open (and, unless their Cursor auto-runs, to press Enter).
+   * The app bundle is the whole availability check; a missing bundle is a missing run, not a missing
+   * credential.
+   */
+  private async cursorPlatform() {
+    const platform:any={provider:'cursor',executionMode:'cli',label:'Cursor',available:false};
+    if(this.router.native.discoveryBlocked?.('cursor'))return this.platforms.find(p=>p.provider==='cursor')??{...platform,reason:'File access denied · click Detect apps to retry'};
+    if(existsSync(cursorAppBinary()))platform.available=true;
+    else platform.reason='Cursor desktop app not found. Install Cursor and sign in, then try again.';
+    return platform;
+  }
   async discover(fresh=false):Promise<any[]>{
     if(!fresh&&this.platforms.length&&Date.now()-this.discoveryAt<15000)return this.platforms;
     if(this.discovery){
@@ -190,13 +210,14 @@ export class Masters {
     }));
     platforms.push(await this.musePlatform());
     platforms.push(await this.deepseekPlatform());
+    platforms.push(await this.cursorPlatform());
     const fallback=(provider:Provider)=>this.platforms.filter(p=>p.provider===provider&&(provider==='claude'||p.executionMode==='cli')).flatMap(p=>(p.sessions??[]).map((s:any)=>({...s,provider,executionMode:p.executionMode})));
     const errors=new Set<Provider>();
     const load=(provider:Provider)=>this.catalog(provider,fresh).catch(()=>{errors.add(provider);return fallback(provider);});
-    const [claude,codex,muse,deepseek]=await Promise.all([load('claude'),load('codex'),load('muse'),load('deepseek')]);
+    const [claude,codex,muse,deepseek,cursor]=await Promise.all([load('claude'),load('codex'),load('muse'),load('deepseek'),load('cursor')]);
     if(!errors.has('claude'))this.registry.adoptAccounts('claude',claude);
     const rows=(sessions:any[])=>sessions.map(s=>({id:s.id,desktopId:s.desktopId,executionMode:s.executionMode,accountScope:s.accountScope,name:s.name,cwd:s.cwd,status:s.status,model:s.model,updatedAt:s.updatedAt,available:s.available===true}));
-    for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):platform.provider==='muse'?muse:platform.provider==='deepseek'?deepseek:codex);
+    for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):platform.provider==='muse'?muse:platform.provider==='deepseek'?deepseek:platform.provider==='cursor'?cursor:codex);
     platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claudeDesktopInstalled()||claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'New coordinators open directly in Claude Desktop. Existing chats still require verified session discovery.'});
     platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
     if(portableAgents)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
@@ -214,6 +235,8 @@ export class Masters {
       if(platform.provider==='muse'&&!usableCLIConnection(connection))platform.reason=connection.label;
       // DeepSeek publishes history from its own session store, but a turn needs its credential and CLI.
       if(platform.provider==='deepseek'&&!usableCLIConnection(connection))platform.reason=connection.label;
+      // Cursor publishes chat history from the app's transcripts, but a turn needs the signed-in app.
+      if(platform.provider==='cursor'&&!usableCLIConnection(connection))platform.reason=connection.label;
       if(platform.provider==='claude'&&platform.executionMode==='desktop') {
         const preference=JSON.parse(this.store.get('platform-preference:claude')??'null');
         const coordinators=this.registry.entries().filter(r=>r.provider==='claude'&&r.executionMode==='desktop'&&this.store.binding(r.bindingId)?.enabled);
@@ -224,7 +247,7 @@ export class Masters {
       }
     }));
     let resolved:ResolvedWorkspaces=new Map(),workspaceError:string|undefined;
-    try{resolved=await this.workspaceScanner.scan([...claude,...codex,...muse,...deepseek].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
+    try{resolved=await this.workspaceScanner.scan([...claude,...codex,...muse,...deepseek,...cursor].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
     catch(error){workspaceError=error instanceof Error?error.message:'Workspace discovery unavailable';}
     for(const platform of platforms){platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[],resolved);if(workspaceError)platform.workspaceError=workspaceError;}
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
@@ -421,11 +444,11 @@ export class Masters {
     }finally{this.creating=false;}
   }
   async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string,trustWorkspace?:unknown):Promise<any> {
-    if(!['codex','claude','muse','deepseek'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+    if(!['codex','claude','muse','deepseek','cursor'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
     return withProviderSetup(this.store,'coordinator-create',()=>this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId,trustWorkspace)));
   }
   private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string,trustWorkspace?:unknown):Promise<any> {
-    if(!['codex','claude','muse','deepseek'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+    if(!['codex','claude','muse','deepseek','cursor'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
     requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),name=masterName(provider,mode,requestedName),previous=this.operation(operationId);
     if(previous){if(previous.workspaceId!==workspaceId||previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():'')||(previous.trustWorkspace===true)!==(trustWorkspace===true))throw new Error('Creation ID cannot change platform, workspace or desktop launcher.');return previous;}
@@ -466,9 +489,11 @@ export class Masters {
     if(realpathSync(support)!==support)throw new Error('Workspace setup directory must not be a symbolic link.');
     if(selected)writeFileSync(join(support,'.gitignore'),'*\n',{mode:0o600,flag:'wx'});
     const alias=`whatsapp-master-${operationId.slice(0,8)}`;
-    // A Muse or DeepSeek master is driven per request by the bridge, so it is registered in channel
-    // mode: it has no app, no persistent runtime and no bridge MCP connection of its own.
-    const registered=this.store.register(alias,provider,randomUUID(),cwd,provider==='muse'||provider==='deepseek'?'channel':'desktop');
+    // A Muse, DeepSeek or Cursor master is driven per request by the bridge, so it is registered in
+    // channel mode: it has no persistent runtime and no bridge MCP connection of its own. Cursor is
+    // app-driven: each request is handed to an open Cursor window as a prefilled prompt and the bridge
+    // waits for that turn's `turn_ended` record.
+    const registered=this.store.register(alias,provider,randomUUID(),cwd,provider==='muse'||provider==='deepseek'||provider==='cursor'?'channel':'desktop');
     let b=registered.binding;this.store.set(`execution-mode:${b.id}`,mode);this.store.enable(b.id,false);saveBindingCredentials(b,registered.token);
     const route=this.operation()?.route??await this.connections.prepare(b,mode,mode==='cli');this.connections.save(b,route);
     await this.connections.assert(b);assertProviderSetup(this.store);
@@ -480,7 +505,7 @@ export class Masters {
     // owner chose a real project and kept trust on. The private coordinator folder has none to load.
     if(provider==='muse')this.store.set(`muse-trust:${b.id}`,this.operation()?.trustWorkspace===true?'true':'false');
     // Muse runs headless with no bridge tools, so its finished answer is the reply the bridge delivers.
-    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run.':'Use the session_bridge MCP tools for coordination and replies.';
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run.':'Use the session_bridge MCP tools for coordination and replies.';
     // Support files are written once and may be auto-loaded beside the provider instructions,
     // so they point to the versioned role instead of carrying a copy that would go stale.
     // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
@@ -510,9 +535,10 @@ export class Masters {
       try{await confirmCodexSession(runtime,b.native_id,b.cwd);}catch(e){this.stopWorker(b.id);throw e;}
       if(mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
       else {runtime.close();this.runtimes.delete(b.id);this.saveOperation({...this.operation(),stage:'Opening Codex Desktop'});await this.openCodex(b.native_id);}
-    } else if(provider==='muse'||provider==='deepseek') {
+    } else if(provider==='muse'||provider==='deepseek'||provider==='cursor') {
       // The provider owns its session on disk. Setup only pins the verified CLI route; the first
-      // request creates the session id that later requests resume.
+      // request creates the session id that later requests resume. Cursor does not resume, so its
+      // recorded chat id is for audit and display.
       this.saveOperation({...this.operation(),nativeId:b.native_id,stage:'Ready for the first request'});
     } else {
       this.saveOperation({...this.operation(),nativeId:b.native_id});
@@ -558,6 +584,24 @@ export class Masters {
       const key=`deepseek-session:${b.id}`,stored=this.store.get(key)||null;
       handedOff=true;
       const result=await verify(runDsh({prompt:message,cwd:b.cwd,sessionId:stored,timeoutMs:deepseekTurnTimeoutMs}));
+      if(result.sessionId)this.store.set(key,result.sessionId);
+      if(this.store.job(jobId)?.status==='replaced')return;
+      if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);
+      return;
+    }
+    if(b.provider==='cursor') {
+      // One completed app turn per request. Measured behaviour: opening the deeplink only prefills an
+      // open Cursor window - it never opens one and never submits - so this needs the owner to have
+      // Cursor open (and, unless their Cursor auto-runs, to press Enter). `runCursorTurn` then waits for
+      // the transcript's `turn_ended` record and rejects on timeout, so a delivery that nobody picks up
+      // is reported as unfinished rather than as an answer. The deeplink has no chat-id parameter, so
+      // every request is a new chat and cannot continue an earlier one; the returned chat id is stored
+      // for audit and display only. Cursor reports no usage, so none is emitted. `workspace` is
+      // deliberately not passed: a name that matches no open Cursor window is silently ignored and the
+      // prompt is then never submitted.
+      const key=`cursor-chat:${b.id}`;
+      handedOff=true;
+      const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs}));
       if(result.sessionId)this.store.set(key,result.sessionId);
       if(this.store.job(jobId)?.status==='replaced')return;
       if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);

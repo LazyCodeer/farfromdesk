@@ -25,6 +25,7 @@ import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js
 import {codexProfileEnvironment,codexProfileHome} from './codex-profile.js';
 import {museDataHome} from './muse-paths.js';
 import {dshSessionsDir} from './dsh-paths.js';
+import {cursorSessions} from './cursor-desktop.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
@@ -191,6 +192,7 @@ export class NativeAgents {
   protected async readCatalog(provider:Provider,cursor?:string,fresh=false):Promise<{sessions:Session[];cursor:string|null}> {
     if(provider==='muse')return {sessions:await this.museCatalog(),cursor:null};
     if(provider==='deepseek')return {sessions:this.deepseekCatalog(),cursor:null};
+    if(provider==='cursor')return {sessions:cursorSessions(),cursor:null};
     if(provider==='claude') {
       const [history,desktopHistory,desktopPids,,cliConnection]=await Promise.all([
         claudeHistory(join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')),
@@ -273,6 +275,7 @@ export class NativeAgents {
     // Muse has no app queue and no native chat hand-off: the bridge runs its CLI or nothing.
     if(b.provider==='muse'&&route?.transport!=='managed-cli')throw new Error('Muse Code runs only on its managed CLI connection. Review it in Coding platforms before sending.');
     if(b.provider==='deepseek'&&route?.transport!=='managed-cli')throw new Error('DeepSeek Harness runs only on its managed CLI connection. Review it in Coding platforms before sending.');
+    if(b.provider==='cursor'&&route?.transport!=='managed-cli')throw new Error('Cursor runs only on its managed channel connection. Review it in Coding platforms before sending.');
     const managedFlags=this.store.get(`managed-codex:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true'||this.store.get(`managed-worker:${b.id}`)==='true';
     if(!route) {
       if(guarded)throw new DispatchNotSubmittedError('The request was not sent because this session has no verified connection. Select its exact connection in the app first.');
@@ -324,7 +327,7 @@ export class NativeAgents {
     const attachments=this.store.job(jobId)?new Attachments(this.store).references(b,jobId,true):[];
     // CLI-reply sessions get the farfromdesk skill and its ffd launcher; a coordinator in its own folder also auto-loads the skill.
     const support=this.store.get(`master-support:${b.id}`),ownFolder=support?.startsWith(coordinatorHome+'/');
-    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'?{tool:'final answer'}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
+    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer'}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');

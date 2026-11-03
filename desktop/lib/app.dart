@@ -210,10 +210,11 @@ class _DeskState extends State<Desk> {
   Map<String, dynamic> updateProgress = {};
   Gateway get api => widget.gateway;
 
-  /// Muse Code and DeepSeek Harness are CLI only, so a desktop entry for them never reaches the UI.
+  /// Muse Code, DeepSeek Harness and Cursor are channel mode, so a desktop entry for them never
+  /// reaches the UI. Cursor is app-driven but still runs one turn per request, not a desktop session.
   List<dynamic> get platforms => [
     for (final p in status['masterSetup']?['platforms'] ?? const [])
-      if (!const ['muse', 'deepseek'].contains(p['provider']) ||
+      if (!const ['muse', 'deepseek', 'cursor'].contains(p['provider']) ||
           p['executionMode'] != 'desktop')
         p,
   ];
@@ -1065,15 +1066,18 @@ class _DeskState extends State<Desk> {
     }
     // Muse Code ships a dark-mode mark (blue chevron, white M), so its tile is dark and the mark
     // is the real one from the CLI rather than a stand-in glyph. DeepSeek Harness ships a blue
-    // whale drawn for a light tile.
+    // whale drawn for a light tile. Cursor ships a dark geometric mark, so its tile is dark too.
     final (bg, asset) = switch (brand) {
       'whatsapp' => (whatsappGreen, 'whatsapp'),
       'claude' => (const Color(0xfff4ede4), 'claude'),
       'muse' => (const Color(0xff1b1b20), 'muse'),
       'deepseek' => (const Color(0xffffffff), 'deepseek'),
+      'cursor' => (const Color(0xff1b1b20), 'cursor'),
       _ => (const Color(0xfff3f1ea), 'openai'),
     };
-    final mark = brand == 'muse' ? .62 : (brand == 'deepseek' ? .74 : .53);
+    final mark = brand == 'muse' || brand == 'cursor'
+        ? .62
+        : (brand == 'deepseek' ? .74 : .53);
     final tile = Container(
       width: size,
       height: size,

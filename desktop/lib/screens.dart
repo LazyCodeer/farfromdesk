@@ -66,7 +66,7 @@ extension _BridgeScreens on _DeskState {
   String platformTitle(Map p) {
     final label = providerLabel(p['provider']);
     if (p['executionMode'] == 'desktop') return '$label Desktop';
-    return const ['muse', 'deepseek'].contains(p['provider'])
+    return const ['muse', 'deepseek', 'cursor'].contains(p['provider'])
         ? label
         : '$label CLI';
   }
@@ -2288,7 +2288,7 @@ extension _BridgeScreens on _DeskState {
   });
 
   /// The apps the preferences panel shows a card for: every provider the backend reports.
-  List<String> get codingAppProviders => const ['codex', 'claude', 'muse', 'deepseek']
+  List<String> get codingAppProviders => const ['codex', 'claude', 'muse', 'deepseek', 'cursor']
       .where((provider) => platforms.any((p) => p['provider'] == provider))
       .toList();
 
@@ -2505,7 +2505,7 @@ extension _BridgeScreens on _DeskState {
                 const SizedBox(height: 3),
                 small(
                   runtimes == 0
-                      ? 'FarFromDesk works with Claude Code, Codex, Muse Code and DeepSeek Harness on this $computer. Install one, then detect again.'
+                      ? 'FarFromDesk works with Claude Code, Codex, Muse Code, DeepSeek Harness and Cursor on this $computer. Install one, then detect again.'
                       : 'In $apps ${apps == 1 ? 'app' : 'apps'}, the same list the coding app picker shows. Set the preferred mode for each app.',
                 ),
               ],
@@ -3794,6 +3794,9 @@ extension _BridgeScreens on _DeskState {
         small(
           const ['muse', 'deepseek'].contains(selectedPlatform?['provider'])
               ? '${providerLabel(selectedPlatform?['provider'])} keeps its own session history, so this continues the exact conversation you picked. Availability does not verify subscription limits.'
+              : selectedPlatform?['provider'] == 'cursor'
+              // Cursor's deeplink has no chat id: a picked chat cannot be continued, only shown.
+              ? 'Cursor starts a new chat for every request, so this history is reference only. It cannot continue the exact conversation you picked.'
               : 'Desktop keeps the selected chat’s account. CLI resume uses the account shown above. Availability does not verify subscription limits.',
         ),
       ],
@@ -5857,7 +5860,7 @@ extension _Onboarding on _DeskState {
               'Open the pairing link',
               confirming ? 'now' : 'pending',
             ),
-            ('Set up a coordinator', 'Claude, Codex, Muse Code or DeepSeek Harness', 'pending'),
+            ('Set up a coordinator', 'Claude, Codex, Muse Code, DeepSeek Harness or Cursor', 'pending'),
           ]
         : [
             (
@@ -5871,7 +5874,7 @@ extension _Onboarding on _DeskState {
               hasChannelChoice ? 'now' : 'pending',
             ),
             ('Pick where replies go', 'Yourself or a private group', 'pending'),
-            ('Set up a coordinator', 'Claude, Codex, Muse Code or DeepSeek Harness', 'pending'),
+            ('Set up a coordinator', 'Claude, Codex, Muse Code, DeepSeek Harness or Cursor', 'pending'),
           ];
     final right = !hasChannelChoice
         ? chooseCard()
@@ -6155,7 +6158,7 @@ extension _Welcome on _DeskState {
           step(
             Icons.visibility_outlined,
             'Set up a coordinator',
-            'Pick Claude, Codex, Muse Code or DeepSeek Harness to read your messages.',
+            'Pick Claude, Codex, Muse Code, DeepSeek Harness or Cursor to read your messages.',
             const Text('After step 1', style: later),
             dim: true,
           ),

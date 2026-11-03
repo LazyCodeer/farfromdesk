@@ -23,6 +23,7 @@ Plus a fourth that is not about flags: **the vendor permits it**. Antigravity fa
 | `claude` | Claude Code CLI + Claude Desktop | desktop, cli | SDK / `--append-system-prompt` runtime, or the desktop chat | native session id |
 | `muse` | Muse Code CLI | cli only | one `muse exec --json` per request | session id reported in the JSONL stream |
 | `deepseek` | DeepSeek Harness (`dsh`) | cli only | one `dsh --profile headless --json` per request | session id in the opening `session` event, continued with `--session-id` |
+| `cursor` | Cursor desktop app | cli only | a `cursor://` deeplink prefills the Composer, then the bridge waits for the chat transcript to record a finished turn | Cursor's chat id, read from the transcript. A picked chat **cannot** be continued |
 
 The bridge treats every provider the same way: a binding records provider + runtime + account scope,
 a `SessionRoute` pins the profile, and `Masters.run` hands one request to one provider and waits for a
@@ -59,6 +60,38 @@ exposes no approval or permission flag, and its README does not describe the cas
 blocks on a prompt would sit until the bridge's 20-minute turn timeout. Confirm on a real run before
 relying on unattended DeepSeek work.
 
+## Cursor — verified contract
+
+Cursor is a **reader's integration**: the app's own state is readable, but the only way in from
+outside is a prompt prefill. Verified on this machine against Cursor 3.27.22:
+
+| Fact | Evidence |
+| --- | --- |
+| One transcript per chat at `~/.cursor/projects/<project>/agent-transcripts/<chatId>/<chatId>.jsonl`; subagent runs sit in `subagents/` | inspected on disk |
+| A transcript is `role`/`message.content` lines of `text` and `tool_use`, and ends with `{"type":"turn_ended","status":"success"}` | a live chat and 30+ older ones, all the same shape |
+| Chat titles live in `.../Cursor/User/globalStorage/conversation-search.db`, table `conversations` (`id`, `title`); the transcripts carry no title | `sqlite3 -readonly`, and `node:sqlite` reads it while Cursor is running |
+| The project folder is the workspace path with separators turned into `-`, cut short with a `-<hash>` suffix when long, so it is lossy; the bridge resolves it by walking the real filesystem | 41 of 64 folders resolve here, the rest genuinely have no folder (`empty-window`, deleted and temp paths) |
+| The only external delivery is `cursor://anysphere.cursor-deeplink/prompt?text=…&workspace=…&mode=…`, whose handler calls `deeplink.prompt.prefill` | `extensions/cursor-deeplink/dist/main.js` shipped in the app |
+| That handler **prefills and never submits**, and it does not open a window | same source, and measured below |
+| There is no chat API, port, or extension hook to drive the Composer | no listening socket, no third-party `.d.ts`, `state.vscdb` holds only UI state |
+
+Measured delivery behaviour — this is the part that decides how it must be described:
+
+- Three prompts delivered at 18:40, 18:45 and 18:48 **did** run to completion with a Cursor window
+  open, each producing a transcript with a finished turn.
+- After that window closed, six later deliveries — including a 123-character prompt — produced no
+  chat, no transcript and no entry in the chat list, and `open -a Cursor` did not bring a window back.
+
+So Cursor support is a **prefill hand-off, not unattended delivery**: the bridge sends the prompt, then
+waits for a transcript to show a finished turn. If the owner has no Cursor window open, or their Cursor
+does not auto-run a prefilled prompt, nothing happens and the run fails with a clear timeout instead of
+being reported as an answer. `workspace=` is never sent, because routing to a workspace needs an open
+project window and silently does nothing without one.
+
+Cursor's CLI (`agent`, installed separately at `~/.local/bin/agent`, `agent -p --output-format
+stream-json --resume`) is the autonomous path and needs its own login; it is the next step if Cursor
+turns should run without a window.
+
 ## Every other agent, and the verdict
 
 Tier 1 means a clean subprocess contract: non-interactive run, machine-readable output, resumable.
@@ -68,7 +101,7 @@ a session at all.
 | Agent | Non-interactive | Machine-readable | Resume | Verdict |
 | --- | --- | --- | --- | --- |
 | **DeepSeek Harness** `dsh` | `--profile headless` | `--json` NDJSON | `--session-id` | **Tier 1, implemented** |
-| **Cursor** `agent` | `agent -p` | `--output-format json\|stream-json` | `--resume [chatId]`, `--continue`, `agent create-chat` | **Tier 1**; no documented local transcript, so drive by id only |
+| **Cursor** `agent` | `agent -p` | `--output-format json\|stream-json` | `--resume [chatId]`, `--continue`, `agent create-chat` | **Tier 1 CLI, not yet wired** (needs its own login); the desktop app is wired instead, as a prefill hand-off — see above |
 | **Antigravity** `agy` | `agy -p` | `--output-format json\|stream-json`, stdin streaming | `-c`, `--conversation <id>` | **Tier 2, licence blocker — see below** |
 | **GitHub Copilot CLI** `copilot` | `copilot -p` | `--output-format=json` | `--resume`, `--continue` | **Tier 1**; needs explicit permission flags or approvals are denied silently |
 | **OpenCode** | `opencode run` | `--format json` | `--continue`, `--session <id>` | **Tier 1**; `opencode.db` is a readable local store |

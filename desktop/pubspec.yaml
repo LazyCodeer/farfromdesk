@@ -86,6 +86,7 @@ flutter:
     - assets/logo-claude.png
     - assets/logo-muse.png
     - assets/logo-deepseek.png
+    - assets/logo-cursor.png
     - assets/logo-openai.png
     - assets/logo-whatsapp.png
     - assets/logo-github.png

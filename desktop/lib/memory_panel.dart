@@ -256,13 +256,14 @@ class _MemoryFilesState extends State<MemoryFiles> {
   };
 
   Widget platformChip(String value) {
-    const ids = {'muse code': 'muse', 'deepseek harness': 'deepseek'};
+    const ids = {'muse code': 'muse', 'deepseek harness': 'deepseek', 'cursor': 'cursor'};
     final id = ids[value.toLowerCase()] ?? value.toLowerCase();
     final brand = switch (id) {
       'codex' => 'openai',
       'claude' => 'claude',
       'muse' => 'muse',
       'deepseek' => 'deepseek',
+      'cursor' => 'cursor',
       _ => null,
     };
     final label = brand == null ? value : providerLabel(id);
@@ -286,14 +287,16 @@ class _MemoryFilesState extends State<MemoryFiles> {
                   'muse' => const Color(0xff1b1b20),
                   // The DeepSeek whale is blue and needs a light tile.
                   'deepseek' => const Color(0xffffffff),
+                  // Cursor's mark is drawn for a dark tile, like Muse's.
+                  'cursor' => const Color(0xff1b1b20),
                   _ => const Color(0xfff3f1ea),
                 },
                 borderRadius: BorderRadius.circular(7),
               ),
               child: Image.asset(
                 'assets/logo-$brand.png',
-                width: brand == 'muse' ? 15 : 13,
-                height: brand == 'muse' ? 15 : 13,
+                width: brand == 'muse' || brand == 'cursor' ? 15 : 13,
+                height: brand == 'muse' || brand == 'cursor' ? 15 : 13,
                 fit: BoxFit.contain,
               ),
             ),
@@ -546,7 +549,7 @@ class _MemoryFilesState extends State<MemoryFiles> {
                     value: platform,
                     underline: const SizedBox(),
                     items: [
-                      for (final p in ['Codex', 'Claude', 'Muse Code', 'DeepSeek Harness'])
+                      for (final p in ['Codex', 'Claude', 'Muse Code', 'DeepSeek Harness', 'Cursor'])
                         DropdownMenuItem(value: p, child: Text(p)),
                     ],
                     onChanged: (v) => setState(() => platform = v),
