@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { allPackTools } from '../src/app-tools/packs.js';
 import { buildIndex, selectTools, shortlistTools } from '../src/app-tools/retrieve.js';
-import { embedBinaryPath, embedRank, embeddingsAvailable, embedDocs } from '../src/app-tools/embed.js';
+import { embedBinaryPath, embedRank, embeddingsAvailable, embedDocs, embedStats, resetEmbedStats, resetEmbedCache } from '../src/app-tools/embed.js';
 import { GOLDEN } from '../src/app-tools/golden.js';
 import { PARAPHRASES } from '../src/app-tools/golden-paraphrase.js';
 
@@ -88,4 +88,27 @@ test('no app in front means no embedding candidates at all', async (t) => {
   // anchor, "add a retry to the sync loop" could be widened into another app's tools.
   assert.deepEqual(await shortlistTools('remind me to buy milk later', { index }), []);
   assert.deepEqual(await shortlistTools('add a retry to the sync loop', { app: 'Cursor', index }), []);
+});
+test('the pack docs are embedded once per tool set, not once per turn', async (t) => {
+  if (!haveHelper) return t.skip('native/tool-embed is not built on this machine');
+  resetEmbedCache();
+  resetEmbedStats();
+  await shortlistTools('remind me to buy milk later', { app: 'Notes', index });
+  const cold = embedStats();
+  assert.ok(cold.docsEmbedded > 5, `a cold turn should embed the pack's lines, not ${cold.docsEmbedded}`);
+  assert.equal(cold.cacheHits, 0, 'nothing to hit on the first turn');
+  await shortlistTools('save this for later: invoice 442', { app: 'Notes', index });
+  const warm = embedStats();
+  assert.equal(warm.cacheHits, 1, 'the second turn should reuse the cached doc vectors');
+  assert.equal(warm.docsEmbedded - cold.docsEmbedded, 1, 'a warm turn embeds the owner words and nothing else');
+});
+
+test('a changed tool set is embedded again instead of reusing stale vectors', async (t) => {
+  if (!haveHelper) return t.skip('native/tool-embed is not built on this machine');
+  resetEmbedStats();
+  const edited = buildIndex(tools.map(tool => (tool.name === 'notes_create_note' ? { ...tool, keywords: [...tool.keywords, 'plumber'] } : tool)));
+  await shortlistTools('remind me to buy milk later', { app: 'Notes', index: edited });
+  const stats = embedStats();
+  assert.equal(stats.cacheHits, 0, 'edited tool text must not be scored against the old vectors');
+  assert.ok(stats.docsEmbedded > 5, `an edited tool set should be embedded again, not ${stats.docsEmbedded}`);
 });

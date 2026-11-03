@@ -22,6 +22,7 @@ import { buildIndex, shortlistTools, type ShortlistEntry } from '../src/app-tool
 import { describeReport, evaluateRetrieval } from '../src/app-tools/metrics.js';
 import { GOLDEN, type GoldenUtterance } from '../src/app-tools/golden.js';
 import { PARAPHRASES } from '../src/app-tools/golden-paraphrase.js';
+import { embedStats, resetEmbedCache, resetEmbedStats } from '../src/app-tools/embed.js';
 
 const tools = allPackTools();
 const index = buildIndex(tools);
@@ -80,6 +81,15 @@ const files = [
 ];
 const root = fileURLToPath(new URL('..', import.meta.url));
 console.log('');
+// What the doc-vector cache is worth, measured here rather than claimed: the first turn on a
+// tool set embeds the pack's lines, the next turn embeds only the owner's words.
+resetEmbedCache();
+resetEmbedStats();
+await shortlistTools('remind me to buy milk later', { app: 'Notes' });
+const cold = embedStats();
+await shortlistTools('save this for later: invoice 442', { app: 'Notes' });
+const warm = embedStats();
+line('embedding cache', `${cold.docsEmbedded} lines on a cold turn, ${warm.docsEmbedded - cold.docsEmbedded} on the next (${warm.cacheHits} reuse)`);
 line('transcripts', files.map(file => file.replace('test/', '')).join(', '));
 const run = spawnSync('npx', ['tsx', '--test', ...files], { cwd: root, encoding: 'utf8' });
 const counts = /# tests (\d+)[\s\S]{0,80}?# pass (\d+)\n# fail (\d+)/.exec(run.stdout ?? '');

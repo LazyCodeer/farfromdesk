@@ -1686,8 +1686,16 @@ action at a time (peak in-flight 1), the loser is answered with "I am already do
 your Mac. Let that finish, then ask me again." instead of being dropped or wrongly told it
 succeeded, the completion lands in the chat that acted and the refusal in the chat that asked,
 and each session's `brain-device-last:<destination>` holds its own outcome — including the
-loser's `ok:false` row, which is written on failure too. What is still missing is an embedding
-cache: `indexSignature` is prepared for one that does not exist yet.
+loser's `ok:false` row, which is written on failure too.
+
+The embedding cache is built: `native/tool-embed` learned a vectors mode (`{"texts":[...]}` ->
+L2-normalised vectors, with the caller doing the cosine, so a dot product is the cosine), and
+`embedRank` caches those doc vectors under `indexSignature(tools)`. A turn on a tool set whose
+text has already been embedded sends only the owner's words: measured in `npm run evals`, **28
+lines on a cold turn and 1 on the next**. The first turn on a set embeds the query and the docs
+in one spawn, so nothing got slower to start; a changed pack changes the signature and re-embeds
+rather than scoring against stale vectors. `embedStats()`/`resetEmbedCache()` exist so the tests
+prove that instead of trusting the comment.
 
 `npm run evals:live` (`script/live_transcript.mjs`, `--dry` to check the plumbing) replays the
 same turns against the running app through `POST /api/inbox-send`, then waits and prints what the

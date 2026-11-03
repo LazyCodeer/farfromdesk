@@ -214,6 +214,14 @@ export interface ShortlistEntry {
  * golden set at recall@5 15/15 and lifts a paraphrase set that names neither the app nor its
  * words from 8/10 to 10/10.
  */
+/**
+ * A stable text hash of the tool set, so the embedding cache is keyed by exactly the text it
+ * holds: a pack change changes this and the cached vectors are left behind.
+ */
+export function indexSignature(tools: AppTool[]): string {
+  return tools.map(tool => `${tool.name}:${tool.description.length}:${tool.examples.join('|')}:${tool.keywords.join('|')}`).join('\n');
+}
+
 export async function shortlistTools(text: string, options: SelectOptions = {}): Promise<ShortlistEntry[]> {
   const index = options.index ?? buildIndex();
   const k = options.k ?? 5;
@@ -221,7 +229,7 @@ export async function shortlistTools(text: string, options: SelectOptions = {}):
   const entries: ShortlistEntry[] = lexical.map(match => ({ tool: match.tool, score: match.score, via: 'lexical' }));
   if (entries.length >= k) return entries;
   const polarity = intentPolarity(text);
-  const extras = await embedExtras(text, polarity ? index.tools.filter(tool => polarity === 'write' ? tool.writes : !tool.writes) : index.tools, { app: options.app, k: k - entries.length, already: entries.map(entry => entry.tool.name) });
+  const extras = await embedExtras(text, polarity ? index.tools.filter(tool => polarity === 'write' ? tool.writes : !tool.writes) : index.tools, { app: options.app, k: k - entries.length, already: entries.map(entry => entry.tool.name), signature: indexSignature(index.tools) });
   for (const name of extras) {
     const tool = index.tools.find(candidate => candidate.name === name);
     if (tool) entries.push({ tool, score: 0, via: 'embedding' });

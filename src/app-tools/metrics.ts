@@ -1,4 +1,3 @@
-import type { AppTool } from './types.js';
 import { selectTools, type ToolIndex } from './retrieve.js';
 import { GOLDEN, type GoldenUtterance } from './golden.js';
 
@@ -53,9 +52,4 @@ export function evaluateRetrieval(golden: GoldenUtterance[], index: ToolIndex, k
 /** One line for the test output, so the measured numbers are in the evidence. */
 export function describeReport(report: RetrievalReport): string {
   return `golden ${report.total} (${report.eligible} with a tool, ${report.quiet} that must stay quiet): recall@1 ${report.recall1}, recall@3 ${report.recall3}, recall@5 ${report.recall5}, wrong-first ${report.wrong.length}`;
-}
-
-/** A stable text hash, so an embedding index can be reused until the tool text changes. */
-export function indexSignature(tools: AppTool[]): string {
-  return tools.map(tool => `${tool.name}:${tool.description.length}:${tool.examples.join('|')}:${tool.keywords.join('|')}`).join('\n');
 }

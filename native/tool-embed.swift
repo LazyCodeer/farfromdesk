@@ -14,10 +14,16 @@
 // on its own.
 //
 // Protocol: one JSON object on stdin, one JSON object on stdout.
-//   in : {"query":"...","docs":[{"id":"...","text":"..."}],"k":5}
-//   out: {"ok":true,"model":"nl-sentence-512","ranked":[{"id":"...","score":0.61}]}
-//        {"ok":false,"error":"..."}
+//   rank  : {"query":"...","docs":[{"id":"...","text":"..."}],"k":5}
+//           -> {"ok":true,"model":"nl-sentence-512","ranked":[{"id":"...","score":0.61}]}
+//   vectors: {"texts":["...","..."]}
+//           -> {"ok":true,"model":"nl-sentence-512","vectors":[[...],[...]]}
+//   both  : {"ok":false,"error":"..."}
 // A missing model or a malformed request answers ok:false rather than pretending.
+//
+// The vectors mode exists so the caller can cache the pack's doc vectors per tool set and send
+// only the owner's own words on a later turn. The callers do the cosine themselves in that
+// mode, so these vectors are already L2-normalised and a dot product is the cosine.
 
 import Foundation
 import NaturalLanguage
@@ -28,9 +34,10 @@ struct Doc: Decodable {
 }
 
 struct Request: Decodable {
-    let query: String
-    let docs: [Doc]
+    let query: String?
+    let docs: [Doc]?
     let k: Int?
+    let texts: [String]?
 }
 
 struct Hit: Encodable {
@@ -41,7 +48,8 @@ struct Hit: Encodable {
 struct Response: Encodable {
     let ok: Bool
     let model: String
-    let ranked: [Hit]
+    let ranked: [Hit]?
+    let vectors: [[Double]]?
     let error: String?
 }
 
@@ -50,12 +58,12 @@ func emit(_ response: Response) {
     if let data = try? encoder.encode(response), let text = String(data: data, encoding: .utf8) {
         print(text)
     } else {
-        print("{\"ok\":false,\"model\":\"none\",\"ranked\":[],\"error\":\"could not encode the answer\"}")
+        print("{\"ok\":false,\"model\":\"none\",\"error\":\"could not encode the answer\"}")
     }
 }
 
 func fail(_ message: String) -> Never {
-    emit(Response(ok: false, model: "none", ranked: [], error: message))
+    emit(Response(ok: false, model: "none", ranked: nil, vectors: nil, error: message))
     exit(0)
 }
 
@@ -78,23 +86,39 @@ func cosine(_ a: [Double], _ b: [Double]) -> Double {
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let request = try? JSONDecoder().decode(Request.self, from: input) else {
-    fail("stdin was not a JSON request with a query and docs")
-}
-guard !request.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-    fail("the query was empty")
+    fail("stdin was not a JSON request")
 }
 guard let embedding = NLEmbedding.sentenceEmbedding(for: .english) else {
     fail("this Mac has no English sentence embedding available")
 }
-guard let queryVector = embedding.vector(for: request.query).flatMap({ normalized($0) }) else {
+let model = "nl-sentence-\(embedding.dimension)"
+
+// Vectors mode: embed each text and hand back the normalised vectors, so the caller can cache
+// them per tool set and score later turns itself.
+if let texts = request.texts {
+    var vectors: [[Double]] = []
+    for text in texts {
+        guard let vector = embedding.vector(for: text).flatMap({ normalized($0) }) else {
+            fail("text \(vectors.count) could not be embedded")
+        }
+        vectors.append(vector)
+    }
+    emit(Response(ok: true, model: model, ranked: nil, vectors: vectors, error: nil))
+    exit(0)
+}
+
+guard let query = request.query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    fail("the query was empty")
+}
+guard let queryVector = embedding.vector(for: query).flatMap({ normalized($0) }) else {
     fail("the query could not be embedded")
 }
 
 var hits: [Hit] = []
-for doc in request.docs {
+for doc in request.docs ?? [] {
     guard let vector = embedding.vector(for: doc.text).flatMap({ normalized($0) }) else { continue }
     hits.append(Hit(id: doc.id, score: cosine(queryVector, vector)))
 }
 hits.sort { $0.score > $1.score }
 let limit = max(1, min(request.k ?? 5, hits.count))
-emit(Response(ok: true, model: "nl-sentence-\(embedding.dimension)", ranked: Array(hits.prefix(limit)), error: nil))
+emit(Response(ok: true, model: model, ranked: Array(hits.prefix(limit)), vectors: nil, error: nil))
