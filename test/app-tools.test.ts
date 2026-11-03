@@ -215,3 +215,19 @@ test('every AppleScript tool compiles against its app dictionary', { skip: proce
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * A person's name must never be part of a tool's retrieval text. The calendar tool used to carry
+ * "add a meeting with ashitosh tomorrow at 5pm" and "Meeting with Ashitosh", and that made a note
+ * request about the same person ("don't let me forget to call Ashitosh") match the calendar tool
+ * ahead of the note tool. The live sentence still lives in the golden set, where it belongs.
+ */
+test('a name in a request does not pull in another app tool', () => {
+  const retrievalText = allPackTools().map(tool => JSON.stringify([tool.description, tool.examples, tool.keywords, tool.args])).join(' ').toLowerCase();
+  assert.ok(!retrievalText.includes('ashitosh'), 'a person\'s name is not tool vocabulary');
+  assert.deepEqual(choose("don't let me forget to call Ashitosh", 'Notes'), ['notes_create_note']);
+  assert.equal(choose('add a meeting with ashitosh tomorrow at 5pm', 'Calendar')[0], 'calendar_create_event');
+  // A plan stated as a fact is still a calendar request, which is why the create tool's
+  // description says so rather than relying on a name to match.
+  assert.equal(choose('I am seeing Ashitosh on Friday', 'Calendar')[0], 'calendar_create_event');
+});

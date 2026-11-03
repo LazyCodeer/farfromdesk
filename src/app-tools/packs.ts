@@ -140,18 +140,23 @@ const calendarCreateEvent: AppTool = {
   bundleId: 'com.apple.iCal',
   description:
     'Add an event to a calendar in Apple Calendar with a title, a start and an end. Use this ' +
-    'when the owner asks to schedule, book, add or set up something at a time. It creates the ' +
+    'when the owner asks to schedule, book, add or set up something at a time, and also when the ' +
+    'owner states a plan with a day or time rather than asking, such as seeing someone on Friday. ' +
+    'It creates the ' +
     'event on the owner\'s own calendar and does not invite anyone, does not email anyone and ' +
     'does not create a new calendar. Both times must be written as YYYY-MM-DD HH:MM:SS, so work ' +
     'out the real date and time before calling it. Returns the summary Calendar reports back.',
   args: [
-    { name: 'title', description: 'What the event is called, for example "Meeting with Ashitosh".', required: true },
+    { name: 'title', description: 'What the event is called, for example "Dentist".', required: true },
     { name: 'start', description: 'Start time as YYYY-MM-DD HH:MM:SS.', required: true },
     { name: 'end', description: 'End time as YYYY-MM-DD HH:MM:SS.', required: true },
     { name: 'calendar', description: 'Which calendar to add it to. Leave empty to use the first calendar.' },
   ],
   examples: [
-    'add a meeting with ashitosh tomorrow at 5pm',
+    // The owner's own sentence, with the name left out: an example carrying a person's name
+    // matched an unrelated note request for that same name ("don't let me forget to call
+    // Ashitosh" reached this tool first). The live sentence stays in the golden set instead.
+    'add a meeting with the team tomorrow at 5pm',
     'put a reminder on my calendar for the dentist on friday at 10',
     'schedule a call at 9 tomorrow morning',
   ],
