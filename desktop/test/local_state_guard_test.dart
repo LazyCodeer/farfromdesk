@@ -90,4 +90,69 @@ void main() {
       throwsA(isA<LocalStateUnsafe>()),
     );
   });
+
+  group('resolveOwnerHome', () {
+    bool exists(String path) => true;
+
+    test('an isolated \$HOME is replaced by the account home', () {
+      // The failure this fixes: the app was started with the backend's isolated
+      // HOME, so the guard's "protected" roots landed inside Local's own state and
+      // the start was refused with "Local state overlaps protected data".
+      final resolved = resolveOwnerHome(
+        state: state.path,
+        home: p.join(state.path, 'home'),
+        user: 'someone',
+        directoryExists: exists,
+      );
+      expect(resolved, '/Users/someone');
+    });
+
+    test('a real \$HOME is accepted when nothing better is declared', () {
+      final resolved = resolveOwnerHome(
+        state: state.path,
+        home: '/Users/someone',
+        user: 'someone',
+        directoryExists: exists,
+      );
+      expect(resolved, '/Users/someone');
+    });
+
+    test('the build-time home wins over the environment', () {
+      final resolved = resolveOwnerHome(
+        state: state.path,
+        declared: '/Users/declared',
+        home: '/Users/from-env',
+        user: 'someone',
+        directoryExists: exists,
+      );
+      expect(resolved, '/Users/declared');
+    });
+
+    test('a home that does not exist is skipped', () {
+      final resolved = resolveOwnerHome(
+        state: state.path,
+        declared: '/Users/gone',
+        home: '/Users/here',
+        directoryExists: (path) => path == '/Users/here',
+      );
+      expect(resolved, '/Users/here');
+    });
+
+    test('nothing usable is refused with something the owner can act on', () {
+      expect(
+        () => resolveOwnerHome(
+          state: state.path,
+          home: p.join(state.path, 'home'),
+          directoryExists: exists,
+        ),
+        throwsA(
+          isA<LocalStateUnsafe>().having(
+            (e) => e.message,
+            'message',
+            contains('FFD_OWNER_HOME'),
+          ),
+        ),
+      );
+    });
+  });
 }

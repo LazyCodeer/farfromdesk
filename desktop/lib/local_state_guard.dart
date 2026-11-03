@@ -12,6 +12,43 @@ class LocalStateUnsafe implements Exception {
   String toString() => message;
 }
 
+/// The account's real home folder, resolved without trusting `$HOME` on its own.
+///
+/// `$HOME` is correct for an app the owner launched, but anything that starts this
+/// binary with the backend's isolated environment (a script, a helper, a live
+/// trial) hands it the *Local* home instead. The guard then finds the "protected"
+/// roots inside Local's own state and refuses to start with "Local state overlaps
+/// protected data", which names a symptom and hides the cause. Prefer the
+/// build-time home, then the macOS account home, and only then `$HOME`.
+String resolveOwnerHome({
+  required String state,
+  String? declared,
+  String? home,
+  String? user,
+  bool Function(String path)? directoryExists,
+}) {
+  final exists = directoryExists ?? (path) => Directory(path).existsSync();
+  final local = p.normalize(p.absolute(state));
+  final candidates = <String>[
+    if (declared != null && declared.isNotEmpty) declared,
+    if (user != null && user.isNotEmpty) p.join('/Users', user),
+    if (home != null && home.isNotEmpty) home,
+  ];
+  for (final candidate in candidates) {
+    if (!p.isAbsolute(candidate)) continue;
+    final normal = p.normalize(candidate);
+    // A home inside Local's own state is the backend's isolated home, not the
+    // owner's: using it puts the protected roots inside the state being protected.
+    if (p.equals(normal, local) || p.isWithin(local, normal)) continue;
+    if (!exists(normal)) continue;
+    return normal;
+  }
+  throw LocalStateUnsafe(
+    'Cannot find the account home folder for Local. Open the app from the Finder, '
+    'or build Local with --dart-define=FFD_OWNER_HOME=<absolute home path>.',
+  );
+}
+
 /// A real safety violation. Never retried, because the condition is on disk and
 /// waiting cannot change it.
 class _Unsafe implements Exception {

@@ -1131,3 +1131,20 @@ in place. Details a future session will need:
   (`app.sessionbridge.mac`) is still ad-hoc, so its users still re-approve after every
   release. That needs a Developer ID certificate (paid program).
 
+### The Local start guard must not trust HOME (3 November 2026)
+
+After granting the permissions the owner restarted the app and got **"Local state
+overlaps protected data: /Users/sagar/Library/Application Support/FarFromDesk Local"**
+with no way forward. The app had been started with `HOME` set to the *backend's*
+isolated home (`<state>/home`), so `assertLocalStateSafe` built its "protected" list
+from that home and five of those roots landed inside the Local state, which the guard
+reads as an overlap and refuses. Verified by reproducing the comparison: with
+`HOME=/Users/sagar` nothing overlaps and Local starts; with the isolated home it is
+refused.
+
+`resolveOwnerHome()` in `local_state_guard.dart` now resolves the account home from
+three candidates in order: the build-time `FFD_OWNER_HOME` define, `/Users/$USER`,
+then `$HOME`, skipping anything inside the Local state, and refusing with an
+actionable message (naming the define) when none works. `ffd ship` passes
+`FFD_OWNER_HOME=$HOME`. Five tests in `local_state_guard_test.dart` cover it.
+

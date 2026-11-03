@@ -30,6 +30,9 @@ const _isolatedLocal = bool.fromEnvironment('FFD_ISOLATED_LOCAL');
 const _localState = String.fromEnvironment('FFD_LOCAL_STATE');
 const _localPort = int.fromEnvironment('FFD_LOCAL_PORT', defaultValue: 47961);
 const _localCodexHome = String.fromEnvironment('FFD_LOCAL_CODEX_HOME');
+/// The owner's real home, pinned at build time so the state guard does not have to
+/// take $HOME's word for it. See resolveOwnerHome.
+const _declaredOwnerHome = String.fromEnvironment('FFD_OWNER_HOME');
 
 Future<Directory> createUpdateAttempt(Directory directory) async {
   await directory.create(recursive: true);
@@ -531,12 +534,19 @@ class NativeGateway extends Gateway {
 
   Future<void> start() async {
     if (_isolatedLocal) {
-      final normalHome = Platform.environment['HOME'];
-      if (!Platform.isMacOS ||
-          normalHome == null ||
-          !p.isAbsolute(normalHome)) {
+      if (!Platform.isMacOS) {
         throw StateError('Cannot verify the normal account paths for Local.');
       }
+      // Never trust $HOME alone here: a launch that inherited the backend's
+      // isolated environment makes the guard treat Local's own state as
+      // protected data and refuse. resolveOwnerHome prefers the build-time home,
+      // then the account home, and only then $HOME.
+      final normalHome = resolveOwnerHome(
+        state: state,
+        declared: _declaredOwnerHome,
+        home: Platform.environment['HOME'],
+        user: Platform.environment['USER'],
+      );
       // Validate metadata before creating or accessing Local's state. The
       // second check covers links added while the state directory was created.
       final protected = [

@@ -525,7 +525,8 @@ cmd_ship() {
       --dart-define=FFD_ISOLATED_LOCAL=true \
       "--dart-define=FFD_LOCAL_STATE=$FFD_STATE" \
       --dart-define=FFD_LOCAL_PORT="$FFD_PORT" \
-      --dart-define=FFD_LOCAL_CODEX_HOME="$HOME/.codex" ) > /tmp/ffd-flutter-build.log 2>&1 \
+      --dart-define=FFD_LOCAL_CODEX_HOME="$HOME/.codex" \
+      "--dart-define=FFD_OWNER_HOME=$HOME" ) > /tmp/ffd-flutter-build.log 2>&1 \
     || { tail -30 /tmp/ffd-flutter-build.log; die "flutter build failed"; }
   grep -E '✓ Built|Built ' /tmp/ffd-flutter-build.log | tail -1 | sed 's/^/  /'
 
