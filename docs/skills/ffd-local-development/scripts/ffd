@@ -613,10 +613,17 @@ PY
     [ -z "$stragglers" ] && break
     local pid cmd
     for pid in $stragglers; do
+      # pgrep already matched this pid against the exact installed path, so an
+      # unreadable command line ("(name)" means the process is mid-exit) is not
+      # evidence that it belongs to someone else. Only a readable command that
+      # points elsewhere is. Reading it wrong leaves a stale helper behind, which
+      # is how an orphaned backend ends up holding the port and the service lock.
       cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
       case "$cmd" in
+        '') kill -KILL "$pid" 2>/dev/null || true;;
+        "($FFD_INSTALLED"*|"(${FFD_INSTALLED##*/}"*) kill -KILL "$pid" 2>/dev/null || true;;
         "$FFD_INSTALLED/"*) kill -KILL "$pid" 2>/dev/null || true;;
-        *) note "not killing pid $pid (outside this bundle): ${cmd:-unknown}" ;;
+        *) note "not killing pid $pid (outside this bundle): $cmd" ;;
       esac
     done
     sleep 1

@@ -164,6 +164,35 @@ codesign -d -r- "/Users/sagar/Applications/FarFromDesk Local.app"
 
 The requirement should name the team and the certificate, not a `cdhash`.
 
+If `codesign` fails with `unable to build chain to self-signed root` and
+`security find-identity -v -p codesigning` says **0 valid identities** while Xcode
+happily lists the certificate, the certificate has no usable chain. That is what
+happened here on 3 November:
+
+- `security find-identity -p codesigning` (no `-v`) listed the identity, so the
+  private key was present; only the chain was broken.
+- The certificate's issuer was `Apple Worldwide Developer Relations Certification
+  Authority, OU=G3`, while the only intermediate installed was the 2013 WWDR CA,
+  which **expired on 7 February 2023**.
+- Apple Root CA - G3 was already in the System Roots, so installing the missing G3
+  intermediate completed the chain.
+
+```sh
+curl -sS -o /tmp/AppleWWDRCAG3.cer https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer
+openssl x509 -inform DER -in /tmp/AppleWWDRCAG3.cer -noout -subject -issuer -dates   # check before trusting
+security add-certificates -k "$HOME/Library/Keychains/login.keychain-db" /tmp/AppleWWDRCAG3.cer
+security find-identity -v -p codesigning                                            # now: 1 valid identity
+```
+
+That adds the certificate only. It changes no trust settings: the trust comes from
+Apple's roots already in the System Roots store. The download URL above was taken
+from Apple's own certificate authority page rather than guessed.
+
+Also worth knowing: signing with a new identity makes the app a different code
+identity to the keychain as well as to TCC, so a keychain-backed helper (the Local
+mail helper) can ask once for access to an item created under the old signature.
+"Always Allow" settles it.
+
 Expect **one** re-approval after the first team-signed build: to macOS that build is
 still a different app from the ad-hoc ones, so allow Accessibility and Screen
 Recording once more. From then on, rebuilds keep the grants, which is the whole point.

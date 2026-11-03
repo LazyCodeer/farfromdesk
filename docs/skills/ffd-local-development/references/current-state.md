@@ -1101,3 +1101,33 @@ Until a certificate exists: `ffd permissions` names the changed binary and print
 exact `tccutil reset` for it, and `ffd ship` records the same in the stage's
 `RESULTS.md`. `tccutil` cannot grant; only the owner can switch the row on.
 
+### Signing identity installed, and the missing intermediate (3 November 2026)
+
+The owner created an Apple Development certificate, so the fix for the lost grants is
+in place. Details a future session will need:
+
+- Identity: **`Apple Development: sagar.kumar.iitbombay@gmail.com (P4X9842Y28)`**,
+  **Team ID `75H3D9G65L`**, valid to 3 November 2027. `security find-identity -v -p
+  codesigning` now reports 1 valid identity.
+- It did **not** work at first. `codesign` failed with `unable to build chain to
+  self-signed root ... errSecInternalComponent` while Xcode listed the certificate
+  normally. Cause: the certificate is issued by **WWDR G3**, and the only intermediate
+  installed was the 2013 WWDR CA, which expired on 7 February 2023. Fix: install
+  Apple's G3 intermediate from its own certificate authority page
+  (`https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer`) into the login
+  keychain with `security add-certificates`, which adds the certificate and changes no
+  trust settings. **The release machine will need the same intermediate.**
+- Installed as **2360** (`local-signed-grants-2360`). The app's designated requirement
+  is now team-anchored instead of a cdhash:
+  `identifier "com.codecylabs.farfromdesk.localtest" and anchor apple generic and
+  certificate leaf[subject.CN] = "Apple Development: ..."`, with chain Apple
+  Development > Apple Worldwide Developer Relations Certification Authority > Apple
+  Root CA. `ffd permissions` reports all three Local subjects as identity
+  `75H3D9G65L` and the driver as `YCK386LBJ7`, so no cdhash-based grant is left.
+- One re-approval is still expected after this first signed build, because to macOS it
+  is a different app from the ad-hoc ones. After that, rebuilds should keep the grants;
+  that is the thing to confirm with a second signed install.
+- Not done: nothing signs with the identity on the release path yet, and production
+  (`app.sessionbridge.mac`) is still ad-hoc, so its users still re-approve after every
+  release. That needs a Developer ID certificate (paid program).
+
