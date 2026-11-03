@@ -23,16 +23,22 @@
 # routine, so releasing the hold there would open a window in which a lid-closed
 # Mac could sleep.
 #
+# While the hold is on, a lid close also turns the display off, because macOS
+# only locks the screen when the display sleeps, not when the lid shuts. Without
+# that step a Mac held awake with the lid closed stays unlocked, and the next
+# person to open the lid gets the desktop.
+#
 # This script never reads anything else, never executes app input, and takes no
 # arguments from the app. The app cannot ask it to run a command.
 set -u
 
 # Read by src/server-mode.ts to decide whether the installed copy is out of date.
-FFD_HELPER_VERSION=2
+FFD_HELPER_VERSION=3
 
 STATE="${FFD_STATE_FILE:-}"
 EXPECT_UID="${FFD_STATE_UID:-}"
 PMSET="${FFD_PMSET:-/usr/bin/pmset}"
+IOREG="${FFD_IOREG:-/usr/bin/ioreg}"
 INTERVAL="${FFD_INTERVAL:-5}"
 MAX_AGE="${FFD_HEARTBEAT_MAX_AGE:-180}"
 GRACE_MAX_AGE="${FFD_GRACE_MAX_AGE:-7200}"
@@ -97,18 +103,46 @@ restore() {
   [ "$(sleep_disabled)" = "0" ] || "$PMSET" -a disablesleep 0 >/dev/null 2>&1
 }
 
+# Prints "closed", "open", or "unknown" when the sensor cannot be read.
+lid_state() {
+  state="$("$IOREG" -r -k AppleClamshellState -d 1 2>/dev/null | /usr/bin/grep -o 'AppleClamshellState" = [A-Za-z]*' | /usr/bin/tail -n 1)"
+  case "$state" in
+    *Yes) echo "closed" ;;
+    *No) echo "open" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+# A closed lid does NOT lock macOS by itself: the lock follows display sleep, so
+# a Mac held awake with the lid shut stays unlocked for whoever opens it next.
+# Turning the display off is what makes macOS ask for the password again.
+# Only done while this helper is the reason the Mac is still awake.
+lock_display() {
+  if "$PMSET" displaysleepnow >/dev/null 2>&1; then
+    log "lid closed; display off so macOS locks the screen"
+  else
+    log "lid closed; could not turn the display off, so the screen may stay unlocked"
+  fi
+}
+
 case "$MODE" in
   --once)
     # Single decision, for tests and diagnostics. Prints the reason and result;
     # never loops.
     wanted="$(reason)"
     apply "$wanted"
+    case "$wanted" in
+      ok|grace) [ "$(lid_state)" = "closed" ] && lock_display ;;
+    esac
     printf 'reason=%s sleep=%s\n' "$wanted" "$(sleep_disabled)"
     ;;
   *)
     # If this helper is stopped or unloaded, normal sleep comes back first.
     trap 'log "helper stopping; restoring normal sleep"; restore; exit 0' TERM INT HUP
     previous=""
+    # Starts empty, not "open", so a helper that comes up while the lid is
+    # already shut still locks the screen on its first pass.
+    previous_lid=""
     while :; do
       wanted="$(reason)"
       # Entering the window is the one state change the app cannot report itself,
@@ -118,6 +152,13 @@ case "$MODE" in
       fi
       previous="$wanted"
       apply "$wanted"
+      lid="$(lid_state)"
+      case "$wanted" in
+        ok|grace)
+          if [ "$lid" = "closed" ] && [ "$previous_lid" != "closed" ]; then lock_display; fi
+          ;;
+      esac
+      previous_lid="$lid"
       sleep "$INTERVAL"
     done
     ;;

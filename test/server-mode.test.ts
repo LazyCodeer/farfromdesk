@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { ServerMode } from '../src/server-mode.js';
+import { ServerMode, SERVER_MODE_HELPER_VERSION } from '../src/server-mode.js';
 
 const HELPER = readFileSync(new URL('../native/server-mode/helper.sh', import.meta.url), 'utf8');
 
@@ -20,14 +20,25 @@ fi
 exit 0
 `;
 
-type HelperCase = { enabled?: boolean; power?: 'AC Power' | 'Battery Power'; ageSeconds?: number; graceSeconds?: number; uid?: string; sleepDisabled?: string; raw?: string };
+// A stand-in for ioreg. The lid reads from a file when one is set, so a test can
+// open and close it while the watch loop is running.
+const FAKE_IOREG = `#!/bin/sh
+v="\${FAKE_CLAMSHELL:-No}"
+if [ -n "\${FFD_LID_FILE:-}" ] && [ -f "$FFD_LID_FILE" ]; then v="$(/bin/cat "$FFD_LID_FILE")"; fi
+printf '      "AppleClamshellState" = %s\\n' "$v"
+exit 0
+`;
+
+type HelperCase = { enabled?: boolean; power?: 'AC Power' | 'Battery Power'; ageSeconds?: number; graceSeconds?: number; uid?: string; sleepDisabled?: string; raw?: string; lid?: 'open' | 'closed' };
 
 function helperRun(input: HelperCase) {
   const dir = mkdtempSync(join(tmpdir(), 'ffd-helper-'));
   const pmset = join(dir, 'pmset');
+  const ioreg = join(dir, 'ioreg');
   const state = join(dir, 'server-mode.json');
   const log = join(dir, 'calls.log');
   writeFileSync(pmset, FAKE_PMSET, { mode: 0o755 });
+  writeFileSync(ioreg, FAKE_IOREG, { mode: 0o755 });
   writeFileSync(log, '');
   if (input.raw !== undefined) writeFileSync(state, input.raw);
   else writeFileSync(state, JSON.stringify({ version: 1, enabled: input.enabled !== false, heartbeat: Date.now(), pid: 1 }));
@@ -37,7 +48,7 @@ function helperRun(input: HelperCase) {
   }
   const result = spawnSync('/bin/sh', [new URL('../native/server-mode/helper.sh', import.meta.url).pathname, '--once'], {
     encoding: 'utf8',
-    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: input.uid ?? String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_TEST_LOG: log, FAKE_POWER: input.power ?? 'AC Power', FAKE_SLEEPDISABLED: input.sleepDisabled ?? '0', ...(input.graceSeconds === undefined ? {} : { FFD_GRACE_MAX_AGE: String(input.graceSeconds) }) },
+    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: input.uid ?? String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_IOREG: ioreg, FFD_TEST_LOG: log, FAKE_POWER: input.power ?? 'AC Power', FAKE_CLAMSHELL: input.lid === 'closed' ? 'Yes' : 'No', FAKE_SLEEPDISABLED: input.sleepDisabled ?? '0', ...(input.graceSeconds === undefined ? {} : { FFD_GRACE_MAX_AGE: String(input.graceSeconds) }) },
   });
   const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean);
   const out = (result.stdout ?? '').trim();
@@ -118,6 +129,68 @@ test('server mode with no state file leaves normal sleep in place', () => {
   rmSync(dir, { recursive: true, force: true });
   assert.match(result.stdout, /reason=no-state/);
   assert.ok(!calls.includes('-a disablesleep 1'));
+});
+
+// macOS locks the screen when the display sleeps, not when the lid shuts, so a Mac
+// held awake with the lid closed would stay unlocked for whoever opens it next.
+test('a closed lid turns the display off, because that is what locks macOS', () => {
+  const run = helperRun({ enabled: true, power: 'AC Power', lid: 'closed' });
+  assert.match(run.out, /reason=ok/);
+  assert.ok(run.calls.includes('displaysleepnow'), `expected a display sleep, saw ${JSON.stringify(run.calls)}`);
+});
+
+test('an open lid never touches the display', () => {
+  const run = helperRun({ enabled: true, power: 'AC Power', lid: 'open' });
+  assert.ok(!run.calls.includes('displaysleepnow'));
+});
+
+test('the lid lock needs the same hold as sleep: battery and off are both excluded', () => {
+  const battery = helperRun({ enabled: true, power: 'Battery Power', lid: 'closed', sleepDisabled: '1' });
+  assert.match(battery.out, /reason=on-battery/);
+  assert.ok(!battery.calls.includes('displaysleepnow'), 'the Mac sleeps on battery anyway');
+
+  const off = helperRun({ enabled: false, lid: 'closed' });
+  assert.match(off.out, /reason=disabled/);
+  assert.ok(!off.calls.includes('displaysleepnow'));
+
+  const stale = helperRun({ enabled: true, ageSeconds: 3 * 60 * 60, lid: 'closed', sleepDisabled: '1' });
+  assert.match(stale.out, /reason=stale-heartbeat/);
+  assert.ok(!stale.calls.includes('displaysleepnow'));
+});
+
+test('the watch loop turns the display off once per lid close, not on every pass', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ffd-helper-watch-'));
+  const pmset = join(dir, 'pmset'), ioreg = join(dir, 'ioreg'), state = join(dir, 'server-mode.json');
+  const log = join(dir, 'calls.log'), lid = join(dir, 'lid');
+  writeFileSync(pmset, FAKE_PMSET, { mode: 0o755 });
+  writeFileSync(ioreg, FAKE_IOREG, { mode: 0o755 });
+  writeFileSync(log, '');
+  writeFileSync(lid, 'No');
+  writeFileSync(state, JSON.stringify({ version: 1, enabled: true, heartbeat: Date.now(), pid: 1 }));
+  const child = spawn('/bin/sh', [new URL('../native/server-mode/helper.sh', import.meta.url).pathname], {
+    stdio: 'ignore',
+    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_IOREG: ioreg, FFD_LID_FILE: lid, FFD_TEST_LOG: log, FFD_INTERVAL: '1', FAKE_POWER: 'AC Power', FAKE_SLEEPDISABLED: '1' },
+  });
+  const wakes = () => readFileSync(log, 'utf8').split('\n').filter(c => c === 'displaysleepnow').length;
+  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  try {
+    await wait(1200);
+    assert.equal(wakes(), 0, 'an open lid must not turn the display off');
+    writeFileSync(lid, 'Yes');
+    await wait(2500);
+    assert.equal(wakes(), 1, `one close is one display sleep, saw ${wakes()}`);
+    await wait(2000);
+    assert.equal(wakes(), 1, 'a lid that stays shut must not keep sending');
+    writeFileSync(lid, 'No');
+    await wait(1500);
+    writeFileSync(lid, 'Yes');
+    await wait(2500);
+    assert.equal(wakes(), 2, `a second close is a second display sleep, saw ${wakes()}`);
+  } finally {
+    child.kill('SIGTERM');
+    await wait(300);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
@@ -263,7 +336,7 @@ test('an installed helper from an older build is replaced on the next enable', a
     writeFileSync(join(f.dir, 'helper.sh'), '#!/bin/sh\nFFD_HELPER_VERSION=1\n');
     await f.mode.setEnabled(true);
     assert.equal(f.approved.length, 1, 'an out-of-date helper must be reinstalled, not kept');
-    assert.match(f.approved[0], /FFD_HELPER_VERSION=2/);
+    assert.match(f.approved[0], new RegExp(`FFD_HELPER_VERSION=${SERVER_MODE_HELPER_VERSION}`));
     assert.equal(f.mode.view().enabled, true);
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });

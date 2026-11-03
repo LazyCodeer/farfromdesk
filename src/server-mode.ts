@@ -18,7 +18,7 @@ export const SERVER_MODE = {
 export const SERVER_MODE_PLIST = `/Library/LaunchDaemons/${SERVER_MODE.label}.plist`;
 export const SERVER_MODE_HELPER = `${SERVER_MODE.support}/helper.sh`;
 /** Must match FFD_HELPER_VERSION in native/server-mode/helper.sh. */
-export const SERVER_MODE_HELPER_VERSION = 2;
+export const SERVER_MODE_HELPER_VERSION = 3;
 const HELPER_VERSION = /^FFD_HELPER_VERSION=(\d+)$/m;
 
 export type ServerModeView = {

@@ -17,6 +17,7 @@ import { BrowserTabs } from './browser-tabs.js';
 import {PhoneRemoteService} from './remote-desktop/phone-service.js';
 import {RemoteDesktopService} from './remote-desktop/service.js';
 import {RemoteControlService,voiceTranscriber} from './remote-p2p/service.js';
+import {screenLockGate,sessionProbePath} from './session-lock.js';
 import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
@@ -119,6 +120,14 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
   const remoteControl=new RemoteControlService(new RemotePasswordAccess({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))}),undefined,text=>store.output(undefined,text,`remote-reconnect:${Date.now()}`,undefined,{plain:true}),voiceTranscriber(store));
   router.remoteControl=text=>remoteControl.chat(text);
+  // A locked Mac still accepts synthetic input, but it arrives at the lock screen, so a
+  // screen action is refused and the owner is handed the link the "control my screen"
+  // command sends. See src/session-lock.ts for why that is the whole point.
+  const requireUnlockedScreen=screenLockGate({
+    probe:sessionProbePath,
+    link:()=>remoteControl.chat('control my screen'),
+    notify:text=>{store.output(undefined,text,`remote-locked:${Date.now()}`,undefined,{plain:true});},
+  });
   const artifacts=new Artifacts(store),items=new Items(store,b=>router.coordinator?.name(b)??b.alias);
   const social=process.env.FFD_ISOLATED_LOCAL==='1'?new SocialAssistant(store.db,()=>undefined):undefined;
   artifacts.disk.recover();
@@ -224,7 +233,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           router.coordinator!.ownerRequest(requestId);
           if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
           if(input.action==='stop')macAccessEpoch++;
-          if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireMacPermission();if(epoch!==macAccessEpoch)throw new Error('MAC_CONTROL_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
+          if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireMacPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('MAC_CONTROL_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           let result=await macControl.run(`${binding.id}:${requestId}`,input);
           if(input.action==='status')result=syncMacPermission(result as ReturnType<MacControl['view']>);
           router.coordinator!.ownerRequest(requestId);
@@ -277,7 +286,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
           if(input.action==='stop'){macAccessEpoch++;macControl.stop();}
           if(input.action==='status'){syncMacPermission(await macControl.status());router.coordinator!.ownerRequest(requestId);}
-          if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireDesktopPermission();if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
+          if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{
             router.coordinator!.ownerRequest(requestId);
             if(router.stopped)throw new Error('Background operation is paused.');
@@ -356,7 +365,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         if(router.stopped&&input.action!=='stop'&&input.action!=='status'&&input.action!=='check_permissions')throw new Error('Background operation is paused.');
         if(input.action==='stop')macAccessEpoch++;
         if(input.action==='stop'&&desktopControl.view().enabled)desktopControl.stop();
-        if(input.action!=='stop'&&input.action!=='status'&&input.action!=='check_permissions'){const epoch=macAccessEpoch;await requireDesktopPermission();if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');if(router.stopped)throw new Error('Background operation is paused.');}
+        if(input.action!=='stop'&&input.action!=='status'&&input.action!=='check_permissions'){const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');if(router.stopped)throw new Error('Background operation is paused.');}
         const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{if(router.stopped)throw new Error('Background operation is paused.');});
         store.audit('desktop-control-action',binding.id,String((input as {action?:string}).action??''));
         if(result?.screenshot?.pngBase64){const {pngBase64,...evidence}=result.screenshot as {pngBase64:string};const artifact=artifacts.prepare(binding,requestId,'desktop-window.png',pngBase64);json(res,200,{...result,screenshot:{...evidence,...artifact,delivery:'prepared, not sent'}});return;}
