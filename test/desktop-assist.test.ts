@@ -90,3 +90,13 @@ test('a revoked grant stops the action with the grant named', async () => {
   const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now);
   await assert.rejects(() => c.assist('brain:t', { action: 'open_app', app: 'Comet' }), /ACCESSIBILITY_PERMISSION_REQUIRED/);
 });
+test('driver bookkeeping never reaches the owner as if it were the answer', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: true, observation: { summary: 'full read (no usable earlier read of this window to diff against)' } } });
+  const out = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'escape' });
+  assert.equal(out.ok, true);
+  assert.equal(out.observation, null);
+  assert.equal(out.diff, null);
+  // A refusal still explains itself.
+  const f = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: false, observation: { summary: 'no element matched' } } });
+  assert.equal((await f.c.assist('brain:t', { action: 'click', app: 'Comet', name: 'Nope' })).observation, 'no element matched');
+});

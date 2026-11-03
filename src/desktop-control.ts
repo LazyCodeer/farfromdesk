@@ -199,7 +199,11 @@ export class DesktopControl {
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};
       const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
-      return {action:plan.action,ok:result?.ok===true,observation:result?.observation?.summary??result?.observation?.message??null,diff:String(result?.observation?.state?.tree_diff??'').slice(0,1200)||null};
+      // On success only the diff is evidence. The observation's own summary is driver
+      // bookkeeping ("full read (no usable earlier read of this window to diff against)")
+      // and was reaching the owner's chat as if it were part of the answer.
+      const ok=result?.ok===true;
+      return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,diff:String(result?.observation?.state?.tree_diff??'').slice(0,1200)||null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
   /**

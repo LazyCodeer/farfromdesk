@@ -76,6 +76,22 @@ test in `test/desktop-assist.test.ts`.
   transient failure in the same span, "Meta could not read that message", was the Meta
   API and not this code: an immediate retry succeeded.
 
+## The device router runs before the contract review
+
+Found by database forensics, not by reading the code: the failing message never reached the
+brain at all. The `task_contracts` row for "press escape in Comet" had no matching
+`brain_tasks` row and no `request_events`, while "open Comet" and "press escape" did.
+`receiveOnce` runs the task-contract preflight before `brain.handle`, and that preflight is
+a second, narrower classifier whose prompt asks only "is this unclear coding work?" with no
+device concept, so it intercepted Mac phrasing first.
+
+So now the router asks `brain.claimsDevice` first and skips the preflight when the
+deterministic router will claim the message. The branch is deliberately in this order:
+
+1. a cheap shape test, so only device-shaped messages consult the driver at all,
+2. the real target list, cached, so "open the PR" is still not claimed,
+3. only then the preflight, which keeps its guard on everything else.
+
 ## Obvious commands do not ask the model
 
 `detectDevicePlan` runs before inference, for an explicit device verb on an app that is

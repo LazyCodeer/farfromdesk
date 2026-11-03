@@ -82,7 +82,7 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
   }
   if (!result?.ok) return { ok: false, line: `I could not do that in ${app}: ${result?.observation ?? 'the driver refused it'}.`, evidence: result?.diff ?? null };
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
-  return { ok: true, line: `${what} in ${app}.`, evidence: result?.diff ?? result?.observation ?? null };
+  return { ok: true, line: `${what} in ${app}.`, evidence: result?.diff ?? null };
 }
 
 /**
@@ -135,6 +135,13 @@ const PATTERNS: { action: DevicePlan['action']; pattern: RegExp }[] = [
   { action: 'open_app', pattern: /^(?:open|launch|start|switch to|go to|focus) (.+)$/i },
 ];
 const KEYS: Record<string, string> = { enter: 'return', esc: 'escape' };
+
+/** Cheap shape test, no driver call: does this message open like a Mac action? */
+export function deviceVerbLike(text: string): boolean {
+  const raw = text.trim();
+  if (!raw || raw.startsWith('/') || raw.length > 200) return false;
+  return PATTERNS.some(({ pattern }) => pattern.test(raw));
+}
 
 export function detectDevicePlan(text: string, targets: { name: string }[]): DevicePlan | null {
   const raw = text.trim();

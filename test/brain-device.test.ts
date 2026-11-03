@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DevicePlan, devicePlanIssue, deviceOutcome, deviceRefusal, runDevicePlan, summarizeTree, detectDevicePlan, type DeviceControl } from '../src/brain-device.js';
+import { DevicePlan, devicePlanIssue, deviceOutcome, deviceRefusal, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, type DeviceControl } from '../src/brain-device.js';
 import { Interpretation } from '../src/meta-model.js';
 
 test('a plan accepts only the documented fields', () => {
@@ -125,4 +125,16 @@ test('a command that is not unmistakably a device command is left to the model',
   // Owner commands are commands, not device requests.
   assert.equal(detectDevicePlan('/open Comet', OPEN_APPS), null);
   assert.equal(detectDevicePlan('   ', OPEN_APPS), null);
+});
+
+test('the router can tell a device-shaped message without a driver call', () => {
+  assert.equal(deviceVerbLike('open Comet'), true);
+  assert.equal(deviceVerbLike('press escape in Comet'), true);
+  assert.equal(deviceVerbLike('what is in Comet right now'), true);
+  // Coding and chat must not be claimed, or the contract review would be skipped for them.
+  assert.equal(deviceVerbLike('fix the failing tests'), false);
+  assert.equal(deviceVerbLike('where are we'), false);
+  assert.equal(deviceVerbLike('list my codex sessions'), false);
+  assert.equal(deviceVerbLike('/open Comet'), false);
+  assert.equal(deviceVerbLike('   '), false);
 });

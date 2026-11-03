@@ -9,7 +9,7 @@ import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret, type BrainPolicy } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
-import { runDevicePlan, deviceTargets, detectDevicePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
+import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, type DeviceControl, type DevicePlan } from './brain-device.js';
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
@@ -285,6 +285,19 @@ export class MetaBrain {
         this.store.db.exec('RELEASE brain_watch');
       }catch(e){this.store.db.exec('ROLLBACK TO brain_watch; RELEASE brain_watch');throw e;}
     }
+  }
+  /**
+   * Whether the deterministic device router would claim this message.
+   *
+   * Public because the router must ask before running its task-contract preflight: that
+   * preflight is a second, narrower classifier with no device concept, and it intercepted
+   * "press escape in Comet" before the brain ever saw the message, turning one keypress
+   * into an owner-facing contract review. Cheap by construction: the shape test runs first,
+   * so only device-shaped messages ever touch the driver, and its target list is cached.
+   */
+  async claimsDevice(router:Router,text:string):Promise<boolean>{
+    if(!brainPolicy(this.store).enabled||!brainSelected(router)||!deviceVerbLike(text))return false;
+    try{return detectDevicePlan(text,await deviceTargets(this.deviceControl()))!==null;}catch{return false;}
   }
   /** The driver is started on first use: a brain that never controls the Mac never starts it. */
   private deviceControl():DeviceControl {return this.device??=this.injectedDevice??new DesktopControl(this.store);}
