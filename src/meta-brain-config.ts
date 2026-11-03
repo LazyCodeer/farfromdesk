@@ -12,7 +12,7 @@ export const META_MODELS=['muse-spark-1.3','muse-spark-1.2','muse-spark-1.1','mu
 /** Every coding platform the brain can route to. Adding a provider means adding it here. */
 export const PROVIDERS=['codex','claude','muse','deepseek','cursor'] as const;
 export type BrainProvider=(typeof PROVIDERS)[number];
-export const BrainPolicy=z.object({enabled:z.boolean(),model:z.enum(META_MODELS),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(PROVIDERS)).max(5),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true),taskContracts:z.boolean().default(true)}).strict();
+export const BrainPolicy=z.object({enabled:z.boolean(),model:z.enum(META_MODELS),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(PROVIDERS)).max(PROVIDERS.length),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true),taskContracts:z.boolean().default(true)}).strict();
 export type BrainPolicy=z.infer<typeof BrainPolicy>;
 export const DEFAULT_BRAIN:BrainPolicy={enabled:false,model:'muse-wonder-1.0',allowRouting:false,allowStatus:true,allowManagement:false,providers:[],failure:'legacy',notes:'',learn:true,taskContracts:true};
 /** Platforms the owner has set up. Provisioning a coordinator adds to this list (see masters.ts). */

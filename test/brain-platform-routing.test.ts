@@ -10,7 +10,7 @@ import { Router } from '../src/router.js';
 import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
 import { MetaBrain } from '../src/meta-brain.js';
-import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, type BrainProvider } from '../src/meta-brain-config.js';
+import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, PROVIDERS, type BrainProvider } from '../src/meta-brain-config.js';
 import { TaskContracts } from '../src/task-contracts.js';
 import type { Interpretation } from '../src/meta-model.js';
 
@@ -55,6 +55,20 @@ test('the routing allowlist follows the platforms the owner set up, without drop
     // A platform the owner has not set up stays denied.
     store.set('enabled-apps',JSON.stringify(['codex']));
     assert.deepEqual(brainPolicy(store).providers,['codex','claude']);
+  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('every supported platform fits in the saved allowlist',()=>{
+  // A forward guard rather than a regression test: the cap and the provider count are both 5 today, so
+  // this also passes against the old literal. It fails the day a sixth platform (Antigravity, or a
+  // Cursor CLI provider) is added while the cap is still a hard-coded number - the moment the bug would
+  // otherwise ship, silently turning every brain-policy save into a validation error.
+  const dir=mkdtempSync(join(tmpdir(),'ffd-policy-cap-')),store=new Store(':memory:'),secret=new MetaSecret(dir);
+  try{
+    store.set('enabled-apps',JSON.stringify([...PROVIDERS]));
+    const policy={...DEFAULT_BRAIN,enabled:true,allowRouting:true,providers:[...PROVIDERS]};
+    saveBrainConfig(store,secret,{policy});
+    assert.deepEqual(brainPolicy(store).providers,[...PROVIDERS]);
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
 
