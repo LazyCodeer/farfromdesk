@@ -35,6 +35,11 @@ export const desktopInput=z.object({
   screenshot:z.boolean().optional(),
 }).strict();
 type Input=z.infer<typeof desktopInput>;
+/**
+ * The owner brain's smaller vocabulary: one action, addressed by name. The caller
+ * validates and bounds it; this layer only gates and delivers.
+ */
+export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_key';app?:string;window?:string;role?:string;name?:string;text?:string;key?:string};
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
 export type BrowserCall=(q:Record<string,unknown>,signal?:AbortSignal)=>Promise<any>;
 const execute=promisify(execFile);
@@ -56,6 +61,9 @@ const recipes:Record<string,{composer:string;new:string;send?:string}>={
 };
 const prohibited=['com.apple.systempreferences','com.apple.securityagent','com.apple.loginwindow','com.apple.keychainaccess','com.apple.passwords'];
 const sensitiveApp=(bundle:string)=>prohibited.includes(bundle.toLowerCase())||/1password|bitwarden/i.test(bundle);
+// The brain addresses apps by the name the owner said, not by bundle id, so the
+// exclusion has to match a display name too.
+const sensitiveName=(name:string)=>sensitiveApp(name)||/system settings|keychain|passwords|1password|bitwarden/i.test(name);
 const only=<T>(rows:T[],message:string):T=>{if(rows.length!==1)throw new Error(message);return rows[0];};
 export function desktopUrl(url?:string){
   if(url==='about:blank')return url;
@@ -107,6 +115,7 @@ export class DesktopControl {
    */
   private capability:{ok:boolean;detail:string|null;checkedAt:number}|null=null;
   private capabilityPending?:Promise<{ok:boolean;detail:string|null}>;
+  private targetCache?:{value:{name:string;bundleId:string;windows:string[]}[];checkedAt:number};
   constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now){}
   view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',driverVersion:'0.38.0',browserAdapters:Object.keys(desktopBrowsers),actions:desktopActions,permission:this.permission,capability:this.capability};}
   /**
@@ -149,6 +158,75 @@ export class DesktopControl {
       return {ok:this.capability!.ok,detail:this.capability!.detail};
     })().finally(()=>{this.capabilityPending=undefined;});
     return this.capabilityPending;
+  }
+  /**
+   * One bounded action for the owner brain, addressed by name.
+   *
+   * The ref-based path in `run` needs a discover/select/read loop, which an owner
+   * typing one sentence cannot supply. The driver already resolves role/name/app
+   * targets itself, so this reuses that instead of inventing a second addressing
+   * scheme. Background delivery stays on: the owner keeps working and the pointer
+   * does not move. A batch that cannot be delivered in the background is reported
+   * as refused rather than silently foregrounded.
+   */
+  async assist(scope:string,plan:AssistPlan,authorize:()=>void=()=>{}):Promise<any>{
+    if(this.platform!=='darwin')throw new Error('DESKTOP_MACOS_ONLY');
+    if(this.pending)throw new Error('DESKTOP_BUSY');
+    const report=await this.permissionReport();
+    if(!report?.accessibility)throw new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow FarFromDesk in macOS System Settings > Privacy & Security > Accessibility, then try again.');
+    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Turn on Remote control in Settings, then try again.');
+    if(plan.app&&sensitiveName(plan.app))throw new Error('SENSITIVE_TARGET: System Settings, keychain and password apps are excluded from desktop control.');
+    const controller=new AbortController(),generation=this.generation;this.pending=controller;
+    try{
+      authorize();
+      if(plan.action==='open_app'){
+        const found=await this.resolve(plan.app);
+        const launched=await this.driver.call('launch_app',found?.bundle_id?{bundle_id:found.bundle_id}:{name:plan.app!},controller.signal);
+        return {action:plan.action,app:launched?.name??plan.app,running:launched?.launch_state?.process_running===true,windowReady:launched?.launch_state?.window_ready===true,stoleFocus:launched?.self_activation_suppressed===false};
+      }
+      if(plan.action==='read_window'){
+        const target=await this.resolve(plan.app,plan.window);
+        if(!target)throw new Error('DESKTOP_APP_NOT_RUNNING: '+plan.app+' has no open window to read.');
+        const state=await this.driver.call('get_window_state',{pid:target.pid,window_id:target.window_id,tree_format:'markdown',max_elements:250},controller.signal);
+        return {action:plan.action,app:plan.app,window:state?.window_title??null,tree:String(state?.tree_markdown??'').slice(0,6000),elements:state?.element_count??0,complete:state?.elements_complete===true};
+      }
+      const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
+        :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
+        :{press_key:{key:plan.key!}};
+      const result=await this.driver.call('run_steps',{app:plan.app,...(plan.window?{window:plan.window}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
+      return {action:plan.action,ok:result?.ok===true,observation:result?.observation?.summary??result?.observation?.message??null,diff:String(result?.observation?.state?.tree_diff??'').slice(0,1200)||null};
+    }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
+  }
+  /** Resolve an app by name or bundle id, and optionally one of its windows by title. */
+  private async resolve(app?:string,window?:string){
+    if(!app)return undefined;
+    const tree=await this.driver.call('get_accessibility_tree',{});
+    const needle=app.toLowerCase();
+    const target=(tree?.apps??[]).find((a:any)=>String(a.name??'').toLowerCase()===needle||String(a.bundle_id??'').toLowerCase()===needle)
+      ??(tree?.apps??[]).find((a:any)=>String(a.name??'').toLowerCase().includes(needle)||String(a.bundle_id??'').toLowerCase().includes(needle));
+    if(!target)return undefined;
+    const windows=(tree?.windows??[]).filter((w:any)=>w.pid===target.pid);
+    const picked=(window?windows.find((w:any)=>String(w.title??'').toLowerCase().includes(window.toLowerCase())):undefined)??windows[0];
+    return {...target,window_id:picked?.window_id??null,windowTitle:picked?.title??null};
+  }
+  /**
+   * What the owner could name right now: running apps that actually have a window,
+   * with the window titles. Spans windows only, never page content, so it is safe
+   * to put in a prompt.
+   */
+  async targets(maxAgeMs=10000){
+    if(maxAgeMs>0&&this.targetCache&&this.now()-this.targetCache.checkedAt<maxAgeMs)return this.targetCache.value;
+    const tree=await this.driver.call('get_accessibility_tree',{});
+    const byPid=new Map<number,string[]>();
+    for(const w of tree?.windows??[]){
+      const title=String(w?.title??'').slice(0,90);
+      if(!title)continue;
+      byPid.set(w.pid,[...(byPid.get(w.pid)??[]),title]);
+    }
+    const value=(tree?.apps??[]).map((a:any)=>({name:String(a.name??''),bundleId:String(a.bundle_id??''),windows:byPid.get(a.pid)??[]}))
+      .filter((a:any)=>a.windows.length).slice(0,40);
+    this.targetCache={value,checkedAt:this.now()};
+    return value;
   }
   stop(){this.generation++;this.refs.clear();this.pending?.abort();this.driver.stop();return {stopped:true,warning:'Already-delivered actions may have taken effect. Inspect before retrying.'};}
   private save(r:Ref){while(this.refs.size>=1000)this.refs.delete(this.refs.keys().next().value!);const id=randomUUID();this.refs.set(id,r);return id;}
