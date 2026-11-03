@@ -199,11 +199,15 @@ export class DesktopControl {
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};
       const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
-      // On success only the diff is evidence. The observation's own summary is driver
-      // bookkeeping ("full read (no usable earlier read of this window to diff against)")
-      // and was reaching the owner's chat as if it were part of the answer.
+      // On success the evidence is counts, never the diff. The diff quotes the focused
+      // element, and on a mail page that reached the owner's chat as a sender address and a
+      // subject line. The observation's own summary is driver bookkeeping
+      // ("full read (no usable earlier read of this window to diff against)") and is kept
+      // only for a refusal, where it explains what the driver could not do.
       const ok=result?.ok===true;
-      return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,diff:String(result?.observation?.state?.tree_diff??'').slice(0,1200)||null};
+      const counts=result?.observation?.state?.diff_counts;
+      const total=counts?Number(counts.added??0)+Number(counts.changed??0)+Number(counts.removed??0):0;
+      return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,changes:ok&&total?`The window changed (${total} element${total===1?'':'s'}).`:null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
   /**

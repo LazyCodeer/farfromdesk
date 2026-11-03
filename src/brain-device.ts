@@ -80,9 +80,9 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     if (!result?.tree) return { ok: false, line: `I could not read ${app}.`, evidence: null };
     return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree) };
   }
-  if (!result?.ok) return { ok: false, line: `I could not do that in ${app}: ${result?.observation ?? 'the driver refused it'}.`, evidence: result?.diff ?? null };
+  if (!result?.ok) return { ok: false, line: `I could not do that in ${app}: ${result?.observation ?? 'the driver refused it'}.`, evidence: null };
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
-  return { ok: true, line: `${what} in ${app}.`, evidence: result?.diff ?? null };
+  return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };
 }
 
 /**

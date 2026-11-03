@@ -176,7 +176,15 @@ export class TaskContracts {
     if(text.startsWith('/')&&!/^\/to\s+/i.test(text)&&!specialty)return {kind:'pass'};
     const key=this.secret.read();if(!key)throw new Error('The task contract needs a Meta key. Nothing was sent.');
     const review=(reviewText??text).trim();if(text.length>4000||review.length>4000)throw new Error('Please send a task under 4,000 characters for review. Nothing was sent.');
-    const decision=ContractDecision.parse(await this.interpret(key,review,[],metaObserver(this.store,'contracted',context.destination,context.owner)));
+    let decision:ContractDecision;
+    try{decision=ContractDecision.parse(await this.interpret(key,review,[],metaObserver(this.store,'contracted',context.destination,context.owner)));}
+    catch(e){
+      // Record which failure it was before the owner-facing sentence replaces it, so the
+      // timeline can tell a rate limit from a rejected response without guessing.
+      const code=(e as {code?:unknown})?.code;
+      try{this.store.event(m.id,'contract_interpretation_failed',{code:typeof code==='string'?code:'unknown'});}catch{}
+      throw e;
+    }
     if(!this.store.incomingOwnerCurrent())return {kind:'handled'};
     if(!contextValid(r,context)||hash(this.secret.read()??'')!==hash(key))throw new Error('Your connection or settings changed. Nothing was sent.');
     if(decision.kind==='pass')return {kind:'pass'};

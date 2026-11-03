@@ -95,8 +95,18 @@ test('driver bookkeeping never reaches the owner as if it were the answer', asyn
   const out = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'escape' });
   assert.equal(out.ok, true);
   assert.equal(out.observation, null);
-  assert.equal(out.diff, null);
+  assert.equal(out.changes, null, 'nothing changed, so there is nothing to report');
   // A refusal still explains itself.
   const f = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: false, observation: { summary: 'no element matched' } } });
   assert.equal((await f.c.assist('brain:t', { action: 'click', app: 'Comet', name: 'Nope' })).observation, 'no element matched');
+});
+
+test('a successful action reports counts, never the window text', async () => {
+  // Measured: the raw diff put a sender address and a subject line from a mail page into the
+  // owner's chat. Counts describe the same outcome without carrying content.
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: true, observation: { state: { diff_counts: { added: 1, changed: 2, removed: 0 }, tree_diff: '~ AXStaticText = "freetier@costalerts.amazonaws.com AWS Free Tier"' } } } });
+  const out = await h.c.assist('brain:t', { action: 'click', app: 'Comet', name: 'Inbox' });
+  assert.equal(out.changes, 'The window changed (3 elements).');
+  assert.equal('diff' in out, false, 'the raw diff must not leave this layer');
+  assert.equal(JSON.stringify(out).includes('costalerts'), false);
 });
