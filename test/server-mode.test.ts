@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -133,6 +133,19 @@ test('server mode with no state file leaves normal sleep in place', () => {
 
 // macOS locks the screen when the display sleeps, not when the lid shuts, so a Mac
 // held awake with the lid closed would stay unlocked for whoever opens it next.
+test('every absolute tool the helper calls exists at the path it hardcodes', () => {
+  // The lid lock hardcoded /usr/bin/ioreg in version 3, which does not exist: ioreg is
+  // in /usr/sbin. The helper therefore read the lid as unknown on every pass and never
+  // locked a single lid close, and nothing caught it, because every fake in this file
+  // injects its own path. These defaults are the ones only the real daemon uses, so
+  // they are the only paths this suite cannot exercise any other way.
+  const paths = [...HELPER.matchAll(/^[A-Z]+="\$\{FFD_[A-Z_]+:-(\/[^}]*)\}"/gm)].map(m => m[1]);
+  assert.ok(paths.length >= 2, `expected the helper's tool defaults, saw ${JSON.stringify(paths)}`);
+  for (const path of paths) {
+    if (process.platform === 'darwin') assert.ok(existsSync(path), `${path} does not exist, so the helper would fail silently`);
+  }
+});
+
 test('a closed lid turns the display off, because that is what locks macOS', () => {
   const run = helperRun({ enabled: true, power: 'AC Power', lid: 'closed' });
   assert.match(run.out, /reason=ok/);

@@ -33,12 +33,12 @@
 set -u
 
 # Read by src/server-mode.ts to decide whether the installed copy is out of date.
-FFD_HELPER_VERSION=3
+FFD_HELPER_VERSION=4
 
 STATE="${FFD_STATE_FILE:-}"
 EXPECT_UID="${FFD_STATE_UID:-}"
 PMSET="${FFD_PMSET:-/usr/bin/pmset}"
-IOREG="${FFD_IOREG:-/usr/bin/ioreg}"
+IOREG="${FFD_IOREG:-/usr/sbin/ioreg}"
 INTERVAL="${FFD_INTERVAL:-5}"
 MAX_AGE="${FFD_HEARTBEAT_MAX_AGE:-180}"
 GRACE_MAX_AGE="${FFD_GRACE_MAX_AGE:-7200}"
@@ -143,6 +143,7 @@ case "$MODE" in
     # Starts empty, not "open", so a helper that comes up while the lid is
     # already shut still locks the screen on its first pass.
     previous_lid=""
+    warned_lid=""
     while :; do
       wanted="$(reason)"
       # Entering the window is the one state change the app cannot report itself,
@@ -153,6 +154,16 @@ case "$MODE" in
       previous="$wanted"
       apply "$wanted"
       lid="$(lid_state)"
+      # Say so out loud the first time the lid cannot be read: otherwise the screen
+      # silently never locks and nothing anywhere explains why.
+      if [ "$lid" = "unknown" ]; then
+        if [ "$warned_lid" != "unknown" ]; then
+          log "cannot read the lid state (${IOREG}); the screen will not lock on a lid close"
+          warned_lid="unknown"
+        fi
+      else
+        warned_lid=""
+      fi
       case "$wanted" in
         ok|grace)
           if [ "$lid" = "closed" ] && [ "$previous_lid" != "closed" ]; then lock_display; fi
