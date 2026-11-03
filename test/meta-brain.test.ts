@@ -226,6 +226,14 @@ test('owner can save a todo without dispatch, update it, and recover it from dis
     saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
     await f.router.receive({id:'wa:todo',text:'Add todo: improve invoice export'});
     assert.equal(f.store.jobs().length,0);const item=f.router.brain.memory.board()[0];assert.equal(item.title,'improve invoice export');assert.equal(item.status,'not started');
+    // The same operation, said the way the owner actually says it. Live on 2393 the phrase below
+    // answered 'To save without starting work, say "Add todo: …".', because the model read the
+    // intent and this literal check refused the wording.
+    await f.router.receive({id:'wa:forget',text:"don't let me forget to call Ashitosh"});
+    assert.ok(f.router.brain.memory.board().some(item=>item.title==='call Ashitosh'),'the forget phrasing is saved as a task');
+    assert.equal(f.store.jobs().length,0);
+    // "remind me to X" is not this check's business: the schedule lane claims it first (its own
+    // reply source is `schedule-reply:`), so it never reaches the task board.
     f.respond(async()=>({...decision(),intent:'manage',operation:'set_todo',itemStatus:'blocked',taskIds:[item.ref]}));
     await f.router.receive({id:'wa:todo-blocked',text:'Mark invoice export as blocked'});
     assert.equal(f.c.items().get(item.id).status,'blocked');assert.equal(f.store.jobs().length,0);

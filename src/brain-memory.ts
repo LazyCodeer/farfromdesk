@@ -103,7 +103,10 @@ export class BrainMemory {
   /** Interpretation proposes a management operation; literal original commands authorize it. */
   manage(router:Router,m:Incoming,d:Interpretation):string {
     if(d.operation==='add_todo') {
-      const match=/^(?:please\s+)?(?:add (?:a )?(?:to-do|todo|task)|remember(?: this)?(?: task)?)[ :]+(?:to\s+)?([\s\S]+)$/i.exec(m.text.trim());
+      // The owner says this the way people say it: "don't let me forget to call Ashitosh" was
+      // refused live with a scolding about "Add todo:", because the model read the intent
+      // correctly and this literal check did not accept the phrasing.
+      const match=/^(?:please\s+)?(?:add (?:a )?(?:to-do|todo|task)|remember(?: this)?(?: task)?|don'?t (?:let me )?forget)[ :]+(?:to\s+)?([\s\S]+)$/i.exec(m.text.trim());
       if(!match)throw new Error('To save without starting work, say “Add todo: …”.');
       const item=this.add(m.id,match[1]);
       return `Saved #${item.id}: ${item.title}. Status: not started. No session was dispatched.`;
