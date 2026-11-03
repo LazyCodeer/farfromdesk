@@ -108,9 +108,40 @@ an awake Mac with the lid shut is not necessarily a Mac with a visible screen.
 | Logged out, at the login window | `LOGIN_UNCONFIRMED` / `NOT_CONSOLE_SESSION` | refuses, returns `MAC_UNAVAILABLE` |
 | Asleep | nothing runs | `womp 1` on AC allows a magic-packet wake; there is no wake-on-request path |
 
-Still not tested, and not claimed: a lid-close with no external display attached, where
-no display may remain to capture; relock after display sleep mid-session; fast user
-switching; and the login window, which the code refuses by design.
+Still not tested, and not claimed: relock after display sleep mid-session, fast user
+switching, and the login window, which the code refuses by design.
+
+## A lid with no display attached is still a screen
+
+This was the last open question, and it came out better than expected. With the charger
+in, the monitor unplugged and the lid shut, `system_profiler` listed exactly one display:
+the built-in Retina panel at 2560x1664, `Online: Yes`. `session-state` returned
+`UNLOCKED`, `pmset -g` returned `SleepDisabled 1`, and a capture through the driver
+returned a full 269,908-byte frame of the live desktop, rendered while the panel itself
+was shut. Plain typing and clicking therefore work in this state too, because input never
+depended on a visible panel.
+
+So a laptop with nothing plugged in and the lid closed remains fully usable, and no dummy
+display adapter is needed. The earlier black frame was a different cause: the display had
+been turned off after the lock screen went idle, not removed.
+
+## Losing power is the one thing that puts it to sleep
+
+While the charger was out during this test the Mac slept, which the machine's own log
+shows rather than my reasoning:
+
+```
+2026-11-03 15:44:16 Sleep  Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 596 secs
+2026-11-03 15:54:57 Sleep  Entering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 68 secs
+```
+
+The helper had logged `10:13:42Z normal sleep restored (on-battery)` at 15:43:42, and the
+clamshell sleep followed 34 seconds later. Both directions of the battery transition are
+now verified on live hardware, which had been listed as unverified since 2325: pulling
+power gives up the hold, plugging back in (`10:30:06Z lid-closed sleep disabled`) takes it
+again. The cost is real and worth stating plainly: unplugging a closed Mac makes it sleep
+within about half a minute, remote control goes down with it, and `womp` is 0 on battery,
+so nothing short of physical input brings it back.
 
 ## The ceiling nobody can code around
 

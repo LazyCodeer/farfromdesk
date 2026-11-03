@@ -1255,9 +1255,25 @@ skipped with **no new failures** (the 12 are the known families); packaged smoke
 installed 2377, health 401 at 16 s. Rollback bundle
 `/Volumes/Personal/Developer/FarFromDesk/Builds/local-lid-grace-2377/local-2376-rollback.bundle`.
 
-Still not tested, and not claimed: a lid-close with no external display attached, where
-no display may remain to capture; relock after display sleep mid-session; fast user
-switching; and the login window, which the code refuses by design.
+Still not tested, and not claimed: relock after display sleep mid-session, fast user
+switching, and the login window, which the code refuses by design.
+
+**The last open question, tested and passing.** With the charger in, the monitor
+unplugged and the lid shut, `system_profiler` listed one display (the built-in Retina
+panel, `Online: Yes`), `session-state` returned `UNLOCKED`, `pmset -g` returned
+`SleepDisabled 1`, and a driver capture returned a full 269,908-byte frame of the live
+desktop with the panel shut. A laptop with nothing attached and the lid closed stays
+usable, and no dummy display adapter is needed. The earlier all-black frame was the lock
+screen turning the display off after idle, not a missing display.
+
+**And the battery rule verified itself by accident.** The owner unplugged the charger
+during the test: the helper logged `10:13:42Z normal sleep restored (on-battery)`, and
+`pmset -g log` shows `15:44:16 Clamshell Sleep` 34 seconds later, then a
+`15:54:57 Maintenance Sleep`. Plugging back in produced `10:30:06Z lid-closed sleep
+disabled`. Both directions of the battery transition, unverified since 2325, are now
+confirmed on live hardware. The cost is worth stating plainly: unplugging a closed Mac
+sends it to sleep within about half a minute, remote control goes down with it, and `womp`
+is 0 on battery, so only physical input brings it back.
 
 FileVault is on and there is no auto-login, so a restart still requires the owner
 physically; no code change affects that.
