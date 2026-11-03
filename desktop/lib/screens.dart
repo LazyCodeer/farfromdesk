@@ -66,7 +66,9 @@ extension _BridgeScreens on _DeskState {
   String platformTitle(Map p) {
     final label = providerLabel(p['provider']);
     if (p['executionMode'] == 'desktop') return '$label Desktop';
-    return p['provider'] == 'muse' ? label : '$label CLI';
+    return const ['muse', 'deepseek'].contains(p['provider'])
+        ? label
+        : '$label CLI';
   }
 
   /// Two trailing segments keep same-named projects apart without a wall of path.
@@ -2286,7 +2288,7 @@ extension _BridgeScreens on _DeskState {
   });
 
   /// The apps the preferences panel shows a card for: every provider the backend reports.
-  List<String> get codingAppProviders => const ['codex', 'claude', 'muse']
+  List<String> get codingAppProviders => const ['codex', 'claude', 'muse', 'deepseek']
       .where((provider) => platforms.any((p) => p['provider'] == provider))
       .toList();
 
@@ -2503,7 +2505,7 @@ extension _BridgeScreens on _DeskState {
                 const SizedBox(height: 3),
                 small(
                   runtimes == 0
-                      ? 'FarFromDesk works with Claude Code, Codex and Muse Code on this $computer. Install one, then detect again.'
+                      ? 'FarFromDesk works with Claude Code, Codex, Muse Code and DeepSeek Harness on this $computer. Install one, then detect again.'
                       : 'In $apps ${apps == 1 ? 'app' : 'apps'}, the same list the coding app picker shows. Set the preferred mode for each app.',
                 ),
               ],
@@ -3790,8 +3792,8 @@ extension _BridgeScreens on _DeskState {
         ),
         gap(8),
         small(
-          selectedPlatform?['provider'] == 'muse'
-              ? 'Muse keeps its own session history, so this continues the exact conversation you picked. Availability does not verify subscription limits.'
+          const ['muse', 'deepseek'].contains(selectedPlatform?['provider'])
+              ? '${providerLabel(selectedPlatform?['provider'])} keeps its own session history, so this continues the exact conversation you picked. Availability does not verify subscription limits.'
               : 'Desktop keeps the selected chat’s account. CLI resume uses the account shown above. Availability does not verify subscription limits.',
         ),
       ],
@@ -5855,7 +5857,7 @@ extension _Onboarding on _DeskState {
               'Open the pairing link',
               confirming ? 'now' : 'pending',
             ),
-            ('Set up a coordinator', 'Claude, Codex or Muse Code', 'pending'),
+            ('Set up a coordinator', 'Claude, Codex, Muse Code or DeepSeek Harness', 'pending'),
           ]
         : [
             (
@@ -5869,7 +5871,7 @@ extension _Onboarding on _DeskState {
               hasChannelChoice ? 'now' : 'pending',
             ),
             ('Pick where replies go', 'Yourself or a private group', 'pending'),
-            ('Set up a coordinator', 'Claude, Codex or Muse Code', 'pending'),
+            ('Set up a coordinator', 'Claude, Codex, Muse Code or DeepSeek Harness', 'pending'),
           ];
     final right = !hasChannelChoice
         ? chooseCard()
@@ -6153,7 +6155,7 @@ extension _Welcome on _DeskState {
           step(
             Icons.visibility_outlined,
             'Set up a coordinator',
-            'Pick Claude, Codex or Muse Code to read your messages.',
+            'Pick Claude, Codex, Muse Code or DeepSeek Harness to read your messages.',
             const Text('After step 1', style: later),
             dim: true,
           ),

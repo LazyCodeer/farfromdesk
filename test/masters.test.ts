@@ -211,7 +211,7 @@ test('overlapping app refreshes publish each execution mode only once',async()=>
  const f=fixture();let reads=0;
  f.router.native.catalog=async()=>{reads++;await new Promise(r=>setTimeout(r,10));return {sessions:[{id:nativeId,name:'Desktop',cwd:dir,provider:'claude',executionMode:'desktop',available:true,status:'idle'}],cursor:null};};
  await Promise.all([f.masters.discover(),f.masters.discover(),f.masters.discover()]);
- assert.equal(reads,3);assert.equal(f.masters.platforms.length,5);assert.equal(new Set(f.masters.platforms.map(p=>p.provider+':'+p.executionMode)).size,5);
+ assert.equal(reads,4);assert.equal(f.masters.platforms.length,6);assert.equal(new Set(f.masters.platforms.map(p=>p.provider+':'+p.executionMode)).size,6);
 });
 
 test('another platform can set up independently; stable failed ID never creates again',async()=>{

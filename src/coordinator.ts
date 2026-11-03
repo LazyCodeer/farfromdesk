@@ -126,7 +126,7 @@ export class Coordinator {
     const warnings=Object.keys(this.errors).map(p=>`${p}: discovery was incomplete; check the native app.`).join('\n');
     const own=this.scope.getStore()?this.registry.entry(this.scope.getStore()!)?.provider:undefined;
     // Muse is its own platform: a two-way codex/else label printed its sessions under "Claude Code".
-    const providerLabel=(p:string)=>p==='codex'?'Codex':p==='muse'?'Muse Code':'Claude Code';
+    const providerLabel=(p:string)=>p==='codex'?'Codex':p==='muse'?'Muse Code':p==='deepseek'?'DeepSeek Harness':'Claude Code';
     const groups=this.enabled().map(p=>{
       // A coordinator only sees its own platform; say where the rest go instead of showing an empty list.
       if(own&&own!==p)return `${providerLabel(p)}\nHandled by the ${providerLabel(p)} proxy. Hand work to it (ffd ask ${p}) instead of looking for its sessions here.`;

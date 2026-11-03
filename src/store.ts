@@ -12,7 +12,7 @@ import { safeEventDetails, errorCode, type ReplyContext, type RequestOutcome, ty
 
 const buildSource=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8')).sourceCommit??null;}catch{return null;}})();
 
-export type Provider = 'codex' | 'claude' | 'muse';
+export type Provider = 'codex' | 'claude' | 'muse' | 'deepseek';
 export type Binding = { id: string; alias: string; provider: Provider; native_id: string; cwd: string; enabled: number; mode: 'desktop' | 'channel'; token_hash: string; created_at: number };
 export type Job = { id: string; binding_id: string; body: string; status: string; created_at: number; error: string | null; destination?:string|null; updated_at?:number; outcome?:RequestOutcome|null; received_at?:number|null; submitted_at?:number|null; first_reply_at?:number|null; final_reply_at?:number|null; last_error?:string|null; last_error_at?:number|null; attempt_id?:string|null };
 export type IncomingOwner={owner:string;destination:string;channel:'whatsapp'|'telegram';generation:string};

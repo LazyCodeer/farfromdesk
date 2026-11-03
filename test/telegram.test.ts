@@ -225,7 +225,7 @@ test('command menu and bot suffixes preserve existing commands and reject other 
   const f=fixture();try{
     await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
     assert.deepEqual(menu.scope,{type:'all_private_chats'});
-    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','muse','screen','back','help','sessions','status','checkrun','reach','research','jobs','social']);
+    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','muse','deepseek','screen','back','help','sessions','status','checkrun','reach','research','jobs','social']);
     await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
     await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);

@@ -8,6 +8,7 @@ import { codexBin, claudeBin } from './config.js';
 import { nativeCommand } from './platform.js';
 import { CodexSession } from './codex-session.js';
 import { museAuthPath, museBinary, museConfigDir } from './muse-paths.js';
+import { dshBinary, dshCredentialsPath, dshHome } from './dsh-paths.js';
 import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-provider.js';
 import type { Binding, Provider, Store } from './store.js';
 import type { ExecutionMode } from './desktop-claude.js';
@@ -17,13 +18,14 @@ const exec=promisify(execFile);
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const canonical=(path:string)=>{try{return realpathSync(path);}catch{return path;}};
 export { museAuthPath } from './muse-paths.js';
+export { dshCredentialsPath } from './dsh-paths.js';
 export type Connection = {id:string;provider:Provider;executionMode:ExecutionMode;state:'verified'|'configured'|'signed-out'|'unknown'|'native';label:string;revision:string;accountKey?:string};
 export const usableCLIConnection = (connection: Pick<Connection,'state'>) => connection.state==='verified'||connection.state==='configured';
 export type SessionRoute={provider:Provider;executionMode:ExecutionMode;transport:'managed-cli'|'native-session';profileId:string;accountKey?:string;accountScope?:string;label:string};
 export function connectionProfile(provider:Provider,mode:ExecutionMode,env=process.env) {
   const home=homedir();
   const root=mode==='desktop'&&provider==='claude'?join(home,'Library/Application Support/Claude'):
-    provider==='codex'?codexProfileHome(env):provider==='muse'?museConfigDir(env):(env.CLAUDE_CONFIG_DIR??join(home,'.claude'));
+    provider==='codex'?codexProfileHome(env):provider==='muse'?museConfigDir(env):provider==='deepseek'?dshHome(env):(env.CLAUDE_CONFIG_DIR??join(home,'.claude'));
   return `${provider}:${mode}:${digest(canonical(root)).slice(0,20)}`;
 }
 function maskedEmail(value:unknown) {
@@ -80,8 +82,21 @@ export async function probeMuseAccount(cwd:string,env:NodeJS.ProcessEnv=process.
   catch{return {state:'unknown',label:'Muse Code CLI unavailable · install it with the Meta installer, then retry'};}
   return {state:'verified',label:'Muse Code CLI · local credential',accountKey:digest(['muse',canonical(auth),providers])};
 }
+export async function probeDeepseekAccount(cwd:string,env:NodeJS.ProcessEnv=process.env,
+  dependencies:{execute?:typeof exec}={}):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
+  const directory=existsSync(cwd)?cwd:homedir(),credentials=dshCredentialsPath(env);
+  // DeepSeek Harness has no account identity to pin and its credential file is a
+  // secret: the presence of that file plus a working `dsh` binary is the whole
+  // profile. Never read the credential, and never log its path into a label.
+  if(!existsSync(credentials))return {state:'signed-out',label:'DeepSeek Harness signed out · sign in to this CLI'};
+  const command=nativeCommand(dshBinary(),['--version'],process.platform,env);
+  try {await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env,timeout:12000,maxBuffer:65536,windowsHide:true});}
+  catch{return {state:'unknown',label:'DeepSeek Harness CLI unavailable · install it, then retry'};}
+  return {state:'verified',label:'DeepSeek Harness CLI · local credential',accountKey:digest(['deepseek',canonical(credentials)])};
+}
 export async function probeAccount(provider:Provider,cwd:string):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
   if(provider==='muse')return probeMuseAccount(cwd);
+  if(provider==='deepseek')return probeDeepseekAccount(cwd);
   if(provider==='claude')return probeClaudeAccount(claudeBin,cwd);
   const runtime=new CodexSession(codexBin,existsSync(cwd)?cwd:homedir(),async()=>{throw new Error('Account checks cannot approve operations.');});
   const timer=setTimeout(()=>runtime.close(),12000);
@@ -134,13 +149,14 @@ export class Connections {
   async prepare(b:Pick<Binding,'provider'|'cwd'>,mode:ExecutionMode,managed:boolean,accountScope?:string,expectedRevision?:string) {
     // Muse runs only through the bridge's headless CLI; it has no app session to hand a turn to.
     if(b.provider==='muse'&&mode!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');
+    if(b.provider==='deepseek'&&mode!=='cli')throw new Error('DeepSeek Harness has only a CLI connection. Choose CLI.');
     const c=managed||expectedRevision?await this.read(b.provider,managed?'cli':mode,true,b.cwd):
       {id:connectionProfile(b.provider,mode),state:'native' as const,label:'Existing native session account',revision:'',accountKey:undefined};
     // A preview made outside a project is not sufficient for project-specific CLI config.
     if(expectedRevision&&expectedRevision!==c.revision)throw new Error('Connection changed since selection. Review the account and select again.');
     if(managed&&!usableCLIConnection(c))throw new Error(c.label+'. Sign in or configure this CLI, then select it again.');
     const route:SessionRoute={provider:b.provider,executionMode:mode,transport:managed?'managed-cli':'native-session',profileId:c.id,
-      accountKey:managed?c.accountKey:undefined,accountScope,label:managed?c.label:`${b.provider==='claude'?'Claude':b.provider==='muse'?'Muse Code':'Codex'} ${mode==='desktop'?'Desktop':'CLI'} · existing session account`};
+      accountKey:managed?c.accountKey:undefined,accountScope,label:managed?c.label:`${b.provider==='claude'?'Claude':b.provider==='muse'?'Muse Code':b.provider==='deepseek'?'DeepSeek Harness':'Codex'} ${mode==='desktop'?'Desktop':'CLI'} · existing session account`};
     return route;
   }
   async assert(b:Binding) {
@@ -149,6 +165,7 @@ export class Connections {
       throw new Error('Session connection changed. Select its original platform/profile again; no fallback was used.');
     // Never let a Muse binding reach the Codex/Claude app queues: it has one CLI transport only.
     if(b.provider==='muse'&&route.transport!=='managed-cli')throw new Error('Muse Code has no app session. Select its CLI connection again.');
+    if(b.provider==='deepseek'&&route.transport!=='managed-cli')throw new Error('DeepSeek Harness has no app session. Select its CLI connection again.');
     if(route.transport==='managed-cli') {
       const current=await this.read(b.provider,'cli',true,b.cwd);
       if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new Error('CLI account or provider changed. Review and reselect this session before sending more work. No other account was used.');

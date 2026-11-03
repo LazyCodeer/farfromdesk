@@ -23,7 +23,7 @@ export function safeEventDetails(input:Record<string,unknown>={}) {
     const value=input[key];if(typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1e12)result[key]=value;
   }
   if(typeof input.code==='string')result.code=codes.has(input.code)?input.code:'unknown';
-  for(const [key,values] of Object.entries({stage:['download','decode','transcribe','route'],outcome:['done','blocked','reviewed','cancelled'],provider:['codex','claude','muse'],state:['started','completed','failed'],engine:['whisper.cpp','deepgram','assemblyai','meta'],model:['bundled','custom'],action:['open_app','read_window','click','type','press_key']})) {
+  for(const [key,values] of Object.entries({stage:['download','decode','transcribe','route'],outcome:['done','blocked','reviewed','cancelled'],provider:['codex','claude','muse','deepseek'],state:['started','completed','failed'],engine:['whisper.cpp','deepgram','assemblyai','meta'],model:['bundled','custom'],action:['open_app','read_window','click','type','press_key']})) {
     if(typeof input[key]==='string'&&values.includes(input[key] as string))result[key]=input[key] as string;
   }
   return result;

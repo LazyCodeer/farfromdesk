@@ -1,16 +1,18 @@
-/// Coding provider labels are three way. Muse Code is its own provider and never
+/// Coding provider labels are explicit. Each CLI-only provider is its own provider and never
 /// falls through to Codex; an unknown legacy row gets a neutral label instead.
 String providerLabel(Object? provider) => switch ('${provider ?? ''}') {
   'claude' => 'Claude',
   'codex' => 'Codex',
   'muse' => 'Muse Code',
+  'deepseek' => 'DeepSeek Harness',
   _ => 'Coding',
 };
 
-/// Brand key for the logo tile: Muse has no image asset, so it uses its glyph.
+/// Brand key for the logo tile: each provider uses its own shipped mark.
 String providerBrand(Object? provider) => switch ('${provider ?? ''}') {
   'claude' => 'claude',
   'muse' => 'muse',
+  'deepseek' => 'deepseek',
   _ => 'openai',
 };
 

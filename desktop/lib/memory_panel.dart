@@ -256,13 +256,13 @@ class _MemoryFilesState extends State<MemoryFiles> {
   };
 
   Widget platformChip(String value) {
-    final id = value.toLowerCase() == 'muse code'
-        ? 'muse'
-        : value.toLowerCase();
+    const ids = {'muse code': 'muse', 'deepseek harness': 'deepseek'};
+    final id = ids[value.toLowerCase()] ?? value.toLowerCase();
     final brand = switch (id) {
       'codex' => 'openai',
       'claude' => 'claude',
       'muse' => 'muse',
+      'deepseek' => 'deepseek',
       _ => null,
     };
     final label = brand == null ? value : providerLabel(id);
@@ -284,6 +284,8 @@ class _MemoryFilesState extends State<MemoryFiles> {
                   'claude' => const Color(0xfff4ede4),
                   // The Muse mark is white and blue: it needs a dark tile on any card.
                   'muse' => const Color(0xff1b1b20),
+                  // The DeepSeek whale is blue and needs a light tile.
+                  'deepseek' => const Color(0xffffffff),
                   _ => const Color(0xfff3f1ea),
                 },
                 borderRadius: BorderRadius.circular(7),
@@ -544,7 +546,7 @@ class _MemoryFilesState extends State<MemoryFiles> {
                     value: platform,
                     underline: const SizedBox(),
                     items: [
-                      for (final p in ['Codex', 'Claude', 'Muse Code'])
+                      for (final p in ['Codex', 'Claude', 'Muse Code', 'DeepSeek Harness'])
                         DropdownMenuItem(value: p, child: Text(p)),
                     ],
                     onChanged: (v) => setState(() => platform = v),

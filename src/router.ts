@@ -681,7 +681,7 @@ export class Router {
   noticeModel=new MetaModel();
   private recordLiveness(live:{codex:boolean;claude:boolean}) {
     for(const provider of ['codex','claude'] as Provider[]){
-      if(provider==='muse')continue;
+      if(provider==='muse'||provider==='deepseek')continue;
       const next=String(live[provider]),previous=this.store.get(`app-running:${provider}`);
       this.store.set(`app-running:${provider}`,next);
       this.store.set(`app-running:${provider}:at`,String(Date.now()));
@@ -693,8 +693,9 @@ export class Router {
    * "queued" for an app that had already quit, so probe once per owner message instead.
    */
   private receiptWithLiveness(id:string,b:Binding) {
-    // Muse Code is a CLI with no companion desktop app, so it is never "closed".
+    // Muse Code and DeepSeek Harness are CLIs with no companion desktop app, so they are never "closed".
     if(b.provider==='muse'){this.store.set('app-running:muse','true');queueOwnerReceipt(this.store,id,b);return;}
+    if(b.provider==='deepseek'){this.store.set('app-running:deepseek','true');queueOwnerReceipt(this.store,id,b);return;}
     const live=this.livenessProbe();
     this.store.set(`app-running:${b.provider}`,String(live[b.provider]));
     this.store.set(`app-running:${b.provider}:at`,String(Date.now()));
@@ -706,8 +707,9 @@ export class Router {
    * the app's own queue, which cannot be cancelled.
    */
   private ownerReceipt(id:string,b:Binding) {
-    // Muse Code is a CLI with no companion desktop app, so it is never "closed".
+    // Muse Code and DeepSeek Harness are CLIs with no companion desktop app, so they are never "closed".
     if(b.provider==='muse'){this.store.set('app-running:muse','true');queueOwnerReceipt(this.store,id,b);return;}
+    if(b.provider==='deepseek'){this.store.set('app-running:deepseek','true');queueOwnerReceipt(this.store,id,b);return;}
     // One fresh probe per owner message: a minute-old answer is how a closed app still read "queued".
     const live=this.livenessProbe();
     this.store.set(`app-running:${b.provider}`,String(live[b.provider]));
@@ -728,7 +730,7 @@ export class Router {
     try {
       // Only the owner's own message is worth asking about; reports and coordinator traffic are not.
       if(!/^(wa|tg):/.test(id))return false;
-      if(b.provider==='muse')return false;
+      if(b.provider==='muse'||b.provider==='deepseek')return false;
       if(this.store.get(`execution-mode:${b.id}`)!=='desktop')return false;
       if(this.appOnline(b.provider))return false;
       // A contract, a schedule or an earlier choice owns this dispatch. Never stand in front of it.
@@ -863,7 +865,7 @@ export class Router {
     if(!hold||!alternative)throw new Error('that session is no longer offered');
     const target=this.store.binding(alternative.bindingId);
     if(!target||!target.enabled)throw new Error('that session is no longer connected');
-    if(target.provider!=='muse'&&!this.appOnline(target.provider))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
+    if(target.provider!=='muse'&&target.provider!=='deepseek'&&!this.appOnline(target.provider))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
     say(`➡️ Sending this to ${alternative.label}…`,'delivery-move');
     // The held copy was never submitted, so closing it cannot leave the task running twice.
     this.store.jobState(hold.requestId,'replaced','You moved this message to another session before it was sent.');
@@ -893,7 +895,7 @@ export class Router {
       }
     } catch(e) { console.error(`Closed-app notice failed: ${e instanceof Error?e.message:'unknown failure'}`); }
   }
-  appOnline(provider:Provider) { return provider==='muse'||this.store.get(`app-running:${provider}`)!=='false'; }
+  appOnline(provider:Provider) { return provider==='muse'||provider==='deepseek'||this.store.get(`app-running:${provider}`)!=='false'; }
   private clearSilenceTimers() { for(const timer of this.silenceTimers.values())clearTimeout(timer);this.silenceTimers.clear(); }
   /**
    * Accepted by the queue is not an answer. When a submitted request goes quiet, say so once and
@@ -1152,9 +1154,9 @@ export class Router {
       if(!briefDispatchValid(this,job))this.rejectBriefDispatch(job);
     }
     for(const b of this.store.bindings()) {
-      // A channel-mode session is pulled by its own client. Muse has no client and no app:
-      // the bridge runs one headless turn per request, so it is pumped like a CLI session.
-      if(!b.enabled||(b.mode==='channel'&&b.provider!=='muse')||this.busy.has(b.id))continue;
+      // A channel-mode session is pulled by its own client. Muse and DeepSeek have no client and
+      // no app: the bridge runs one headless turn per request, so they are pumped like a CLI session.
+      if(!b.enabled||(b.mode==='channel'&&b.provider!=='muse'&&b.provider!=='deepseek')||this.busy.has(b.id))continue;
       const job=this.routableJob(b);if(!job)continue;
       const origin=this.store.incomingOwnerContext.getStore();
       // Wait for a neutral timer rather than inherit another chat's context.

@@ -58,8 +58,8 @@ export function deliveryAlternatives(store:Store,from:Binding,isCoordinator:(id:
   return store.bindings()
     .filter(b=>b.enabled&&b.id!==from.id)
     // A channel-mode session is pulled by its own client, so the bridge cannot dispatch to it.
-    .filter(b=>b.provider==='muse'||b.mode!=='channel')
-    .filter(b=>b.provider==='muse'||live(b.provider)||store.get(`execution-mode:${b.id}`)!=='desktop')
+    .filter(b=>b.provider==='muse'||b.provider==='deepseek'||b.mode!=='channel')
+    .filter(b=>b.provider==='muse'||b.provider==='deepseek'||live(b.provider)||store.get(`execution-mode:${b.id}`)!=='desktop')
     .map(b=>{
       const sameFolder=!!from.cwd&&b.cwd===from.cwd,coordinator=isCoordinator(b.id),where=folderOf(b.cwd);
       const label=cleanLabel(`${sessionShortName(store,b)}${where?` · ${where}`:''}${coordinator?' · coordinator':''}`).slice(0,72)||b.alias;
@@ -81,6 +81,7 @@ export function runningApps(store:Store):string[] {
   if(store.get('app-running:codex')==='true')names.push('Codex Desktop');
   if(store.get('app-running:claude')==='true')names.push('Claude Desktop');
   names.push('Muse Code');
+  if(store.get('app-running:deepseek')==='true')names.push('DeepSeek Harness');
   return names;
 }
 

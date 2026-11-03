@@ -57,7 +57,7 @@ export function parseQuestionChoices(question:string):QuestionChoice[] {
   });
 }
 export function appName(provider:string|undefined) {
-  return provider==='claude'?'Claude':provider==='codex'?'Codex':provider==='muse'?'Muse Code':'the coding app';
+  return provider==='claude'?'Claude':provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':'the coding app';
 }
 function sessionLine(store:Store,binding:Binding) {
   const meta=sessionMeta(store,binding);
@@ -120,8 +120,8 @@ export function takeoverGuide(o:{store:Store;binding:Binding;reason:HandoverReas
     '⚠️ *This one needs your Mac*',
     `- ${guideWhy[o.reason](session.name)}`,
   ];
-  if(binding.provider!=='muse')lines.push(`- ${session.name} is in ${app}${session.where?`, folder ${session.where}`:''}.`);
-  lines.push('',binding.provider==='muse'?'1. Open your terminal on the Mac.':`1. Open ${app} on the Mac.`,'2. Open the chat above and approve the request there.','3. Send /done here and I will check whether it moved.');
+  if(binding.provider!=='muse'&&binding.provider!=='deepseek')lines.push(`- ${session.name} is in ${app}${session.where?`, folder ${session.where}`:''}.`);
+  lines.push('',binding.provider==='muse'||binding.provider==='deepseek'?'1. Open your terminal on the Mac.':`1. Open ${app} on the Mac.`,'2. Open the chat above and approve the request there.','3. Send /done here and I will check whether it moved.');
   if(o.deepLink)lines.push('',`Or open it directly: ${o.deepLink}`);
   lines.push('',`From your phone: send /screen to control the Mac, then do the same steps.`);
   const trouble=hookTroubleLine(o.hookReports);

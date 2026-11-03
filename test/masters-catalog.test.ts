@@ -8,7 +8,7 @@ import type { Session } from '../src/session-catalog.js';
 const dir=mkdtempSync(join(tmpdir(),'tether-master-catalog-'));
 process.env.WSB_STATE_DIR=dir;
 // --version checks run the current Node executable, never an installed agent.
-process.env.WSB_CODEX_BIN=process.execPath;process.env.WSB_CLAUDE_BIN=process.execPath;process.env.MUSE_BIN=process.execPath;process.env.MUSE_CONFIG_DIR=join(dir,'muse-config');
+process.env.WSB_CODEX_BIN=process.execPath;process.env.WSB_CLAUDE_BIN=process.execPath;process.env.MUSE_BIN=process.execPath;process.env.MUSE_CONFIG_DIR=join(dir,'muse-config');process.env.DSH_BIN=process.execPath;process.env.DSH_HOME=join(dir,'dsh');
 const { Store }=await import('../src/store.js');
 const { Router }=await import('../src/router.js');
 const { Approvals }=await import('../src/approvals.js');
@@ -31,12 +31,12 @@ function fixture(catalog:Catalog=async provider=>({sessions:[row(provider==='cod
   return {store,native,router,masters,close(){masters.close();approvals.cancel();store.close();}};
 }
 
-test('legacy and unknown-revision master options include the full five-platform catalog',async()=>{
+test('legacy and unknown-revision master options include the full six-platform catalog',async()=>{
   const f=fixture();
   try {
     await f.masters.discover();
     const legacy=f.masters.options();
-    assert.equal(legacy.catalogUnchanged,false);assert.equal(legacy.platforms.length,5);
+    assert.equal(legacy.catalogUnchanged,false);assert.equal(legacy.platforms.length,6);
     assert.ok(legacy.catalogRevision);assert.ok(legacy.prompt.length>0);
     assert.equal(legacy.platforms.find(p=>p.provider==='codex'&&p.executionMode==='desktop').sessions[0].id,row(1).id);
     const unknown=f.masters.options('unknown-client-revision');
@@ -72,7 +72,7 @@ test('a restarted master service gives a new revision and sends its full catalog
     restarted=new Masters(f.store,f.router);await restarted.discover();
     const after=restarted.options(before.catalogRevision);
     assert.notEqual(after.catalogRevision,before.catalogRevision);assert.equal(after.catalogUnchanged,false);
-    assert.deepEqual(after.platforms,before.platforms);assert.equal(after.platforms.length,5);
+    assert.deepEqual(after.platforms,before.platforms);assert.equal(after.platforms.length,6);
   }finally{restarted?.close();f.close();}
 });
 
@@ -80,13 +80,13 @@ test('warm master discovery honors 15-second TTL without refreshing the native c
   let now=1_000_000,calls=0;t.mock.method(Date,'now',()=>now);
   const f=fixture(async provider=>{calls++;return {sessions:[row(provider==='codex'?1:2,provider)],cursor:null};});
   try {
-    await f.masters.discover();const firstRevision=f.masters.options().catalogRevision;assert.equal(calls,3);
-    now+=14_999;await f.masters.discover();assert.equal(calls,3);
+    await f.masters.discover();const firstRevision=f.masters.options().catalogRevision;assert.equal(calls,4);
+    now+=14_999;await f.masters.discover();assert.equal(calls,4);
     assert.equal(f.masters.options().catalogRevision,firstRevision);
-    now+=2;await f.masters.discover();assert.equal(calls,6);
+    now+=2;await f.masters.discover();assert.equal(calls,8);
     assert.equal(f.masters.options().catalogRevision,firstRevision);
     assert.equal(f.masters.options(firstRevision).catalogUnchanged,true);
-    await f.masters.discover(true);assert.equal(calls,9);
+    await f.masters.discover(true);assert.equal(calls,12);
     assert.equal(f.masters.options().catalogRevision,firstRevision);
   }finally{f.close();}
 });
@@ -97,14 +97,14 @@ test('simultaneous forced refreshes bypass the warm catalog once and share the s
   try {
     await f.masters.discover();const old=f.masters.options();
     f.native.catalog=async(provider,_cursor,options)=>{
-      calls++;optionsSeen.push(options?.fresh);if(calls===3)started.resolve();
+      calls++;optionsSeen.push(options?.fresh);if(calls===4)started.resolve();
       await gate.promise;return {sessions:[row(provider==='codex'?3:4,provider)],cursor:null};
     };
     const pending=Array.from({length:20},()=>f.masters.discover(true));await started.promise;
-    assert.equal(calls,3);assert.deepEqual(optionsSeen,[true,true,true]);
-    const warm=await f.masters.discover();assert.deepEqual(warm,old.platforms);assert.equal(calls,3);
+    assert.equal(calls,4);assert.deepEqual(optionsSeen,[true,true,true,true]);
+    const warm=await f.masters.discover();assert.deepEqual(warm,old.platforms);assert.equal(calls,4);
     gate.resolve();const results=await Promise.all(pending);
-    assert.equal(calls,3);assert.ok(results.every(r=>r.find(p=>p.provider==='codex').sessions[0].id===row(3).id));
+    assert.equal(calls,4);assert.ok(results.every(r=>r.find(p=>p.provider==='codex').sessions[0].id===row(3).id));
     assert.notEqual(f.masters.options().catalogRevision,old.catalogRevision);
     assert.equal(f.masters.options(old.catalogRevision).catalogUnchanged,false);
   }finally{gate.resolve();f.close();}
@@ -112,12 +112,12 @@ test('simultaneous forced refreshes bypass the warm catalog once and share the s
 
 test('an explicit refresh arriving during background discovery still performs one fresh check',async()=>{
   const started=deferred<void>(),gate=deferred<void>(),seen:boolean[]=[];let calls=0;
-  const f=fixture(async(provider,_cursor,options)=>{calls++;seen.push(options?.fresh===true);if(calls===3)started.resolve();if(calls<=3)await gate.promise;return {sessions:[row(provider==='codex'?1:2,provider)],cursor:null};});
+  const f=fixture(async(provider,_cursor,options)=>{calls++;seen.push(options?.fresh===true);if(calls===4)started.resolve();if(calls<=4)await gate.promise;return {sessions:[row(provider==='codex'?1:2,provider)],cursor:null};});
   try {
     const background=f.masters.discover();await started.promise;
     const explicit=Array.from({length:5},()=>f.masters.discover(true));gate.resolve();
     await Promise.all([background,...explicit]);
-    assert.deepEqual(seen,[false,false,false,true,true,true]);
+    assert.deepEqual(seen,[false,false,false,false,true,true,true,true]);
   }finally{gate.resolve();f.close();}
 });
 

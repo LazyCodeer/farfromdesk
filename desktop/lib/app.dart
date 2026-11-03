@@ -210,10 +210,12 @@ class _DeskState extends State<Desk> {
   Map<String, dynamic> updateProgress = {};
   Gateway get api => widget.gateway;
 
-  /// Muse Code is CLI only, so a desktop entry for it never reaches the UI.
+  /// Muse Code and DeepSeek Harness are CLI only, so a desktop entry for them never reaches the UI.
   List<dynamic> get platforms => [
     for (final p in status['masterSetup']?['platforms'] ?? const [])
-      if (p['provider'] != 'muse' || p['executionMode'] != 'desktop') p,
+      if (!const ['muse', 'deepseek'].contains(p['provider']) ||
+          p['executionMode'] != 'desktop')
+        p,
   ];
   Map<String, dynamic> get preferences =>
       Map<String, dynamic>.from(status['preferences'] ?? {});
@@ -1062,13 +1064,16 @@ class _DeskState extends State<Desk> {
       );
     }
     // Muse Code ships a dark-mode mark (blue chevron, white M), so its tile is dark and the mark
-    // is the real one from the CLI rather than a stand-in glyph.
+    // is the real one from the CLI rather than a stand-in glyph. DeepSeek Harness ships a blue
+    // whale drawn for a light tile.
     final (bg, asset) = switch (brand) {
       'whatsapp' => (whatsappGreen, 'whatsapp'),
       'claude' => (const Color(0xfff4ede4), 'claude'),
       'muse' => (const Color(0xff1b1b20), 'muse'),
+      'deepseek' => (const Color(0xffffffff), 'deepseek'),
       _ => (const Color(0xfff3f1ea), 'openai'),
     };
+    final mark = brand == 'muse' ? .62 : (brand == 'deepseek' ? .74 : .53);
     final tile = Container(
       width: size,
       height: size,
@@ -1079,8 +1084,8 @@ class _DeskState extends State<Desk> {
       alignment: Alignment.center,
       child: Image.asset(
         'assets/logo-$asset.png',
-        width: size * (brand == 'muse' ? .62 : .53),
-        height: size * (brand == 'muse' ? .62 : .53),
+        width: size * mark,
+        height: size * mark,
         fit: BoxFit.contain,
       ),
     );

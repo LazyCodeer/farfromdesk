@@ -91,7 +91,7 @@ export type InboxFeedMessage = {
   key: string;
   at: number;
   source: InboxFeedSource;
-  provider: 'codex' | 'claude' | 'muse' | null;
+  provider: 'codex' | 'claude' | 'muse' | 'deepseek' | null;
   bindingId: string | null;
   sessionName: string | null;
   requestId: string | null;
@@ -196,12 +196,12 @@ WHERE a.destination IS ?
   AND (i.id IS NULL OR (i.status NOT IN ('reviewed','replaced','auto_closed') AND (i.status!='completed' OR i.outcome='blocked')))`;
 }
 
-const PROVIDER_LABEL: Record<string, string> = { codex: 'Codex', claude: 'Claude', muse: 'Muse' };
+const PROVIDER_LABEL: Record<string, string> = { codex: 'Codex', claude: 'Claude', muse: 'Muse', deepseek: 'DeepSeek' };
 type FeedParam = string | number | null;
 const BRAIN_SUBVIEWS: Record<string, string> = { 'brain-brief': 'Morning brief', 'brain-memory': 'Memory', 'brain-ask': 'Asks' };
 
-function feedProvider(value: unknown): 'codex' | 'claude' | 'muse' | null {
-  return value === 'codex' || value === 'claude' || value === 'muse' ? value : null;
+function feedProvider(value: unknown): 'codex' | 'claude' | 'muse' | 'deepseek' | null {
+  return value === 'codex' || value === 'claude' || value === 'muse' || value === 'deepseek' ? value : null;
 }
 
 function feedChannel(destination: unknown): 'whatsapp' | 'telegram' | null {
