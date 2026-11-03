@@ -252,7 +252,6 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
   if (plan.action === 'app_tool' && result?.ok) {
     const tool = plan.tool ?? '';
     if (tool === 'notes_create_note') return { ok: true, line: `Wrote the note in ${app}.`, evidence: null };
-    if (tool === 'notes_search') return { ok: true, line: `Searched ${app}.`, evidence: null };
     if (tool === 'calendar_create_event') return { ok: true, line: `Added it to ${app}.`, evidence: null };
     if (tool === 'calendar_list_events') {
       const output = String(result?.output ?? '').trim().slice(0, 1500);

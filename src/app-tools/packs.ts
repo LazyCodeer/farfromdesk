@@ -38,6 +38,10 @@ const notesCreate: AppTool = {
     'jot this in notes: call the plumber on monday',
   ],
   keywords: ['note', 'notes', 'write', 'jot', 'save', 'remember', 'take down', 'note down', 'memo'],
+  // Asking to find a note is not asking to write one: the words overlap completely, and a
+  // wrong write is worse than a wrong answer. Live on 2026-11-03 the only Notes tool was
+  // create, so this is what keeps "find my note about the roof" from making a second note.
+  notFor: ['find a note', 'look for a note', 'search my notes', 'show my notes'],
   writes: true,
   plan: args => ({
     kind: 'steps',
@@ -53,31 +57,6 @@ const notesCreate: AppTool = {
   }),
 };
 
-const notesSearch: AppTool = {
-  name: 'notes_search',
-  pack: 'notes',
-  app: 'Notes',
-  bundleId: 'com.apple.Notes',
-  description:
-    'Type a phrase into the Notes search field so the note list is filtered down to matching ' +
-    'notes. Use this when the owner asks to find, look for or show a note they already have. ' +
-    'It only filters what Notes shows; it does not read the note out and it does not create ' +
-    'anything. Read the window afterwards when the owner wants to know what the note says.',
-  args: [{ name: 'query', description: 'The words to search the note list for.', required: true }],
-  examples: ['find my note about the roof', 'look for the note with the plumber number', 'show my notes about the invoice'],
-  keywords: ['find', 'search', 'look for', 'note', 'notes', 'where', 'show me'],
-  writes: false,
-  // Not exercised live yet; the click focuses the field and the untargeted type_text goes to
-  // whatever holds focus, which is the same convention the phone typing path uses.
-  plan: args => ({
-    kind: 'steps',
-    steps: [
-      { press_key: { key: 'escape' } },
-      { click: { role: 'AXTextField', name: 'Search' } },
-      { type_text: { text: String(args.query ?? '') } },
-    ],
-  }),
-};
 
 const calendarCreateEvent: AppTool = {
   name: 'calendar_create_event',
@@ -163,8 +142,8 @@ export const PACKS: AppPack[] = [
     id: 'notes',
     app: 'Notes',
     bundleId: 'com.apple.Notes',
-    summary: 'Write and search notes in Apple Notes without touching the search box by mistake.',
-    tools: [notesCreate, notesSearch],
+    summary: 'Write a note in Apple Notes without typing into a search field by mistake.',
+    tools: [notesCreate],
   },
   {
     id: 'calendar',

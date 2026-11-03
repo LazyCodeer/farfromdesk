@@ -114,8 +114,20 @@ export function selectTools(text: string, options: SelectOptions = {}): ToolMatc
   const unique = [...new Set(wanted)];
   const app = options.app?.trim().toLowerCase();
   const found: ToolMatch[] = [];
+  // When the owner names an app or a pack, only that app's tools are in play. Measured: "look
+  // for the note with the plumber number" reached the calendar list tool on the incidental
+  // words "look" and "number" once the notes tool was removed. A request about notes is not a
+  // request about the calendar, whatever words the two descriptions happen to share.
+  const namedPacks = new Set(index.tools.filter(tool => [...appWords(tool)].some(word => unique.includes(word))).map(tool => tool.pack));
 
   for (const tool of index.tools) {
+    if (namedPacks.size && !namedPacks.has(tool.pack)) continue;
+    // A tool that declares requests it must never serve is skipped when one of them is what
+    // the owner said. This is checked before scoring, so a near-miss cannot outrank it. A
+    // phrase counts only when at least two of its words carry meaning: measured here, a
+    // one-word phrase like "where is that note" reduces to ["note"] and would switch the tool
+    // off for every note request, which is the opposite of what it is for.
+    if (tool.notFor?.some(phrase => { const words = tokenize(phrase); return words.length >= 2 && words.every(word => unique.includes(word)); })) continue;
     const own = index.tokens.get(tool.name) ?? [];
     const ownSet = new Set(own);
     const names = appWords(tool);

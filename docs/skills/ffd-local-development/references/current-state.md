@@ -1524,9 +1524,10 @@ window, because the driver refuses an observation it cannot attach to one.
 **Code.**
 - `src/app-tools/types.ts`: `AppTool` (name, pack, app, bundleId, description, args,
   examples, keywords, `plan`), `AppToolPlan` = driver steps or an AppleScript.
-- `src/app-tools/packs.ts`: `notes_create_note`, `notes_search`, `calendar_create_event`,
+- `src/app-tools/packs.ts`: `notes_create_note`, `calendar_create_event`,
   `calendar_list_events`, plus `toolByName`, `packFor`, `appleDate` (refuses anything that is
-  not `YYYY-MM-DD HH:MM:SS`) and `asStr` (AppleScript escaping).
+  not `YYYY-MM-DD HH:MM:SS`) and `asStr` (AppleScript escaping). There is no `notes_search`:
+  it was removed on 3 November after it failed live and typed into a note body (below).
 - `src/app-tools/retrieve.ts`: `tokenize`, `toolText` (pack + name + app + description + arg
   names and descriptions + examples + keywords), IDF indexing, and `selectTools(text,{app,k,
   minScore})`. A tool is only in play when the owner named the app or the pack, when the app is
@@ -1596,9 +1597,43 @@ transcript takes the pack tool with the owner's words verbatim.
   front **10/10**, and the golden set unchanged at 15/15. That union is what `shortlistTools`
   does, and it is why the embedding layer may only widen a shortlist and never reorder it.
 
+- The shortlist now reaches the model. `MetaBrain.reviewedTools` asks the driver which app is in
+  front (`DesktopControl.activeApp`, which reads `list_apps`, the only call that flags the
+  frontmost app) and passes `shortlistTools` for that app into `InterpretInput.appTools`, capped
+  at five. The prompt names the list, the new `app_tool` action, the rule that an argument name
+  must be one the tool lists, and `now` (a `YYYY-MM-DD HH:MM:SS Weekday` stamp from `localStamp`),
+  without which "tomorrow at 5" would be a guess. A message that matches nothing sends no list at
+  all, and a failure to work out the app is never fatal.
+
+**The unreviewed Notes search tool, removed on 3 November 2026.** `notes_search` shipped as a
+three-step sequence (escape, click an `AXTextField` named Search, type the query). Live, the
+shortlist reached the model, the model picked the tool, and the run answered "I could not do that:
+the helper could not complete it." Two measured facts, from the driver itself:
+- `click {role:'AXTextField', name:'Search'}` fails on an ordinary note window: *no AXTextField
+  "Search" in Notes window; nearest: [45] AXButton "Search"*. The field only exists in the
+  `Search – No Results` state, so the sequence was written against the one state that was not
+  the normal one.
+- Its third step typed with no target at all. Replayed by hand, that step **appended "roof" to the
+  open note body**, because an untargeted keystroke goes wherever focus is. The note's own text had
+  to be typed back in by hand (the undo ran one step too far and emptied the note first). The tool
+  was removed rather than fixed: there is no measured working way to search Notes yet, and a
+  reviewed tool that fails is worse than no tool.
+
+Two rules came out of it, both tested.
+- `AppTool.notFor`: requests a tool must never be offered for. `notes_create_note` declares
+  "find a note", "look for a note", "search my notes", "show my notes". Without it, "find my note
+  about the roof" shares the words *note* and *roof* with the create tool and would have made a
+  second note. The retrieval layer ignores a phrase with fewer than two meaningful words
+  ("where is that note" reduces to *note*) and a test asserts nobody adds one believing it guards.
+- `AppPack` scoping: when the owner names an app or a pack, only that pack's tools are in play.
+  Without it, "look for the note with the plumber number" reached `calendar_list_events` on the
+  incidental words "look" and "number" once the Notes search tool was gone.
+- Invariant test: every `type_text` step in any pack must name a role or a name. That is the check
+  that would have caught the untargeted keystroke before it ran.
+
 **Not done yet.** Calendar tools are written and unit-tested but never run live, and the first
-run will raise the macOS Automation permission prompt. `notes_search` is not exercised live
-either. Nothing yet sends a retrieved tool list to the model: `shortlistTools` exists and is
-tested, but the meta model still receives every device action rather than the shortlist. The
-multi-session/subagent harness is not built, and `indexSignature` is prepared for an embedding
-cache that does not exist yet.
+run will raise the macOS Automation permission prompt. Finding an existing note has no reviewed
+tool at all. The shortlist wiring is unit-tested at transcript level (`test/brain-conversation.test.ts`:
+the offer, the argument names, the clock, and that a coding app gets no list). The multi-session/
+subagent harness is not built, and `indexSignature` is prepared for an embedding cache that does
+not exist yet.

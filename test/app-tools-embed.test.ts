@@ -45,10 +45,12 @@ test('the shortlist keeps the golden set at recall@5 and lifts the paraphrases',
     if (selectTools(row.text, { app: row.app, index, k: 5 }).some(m => m.tool.name === row.tool)) goldenLexical += 1;
     if ((await shortlistTools(row.text, { app: row.app, index, k: 5 })).some(e => e.tool.name === row.tool)) goldenUnion += 1;
   }
-  // 11 of the 15 golden rows carry the app, and the other four name it, so embeddings are the
-  // only extra layer here and must change nothing.
-  assert.equal(goldenLexical, 15);
-  assert.equal(goldenUnion, 15);
+  // Every golden row that expects a tool must keep it, and the count comes from the set itself:
+  // it dropped from 15 to 12 when the unreviewed Notes search tool was removed.
+  const goldenWanted = GOLDEN.filter(row => row.tool).length;
+  assert.ok(goldenWanted >= 10);
+  assert.equal(goldenLexical, goldenWanted);
+  assert.equal(goldenUnion, goldenWanted);
 
   let lexical = 0;
   let union = 0;

@@ -42,6 +42,16 @@ export interface AppTool {
   /** Extra retrieval vocabulary: synonyms and the words the owner actually types. */
   keywords: string[];
   /**
+   * Requests this tool must never be offered for.
+   *
+   * A near-miss is expensive in a way a plain miss is not: measured live on 2026-11-03, the
+   * only Notes tool left was "create a note", and "find my note about the roof" shares the
+   * words note and roof with it. Writing a second note when the owner asked to find the first
+   * is a wrong write, not a wrong answer. Each phrase is matched as a set of its meaningful
+   * words, so "find my note" also covers "find the note about the roof".
+   */
+  notFor?: string[];
+  /**
    * True when the tool changes something the owner would have to undo by hand. The caller
    * decides what that means for confirmation; the pack only declares it.
    */

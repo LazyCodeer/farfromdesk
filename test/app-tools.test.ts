@@ -30,6 +30,31 @@ test('every pack tool is named, described and argued clearly enough to be chosen
   assert.equal(seen.size, tools.length);
 });
 
+test('every typing step says which control it types into', () => {
+  // Measured 2026-11-03: a tool whose type_text carried no target typed into the open note
+  // body instead of the search field it was written for, and the note's own text had to be put
+  // back by hand. An untargeted keystroke goes wherever focus happens to be, which is never
+  // good enough for a reviewed tool.
+  for (const tool of tools) {
+    // A phrase with fewer than two meaningful words ("where is that note" reduces to just
+    // "note") would switch the tool off for every request that mentions the app at all, so the
+    // retrieval layer ignores those. This asserts nobody adds one believing it is a guard.
+    for (const phrase of tool.notFor ?? []) {
+      assert.ok(tokenize(phrase).length >= 2, `${tool.name} notFor "${phrase}" has one meaningful word and never applies`);
+    }
+    let plan;
+    // A tool may refuse a dummy argument (the calendar tools reject a date that is not a real
+    // one). That is the tool doing its job, and it is not what this test is looking at.
+    try { plan = tool.plan(Object.fromEntries(tool.args.map(arg => [arg.name, 'x']))); } catch { continue; }
+    if (plan.kind !== 'steps') continue;
+    for (const step of plan.steps) {
+      const typed = (step as any).type_text;
+      if (!typed) continue;
+      assert.ok(typed.role || typed.name, `${tool.name} types without naming a control: ${JSON.stringify(step)}`);
+    }
+  }
+});
+
 test('creating a note never types into the search field', () => {
   const plan = toolByName('notes_create_note')!.plan({ body: 'tomorrow meeting at 10pm' });
   assert.equal(plan.kind, 'steps');
@@ -79,7 +104,10 @@ test('the phrases the owner actually uses pick the right tool', () => {
   assert.equal(choose('write a note that the roof is leaking')[0], 'notes_create_note');
   assert.equal(choose('Could you write a note that the roof is leaking')[0], 'notes_create_note');
   assert.equal(choose('jot this in notes: call the plumber on monday')[0], 'notes_create_note');
-  assert.equal(choose('find my note about the roof')[0], 'notes_search');
+  // Asking to find a note must never offer the tool that writes one: the words overlap and a
+  // wrong write is worse than a wrong answer. There is no reviewed search tool yet.
+  assert.deepEqual(choose('find my note about the roof'), []);
+  assert.deepEqual(choose('find my note about the roof', 'Notes'), []);
   assert.equal(choose('put a meeting on my calendar tomorrow at 5')[0], 'calendar_create_event');
   // The owner is in Calendar, so the pack is in play even when they do not name the app:
   // that is the "load the tools of the app I am working in" rule.
