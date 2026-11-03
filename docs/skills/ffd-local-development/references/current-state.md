@@ -1635,10 +1635,12 @@ Two rules came out of it, both tested.
 - Finding a note has a reviewed tool again, and this one cannot type. `notes_find` sends one
   read-only AppleScript to Notes and returns up to 8 titles whose name or body contains the
   phrase, capped at the first 300 notes. Nothing is clicked and no keystroke is sent, which is
-  the property the removed UI search tool could not offer. The script compiles (`osacompile`,
-  which resolves `notes` against the app dictionary and needs no Automation grant to compile)
-  and has not been run: the first live run raises the same one-time Automation prompt as the
-  Calendar tools.
+  the property the removed UI search tool could not offer. Every osascript tool is now compiled
+  in the suite (`test/app-tools.test.ts`, `osacompile -o`, which resolves the dictionary and
+  needs no Automation grant), so `notes_find`, `calendar_create_event` and
+  `calendar_list_events` are at least proven to be syntactically valid against the apps' own
+  dictionaries. `notes_find` has still not been run: the first live run raises the same one-time
+  Automation prompt as the Calendar tools.
 - Read and write are separated by the owner's opening verb. `intentPolarity` in
   `src/app-tools/retrieve.ts` returns `write` for write/jot/save/note/remind/remember/record/
   log/capture/forget/hold/keep and `read` for find/search/look/where/read/show/list/tell/what/

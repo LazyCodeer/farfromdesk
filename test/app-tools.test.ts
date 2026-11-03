@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { PACKS, allPackTools, appleDate, asStr, packFor, toolByName } from '../src/app-tools/packs.js';
 import { buildIndex, describeTools, selectTools, tokenize, toolText } from '../src/app-tools/retrieve.js';
@@ -174,4 +178,34 @@ test('a tool that only reads never carries a step that changes the Mac', () => {
   const find = toolByName('notes_find')!.plan({ query: 'roof' });
   assert.match(find.kind === 'osascript' ? find.script : '', /tell application "Notes"/);
   assert.match(find.kind === 'osascript' ? find.script : '', /contains q/);
+});
+
+/**
+ * The AppleScript tools must at least compile against the app's own dictionary. This needs no
+ * Automation grant (`osacompile` only reads the .sdef in the app), so it runs everywhere and
+ * catches a script that would fail the first time the owner asked for it. Calendar and Notes
+ * are the two packs with osascript plans; the steps plans are covered by the driver tests.
+ */
+const SCRIPT_SAMPLES: Record<string, Record<string, string>> = {
+  notes_find: { query: 'the roof' },
+  calendar_create_event: { title: 'Call Ashitosh', start: '2026-11-05 17:00:00', end: '2026-11-05 17:30:00' },
+  calendar_list_events: { days: '7' },
+};
+
+test('every AppleScript tool compiles against its app dictionary', { skip: process.platform !== 'darwin' ? 'macOS only' : false }, () => {
+  const osacompile = existsSync('/usr/bin/osacompile');
+  if (!osacompile) return;
+  const dir = mkdtempSync(join(tmpdir(), 'ffd-osacompile-'));
+  try {
+    for (const tool of allPackTools()) {
+      const planned = tool.plan(SCRIPT_SAMPLES[tool.name] ?? {});
+      if (planned.kind !== 'osascript') continue;
+      const file = join(dir, `${tool.name}.applescript`);
+      writeFileSync(file, planned.script, 'utf8');
+      const result = spawnSync('/usr/bin/osacompile', ['-o', join(dir, `${tool.name}.scpt`), file], { encoding: 'utf8' });
+      assert.equal(result.status, 0, `${tool.name} does not compile: ${result.stderr ?? ''}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
