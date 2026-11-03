@@ -60,7 +60,7 @@ One action, addressed by name. Fill only the fields that action needs.
 - read_window: app, plus window only when several are listed and the owner named one.
 - click: app, then name (the visible label) or role (button, link, textfield, row, tab).
 - type: app, name or role of the field, plus text.
-- press_key: key, one of return, tab, escape, up, down, left, right.
+- press_key: app, and key, one of return, tab, escape, up, down, left, right.
 - app must be a name from devices, except for open_app. Never guess a label, a window or a key.
 - Never target System Settings, keychain or password apps.
 

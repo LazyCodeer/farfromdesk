@@ -190,10 +190,15 @@ export class DesktopControl {
         const state=await this.driver.call('get_window_state',{pid:target.pid,window_id:target.window_id,tree_format:'markdown',max_elements:250},controller.signal);
         return {action:plan.action,app:plan.app,window:state?.window_title??null,tree:String(state?.tree_markdown??'').slice(0,6000),elements:state?.element_count??0,complete:state?.elements_complete===true};
       }
+      // These steps act on a window, so resolve one first and name it on the batch. The
+      // driver refuses an `observe` it cannot attach to a window ("no step names a window
+      // to inherit"), which is what a bare `press escape` produced live.
+      const target=await this.resolve(plan.app,plan.window);
+      if(!target?.window_id)throw new Error('DESKTOP_APP_NOT_RUNNING: '+(plan.app??'that app')+' has no open window to act on.');
       const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};
-      const result=await this.driver.call('run_steps',{app:plan.app,...(plan.window?{window:plan.window}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
+      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
       return {action:plan.action,ok:result?.ok===true,observation:result?.observation?.summary??result?.observation?.message??null,diff:String(result?.observation?.state?.tree_diff??'').slice(0,1200)||null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
@@ -206,7 +211,10 @@ export class DesktopControl {
       ??(tree?.apps??[]).find((a:any)=>String(a.name??'').toLowerCase().includes(needle)||String(a.bundle_id??'').toLowerCase().includes(needle));
     if(!target)return undefined;
     const windows=(tree?.windows??[]).filter((w:any)=>w.pid===target.pid);
-    const picked=(window?windows.find((w:any)=>String(w.title??'').toLowerCase().includes(window.toLowerCase())):undefined)??windows[0];
+    // A Chromium app holds several chrome-less windows beside the real one, and picking the
+    // first read a menu bar instead of the page. A titled window is the one the owner means.
+    const named=windows.filter((w:any)=>String(w.title??'').trim());
+    const picked=(window?windows.find((w:any)=>String(w.title??'').toLowerCase().includes(window.toLowerCase())):undefined)??named[0]??windows[0];
     return {...target,window_id:picked?.window_id??null,windowTitle:picked?.title??null};
   }
   /**

@@ -55,6 +55,20 @@ starts the desktop driver.
   belong to the desktop driver, which is a different TCC subject from the Remote
   control helper. `deviceRefusal` says which one to change.
 
+## Two defects the first live test found
+
+Both came from asking a real installed build to act, and both now have a regression
+test in `test/desktop-assist.test.ts`.
+
+- "what is in Comet right now" was answered with Comet's menu bar. Comet holds four
+  windows and three have no title, and the resolver took the first one. A titled window
+  is now preferred, because that is the one the owner means.
+- "press escape" was refused by the driver: `run_steps rejected before running
+  anything: observe: pid and window_id are required (no step names a window to
+  inherit)`. Background delivery acts on a window, so an action batch now names the
+  resolved window, and `press_key` requires an app like every other action rather than
+  accepting a bare key.
+
 ## Who acts on the Mac follows the owner's selection
 
 There is no second setting. `/brain` already persists `{kind:'brain'}` and

@@ -27,8 +27,8 @@ export type DeviceControl = {
 
 /** What each action cannot do without. A missing field is a refusal, not a crash. */
 export function devicePlanIssue(plan: DevicePlan): string | null {
+  if (!plan.app) return plan.action === 'press_key' ? 'Which app should I press a key in?' : plan.action === 'open_app' ? 'Which app should I open?' : `Which app should I ${plan.action === 'read_window' ? 'read' : 'use'}?`;
   if (plan.action === 'press_key') return plan.key ? null : 'Which key should I press?';
-  if (!plan.app) return plan.action === 'open_app' ? 'Which app should I open?' : `Which app should I ${plan.action === 'read_window' ? 'read' : 'use'}?`;
   if (plan.action === 'type') return plan.text ? null : 'What should I type?';
   if (plan.action === 'click' && !plan.name && !plan.role) return 'What should I click?';
   return null;

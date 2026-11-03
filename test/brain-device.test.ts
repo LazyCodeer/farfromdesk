@@ -16,11 +16,14 @@ test('a plan accepts only the documented fields', () => {
 test('a missing field is a question, not a crash', () => {
   assert.match(devicePlanIssue({ action: 'open_app' })!, /which app/i);
   assert.match(devicePlanIssue({ action: 'type', app: 'Notes' })!, /what should i type/i);
-  assert.match(devicePlanIssue({ action: 'press_key' })!, /which key/i);
+  assert.match(devicePlanIssue({ action: 'press_key' })!, /which app/i);
+  assert.match(devicePlanIssue({ action: 'press_key', app: 'Comet' })!, /which key/i);
   assert.match(devicePlanIssue({ action: 'click', app: 'Comet' })!, /what should i click/i);
   assert.equal(devicePlanIssue({ action: 'open_app', app: 'Comet' }), null);
   assert.equal(devicePlanIssue({ action: 'click', app: 'Comet', name: 'Compose' }), null);
-  assert.equal(devicePlanIssue({ action: 'press_key', key: 'escape' }), null);
+  // A bare key has no window to land in, so the app is required, not optional.
+  assert.match(devicePlanIssue({ action: 'press_key', key: 'escape' })!, /which app/i);
+  assert.equal(devicePlanIssue({ action: 'press_key', app: 'Comet', key: 'escape' }), null);
 });
 
 test('the driver result is reported, not the model guess', () => {
