@@ -1640,6 +1640,31 @@ Two rules came out of it, both tested.
 run will raise the macOS Automation permission prompt. Finding an existing note has no reviewed
 tool at all. The shortlist wiring is unit-tested at transcript level (`test/brain-conversation.test.ts`:
 the offer, the argument names, the clock, and that a coding app gets no list) and was watched live
-on 2386-2389, where the model picked the reviewed tool it was offered. The multi-session/subagent
-harness is not built, and `indexSignature` is prepared for an embedding cache that does not exist
-yet.
+on 2386-2389, where the model picked the reviewed tool it was offered.
+
+### The eval harness, and sessions at once
+
+`npm run evals` (`script/run_brain_evals.mts`) is the gate: it prints the retrieval scoreboard
+both lexical and embedding-widened, runs the four brain eval files, and exits non-zero when a
+number falls below what was measured. Measured on 3 November: golden 25 (12 with a tool, 13 quiet)
+at recall@1/3/5 = 1 with wrong-first 0, paraphrases lexical 0.6/0.8/0.8 and 0.7/1.0/1.0 widened,
+25 transcript tests green.
+
+`test/brain-sessions.test.ts` runs two sessions through one router and one brain, because
+everything per-chat is keyed by destination and a per-session bug is invisible in a suite that
+never runs two. It pins: each reply lands in its own chat (and the outbox row names it); the
+device memory (`brain-device-last:<destination>`) does not leak, so a bare write in a chat that
+never used an app asks instead of writing into the other chat's app; a pending coding contract in
+one chat does not swallow another chat's turn; and the reviewed tools follow the Mac rather than
+the chat, so both sessions are offered the front app's tools. Authentication is part of the
+fixture: the second chat is an `owned-group:` + `destination-jid` one, because owner commands are
+refused from anywhere else.
+
+The multi-session harness is built at this level. A subagent harness is not, and `indexSignature`
+is prepared for an embedding cache that does not exist yet.
+
+**Known retrieval limit, measured:** the Notes tool's examples include the owner's own note
+sentence "tomorrow meeting at 10pm woth ashitosh", so a calendar request for a meeting with
+Ashitosh still matches the Notes tool. The calendar tool ranks first, and the list is a shortlist
+for the model rather than a decision, so this is a ranking wart and not the failure it would be
+if the list were sent as the answer.
