@@ -114,6 +114,18 @@ test('a window summary is content, not the menu bar', () => {
   assert.equal(summarizeTree(Array.from({ length: 250 }, (_, i) => `- [${i}] AXStaticText = "row ${i}"`).join('\n')).split('\n').length, 8);
 });
 
+test('a field reads as label and value, once', () => {
+  // Measured live on a settings page: the label arrived alone and then with its value, so
+  // two of eight bullets were spent on one row, and the pair kept its quotes and equals sign.
+  const tree = ['- [0] AXWindow "Microsoft Foundry"',
+    '  - [1] AXStaticText = "Deployment name"',
+    '  - [2] AXTextField "Deployment name" = "claude-fable-5-1"',
+    '  - [3] AXButton "Deploy"'].join('\n');
+  const summary = summarizeTree(tree, 8, 'Microsoft Foundry');
+  assert.equal(summary, '- Deployment name: claude-fable-5-1\n- Deploy');
+  assert.doesNotMatch(summary, /"|= "|\[/);
+});
+
 test('a heading that repeats the window title is not a second bullet', () => {
   // Measured live: of eight bullets on a mail window, the first one repeated the title the
   // sentence above it had already given, icon and all.

@@ -108,7 +108,10 @@ export function summarizeTree(markdown: string, limit = 8, skip?: string | null)
       chromeIndent = indent;
       continue;
     }
-    const label = match[3]!
+    // A field carries its label and its value ("Deployment name" = "claude-fable-5-1"). On a
+    // phone that becomes one readable line rather than a quoted pair.
+    const pair = /^\s*"([^"]+)"\s*=\s*"([\s\S]*)"\s*$/.exec(match[3]!);
+    const label = pair ? `${pair[1]}: ${pair[2]}` : match[3]!
       .replace(/\s*\[actions=.*$/, '')
       .replace(/\s*\((?:[^()]*)\)\s*$/, '')
       .replace(/^[=:]\s*/, '')
@@ -120,9 +123,11 @@ export function summarizeTree(markdown: string, limit = 8, skip?: string | null)
     if (title && folded.length > 8 && (title.includes(folded) || folded.includes(title))) continue;
     rows.push(label.length > 90 ? label.slice(0, 89).trimEnd() + '...' : label);
   }
+  // The label alone is redundant once the same label arrives with its value.
+  const trimmed = rows.filter((row, index) => !rows.some((later, at) => at > index && later.startsWith(`${row}: `)));
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const row of rows) {
+  for (const row of trimmed) {
     if (seen.has(row)) continue;
     seen.add(row);
     out.push(row);
