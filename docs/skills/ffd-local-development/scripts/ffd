@@ -86,6 +86,47 @@ next_build_after() {
   case "$1" in ''|none|unknown|*[!0-9]*) echo 1;; *) echo $(( $1 + 1 ));; esac
 }
 
+# The signing identity to use, if the keychain has one.
+#
+# An ad-hoc signature ("-") gives the app a TCC requirement of a bare cdhash, so
+# every rebuild is a different app to macOS and the owner has to allow Accessibility
+# and Screen Recording again. A real identity makes the requirement name the team
+# instead of the bytes, so the grant is asked for once and survives rebuilds.
+# FFD_SIGN_IDENTITY overrides the search.
+sign_identity() {
+  if [ -n "${FFD_SIGN_IDENTITY:-}" ]; then printf '%s' "$FFD_SIGN_IDENTITY"; return; fi
+  security find-identity -v -p codesigning 2>/dev/null \
+    | grep -E '"(Apple Development|Developer ID Application)' \
+    | head -1 \
+    | sed -E 's/^[[:space:]]*[0-9]+\) [0-9A-F]+ "(.*)"/\1/'
+}
+identity_count() {
+  security find-identity -v -p codesigning 2>/dev/null | grep -c '^ *[0-9]*)' || true
+}
+# Sign the nested TCC subjects too, so their requirements also name the team.
+# cua-driver is deliberately never touched: it carries the vendor's signature, and
+# re-signing it would replace the very requirement that keeps its grant working.
+# With no identity, nothing is re-signed at all: the staged helpers are already
+# ad-hoc signed, and re-signing them for no reason can only disturb their bytes.
+sign_grant_holders() {
+  local app="$1" identity="$2" rel target
+  [ -n "$identity" ] || return 0
+  for rel in "Contents/Resources/backend/native/FarFromDesk Accessibility.app" \
+             "Contents/Resources/backend/native/session-state"; do
+    target="$app/$rel"
+    [ -e "$target" ] || continue
+    if /usr/bin/codesign --force --sign "$identity" --preserve-metadata=entitlements "$target" >/dev/null 2>&1; then
+      say "  signed $rel"
+    else
+      note "could not sign $rel with $identity; leaving its existing signature"
+    fi
+  done
+}
+# The designated requirement is what macOS stores and matches a grant against.
+requirement_of() {
+  codesign -d -r- "$1" 2>&1 | grep -m1 'designated' | sed 's/^# designated => //'
+}
+
 # ---------------------------------------------------------------- status
 
 cmd_status() {
@@ -136,6 +177,18 @@ cmd_status() {
   fi
   say "  next build $(next_build_after "$ver") (override with: ffd ship --build N)"
   say "  stage dir  $FFD_BUILDS/<note>-<build>"
+  local id idcount; id="$(sign_identity)"; idcount="$(identity_count)"
+  if [ -n "$id" ]; then
+    say "  identity   $id  (grants survive a rebuild)"
+  else
+    if [ "$idcount" = "0" ]; then
+      say "  identity   none in the keychain: ad-hoc only"
+    else
+      say "  identity   none usable of $idcount (need Apple Development or Developer ID Application)"
+    fi
+    note "so this app's TCC requirement is a cdhash, and every rebuild needs Accessibility"
+    note "and Screen Recording allowed again. An Apple Development certificate fixes that."
+  fi
   note "writing to $FFD_BUILDS and \$HOME/Applications needs the file sandbox widened"
 }
 
@@ -305,6 +358,26 @@ cmd_permissions() {
     printf '    cdhash      %s\n' "${cdhash:-none}"
     printf '    identity    %s\n' "$kind"
   done < /tmp/ffd-perms.txt
+
+  # The app's own requirement is the one that decides this build's grants, so say
+  # what it means in plain words rather than leaving it in the table above.
+  local app_exec app_req
+  app_exec="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null)"
+  app_req="$(requirement_of "$app_exec")"
+  if printf '%s' "$app_req" | grep -q cdhash; then
+    say ""
+    say "  The app's own requirement is a byte hash, and macOS stores these grants"
+    say "  against it (tccd: AUTHREQ_SUBJECT is the app bundle, not the helper it"
+    say "  launches). Every rebuild therefore needs the two services allowed again."
+    if [ -n "$(sign_identity)" ]; then
+      say "  A signing identity is available, so sign the build with it and that stops:"
+      say "    $(sign_identity)"
+    else
+      say "  $(identity_count) code signing identities in the keychain, so there is nothing"
+      say "  to sign with yet. An Apple Development certificate (Xcode > Settings >"
+      say "  Accounts > Manage Certificates) makes this requirement name the team."
+    fi
+  fi
 
   if [ -n "$compare" ] && [ -d "$compare" ]; then
     step "changed since $(dirname "$compare" | xargs basename)"
@@ -487,10 +560,22 @@ PY
     | sed -E 's#.*/dist/([^ ]+).*#    \1#' | head -20
 
   step "sign"
-  /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$app" >/dev/null 2>&1 \
-    && say "  signed (ad-hoc)" || note "ad-hoc signing refused; keeping the staged signature"
+  local identity; identity="$(sign_identity)"
+  sign_grant_holders "$app" "$identity"
+  if [ -n "$identity" ]; then
+    /usr/bin/codesign --force --sign "$identity" --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$app" >/dev/null 2>&1 \
+      || die "signing the app with $identity failed"
+    say "  signed with $identity"
+  else
+    /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$app" >/dev/null 2>&1 \
+      && say "  signed ad-hoc (no signing identity in the keychain)" \
+      || note "ad-hoc signing refused; keeping the staged signature"
+    note "ad-hoc means the app's requirement is a cdhash, so the owner must allow Accessibility"
+    note "and Screen Recording again for this build. A certificate ends that for good."
+  fi
   /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
     && say "  signature verified" || die "signature does not verify"
+  say "  requirement: $(requirement_of "$app")"
 
   step "packaged smoke"
   node "$FFD_SMOKE" "$app" || die "packaged smoke failed"
@@ -560,8 +645,19 @@ PY
     sleep 3
   done
   [ "$copied" = "1" ] || die "copy into ~/Applications was incomplete; the staged build is intact at $stage"
-  /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 \
-    || note "ad-hoc re-sign skipped; keeping the staged signature"
+  # A copy keeps the staged signature, and re-signing a team-signed bundle ad-hoc
+  # would replace the identity requirement the grant is stored against. Only sign
+  # again if the copy actually broke the signature, and then with the same identity.
+  if ! /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1; then
+    local identity; identity="$(sign_identity)"
+    if [ -n "$identity" ]; then
+      /usr/bin/codesign --force --sign "$identity" --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 \
+        || note "re-signing the copied app failed; keeping what it has"
+    else
+      /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 \
+        || note "ad-hoc re-sign skipped; keeping the staged signature"
+    fi
+  fi
   /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1 || die "signature invalid after copy"
   open -a "$FFD_INSTALLED"
 
@@ -613,7 +709,17 @@ cmd_rollback() {
   sleep 2
   rm -rf "$FFD_INSTALLED"
   cp -R -P "$bundle" "$FFD_INSTALLED" || die "copying the bundle back failed"
-  /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 || true
+  # Keep the saved signature: the bundle being restored was signed when it was
+  # built, and re-signing it ad-hoc would change the requirement its grant was
+  # stored against. Only repair a signature the copy actually broke.
+  if ! /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1; then
+    local identity; identity="$(sign_identity)"
+    if [ -n "$identity" ]; then
+      /usr/bin/codesign --force --sign "$identity" --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 || true
+    else
+      /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 || true
+    fi
+  fi
   open -a "$FFD_INSTALLED"
   say "  installed $(installed_version); health $(health_code)"
 }

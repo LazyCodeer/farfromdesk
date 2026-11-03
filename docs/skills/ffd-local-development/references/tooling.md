@@ -129,6 +129,50 @@ and what to click), and clear a row that will not switch on with
 `ScreenCapture` for the same identifier). `tccutil` cannot grant anything; only the
 owner can switch it on.
 
+### Signing with an identity (the fix)
+
+Create the certificate once, in Xcode, with any Apple ID (a free one is enough for
+Local):
+
+> Xcode > Settings > Accounts > **+** Apple ID > select the team > Manage
+> Certificates > **+** > Apple Development
+
+Then nothing else is needed: `ffd ship` finds the identity in the keychain and signs
+with it, and `ffd status` shows it. Override the choice with `FFD_SIGN_IDENTITY`, and
+name it explicitly if the keychain ever holds several:
+
+```sh
+FFD_SIGN_IDENTITY="Apple Development: you@example.com (ABC123DEFG)" ffd ship
+```
+
+What it signs, and why each part matters:
+
+- the two nested TCC subjects, `FarDesk Accessibility.app` and `session-state`, so
+  their requirements name the team as well;
+- the app bundle itself, which is the subject macOS actually records the grant
+  against (`AUTHREQ_SUBJECT`);
+- **never** `cua-driver`. It carries the vendor's signature, and re-signing it would
+  replace the very requirement that keeps its desktop-control grant working. This is
+  why nothing here uses `codesign --deep` on the app.
+
+Verify it took:
+
+```sh
+ffd permissions          # the app should read "identity <TEAMID> (a rebuild keeps the grant)"
+codesign -d -r- "/Users/sagar/Applications/FarFromDesk Local.app"
+```
+
+The requirement should name the team and the certificate, not a `cdhash`.
+
+Expect **one** re-approval after the first team-signed build: to macOS that build is
+still a different app from the ad-hoc ones, so allow Accessibility and Screen
+Recording once more. From then on, rebuilds keep the grants, which is the whole point.
+
+The install and rollback paths deliberately do not re-sign: a copied bundle keeps its
+signature, and re-signing it ad-hoc would change the requirement its grant was stored
+against. They only repair a signature that the copy itself broke, and then with the
+same identity.
+
 ### What build_accessibility_helper.py does about the helper side
 
 It caches each helper under `build/native-helper-cache/`, keyed on the Swift source

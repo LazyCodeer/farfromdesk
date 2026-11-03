@@ -32,11 +32,14 @@ that works where `ditto` is denied, a report that always prints).
 
 **A rebuild can silently cost the owner a macOS permission.** Every grant-holding
 binary here is ad-hoc signed, so its TCC requirement is a bare cdhash and the grant
-belongs to those exact bytes. `ffd ship` carries the installed helpers forward and
-changes nothing, but a build that re-runs the native packaging step recompiles them
-and the owner has to allow Accessibility and Screen Recording again. `ffd permissions`
-shows which grant holder changed and exactly what to re-approve; the detail is in
-[tooling.md](references/tooling.md).
+belongs to those exact bytes. tccd names the subject itself: it is the **app bundle**,
+not the helper it launches (`AUTHREQ_SUBJECT: subject=com.codecylabs.farfromdesk.localtest`),
+and the app's cdhash changes on every build. So every rebuild needs Accessibility and
+Screen Recording allowed again, and the production app has the same problem for its
+users. `ffd ship` signs with the keychain's Apple Development identity when there is
+one, which ends it; otherwise it says plainly that this build needs a re-approval.
+`ffd permissions` shows what changed and what to re-approve. Detail, including how to
+create the certificate, is in [tooling.md](references/tooling.md).
 
 ## Standing defaults for Local work
 
