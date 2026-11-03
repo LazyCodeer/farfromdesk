@@ -299,10 +299,24 @@ const PATTERNS: { action: DevicePlan['action']; pattern: RegExp }[] = [
   { action: 'open_app', pattern: /^(?:open|launch|start|switch to|go to|focus) (.+)$/i },
 ];
 const KEYS: Record<string, string> = { enter: 'return', esc: 'escape' };
+/**
+ * Politeness, not content.
+ *
+ * The owner writes "Could you open notes" as often as "Open Notes". Measured live on
+ * 2026-11-03: that exact sentence was not device-shaped, so `claimsDevice` said no and a
+ * pending coding contract re-sent its review card instead of opening the app. A lead-in made
+ * only of courtesies and filler is removed before the shapes are matched. Nothing that
+ * carries meaning is in this list, so "open the PR" keeps its shape and then fails the
+ * live-target check, which is what keeps coding requests out.
+ */
+const LEAD_IN = /^(?:(?:could|can|would|will|please|pls|kindly|hey|hi|hello|ok|okay|now|then|also|and|you|u)\b[,\s]+)+/i;
+export function stripLeadIn(text: string): string {
+  return text.trim().replace(LEAD_IN, '').trim();
+}
 
 /** Cheap shape test, no driver call: does this message open like a Mac action? */
 export function deviceVerbLike(text: string): boolean {
-  const raw = text.trim();
+  const raw = stripLeadIn(text);
   if (!raw || raw.startsWith('/') || raw.length > 200) return false;
   return PATTERNS.some(({ pattern }) => pattern.test(raw));
 }
@@ -324,7 +338,7 @@ const AUTHORING = /^(?:(?:now|then|also|please|ok|okay|and)\s+)*(?:write|type|en
 
 /** "show me opened apps", "list apps", "what apps are open": an inventory, not a task. */
 export function appInventoryRequest(text: string): boolean {
-  const raw = text.trim();
+  const raw = stripLeadIn(text);
   if (!raw || raw.startsWith('/') || raw.length > 200) return false;
   return APP_INVENTORY.test(raw);
 }
@@ -334,7 +348,7 @@ export function appInventoryRequest(text: string): boolean {
  * whether the owner has just used one; only then is it answerable as a device action.
  */
 export function authoringRequest(text: string): boolean {
-  const raw = text.trim();
+  const raw = stripLeadIn(text);
   if (!raw || raw.startsWith('/') || raw.length > 200) return false;
   return AUTHORING.test(raw);
 }
@@ -357,7 +371,7 @@ export function notesAuthoringRequest(text: string): boolean {
  * asked to be written, so nothing here rewrites them.
  */
 export function authoringText(text: string): string | undefined {
-  const raw = text.trim()
+  const raw = stripLeadIn(text)
     .replace(/^(?:(?:now|then|also|please|ok|okay|and)\s+)*(?:write|type|enter|notes|note|jot|dictate|append)\b\s*/i, '')
     .replace(/^down\s+/i, '')
     .replace(/^(?:(?:a|an|the)\s+)?(?:notes|note)\s*(?:about|that|saying|to say|:)?\s*/i, '')
@@ -367,7 +381,7 @@ export function authoringText(text: string): string | undefined {
 }
 
 export function detectDevicePlan(text: string, targets: { name: string }[]): DevicePlan | null {
-  const raw = text.trim();
+  const raw = stripLeadIn(text);
   if (!raw || raw.startsWith('/') || raw.length > 200) return null;
   const known = (value: string) => targets.find(x => tidy(x.name) === tidy(value))?.name;
   for (const { action, pattern } of PATTERNS) {

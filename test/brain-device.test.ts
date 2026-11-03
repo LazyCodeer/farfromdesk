@@ -263,6 +263,23 @@ test('a command that is not unmistakably a device command is left to the model',
   assert.equal(detectDevicePlan('   ', OPEN_APPS), null);
 });
 
+test('courtesy does not change the shape', () => {
+  // Measured live on 2026-11-03: "Could you open notes" was not device-shaped, so a pending
+  // coding contract re-sent its review card instead of opening the app.
+  for (const text of ['Could you open notes', 'Can you open Notes', 'would you please open Comet', 'Hey, can u open Notes', 'ok now open Comet']) {
+    assert.equal(deviceVerbLike(text), true, text);
+  }
+  assert.deepEqual(detectDevicePlan('Could you open notes', OPEN_APPS), { action: 'open_app', app: 'Notes' });
+  assert.deepEqual(detectDevicePlan('Can you please press escape in Comet', OPEN_APPS), { action: 'press_key', app: 'Comet', key: 'escape' });
+  assert.deepEqual(detectDevicePlan('could you read Notes', OPEN_APPS), { action: 'read_window', app: 'Notes' });
+  assert.equal(deviceVerbLike('Can you fix the failing tests'), false, 'courtesy must not make coding work device-shaped');
+  assert.equal(detectDevicePlan('Can you open the PR', OPEN_APPS), null);
+  assert.equal(appInventoryRequest('Could you show me all apps'), true);
+  assert.equal(authoringRequest('Could you write a note that the roof is leaking'), true);
+  assert.equal(authoringText('Could you write a note that the roof is leaking'), 'the roof is leaking');
+  assert.equal(authoringText('Can you write down buy milk'), 'buy milk');
+});
+
 test('the router can tell a device-shaped message without a driver call', () => {
   assert.equal(deviceVerbLike('open Comet'), true);
   assert.equal(deviceVerbLike('press escape in Comet'), true);

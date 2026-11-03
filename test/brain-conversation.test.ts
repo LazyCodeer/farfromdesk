@@ -96,7 +96,9 @@ test('the answer to a device question is not turned into a coding contract', asy
     // first turn is ordinary chat, the answer to the device question becomes coding work.
     f.decisions(pass, proposal('What item should be opened, and what does "open" mean for it?'));
     f.replies(clarify('Notes is not open right now. Do you want me to open it and write it there?'));
-    await f.send('1', 'Can you open the notes');
+    // "my notes" names no app the driver can resolve, so this is the turn the model answers
+    // with a question, which is the setup this test needs.
+    await f.send('1', 'Could you open my notes');
     assert.equal(f.rows('brain_tasks')[0]?.state, 'clarification');
     f.replies(chat('Opening it now.'));
     await f.send('2', 'Yes make it open');
