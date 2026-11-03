@@ -28,13 +28,14 @@ export const GOLDEN: GoldenUtterance[] = [
   { text: 'now write the notes', app: 'Notes', tool: 'notes_create_note', note: 'live transcript, app in front' },
   { text: 'note that the roof is leaking', tool: 'notes_create_note', note: 'no app named, note named' },
 
-  // Finding a note in an existing note is not a reviewed tool yet. The untested search sequence
-  // typed into the open note body on 2026-11-03 and the note's text had to be put back by hand,
-  // so the tool was removed rather than shipped. These stay in the set as must-stay-quiet
-  // entries: the answer is a question, never a second note.
-  { text: 'find my note about the roof', tool: null, note: 'no reviewed tool; must not create a note' },
-  { text: 'look for the note with the plumber number', tool: null, note: 'no reviewed tool; must not create a note' },
-  { text: 'search my notes for the invoice', tool: null, note: 'no reviewed tool; must not create a note' },
+  // These were quiet while finding a note had no reviewed tool: the failed search sequence typed
+  // into the open note body on 2026-11-03 and the note's text had to be put back by hand, so the
+  // tool was removed rather than shipped. `notes_find` reads through AppleScript and touches no
+  // keystroke, so they expect it now. The other half of the rule still holds in each entry: the
+  // answer must never be a second note.
+  { text: 'find my note about the roof', tool: 'notes_find', note: 'read-only search; must not create a note' },
+  { text: 'look for the note with the plumber number', tool: 'notes_find', note: 'read-only search; must not create a note' },
+  { text: 'search my notes for the invoice', tool: 'notes_find', note: 'read-only search; must not create a note' },
 
   { text: 'put a meeting on my calendar tomorrow at 5', tool: 'calendar_create_event', note: 'pack named' },
   { text: 'add a meeting with ashitosh tomorrow at 5pm', app: 'Calendar', tool: 'calendar_create_event', note: 'live transcript, app in front' },

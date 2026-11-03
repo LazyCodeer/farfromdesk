@@ -93,6 +93,13 @@ if (lexicalGolden.recall5 < 1) failures.push(`lexical golden recall@5 fell to ${
 if (lexicalGolden.wrong.length) failures.push(`${lexicalGolden.wrong.length} quiet request(s) matched a tool`);
 if (wideGolden.recall5 < 1) failures.push(`widened golden recall@5 fell to ${wideGolden.recall5}`);
 if (wideShort.recall5 < lexicalShort.recall5) failures.push(`embeddings made the paraphrases worse: ${lexicalShort.recall5} -> ${wideShort.recall5}`);
+// The paraphrase set is the one that keeps the embedding layer honest, so it is gated too, not
+// just printed. Three of its rows were wrong-first before read/write polarity; one is left, the
+// Ashitosh sentence that the note and calendar tools genuinely share.
+if (lexicalShort.recall1 < 0.8) failures.push(`lexical paraphrase recall@1 fell to ${lexicalShort.recall1}`);
+if (wideShort.recall1 < 0.8) failures.push(`widened paraphrase recall@1 fell to ${wideShort.recall1}`);
+if (wideShort.recall5 < 1) failures.push(`widened paraphrase recall@5 fell to ${wideShort.recall5}`);
+if (wideShort.wrong.length > 2) failures.push(`${wideShort.wrong.length} paraphrase requests answered with the wrong tool`);
 if (run.status !== 0) failures.push('a transcript eval failed');
 console.log('');
 if (failures.length) { for (const failure of failures) console.error(`FAIL ${failure}`); process.exitCode = 1; }

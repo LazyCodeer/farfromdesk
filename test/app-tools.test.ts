@@ -105,9 +105,9 @@ test('the phrases the owner actually uses pick the right tool', () => {
   assert.equal(choose('Could you write a note that the roof is leaking')[0], 'notes_create_note');
   assert.equal(choose('jot this in notes: call the plumber on monday')[0], 'notes_create_note');
   // Asking to find a note must never offer the tool that writes one: the words overlap and a
-  // wrong write is worse than a wrong answer. There is no reviewed search tool yet.
-  assert.deepEqual(choose('find my note about the roof'), []);
-  assert.deepEqual(choose('find my note about the roof', 'Notes'), []);
+  // wrong write is worse than a wrong answer. `notes_find` is read-only AppleScript.
+  assert.equal(choose('find my note about the roof')[0], 'notes_find');
+  assert.equal(choose('find my note about the roof', 'Notes')[0], 'notes_find');
   assert.equal(choose('put a meeting on my calendar tomorrow at 5')[0], 'calendar_create_event');
   // The owner is in Calendar, so the pack is in play even when they do not name the app:
   // that is the "load the tools of the app I am working in" rule.
@@ -146,4 +146,32 @@ test('a chosen tool can always be described without its arguments', () => {
   const lines = describeTools(tools);
   for (const tool of tools) assert.ok(lines.includes(tool.name), `${tool.name} is missing from the description list`);
   assert.equal(lines.split('\n').length, tools.length);
+});
+test('the owner opening verb decides read against write', () => {
+  // "save this for later" and "find my note" share nearly every other word, and "what did I
+  // write" contains the write verb but is a read. The first verb wins.
+  // The paraphrase only becomes a Mac request because the owner is in Notes: with no app in
+  // front the word "save" alone is not enough to put a writing tool in play.
+  assert.equal(choose('save this for later: invoice 442', 'Notes')[0], 'notes_create_note');
+  assert.equal(choose('remind me to buy milk later', 'Notes').includes('notes_find'), false);
+  assert.equal(choose('search my notes for the invoice')[0], 'notes_find');
+  assert.equal(choose('where did i write about the roof')[0], 'notes_find');
+  assert.equal(choose('is anything booked on Friday', 'Calendar')[0], 'calendar_list_events');
+  assert.equal(choose('what does my Friday look like', 'Calendar')[0], 'calendar_list_events');
+  // A sentence that only contains a copula is left undecided rather than forced into a mode.
+  assert.equal(choose('note that the roof is leaking')[0], 'notes_create_note');
+});
+
+test('a tool that only reads never carries a step that changes the Mac', () => {
+  for (const tool of tools.filter(candidate => !candidate.writes)) {
+    const plan = tool.plan(Object.fromEntries(tool.args.map(arg => [arg.name, 'x'])));
+    assert.equal(plan.kind, 'osascript', `${tool.name} reads with UI steps, which can type`);
+    const script = plan.kind === 'osascript' ? plan.script : '';
+    assert.doesNotMatch(script, /\bmake new\b|\bdelete\b|\bduplicate\b|\bmove\b|\bset (?:name|body|value) of\b/i, `${tool.name} mutates something`);
+    assert.match(script, /return /, `${tool.name} never returns what it read`);
+  }
+  // The one read tool that goes through Notes says so in its own script.
+  const find = toolByName('notes_find')!.plan({ query: 'roof' });
+  assert.match(find.kind === 'osascript' ? find.script : '', /tell application "Notes"/);
+  assert.match(find.kind === 'osascript' ? find.script : '', /contains q/);
 });

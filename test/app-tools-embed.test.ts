@@ -60,7 +60,12 @@ test('the shortlist keeps the golden set at recall@5 and lifts the paraphrases',
     if (shortlist.some(e => e.tool.name === row.tool)) union += 1;
     else assert.fail(`no shortlist for "${row.text}": ${shortlist.map(e => e.tool.name).join(', ')}`);
   }
-  assert.equal(lexical, 8, 'the paraphrase set is only useful while it is harder than the words alone');
+  // The paraphrase set exists to stay harder than the words alone: if the lexical pass ever
+  // lifted every row on its own this set would stop testing the embedding layer at all. The
+  // count is a floor, not a target: it was 6 when the set was written, 8 after the intent and
+  // pack rules, and 9 after read/write polarity, while the union has to stay complete.
+  assert.ok(lexical >= 8, `the lexical pass lost ground: ${lexical}/${PARAPHRASES.length}`);
+  assert.ok(lexical < PARAPHRASES.length, 'the paraphrase set is no longer harder than words alone');
   assert.equal(union, PARAPHRASES.length);
 });
 

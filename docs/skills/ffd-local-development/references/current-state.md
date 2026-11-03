@@ -1630,15 +1630,29 @@ Two rules came out of it, both tested.
   incidental words "look" and "number" once the Notes search tool was gone.
 - Invariant test: every `type_text` step in any pack must name a role or a name. That is the check
   that would have caught the untargeted keystroke before it ran.
-- A read spends its character budget on labels: `stripAxMetadata` in `src/desktop-control.ts`
-  removes `[id=...]` and multi-line `[actions=[...]]` blobs before the 6000-character slice, and
-  the tree reader accepts the unnumbered rows the driver uses for plain text. Verified live on
-  2389: "find my note about the roof" answered "I read Notes (Notes)." with the real note titles
-  instead of eight lines of `ICMNoteListCell` ids.
+- Finding a note has a reviewed tool again, and this one cannot type. `notes_find` sends one
+  read-only AppleScript to Notes and returns up to 8 titles whose name or body contains the
+  phrase, capped at the first 300 notes. Nothing is clicked and no keystroke is sent, which is
+  the property the removed UI search tool could not offer. The script compiles (`osacompile`,
+  which resolves `notes` against the app dictionary and needs no Automation grant to compile)
+  and has not been run: the first live run raises the same one-time Automation prompt as the
+  Calendar tools.
+- Read and write are separated by the owner's opening verb. `intentPolarity` in
+  `src/app-tools/retrieve.ts` returns `write` for write/jot/save/note/remind/remember/record/
+  log/capture/forget/hold/keep and `read` for find/search/look/where/read/show/list/tell/what/
+  which, whichever comes first, and a tool whose `writes` is the opposite is dropped before
+  scoring. Copulas are deliberately excluded: "my head is full" is not a read. Measured on the
+  paraphrase set this took wrong-first from 3 to 1 and recall@1 from 0.6 to 0.8.
+- Example sentences must not be shared between a read tool and a write tool. Two collisions were
+  measured, both of which put the wrong tool first: the note-search example reused the create
+  tool's "the roof is leaking" sentence, and the calendar-create example contains "Ashitosh",
+  which is also in the owner's note sentence. The first was fixed by rewording; the second is
+  still there and is the one remaining wrong-first row.
 
 **Not done yet.** Calendar tools are written and unit-tested but never run live, and the first
-run will raise the macOS Automation permission prompt. Finding an existing note has no reviewed
-tool at all. The shortlist wiring is unit-tested at transcript level (`test/brain-conversation.test.ts`:
+run will raise the macOS Automation permission prompt. `notes_find` is in the same position: its
+AppleScript compiles against Notes, but it has never been executed against the app itself. The
+shortlist wiring is unit-tested at transcript level (`test/brain-conversation.test.ts`:
 the offer, the argument names, the clock, and that a coding app gets no list) and was watched live
 on 2386-2389, where the model picked the reviewed tool it was offered.
 
@@ -1646,9 +1660,11 @@ on 2386-2389, where the model picked the reviewed tool it was offered.
 
 `npm run evals` (`script/run_brain_evals.mts`) is the gate: it prints the retrieval scoreboard
 both lexical and embedding-widened, runs the four brain eval files, and exits non-zero when a
-number falls below what was measured. Measured on 3 November: golden 25 (12 with a tool, 13 quiet)
-at recall@1/3/5 = 1 with wrong-first 0, paraphrases lexical 0.6/0.8/0.8 and 0.7/1.0/1.0 widened,
-25 transcript tests green.
+number falls below what was measured. Measured on 3 November: golden 25 (15 with a tool, 10 quiet)
+at recall@1/3/5 = 1 with wrong-first 0, paraphrases lexical 0.8/0.9/0.9 and 0.9/1.0/1.0 widened
+with one wrong-first row, 25 transcript tests green. The paraphrase set is gated too, not just
+printed, because it is the one that keeps the embedding layer honest; the floor it has to stay
+above is 8 of 10 lexically, so the set does not quietly become easy.
 
 `test/brain-sessions.test.ts` runs two sessions through one router and one brain, because
 everything per-chat is keyed by destination and a per-session bug is invisible in a suite that

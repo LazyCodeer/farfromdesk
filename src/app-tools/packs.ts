@@ -57,6 +57,60 @@ const notesCreate: AppTool = {
   }),
 };
 
+const notesFind: AppTool = {
+  name: 'notes_find',
+  pack: 'notes',
+  app: 'Notes',
+  bundleId: 'com.apple.Notes',
+  description:
+    'Look through Apple Notes for notes whose title or body mentions a word or phrase, and list ' +
+    'their titles. Use this when the owner asks to find, search or look for a note, asks where a ' +
+    'note went, or asks what they wrote about something. This tool only reads: it never creates, ' +
+    'edits, deletes, opens or moves a note, and it never types, so it cannot leave a mark in a ' +
+    'note or in the search field. It looks at the first 300 notes and returns at most 8 titles, ' +
+    'not the note bodies; if the owner needs the words of one note, reading the window is the ' +
+    'better tool.',
+  args: [
+    { name: 'query', description: 'The single word or short phrase to look for, as the owner said it.', required: true },
+  ],
+  examples: [
+    // Deliberately not the create tool's "the roof is leaking" sentence: sharing an example
+    // sentence made a write request match this read tool, which is the same collision that put
+    // the Ashitosh calendar sentence in front of the note tool.
+    'find my note about the plumber',
+    'search my notes for invoice 442',
+    'do I have a note about the dentist',
+  ],
+  keywords: ['note', 'notes', 'find', 'search', 'look for', 'where is', 'show my notes', 'did i write'],
+  // Read only, and it says so: the previous search tool drove the interface and typed into the
+  // note that happened to be open. This one sends one AppleScript read and touches no keystroke.
+  writes: false,
+  plan: args => ({
+    kind: 'osascript',
+    // Titles are compared case-insensitively by AppleScript's default, and the loop is capped
+    // so a large Notes library cannot hold the turn open. `notes` at the application level is
+    // real: /tmp/sdef_Notes.xml:49 lists <element type="note"> on the application class.
+    script:
+      `set q to ${asStr(String(args.query ?? ''))}\n` +
+      `set hits to {}\n` +
+      `set seen to 0\n` +
+      `tell application "Notes"\n` +
+      `\trepeat with n in notes\n` +
+      `\t\tset seen to seen + 1\n` +
+      `\t\tif seen > 300 then exit repeat\n` +
+      `\t\tif (name of n contains q) or (body of n contains q) then\n` +
+      `\t\t\tset t to (name of n)\n` +
+      `\t\t\tif t is "" then set t to "untitled note"\n` +
+      `\t\t\tset end of hits to t\n` +
+      `\t\t\tif (count of hits) is greater than or equal to 8 then exit repeat\n` +
+      `\t\tend if\n` +
+      `\tend repeat\n` +
+      `end tell\n` +
+      `if (count of hits) is 0 then return "no note mentions " & q\n` +
+      `return hits\n`,
+  }),
+};
+
 
 const calendarCreateEvent: AppTool = {
   name: 'calendar_create_event',
@@ -114,7 +168,7 @@ const calendarListEvents: AppTool = {
     'next days are clear.',
   args: [{ name: 'days', description: 'How many days ahead to look, for example 1 for today or 7 for the week.' }],
   examples: ['what is on my calendar today', 'what is coming up this week', 'am I free tomorrow'],
-  keywords: ['calendar', 'events', 'today', 'tomorrow', 'week', 'coming up', 'free', 'busy', 'schedule'],
+  keywords: ['calendar', 'events', 'today', 'tomorrow', 'week', 'coming up', 'free', 'busy', 'schedule', 'booked', 'look like', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
   writes: false,
   plan: args => {
     const days = Number(args.days ?? '7');
@@ -142,8 +196,8 @@ export const PACKS: AppPack[] = [
     id: 'notes',
     app: 'Notes',
     bundleId: 'com.apple.Notes',
-    summary: 'Write a note in Apple Notes without typing into a search field by mistake.',
-    tools: [notesCreate],
+    summary: 'Write a note in Apple Notes, and read back one that already exists.',
+    tools: [notesCreate, notesFind],
   },
   {
     id: 'calendar',

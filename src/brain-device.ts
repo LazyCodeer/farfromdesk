@@ -256,6 +256,13 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     const tool = plan.tool ?? '';
     if (tool === 'notes_create_note') return { ok: true, line: `Wrote the note in ${app}.`, evidence: null };
     if (tool === 'calendar_create_event') return { ok: true, line: `Added it to ${app}.`, evidence: null };
+    if (tool === 'notes_find') {
+      const output = String(result?.output ?? '').trim().slice(0, 1000);
+      // An empty answer is a fact too, and the owner asked for it, so it is said plainly
+      // rather than dressed up as "here is what I found".
+      if (!output || /^no note mentions/i.test(output)) return { ok: true, line: `No note in ${app} mentions that.`, evidence: null };
+      return { ok: true, line: `Here is what I found in ${app}:`, evidence: output };
+    }
     if (tool === 'calendar_list_events') {
       const output = String(result?.output ?? '').trim().slice(0, 1500);
       return { ok: true, line: output ? `Here is ${app}:` : `${app} has nothing on that day.`, evidence: output || null };

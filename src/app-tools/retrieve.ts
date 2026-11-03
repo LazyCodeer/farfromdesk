@@ -94,6 +94,30 @@ export interface ToolMatch {
   score: number;
 }
 
+/**
+ * The owner's opening verb, when it settles read against write.
+ *
+ * Reading a note and writing one share almost every word, which is how "save this for later:
+ * invoice 442" matched the note-searching tool on the words of its own example. The first verb
+ * the owner says is the signal: "find" and "what did I write" are reads even though the second
+ * contains "write", and "remind me" and "jot this down" are writes. Words that are neither are
+ * skipped, so "add a meeting", "put a meeting" and "schedule a call" stay undecided rather than
+ * being forced into a half-guessed mode.
+ */
+const WRITE_VERBS = new Set(['write', 'jot', 'save', 'note', 'remind', 'remember', 'record', 'log', 'capture', 'forget', 'hold', 'keep']);
+// Copulas are deliberately absent: "my head is full" is not a read. Every word here names a
+// question the owner is asking, so a sentence that merely contains "is" or "does" stays
+// undecided and is left to the scores.
+const READ_VERBS = new Set(['find', 'search', 'look', 'where', 'read', 'show', 'list', 'tell', 'what', 'which']);
+
+export function intentPolarity(text: string): 'write' | 'read' | undefined {
+  for (const word of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (WRITE_VERBS.has(word)) return 'write';
+    if (READ_VERBS.has(word)) return 'read';
+  }
+  return undefined;
+}
+
 export interface SelectOptions {
   /** The app in front of the owner, if it is known. */
   app?: string;
@@ -119,9 +143,16 @@ export function selectTools(text: string, options: SelectOptions = {}): ToolMatc
   // words "look" and "number" once the notes tool was removed. A request about notes is not a
   // request about the calendar, whatever words the two descriptions happen to share.
   const namedPacks = new Set(index.tools.filter(tool => [...appWords(tool)].some(word => unique.includes(word))).map(tool => tool.pack));
+  const polarity = intentPolarity(text);
 
   for (const tool of index.tools) {
     if (namedPacks.size && !namedPacks.has(tool.pack)) continue;
+    // A read request must not be answered by a writing tool and the other way round. Measured:
+    // this moved the paraphrase set's wrong-first answers off the note-searching tool for
+    // "save this for later" and off the calendar-creating tool for "what does my Friday look
+    // like" and "is anything booked on Friday".
+    if (polarity === 'write' && !tool.writes) continue;
+    if (polarity === 'read' && tool.writes) continue;
     // A tool that declares requests it must never serve is skipped when one of them is what
     // the owner said. This is checked before scoring, so a near-miss cannot outrank it. A
     // phrase counts only when at least two of its words carry meaning: measured here, a
@@ -189,7 +220,8 @@ export async function shortlistTools(text: string, options: SelectOptions = {}):
   const lexical = selectTools(text, { ...options, index, k });
   const entries: ShortlistEntry[] = lexical.map(match => ({ tool: match.tool, score: match.score, via: 'lexical' }));
   if (entries.length >= k) return entries;
-  const extras = await embedExtras(text, index.tools, { app: options.app, k: k - entries.length, already: entries.map(entry => entry.tool.name) });
+  const polarity = intentPolarity(text);
+  const extras = await embedExtras(text, polarity ? index.tools.filter(tool => polarity === 'write' ? tool.writes : !tool.writes) : index.tools, { app: options.app, k: k - entries.length, already: entries.map(entry => entry.tool.name) });
   for (const name of extras) {
     const tool = index.tools.find(candidate => candidate.name === name);
     if (tool) entries.push({ tool, score: 0, via: 'embedding' });
