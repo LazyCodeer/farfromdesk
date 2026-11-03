@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DevicePlan, devicePlanIssue, deviceFailureCode, deviceOutcome, deviceRefusal, plainCause, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, appInventoryRequest, authoringRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl } from '../src/brain-device.js';
 import { safeEventDetails } from '../src/request-events.js';
+import { stripAxMetadata } from '../src/desktop-control.js';
 import { Interpretation } from '../src/meta-model.js';
 
 test('a plan accepts only the documented fields', () => {
@@ -126,6 +127,27 @@ test('a window summary is content, not the menu bar', () => {
   assert.match(summary, /AWS Free Tier limit alert/);
   // Bounded: a page with 250 elements must not become a 250-line message.
   assert.equal(summarizeTree(Array.from({ length: 250 }, (_, i) => `- [${i}] AXStaticText = "row ${i}"`).join('\n')).split('\n').length, 8);
+});
+
+test('a read shows the labels, not the accessibility plumbing', () => {
+  // Live on 3 November a Notes read spent its whole character budget on `[id=...]` and
+  // multi-line `[actions=[...]]` blobs, so the reply listed element ids and no note title.
+  // The metadata is stripped before the budget is applied, which is what this pins.
+  const raw = [
+    '- [0] AXWindow "Notes" [id=_NS:8 actions=[raise]]',
+    '    - [1] AXOutline (Folders) [id=_NS:20]',
+    '      - [5] AXRow [actions=[name:pin',
+    'target:0x0',
+    'selector:(null),name:bin',
+    'target:0x0',
+    'selector:(null)]]',
+    '        - AXStaticText = "tomorrow meeting at 10pm woth ashitosh"',
+    '      - [6] AXButton "New Note"',
+  ].join('\n');
+  const clean = stripAxMetadata(raw);
+  assert.doesNotMatch(clean, /\[id=|\[actions=|selector:/);
+  assert.match(clean, /"tomorrow meeting at 10pm woth ashitosh"/);
+  assert.match(summarizeTree(clean, 8, 'Notes'), /tomorrow meeting at 10pm woth ashitosh/);
 });
 
 test('a clock and a shortcut are furniture, not content', () => {

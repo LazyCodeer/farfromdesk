@@ -46,6 +46,24 @@ type Activator=(app:string,bundleId:string|undefined)=>Promise<unknown>;
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
 export type BrowserCall=(q:Record<string,unknown>,signal?:AbortSignal)=>Promise<any>;
 const execute=promisify(execFile);
+/**
+ * Accessibility plumbing out, content in.
+ *
+ * `get_window_state` renders every element with its id and its action list, and an action list
+ * carries embedded newlines (`[actions=[name:pin\ntarget:0x0\nselector:...]]`). Measured live on
+ * 3 November: a Notes read spent the whole character budget on those blobs, so the note titles
+ * never arrived and the owner was shown eight lines of ids. Stripping the metadata first is what
+ * makes the cap carry the thing they asked to read.
+ */
+export function stripAxMetadata(tree:string):string{
+  return String(tree??'')
+    .replace(/\[actions=\[[\s\S]*?\]\]/g,'')
+    .replace(/\[actions=[^\n]*/g,'')
+    .replace(/\[id=[^\]]*\]/g,'')
+    .replace(/[ \t]+$/gm,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
 const browserCall:BrowserCall=async(q,signal)=>{
   try{
     const r=await execute('/usr/bin/osascript',['-l','JavaScript',fileURLToPath(new URL('../native/desktop-browser.js',import.meta.url)),JSON.stringify(q)],{timeout:15000,signal,maxBuffer:2*1024*1024});
@@ -196,7 +214,7 @@ export class DesktopControl {
         const target=await this.resolve(plan.app,plan.window);
         if(!target)throw new Error('DESKTOP_APP_NOT_RUNNING: '+plan.app+' has no open window to read.');
         const state=await this.driver.call('get_window_state',{pid:target.pid,window_id:target.window_id,tree_format:'markdown',max_elements:250},controller.signal);
-        return {action:plan.action,app:plan.app,window:state?.window_title??null,tree:String(state?.tree_markdown??'').slice(0,6000),elements:state?.element_count??0,complete:state?.elements_complete===true};
+        return {action:plan.action,app:plan.app,window:state?.window_title??null,tree:stripAxMetadata(String(state?.tree_markdown??'')).slice(0,6000),elements:state?.element_count??0,complete:state?.elements_complete===true};
       }
       // These steps act on a window, so resolve one first and name it on the batch. The
       // driver refuses an `observe` it cannot attach to a window ("no step names a window

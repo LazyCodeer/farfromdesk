@@ -142,7 +142,10 @@ function renderTree(markdown: string, limit: number, skip: string | null | undef
   const title = fold(String(skip ?? ''));
   let chromeIndent: number | null = null;
   for (const line of String(markdown).split('\n')) {
-    const match = /^(\s*)-\s*\[\d+\]\s+(AX\w+)\s*([\s\S]*)$/.exec(line);
+    // The driver numbers the interactive elements and leaves the plain text rows unnumbered:
+    // measured live, a Notes list rendered its note titles as `- AXStaticText = "..."`, so
+    // demanding an id marker summarised the ids around the title and dropped the title.
+    const match = /^(\s*)-\s*(?:\[\d+\]\s+)?(AX\w+)\s*([\s\S]*)$/.exec(line);
     if (!match) continue;
     const indent = match[1]!.length;
     if (chromeIndent !== null) {
