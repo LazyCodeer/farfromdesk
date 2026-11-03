@@ -30,8 +30,12 @@ const BOOKKEEPING = [
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g;
 const LONG_DASH = /\s*[\u2014\u2013]\s*/g;
-/** A phone shows about forty characters a line; this is the point where a paragraph is
- * plainly unwrapped rather than merely long. */
+/**
+ * The width at which a line is plainly unwrapped rather than merely long. A phone shows
+ * about forty characters per line, but wrapping there would reflow every sentence, and the
+ * chat client already folds text to its own width. This only stops one paragraph from
+ * arriving as a single unbroken run.
+ */
 const PHONE_LINE = 320;
 
 export function isBookkeeping(line: string): boolean {
