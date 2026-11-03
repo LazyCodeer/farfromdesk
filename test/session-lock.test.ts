@@ -101,3 +101,35 @@ test('a delivery failure does not hide the reason for the refusal', async () => 
     await assert.rejects(() => gate('click'), /SESSION_LOCKED/);
   } finally { f.dispose(); }
 });
+
+test('a model retrying a refused action does not mint a pile of dead links', async () => {
+  const f = fixture(`printf '%s\\n' '{"unlocked":false,"reason":"SESSION_LOCKED"}'`);
+  const notices: string[] = [];
+  let linked = 0;
+  let clock = 1_000_000;
+  try {
+    // Every link invalidates the last one, so a retry loop must reuse the current one.
+    const gate = screenLockGate({probe: f.probe, link: async () => { linked += 1; return `https://example.invalid/link-${linked}`; }, notify: text => { notices.push(text); }, now: () => clock, cooldownMs: 60_000});
+    for (let i = 0; i < 4; i++) await assert.rejects(() => gate('click'), /SESSION_LOCKED/);
+    assert.equal(linked, 1, 'four refusals inside the window must stay one link');
+    assert.equal(notices.length, 1);
+    clock += 61_000;
+    await assert.rejects(() => gate('click'), /SESSION_LOCKED/);
+    assert.equal(linked, 2, 'after the window a fresh link is expected, since the old one has expired');
+  } finally { f.dispose(); }
+});
+
+test('a refusal says which next step to take, and never claims a link it did not send', async () => {
+  const f = fixture(`printf '%s\\n' '{"unlocked":false,"reason":"SESSION_LOCKED"}'`);
+  try {
+    // The remote password is unset: chat() answers with prose instead of a link.
+    const noLink = screenLockGate({probe: f.probe, link: async () => 'Set a remote password first.', notify: () => {}});
+    await assert.rejects(() => noLink('click'), (e: Error) => /SESSION_LOCKED/.test(e.message) && /control my screen/.test(e.message) && !/has been sent/.test(e.message));
+
+    const undeliverable = screenLockGate({probe: f.probe, link: async () => 'https://example.invalid/abc', notify: () => { throw new Error('nope'); }});
+    await assert.rejects(() => undeliverable('click'), (e: Error) => /could not be delivered/.test(e.message) && !/has been sent/.test(e.message));
+
+    const delivered = screenLockGate({probe: f.probe, link: async () => 'https://example.invalid/abc', notify: () => {}});
+    await assert.rejects(() => delivered('click'), (e: Error) => /A remote-control link has been sent/.test(e.message));
+  } finally { f.dispose(); }
+});

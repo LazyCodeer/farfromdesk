@@ -4555,11 +4555,14 @@ extension _BridgeScreens on _DeskState {
                       'This installs a small background helper with administrator '
                           'approval. While it is on and the power cable is '
                           'connected, this $computer will not sleep, and a closed '
-                          'lid gets warm. Turning this off or unplugging the cable '
-                          'puts normal sleep back within seconds. If FarFromDesk '
-                          'stops, the helper keeps holding sleep off for up to two '
-                          'hours, then restores normal sleep. It cannot log in for '
-                          'you after a restart when FileVault is on.',
+                          'lid gets warm, so keep the vents clear. Closing the lid '
+                          'also locks the screen, so you will need your Mac '
+                          'password when you open it again. Turning this off or '
+                          'unplugging the cable puts normal sleep back within '
+                          'seconds. If FarFromDesk stops, the helper keeps holding '
+                          'sleep off for up to two hours, then restores normal '
+                          'sleep. It cannot log in for you after a restart when '
+                          'FileVault is on.',
                       actionLabel: 'Turn on',
                     );
                     if (!proceed) return;
@@ -4583,8 +4586,8 @@ extension _BridgeScreens on _DeskState {
             // reference states it, instead of a pill plus a second paragraph.
             if (serverMode['active'] == true)
               settingsNote(
-                'Lid-closed sleep is off on power. Keep the vents clear for '
-                'proper airflow.',
+                'Lid-closed sleep is off on power, and closing the lid locks the '
+                'screen. Keep the vents clear for proper airflow.',
               )
             else ...[
               gap(7),

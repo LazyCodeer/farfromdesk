@@ -235,6 +235,35 @@ recovery `src/remote-p2p/desktop.ts` performs on `SESSION_LOCKED`, now measured 
 exact state a lid-closed Mac will be in if locking on lid close is added. Server mode held
 throughout: no sleep event in `pmset -g log` and `SleepDisabled 1`.
 
+## The helper locks the screen, and a locked Mac refuses screen actions
+
+Both directions are now implemented, in helper version 3 and `src/session-lock.ts`.
+
+**Lid close turns the display off.** The helper reads `AppleClamshellState` on each pass
+and runs `pmset displaysleepnow` on the open-to-closed transition, once per close, and only
+while its own decision is `ok|grace`. That last condition matters: on battery the Mac
+sleeps on its own and a stopped app restores normal sleep, so in both of those cases the
+lock arrives by itself and the helper has no business acting. `previous_lid` starts empty
+rather than `open`, so a helper that comes up while the lid is already shut still locks on
+its first pass instead of waiting for a transition that will not come.
+
+**A locked Mac refuses a screen action and sends the link instead.** This is the owner's
+own design and it is the right one: synthetic input does reach a locked Mac, which is the
+whole problem, because it arrives at the lock screen rather than at the application the
+request was about, and the likeliest home for typed text is the Mac password field. So the
+action stops, and the owner is sent the same link and code the `control my screen` command
+sends. Unlocking from the phone fixes it for real: the remote session types the Mac
+password at the lock screen, and afterwards the Mac is ordinary to every tool.
+
+Three things are exempt, because diagnosing a locked Mac has to stay possible: `stop`,
+`status` and `check_permissions`. And nothing about a failed handshake becomes permission:
+if the link cannot be made, if the probe is missing, or if delivery fails, the action is
+still refused, and a probe that cannot answer blocks nothing either, since guessing in
+either direction is worse than the status quo.
+
+The ceiling is unchanged and worth repeating in this context: none of this helps after a
+restart, because FileVault stops the boot before any of this runs.
+
 ## FarFromDesk never has the Mac password
 
 Nothing in the app reads, asks for, stores or logs it.
