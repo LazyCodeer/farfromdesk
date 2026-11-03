@@ -127,12 +127,15 @@ function renderTree(markdown: string, limit: number, skip: string | null | undef
       continue;
     }
     // A field carries its label and its value ("Deployment name" = "claude-fable-5-1"). On a
-    // phone that becomes one readable line rather than a quoted pair.
+    // phone that becomes one readable line rather than a quoted pair. The driver's markdown
+    // can also truncate the closing quote, which is the shape the live tree actually had:
+    // `Deployment name" = "claude-fable-5-1`. Both forms lose the quote and the equals sign.
     const pair = /^\s*"([^"]+)"\s*=\s*"([\s\S]*)"\s*$/.exec(match[3]!);
     const label = pair ? `${pair[1]}: ${pair[2]}` : match[3]!
       .replace(/\s*\[actions=.*$/, '')
       .replace(/\s*\((?:[^()]*)\)\s*$/, '')
       .replace(/^[=:]\s*/, '')
+      .replace(/"?\s*=\s*"?/g, ': ')
       .replace(/^"|"$/g, '')
       .trim();
     if (label.length < 3) continue;   // "PM", "OK", "1": never page content, always furniture

@@ -145,6 +145,13 @@ test('a field reads as label and value, once', () => {
   const summary = summarizeTree(tree, 8, 'Microsoft Foundry');
   assert.equal(summary, '- Deployment name: claude-fable-5-1\n- Deploy');
   assert.doesNotMatch(summary, /"|= "|\[/);
+  // The live tree truncates the closing quote, which is what the first version of this rule
+  // missed: it only knew the balanced form, so the real window still showed
+  // `Deployment name" = "claude-fable-5-1`.
+  const truncated = ['- [0] AXWindow "Microsoft Foundry"',
+    '  - [1] AXStaticText = "Deployment name"',
+    '  - [2] AXTextField "Deployment name" = "claude-fable-5-1'].join('\n');
+  assert.equal(summarizeTree(truncated, 8, 'Microsoft Foundry'), '- Deployment name: claude-fable-5-1');
 });
 
 test('a page is never emptied by the chrome rule', () => {
