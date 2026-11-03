@@ -53,6 +53,9 @@ function fixture() {
   const device = {
     assist: async (_s: string, plan: any) => { calls.push(plan); return { app: plan.app, running: true, windowReady: false, ...(plan.action === 'open_app' ? {} : { ok: true }) }; },
     targets: async () => targets,
+    // A reviewed app tool is recorded next to the raw plans, so a transcript can assert that
+    // the pack did the write instead of a blind type.
+    packTool: async (_s: string, name: string, args: any) => { calls.push({ action: 'app_tool', tool: name, app: 'Notes', args }); return { action: 'app_tool', tool: name, app: 'Notes', ok: true, window: 'Notes' }; },
   };
   r.brain = new MetaBrain(store, secret, model as any, device as any);
   let decisions: ContractDecision[] = [];
@@ -115,8 +118,10 @@ test('a bare write after using an app goes to that app, with the owner words ver
     assert.deepEqual(f.calls[0], { action: 'open_app', app: 'Notes' });
     assert.match(f.last(), /has not drawn a window/, 'the driver report is what the owner read');
     await f.send('2', 'Write a notes about tomorrow meeting at 10pm woth ashitosh');
-    assert.deepEqual(f.calls[1], { action: 'type', app: 'Notes', text: 'tomorrow meeting at 10pm woth ashitosh' });
-    assert.match(f.last(), /Typed in Notes/);
+    // The blind type is what landed in the Notes search field live while the owner was told
+    // it had been written; the reviewed Notes tool is what replaces it.
+    assert.deepEqual(f.calls[1], { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'tomorrow meeting at 10pm woth ashitosh' } });
+    assert.match(f.last(), /Wrote the note in Notes/);
     assert.doesNotMatch(f.last(), /not open right now/i);
     assert.equal(f.seen.length, 0, 'the unambiguous device path never asks the model');
   } finally { f.close(); }

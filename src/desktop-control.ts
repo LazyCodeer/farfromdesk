@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { EmbeddedDesktopDriver,type DesktopDriver } from './desktop-driver.js';
+import { toolByName } from './app-tools/packs.js';
 
 export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','stop'] as const;
 /**
@@ -217,6 +218,53 @@ export class DesktopControl {
       // "Something visibly changed" is the owner's fact; the element count is build detail
       // and reads like a diff line in a chat message.
       return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,changes:ok&&total?'The window changed.':null};
+    }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
+  }
+  /**
+   * Run one reviewed app-pack tool, so the exact sequence is written down once instead of
+   * being rediscovered at runtime.
+   *
+   * Measured live on 2026-11-03: "write a note that 5pm meeting tomorrow" typed into the
+   * Notes *search field* and the owner was told "Typed in Notes." The pack holds the
+   * sequence that actually lands in a note (leave the search field, click the New Note
+   * button, type into the note body), and this method returns only what the driver reported,
+   * so that sentence can no longer be produced.
+   *
+   * Step tools stay in the background: the owner keeps working and the pointer does not move.
+   * An osascript tool goes through the app's own automation interface instead, which is the
+   * first run's Automation permission prompt and nothing else.
+   */
+  async packTool(scope:string,name:string,args:Record<string,string>,authorize:()=>void=()=>{}):Promise<any>{
+    if(this.platform!=='darwin')throw new Error('DESKTOP_MACOS_ONLY');
+    if(this.pending)throw new Error('DESKTOP_BUSY');
+    const tool=toolByName(name);
+    if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+name+' is not an app tool I have.');
+    if(sensitiveName(tool.app))throw new Error('SENSITIVE_TARGET: System Settings, keychain and password apps are excluded from desktop control.');
+    for(const arg of tool.args)if(arg.required&&!String(args[arg.name]??'').trim())throw new Error('APP_TOOL_ARGUMENT_MISSING: '+tool.name+' needs '+arg.name+'.');
+    const report=await this.permissionReport();
+    if(!report?.accessibility)throw new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow FarFromDesk in macOS System Settings > Privacy & Security > Accessibility, then try again.');
+    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Turn on Remote control in Settings, then try again.');
+    const controller=new AbortController(),generation=this.generation;this.pending=controller;
+    try{
+      authorize();
+      const plan=tool.plan(args);
+      if(plan.kind==='osascript'){
+        try{
+          const run=await execute('/usr/bin/osascript',['-e',plan.script],{timeout:20000,signal:controller.signal,maxBuffer:1024*1024});
+          const output=String(run.stdout??'').trim().replace(/\s*\n\s*/g,' | ').slice(0,600);
+          return {action:'app_tool',tool:tool.name,app:tool.app,ok:true,output,window:null};
+        }catch(e){
+          const text=String((e as {stderr?:string}).stderr??(e as Error).message??'');
+          // -1743 is macOS saying the Automation grant is missing, and it arrives on stderr.
+          if(/-1743|not authori[sz]ed|not permitted|errAEEventNotPermitted/i.test(text))throw new Error('AUTOMATION_PERMISSION_REQUIRED: macOS is waiting for your permission to control '+tool.app+'. Open System Settings > Privacy & Security > Automation, allow FarFromDesk Local to control '+tool.app+', then ask me again. Nothing was sent.');
+          throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+text.replace(/\s+/g,' ').slice(0,300));
+        }
+      }
+      const target=await this.resolve(tool.app);
+      if(!target?.window_id)throw new Error('DESKTOP_APP_NOT_RUNNING: '+tool.app+' has no open window to act on.');
+      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,app:tool.app,delivery_mode:'background',steps:plan.steps,observe:{}} as Record<string,unknown>,controller.signal);
+      const ok=result?.ok===true;
+      return {action:'app_tool',tool:tool.name,app:tool.app,ok,window:result?.window_title??null,observation:ok?null:result?.observation?.summary??result?.observation?.message??null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
   /**

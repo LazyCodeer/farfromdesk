@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AssistPlan } from './desktop-control.js';
+import { toolByName } from './app-tools/packs.js';
 
 /**
  * The owner brain's device vocabulary.
@@ -9,7 +10,14 @@ import type { AssistPlan } from './desktop-control.js';
  * a refused action is reported as refused and the owner decides what happens next.
  */
 export const DevicePlan = z.object({
-  action: z.enum(['open_app', 'read_window', 'click', 'type', 'press_key']),
+  action: z.enum(['open_app', 'read_window', 'click', 'type', 'press_key', 'app_tool']),
+  /**
+   * A reviewed app-pack tool (`src/app-tools`). Running one is not a new capability: it is
+   * the same driver steps, written down once and named, so a request like "write a note"
+   * lands in the note body instead of the search field the owner was shown.
+   */
+  tool: z.string().min(1).max(80).optional(),
+  args: z.record(z.string(), z.string()).optional(),
   app: z.string().min(1).max(120).optional(),
   window: z.string().max(160).optional(),
   role: z.string().max(40).optional(),
@@ -23,15 +31,32 @@ export type DevicePlan = z.infer<typeof DevicePlan>;
 export type DeviceControl = {
   assist(scope: string, plan: AssistPlan, authorize?: () => void): Promise<any>;
   targets(maxAgeMs?: number): Promise<{ name: string; bundleId: string; windows: string[] }[]>;
+  /** Optional so older fakes and callers keep working; an app tool needs it. */
+  packTool?(scope: string, name: string, args: Record<string, string>, authorize?: () => void): Promise<any>;
 };
 
 /** What each action cannot do without. A missing field is a refusal, not a crash. */
 export function devicePlanIssue(plan: DevicePlan): string | null {
+  if (plan.action === 'app_tool') return plan.tool ? null : 'Which app tool should I use?';
   if (!plan.app) return plan.action === 'press_key' ? 'Which app should I press a key in?' : plan.action === 'open_app' ? 'Which app should I open?' : `Which app should I ${plan.action === 'read_window' ? 'read' : 'use'}?`;
   if (plan.action === 'press_key') return plan.key ? null : 'Which key should I press?';
   if (plan.action === 'type') return plan.text ? null : 'What should I type?';
   if (plan.action === 'click' && !plan.name && !plan.role) return 'What should I click?';
   return null;
+}
+
+/**
+ * The plan for a bare "write a note ..." with no app named.
+ *
+ * When the app the owner was last using is Notes, the reviewed Notes tool does it, so the
+ * text lands in a note. Any other app keeps the old behaviour: type the owner's own words
+ * there. Keeping both paths means the general promise ("write this down where I am") does
+ * not silently become Notes-only.
+ */
+export function notesWritePlan(app: string, body: string): DevicePlan {
+  const tool = toolByName('notes_create_note');
+  if (tool && app.toLowerCase() === tool.app.toLowerCase()) return { action: 'app_tool', tool: tool.name, app, args: { body } };
+  return { action: 'type', app, text: body };
 }
 
 /**
@@ -220,6 +245,19 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     if (result?.running) return { ok: true, line: `Opened ${app}. It is running but has not drawn a window yet.`, evidence: null };
     return { ok: false, line: `${app} did not open.`, evidence: null };
   }
+  // A reviewed pack tool reports what the driver reported. These are the sentences the pack
+  // is allowed to claim; a failure falls through to the refusal path below.
+  if (plan.action === 'app_tool' && result?.ok) {
+    const tool = plan.tool ?? '';
+    if (tool === 'notes_create_note') return { ok: true, line: `Wrote the note in ${app}.`, evidence: null };
+    if (tool === 'notes_search') return { ok: true, line: `Searched ${app}.`, evidence: null };
+    if (tool === 'calendar_create_event') return { ok: true, line: `Added it to ${app}.`, evidence: null };
+    if (tool === 'calendar_list_events') {
+      const output = String(result?.output ?? '').trim().slice(0, 1500);
+      return { ok: true, line: output ? `Here is ${app}:` : `${app} has nothing on that day.`, evidence: output || null };
+    }
+    return { ok: true, line: `Done in ${app}.`, evidence: null };
+  }
   if (plan.action === 'read_window') {
     if (!result?.tree) return { ok: false, line: `I could not read ${app}.`, evidence: null };
     return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree, 8, result?.window) || null };
@@ -247,6 +285,10 @@ export function deviceRefusal(error: unknown): string {
   if (message.startsWith('ACCESSIBILITY_PERMISSION_REQUIRED')) return 'I cannot control apps yet: Accessibility is not granted to FarFromDesk Local. Open Settings, Remote control, allow Accessibility, then ask me again.';
   if (message.startsWith('MAC_CONTROL_DISABLED')) return 'Desktop control is switched off in Settings. Turn on Remote control, then ask me again.';
   if (message.startsWith('SENSITIVE_TARGET')) return 'I am not allowed to drive System Settings, keychain or password apps.';
+  if (message.startsWith('APP_TOOL_UNKNOWN')) return 'I do not have a reviewed tool for that app action yet, so I did nothing.';
+  if (message.startsWith('APP_TOOL_ARGUMENT_MISSING')) return `I need one more detail before I can do that: ${message.slice('APP_TOOL_ARGUMENT_MISSING: '.length)}`;
+  if (message.startsWith('AUTOMATION_PERMISSION_REQUIRED')) return message.slice('AUTOMATION_PERMISSION_REQUIRED: '.length) || 'macOS needs your permission before I can control that app.';
+  if (message.startsWith('APP_TOOL_FAILED')) return `I could not do that: ${plainCause(message.slice('APP_TOOL_FAILED:'.length))}.`;
   if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app has no open window right now, so there is nothing to act on yet.';
   if (message.startsWith('DESKTOP_MACOS_ONLY')) return 'I can only control apps on macOS.';
   if (message.startsWith('DESKTOP_BUSY')) return 'I am already doing something on your Mac. Let that finish, then ask me again.';
@@ -260,6 +302,15 @@ export function deviceRefusal(error: unknown): string {
 export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, scope: string, authorize: () => void): Promise<DeviceOutcome> {
   const issue = devicePlanIssue(plan);
   if (issue) return { ok: false, line: issue, evidence: null };
+  if (plan.action === 'app_tool') {
+    if (!control.packTool) return { ok: false, line: 'I can only run that through the desktop helper, and it is not available right now.', evidence: null, code: 'driver_unavailable' };
+    try {
+      const result = await control.packTool(scope, plan.tool!, plan.args ?? {}, authorize);
+      return deviceOutcome(plan, result);
+    } catch (error) {
+      return { ok: false, line: deviceRefusal(error), evidence: null, code: deviceFailureCode(error) };
+    }
+  }
   const assist: AssistPlan = { action: plan.action, ...(plan.app ? { app: plan.app } : {}), ...(plan.window ? { window: plan.window } : {}), ...(plan.role ? { role: plan.role } : {}), ...(plan.name ? { name: plan.name } : {}), ...(plan.text ? { text: plan.text } : {}), ...(plan.key ? { key: plan.key } : {}) };
   try {
     const result = await control.assist(scope, assist, authorize);

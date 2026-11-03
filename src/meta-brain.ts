@@ -9,7 +9,7 @@ import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret, type BrainPolicy } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
-import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, type DeviceControl, type DevicePlan } from './brain-device.js';
+import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
@@ -442,9 +442,11 @@ export class MetaBrain {
       if(direct)return await this.executeDevice(router,m,direct,policy);
       // "now write the notes" names no app, so no pattern can match it. The app the owner
       // last used is the target; the text is theirs verbatim. Nothing is invented: if the
-      // driver cannot reach that app, its report is what the owner reads.
+      // driver cannot reach that app, its report is what the owner reads. When that app is
+      // Notes the reviewed Notes tool does the write, because a blind type landed in the
+      // search field and was reported to the owner as if it had been written down.
       const written=notesAuthoringRequest(m.text)?authoringText(m.text):undefined;
-      if(written&&last)return await this.executeDevice(router,m,{action:'type',app:last,text:written},policy);
+      if(written&&last)return await this.executeDevice(router,m,notesWritePlan(last,written),policy);
     }
     try {
       const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});

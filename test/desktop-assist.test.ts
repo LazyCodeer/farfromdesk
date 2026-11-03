@@ -151,3 +151,39 @@ test('an app the driver cannot front is activated through LaunchServices', async
   assert.equal(attempts, 2);
   assert.ok(seen.includes('activate:ai.perplexity.comet'), 'LaunchServices was asked by bundle id');
 });
+
+const NOTES_WINDOWS = [
+  { pid: 16976, app_name: 'Notes', title: 'Search - No Results', window_id: 19220 },
+  { pid: 16976, app_name: 'Notes', title: 'Notes', window_id: 19221 },
+];
+
+test('the reviewed Notes tool runs its whole sequence in one background batch', async () => {
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 16976 }], windows: [] }, NOTES_WINDOWS, { run_steps: { ok: true, window_title: 'Notes' } });
+  const out = await h.c.packTool('brain:t', 'notes_create_note', { body: 'tomorrow meeting at 10pm' });
+  const args = h.of('run_steps')[0].args;
+  assert.equal(args.delivery_mode, 'background');
+  // Either Notes window works: the search state and a note share the toolbar, and the
+  // resolver prefers the frontmost titled window. What matters is that a window is named,
+  // because the driver refuses a batch whose observation cannot attach to one.
+  assert.ok([19220, 19221].includes(args.window_id), `named window ${args.window_id}`);
+  assert.deepEqual(args.steps, [
+    { press_key: { key: 'escape' } },
+    { click: { role: 'AXButton', name: 'New Note' } },
+    { type_text: { role: 'AXTextArea', text: 'tomorrow meeting at 10pm' } },
+  ]);
+  assert.equal(out.ok, true);
+  assert.equal(out.window, 'Notes');
+});
+
+test('an unknown tool or a missing argument is refused before the driver acts', async () => {
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 16976 }], windows: [] }, NOTES_WINDOWS, {});
+  await assert.rejects(() => h.c.packTool('brain:t', 'notes_send_fax', {}), /APP_TOOL_UNKNOWN/);
+  await assert.rejects(() => h.c.packTool('brain:t', 'notes_create_note', {}), /APP_TOOL_ARGUMENT_MISSING/);
+  assert.equal(h.of('run_steps').length, 0);
+});
+
+test('an app tool with no open window is refused before the driver is asked', async () => {
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 1 }], windows: [] }, []);
+  await assert.rejects(() => h.c.packTool('brain:t', 'notes_create_note', { body: 'x' }), /DESKTOP_APP_NOT_RUNNING/);
+  assert.equal(h.of('run_steps').length, 0);
+});

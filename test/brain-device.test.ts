@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DevicePlan, devicePlanIssue, deviceFailureCode, deviceOutcome, deviceRefusal, plainCause, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, appInventoryRequest, authoringRequest, notesAuthoringRequest, authoringText, type DeviceControl } from '../src/brain-device.js';
+import { DevicePlan, devicePlanIssue, deviceFailureCode, deviceOutcome, deviceRefusal, plainCause, runDevicePlan, summarizeTree, detectDevicePlan, deviceVerbLike, appInventoryRequest, authoringRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl } from '../src/brain-device.js';
 import { safeEventDetails } from '../src/request-events.js';
 import { Interpretation } from '../src/meta-model.js';
 
@@ -326,4 +326,53 @@ test('a bare write keeps the owner words verbatim and drops only the filler', ()
   assert.equal(authoringText('write'), undefined);
   // Nothing is rewritten: a typo is what the owner asked to be written.
   assert.equal(authoringText('append teh invoice number'), 'teh invoice number');
+});
+
+test('a bare write in Notes runs the reviewed Notes tool, not a blind type', () => {
+  // Measured live: the blind type landed in the Notes search field while the owner was told
+  // it had been written down. The pack is what makes the claim match the driver's report.
+  assert.deepEqual(notesWritePlan('Notes', 'tomorrow meeting at 10pm'), { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'tomorrow meeting at 10pm' } });
+  assert.deepEqual(notesWritePlan('notes', 'buy milk').action, 'app_tool');
+  // Any other app keeps the general promise: the owner's own words, typed where they are.
+  assert.deepEqual(notesWritePlan('TextEdit', 'buy milk'), { action: 'type', app: 'TextEdit', text: 'buy milk' });
+});
+
+test('an app tool plan is validated and reported like any other plan', async () => {
+  assert.match(devicePlanIssue({ action: 'app_tool' })!, /which app tool/i);
+  assert.equal(devicePlanIssue({ action: 'app_tool', tool: 'notes_create_note' }), null);
+  const seen: any[] = [];
+  const control: DeviceControl = {
+    assist: async () => { throw new Error('assist must not be used for an app tool'); },
+    targets: async () => [],
+    packTool: async (scope, name, args) => { seen.push({ scope, name, args }); return { action: 'app_tool', tool: name, app: 'Notes', ok: true, window: 'Notes' }; },
+  };
+  const out = await runDevicePlan(control, { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'buy milk' } }, 'brain:t', () => {});
+  assert.deepEqual(seen, [{ scope: 'brain:t', name: 'notes_create_note', args: { body: 'buy milk' } }]);
+  assert.equal(out.ok, true);
+  assert.equal(out.line, 'Wrote the note in Notes.');
+});
+
+test('a helper without app tools says so instead of claiming anything', async () => {
+  const control: DeviceControl = { assist: async () => ({}), targets: async () => [] };
+  const out = await runDevicePlan(control, { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'x' } }, 'brain:t', () => {});
+  assert.equal(out.ok, false);
+  assert.match(out.line, /not available right now/i);
+  assert.equal(out.code, 'driver_unavailable');
+});
+
+test('a failed app tool is reported in the owner words, never the driver text', async () => {
+  const control: DeviceControl = {
+    assist: async () => ({}),
+    targets: async () => [],
+    packTool: async () => { throw Object.assign(new Error('APP_TOOL_FAILED: notes_create_note did not run: {"type":"text","text":"DESKTOP_NATIVE_REFUSED"}'), {}); },
+  };
+  const out = await runDevicePlan(control, { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'x' } }, 'brain:t', () => {});
+  assert.equal(out.ok, false);
+  assert.ok(!/DESKTOP_NATIVE_REFUSED|\{"type"/.test(out.line), out.line);
+});
+
+test('the Automation grant is named as the exact switch to flip', () => {
+  assert.match(deviceRefusal(new Error('AUTOMATION_PERMISSION_REQUIRED: macOS is waiting for your permission to control Calendar. Open System Settings > Privacy & Security > Automation, allow FarFromDesk Local to control Calendar, then ask me again. Nothing was sent.')), /Privacy & Security > Automation/);
+  assert.match(deviceRefusal(new Error('APP_TOOL_ARGUMENT_MISSING: calendar_create_event needs start.')), /needs start/);
+  assert.match(deviceRefusal(new Error('APP_TOOL_UNKNOWN: notes_send_fax')), /reviewed tool/i);
 });
