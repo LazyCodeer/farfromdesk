@@ -97,7 +97,7 @@ Verified: 13 new backend tests (helper decision matrix against a fake pmset, ins
 
 Owner-verified on 1 November: the administrator install completed (plist present as root:wheel, daemon running under launchd), and toggling the setting set SleepDisabled 1 and back to 0 within seconds, on AC power. Log evidence: `/var/log/farfromdesk-servermode.log` entries at 10:04:26Z, 10:04:52Z, 10:04:57Z and 10:05:08Z on 1 November.
 
-Not verified: an actual lid-close run (whether macOS really stays awake with the lid shut), heat behaviour, and a battery-to-AC transition while enabled. `pmset disablesleep` is an undocumented switch absent from `man pmset`; if Apple removes it the settings pane reports "The sleep helper is not taking effect" instead of pretending to work.
+Superseded on 3 November: the lid-close run is now verified (2377), as is the battery-to-AC transition in both directions with real sleep events in `pmset -g log` (2377). Heat behaviour is still only a design claim, not a measurement. `pmset disablesleep` remains an undocumented switch absent from `man pmset`; if Apple removes it the settings pane reports "The sleep helper is not taking effect" instead of pretending to work. See the 2377 and 2379 sections below and `docs/remote-control-lock-screen.md`.
 
 Current machine state after the 2325 work: the helper is installed and loaded, and it is inert whenever the setting is off. See the 2326 section for the state after the owner turned server mode on. Rollback: `local-2323-rollback.bundle` and the staged `stage/FarFromDesk Local.app` in `/Volumes/Personal/Developer/FarFromDesk/Builds/server-mode-20261101`.
 

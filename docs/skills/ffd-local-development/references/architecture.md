@@ -54,7 +54,7 @@ Brain receives taskMode/imageProvider metadata, rejects inference after a routin
 
 This changes Telegram/WhatsApp previews, not the desktop Inbox media viewer. Tests use synthetic transports; verify the phone presentation with a fresh owner request after install. Do not replay old production/Local requests to demonstrate delivery.
 
-## Server mode, lid closed (2325 source)
+## Server mode, lid closed
 
 `src/server-mode.ts` owns the whole feature on the backend: the `server-mode` store key as intent, `<state>/server-mode.json` as the heartbeat the helper reads, the status view, and the one-time install or removal of the privileged helper. It never runs `pmset` with privileges; only `pmset -g` and `pmset -g batt` are read, to report what the system says rather than what we assume.
 
