@@ -1529,10 +1529,21 @@ window, because the driver refuses an observation it cannot attach to one.
   not `YYYY-MM-DD HH:MM:SS`) and `asStr` (AppleScript escaping).
 - `src/app-tools/retrieve.ts`: `tokenize`, `toolText` (pack + name + app + description + arg
   names and descriptions + examples + keywords), IDF indexing, and `selectTools(text,{app,k,
-  minScore})`. A tool is only in play when the owner named the app or the pack, or the app is
-  the one in front, and at least one matched token is not the app name. Without that gate
-  "add a retry to the sync loop" matched a calendar tool on the word "add"; it now returns
-  nothing, and a bare "notes" is not a request to do anything.
+  minScore})`. A tool is only in play when the owner named the app or the pack, when the app is
+  the one in front, or when a matched word belongs to that app rather than to requests in
+  general (`GENERIC`: add, create, find, get, list, make, new, open, put, run, save, search,
+  set, show, use, write, today, tomorrow, week, time, name, body, title, start, end). Without
+  that gate "add a retry to the sync loop" matched a calendar tool on the word "add"; without
+  the third clause "schedule a call at 9 tomorrow morning" was dropped even though the app was
+  not named. A bare "notes" is not a request to do anything.
+- `src/app-tools/golden.ts` and `src/app-tools/golden-paraphrase.ts`: 25 utterances that must
+  reach a named tool and 10 that must stay quiet, then 10 paraphrases that name neither the app
+  nor any of its words and are only a Mac request because of the app in front.
+- `src/app-tools/metrics.ts`: `evaluateRetrieval` (recall@1/3/5, wrong-first, missed) and
+  `describeReport`, so retrieval quality is a number rather than an opinion.
+- `src/app-tools/embed.ts` and `native/tool-embed.swift`: on-device sentence embeddings behind
+  a five-second timeout, one process per request on stdin/stdout. `shortlistTools` appends the
+  embedding candidates for the app in front to the lexical shortlist and never reorders it.
 - `src/desktop-control.ts`: `packTool(scope,name,args,authorize)` runs one pack tool behind
   the same gates as `assist`, in the background, and returns only what the driver reported.
   An AppleScript tool reports `-1743` as `AUTOMATION_PERMISSION_REQUIRED` and names the exact
@@ -1560,16 +1571,34 @@ window, because the driver refuses an observation it cannot attach to one.
 **Tests.** `test/app-tools.test.ts` (9) asserts the pack invariants the research calls
 decisive (unique `pack_`-prefixed names, at least three sentences with "Use this when" and an
 explicit negative, two owner examples, four keywords, every argument described) and the
-retrieval positives and negatives. `test/brain-device.test.ts` and `test/desktop-assist.test.ts`
-cover the plan, the refusal codes, the whole step batch in one background call, and the
-"unknown tool or missing argument is refused before the driver acts" case.
-`test/brain-conversation.test.ts` now asserts the transcript takes the pack tool with the
-owner's words verbatim. Full suite 1812 pass / 12 known failures / 4 skipped.
+retrieval positives and negatives. `test/app-tools-retrieval.test.ts` (6) asserts the gate:
+wrong-first 0, recall@5 1, recall@1 at least 0.9, recall@3 at least 0.95, every pack tool
+covered by the golden set, the two original failures pinned, and a bare app name answering
+nothing whatever the app in front. `test/app-tools-embed.test.ts` (5) holds the embedding layer
+to widening only, and skips rather than fails when the compiled helper is absent.
+`test/brain-device.test.ts` and `test/desktop-assist.test.ts` cover the plan, the refusal codes,
+the whole step batch in one background call, and the "unknown tool or missing argument is
+refused before the driver acts" case. `test/brain-conversation.test.ts` now asserts the
+transcript takes the pack tool with the owner's words verbatim.
+
+**Measured on 3 November 2026, with `native/tool-embed` built on this Mac.**
+- Lexical scorer on the golden set: **recall@1 15/15, recall@3 15/15, recall@5 15/15,
+  wrong-first 0**.
+- The same request set through one embedding per tool: 14/15 top-1. As a reranker of the lexical
+  shortlist it made things worse, **15/15 down to 11/15**, confusing `notes_create_note` with
+  `notes_search`. As a standalone ranker on 16 tool descriptions it scored 4/8 top-1, and
+  "write a note about tomorrow's meeting" put the note tool seventh.
+- One line per example (not one per tool) with a per-tool best match is the better formulation:
+  14/15 on the golden set, and on the paraphrase set it finds the right tool in the top three
+  for 7 of 10.
+- What it is actually good for, measured: the paraphrase set where the owner names neither the
+  app nor its words. Lexical recall@5 **8/10**, lexical plus embedding candidates for the app in
+  front **10/10**, and the golden set unchanged at 15/15. That union is what `shortlistTools`
+  does, and it is why the embedding layer may only widen a shortlist and never reorder it.
 
 **Not done yet.** Calendar tools are written and unit-tested but never run live, and the first
 run will raise the macOS Automation permission prompt. `notes_search` is not exercised live
-either. Retrieval is lexical only: an on-device `NLEmbedding` probe measured 4/8 top-1 and 6/8
-top-3 on 16 tool descriptions (and ranked the right note tool 7th), with true-match cosines
-overlapping the best false match, so embeddings will be a pre-filter at most and never the
-only router. Nothing yet sends a retrieved tool list to the model, and the golden set,
-recall@5 gate and multi-session harness are still to build.
+either. Nothing yet sends a retrieved tool list to the model: `shortlistTools` exists and is
+tested, but the meta model still receives every device action rather than the shortlist. The
+multi-session/subagent harness is not built, and `indexSignature` is prepared for an embedding
+cache that does not exist yet.

@@ -44,3 +44,4 @@ __pycache__/
 
 # Pinned driver is downloaded and verified during macOS packaging.
 native/cua-driver/cua-driver
+native/tool-embed

@@ -555,6 +555,19 @@ cmd_ship() {
   # Merge, never replace: ditto only writes what the checkout has, so a compiled
   # helper that exists only in the installed app is left alone.
   ditto "$FFD_SOURCE/native" "$app/Contents/Resources/backend/native" || die "overlaying native helpers failed"
+  # The embedding helper is compiled here rather than committed: nothing under native/ that
+  # is a binary is tracked. A machine without the Swift toolchain simply ships without it, and
+  # retrieval falls back to the lexical shortlist, which is measured to hold the golden set on
+  # its own.
+  if command -v xcrun >/dev/null 2>&1; then
+    if xcrun swiftc -O "$FFD_SOURCE/native/tool-embed.swift" -o "$app/Contents/Resources/backend/native/tool-embed" 2>/tmp/ffd-tool-embed.log; then
+      say "  tool-embed ok"
+    else
+      say "  tool-embed skipped (see /tmp/ffd-tool-embed.log)"
+    fi
+  else
+    say "  tool-embed skipped (no Swift toolchain)"
+  fi
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$app/Contents/Info.plist"
   python3 - "$app/Contents/Resources/backend/build.json" "$FFD_SOURCE" "local-$note-$build" "$FFD_SOURCE" <<'PY'
 import json,sys
