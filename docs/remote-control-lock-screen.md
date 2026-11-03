@@ -1,8 +1,9 @@
 # Phone control at the lock screen, and lid-closed server mode
 
-Verified on 3 November 2026 against the installed Local build 2376 on the owner's
-MacBook Air (Mac16,12, macOS with FileVault on). This resolves a contradiction that
-had been sitting in the repository, and it records the first lid-close run.
+Verified on 3 November 2026 against the installed Local builds 2376 to 2379 on the
+owner's MacBook Air (Mac16,12, macOS with FileVault on). This resolves a contradiction
+that had been sitting in the repository, it records the first lid-close run, and it
+records what the owner's Mac does and does not do about its own password.
 
 ## The contradiction this closes
 
@@ -105,6 +106,7 @@ an awake Mac with the lid shut is not necessarily a Mac with a visible screen.
 | --- | --- | --- |
 | Unlocked, logged in | `UNLOCKED` | works, verified |
 | Locked, still logged in | `SESSION_LOCKED` | works, verified 3 November: capture and typing |
+| Lid shut, no display attached, session unlocked | `UNLOCKED` | works, verified 3 November: full live-desktop frame |
 | Logged out, at the login window | `LOGIN_UNCONFIRMED` / `NOT_CONSOLE_SESSION` | refuses, returns `MAC_UNAVAILABLE` |
 | Asleep | nothing runs | `womp 1` on AC allows a magic-packet wake; there is no wake-on-request path |
 
@@ -150,3 +152,61 @@ login screen, where no part of this product runs and none can. Any reboot or pow
 therefore means the machine is unreachable until someone is physically in front of it.
 Turning FileVault off is the only thing that changes this, and it is a real security cost,
 so it stays a decision for the owner rather than a default.
+
+## Closing the lid does not lock this Mac, and that was already true
+
+The owner asked the right question after the lid test: if the Mac password never came
+into it, can anyone who opens the laptop just walk in? On this machine the answer is yes,
+and it has nothing to do with FarFromDesk. macOS keeps the whole behaviour in one setting:
+
+```sh
+sysadminctl -screenLock status                    # screenLock is off
+defaults -currentHost read com.apple.screensaver  # no askForPassword key exists
+pmset -g custom                                   # displaysleep 0 on AC and on battery
+```
+
+"Screen lock is off" is macOS's own term for "Require password after screen saver begins
+or display is turned off" being disabled. Three things follow, and all three were checked
+rather than assumed:
+
+- With the requirement off there is no password to ask for, so turning a display off
+  cannot produce a lock screen.
+- `displaysleep 0` on both power sources means the display never times out by itself, so
+  not even the display-off trigger can fire.
+- Lid close does not lock either. `loginwindow` says so in its own log, six times in eight
+  minutes while this test ran:
+
+```
+16:25:37 clamshellStateChanged: | clamshell closed, but screen is not locked.  Ignoring
+16:29:32 clamshellStateChanged: | clamshell opened, but screen is not locked.  Ignoring
+16:30:44 clamshellStateChanged: | clamshell closed, but screen is not locked.  Ignoring
+16:32:10 clamshellStateChanged: | clamshell opened, but screen is not locked.  Ignoring
+16:32:50 clamshellStateChanged: | clamshell closed, but screen is not locked.  Ignoring
+16:32:52 clamshellStateChanged: | clamshell opened, but screen is not locked.  Ignoring
+```
+
+The session stayed `UNLOCKED` across all six, which matches the lid-shut capture above:
+it returned the live desktop, not a lock screen. So opening that lid gives the desktop to
+whoever opens it, whether or not FarFromDesk is installed and whether or not server mode
+is on. Server mode does not weaken this, it only removes the sleep that used to pause the
+machine while the lid was shut.
+
+The lock screen itself is fine and was verified: the owner locks it with Control-Command-Q
+or Apple menu then Lock Screen, and capture and typing both reach it. "Locked" is a state
+FarFromDesk handles well. "Locks itself" is a state this Mac is not in.
+
+## FarFromDesk never has the Mac password
+
+Nothing in the app reads, asks for, stores or logs it.
+
+- The lid-closed run never needed it: every probe returned `UNLOCKED`.
+- The remote path only carries it when the owner types it himself on the phone's lock
+  screen, and then it goes straight into the Mac as synthetic keystrokes.
+  `remote-page/index.html` states "FarFromDesk never stores or logs it", and the code
+  matches: no module under `src/` reads or keeps a Mac password, the field is cleared on
+  both lock transitions so half-typed text cannot become one, the page masks it in CSS
+  rather than `type=password` so the browser does not offer to save it, and voice input is
+  refused while locked so a spoken password cannot reach a transcriber.
+- The password the app does own is the per-connection remote password, checked in
+  `src/remote-p2p/host.ts` and never logged. It is a different secret and it protects the
+  link, not the Mac.

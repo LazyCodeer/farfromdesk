@@ -4,7 +4,7 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2377** (`local-local-lid-grace-2377`).
+app is **2379** (`local-local-lid-grace-2379`).
 
 ## Source and installation
 
@@ -1307,4 +1307,45 @@ bootout/restore pair at 09:56:24Z; and `helper.sh --once` against the real state
 returns `reason=ok sleep=1`. Server-mode tests are 21, `tsc` clean. The grace window
 itself is covered by unit tests and by a live decision probe with a backdated state file;
 it was not exercised by a real six-minute app outage.
+
+## A closed lid does not lock this Mac, and nothing here ever had the password
+
+The owner asked, after the lid run worked, whether opening the lid still needs a password.
+It does not, and the finding is bigger than the feature: **this Mac is set never to
+require a password after the display turns off or the screen saver starts**, so anyone who
+opens the lid gets the desktop. Recorded in full in
+`docs/remote-control-lock-screen.md`; the load-bearing evidence:
+
+- `sysadminctl -screenLock status` returns `screenLock is off`, and
+  `defaults -currentHost read com.apple.screensaver` has no `askForPassword` key at all.
+- `pmset -g custom` reports `displaysleep 0` on both AC and battery, so the display never
+  times out by itself and even the display-off trigger cannot fire.
+- `loginwindow` logs the lid behaviour directly. Six lines inside eight minutes on
+  3 November, at 16:25:37, 16:29:32, 16:30:44, 16:32:10, 16:32:50 and 16:32:52:
+  `clamshellStateChanged: | clamshell closed, but screen is not locked.  Ignoring`, and
+  the same for opened. The session stayed `UNLOCKED` throughout, matching the lid-shut
+  capture that returned the live desktop rather than a lock screen.
+
+So closing the lid has never locked this Mac, with or without FarFromDesk, and server mode
+does not weaken it: the helper only removes the sleep that used to pause the machine.
+Manual lock (Control-Command-Q) still works, and that is the state where capture and
+typing were verified. Turning the password requirement on lives in System Settings →
+Lock Screen and needs the owner, not the app.
+
+Nothing in the product asks for, keeps or logs the Mac password, and the lid run never
+needed it because every probe returned `UNLOCKED`. The password the app owns is the
+per-connection remote password in `src/remote-p2p/host.ts`, a different secret.
+
+Stale claims this corrected, all of which had said the capability was absent:
+
+| File | Was | Now |
+| --- | --- | --- |
+| `docs/reference.md` | "Closed-lid operation requires Apple's supported powered external-display setup; no unsupported lid override or system-wide sleep setting is installed." | Describes server mode holding lid sleep off on AC, with the 5-minute and 2-hour thresholds, and states that neither setting touches the Mac password |
+| `README.md` | "The awake option prevents idle sleep; it does not override every closed-lid condition." | Lid-closed works with server mode on AC and no external display; the lid still does not lock by itself |
+| `MAC-APP.md` | Keep-awake "does not bypass ... unsupported lid-close behavior" | Separates keep-awake from server mode and says server mode never handles the Mac password |
+| `docs/TROUBLESHOOTING.md` | "Idle-sleep prevention does not override every closed-lid/manual-sleep condition." | Nothing wakes a sleeping Mac remotely; server mode keeps a closed lid awake on AC and holds 2 hours after the app stops |
+| `docs/coordinator-instructions.md` | "Do not claim to ... bypass lid-closed sleep" | Agents may rely on lid-closed operation on AC with server mode; must not claim it on battery, after a reboot, or that a closed lid locks the Mac |
+| `desktop/lib/screens.dart` | "restores normal sleep within minutes if FarFromDesk stops, the cable is unplugged, or you turn this off" | Seconds for turning it off or unplugging (helper interval is 5 s), up to two hours after the app stops |
+
+The `screens.dart` wording ships with the next build, since it is Flutter UI text.
 

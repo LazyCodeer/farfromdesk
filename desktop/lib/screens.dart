@@ -4555,10 +4555,11 @@ extension _BridgeScreens on _DeskState {
                       'This installs a small background helper with administrator '
                           'approval. While it is on and the power cable is '
                           'connected, this $computer will not sleep, and a closed '
-                          'lid gets warm. The helper restores normal sleep within '
-                          'minutes if FarFromDesk stops, the cable is unplugged, or '
-                          'you turn this off. It cannot log in for you after a '
-                          'restart when FileVault is on.',
+                          'lid gets warm. Turning this off or unplugging the cable '
+                          'puts normal sleep back within seconds. If FarFromDesk '
+                          'stops, the helper keeps holding sleep off for up to two '
+                          'hours, then restores normal sleep. It cannot log in for '
+                          'you after a restart when FileVault is on.',
                       actionLabel: 'Turn on',
                     );
                     if (!proceed) return;
@@ -4572,8 +4573,9 @@ extension _BridgeScreens on _DeskState {
         ),
         footer: [
           small(
-            'The helper puts normal sleep back when you turn this off, unplug '
-            'the power, or quit FarFromDesk.',
+            'The helper puts normal sleep back when you turn this off or unplug '
+            'the power. If FarFromDesk stops, it holds sleep off for up to two '
+            'hours, then restores normal sleep.',
           ),
           if (enabled) ...[
             gap(10),
@@ -4597,8 +4599,9 @@ extension _BridgeScreens on _DeskState {
                 serverModeHelperStale(serverMode)
                     ? 'macOS is still set to sleep normally. Server mode needs the '
                           'background helper; turn it off and on again to reinstall it.'
-                    : 'The helper puts normal sleep back if FarFromDesk stops or the '
-                          'power cable is unplugged.',
+                    : 'The helper holds sleep off while FarFromDesk is alive and the '
+                          'power cable is connected, and puts normal sleep back if '
+                          'either one goes away.',
               ),
             ],
           ],

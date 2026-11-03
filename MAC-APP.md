@@ -30,7 +30,7 @@ The UI installer does not restart an existing background bridge. Source changes 
 
 ## Permissions and availability
 
-Background operation uses a launchd agent. Login/background consent and coding-app native permissions still apply. Keep-awake uses an idle-sleep assertion; it does not bypass the lock screen, manual sleep, low battery shutdown, or unsupported lid-close behavior.
+Background operation uses a launchd agent. Login/background consent and coding-app native permissions still apply. Keep-awake uses an idle-sleep assertion; it does not bypass the lock screen, manual sleep, low battery shutdown or unsupported lid-close behavior. Lid-closed operation is a separate setting, server mode, which installs a root helper that holds system sleep off on AC power while the app is alive; it never handles the Mac password, and it does not lock a closed lid, which follows the macOS "Require password after screen saver begins or display is turned off" setting.
 
 ## Verification
 
