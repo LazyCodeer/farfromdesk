@@ -107,6 +107,7 @@ an awake Mac with the lid shut is not necessarily a Mac with a visible screen.
 | Unlocked, logged in | `UNLOCKED` | works, verified |
 | Locked, still logged in | `SESSION_LOCKED` | works, verified 3 November: capture and typing |
 | Lid shut, no display attached, session unlocked | `UNLOCKED` | works, verified 3 November: full live-desktop frame |
+| Locked with the display asleep | `SESSION_LOCKED` | first capture is black; `caffeinate -u` then returns the real lock screen |
 | Logged out, at the login window | `LOGIN_UNCONFIRMED` / `NOT_CONSOLE_SESSION` | refuses, returns `MAC_UNAVAILABLE` |
 | Asleep | nothing runs | `womp 1` on AC allows a magic-packet wake; there is no wake-on-request path |
 
@@ -194,6 +195,45 @@ machine while the lid was shut.
 The lock screen itself is fine and was verified: the owner locks it with Control-Command-Q
 or Apple menu then Lock Screen, and capture and typing both reach it. "Locked" is a state
 FarFromDesk handles well. "Locks itself" is a state this Mac is not in.
+
+## Turning the password requirement on is not enough, because the lock follows display sleep
+
+The owner turned the setting on. `sysadminctl -screenLock status` went from
+`screenLock is off` to `screenLock delay is immediate`, and `loginwindow` confirmed it:
+`readAskForPasswordSettings | passwordDelay = 0` and `setScreenLockDefaultDelay to: 0`.
+That part worked and should stay on. The lid still did not lock:
+
+```
+17:23:33.915 setScreenLockDefaultDelay to: 0
+17:24:00.556 clamshellStateChanged | Clamshell state changed: closed=1, shouldSleepWhenClosed=1
+17:24:00.557 clamshellStateChanged: | clamshell closed, but screen is not locked.  Ignoring
+```
+
+With the lid shut and the new setting active, `session-state` returned `UNLOCKED` six times
+across a minute of polling. So the lock is driven by **display sleep**, not by the
+clamshell, and `displaysleep 0` means the display never sleeps on its own.
+
+Forcing display sleep locks within four seconds:
+
+| Action | `session-state` after it |
+| --- | --- |
+| Lid closed, Require password Immediately | `UNLOCKED` for 60s |
+| `/usr/bin/pmset displaysleepnow` | `SESSION_LOCKED` within 4s |
+
+That names the fix: make a lid close put the display to sleep. It also settles what the
+phone sees in the locked state, because the display being asleep is the normal case there.
+A capture taken while the display was asleep returned **14,987 bytes, entirely black**, at
+999x650 rather than the panel's real size; declaring activity recovered it immediately:
+
+```sh
+/usr/bin/caffeinate -u -t 2   # next capture: 655,103 bytes, the real lock screen
+```
+
+The recovered frame showed the date, the time, the owner's account tile and the
+`Enter Password` field, with `session-state` still `SESSION_LOCKED`. This is the same
+recovery `src/remote-p2p/desktop.ts` performs on `SESSION_LOCKED`, now measured in the
+exact state a lid-closed Mac will be in if locking on lid close is added. Server mode held
+throughout: no sleep event in `pmset -g log` and `SleepDisabled 1`.
 
 ## FarFromDesk never has the Mac password
 

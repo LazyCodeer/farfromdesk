@@ -1329,8 +1329,25 @@ opens the lid gets the desktop. Recorded in full in
 So closing the lid has never locked this Mac, with or without FarFromDesk, and server mode
 does not weaken it: the helper only removes the sleep that used to pause the machine.
 Manual lock (Control-Command-Q) still works, and that is the state where capture and
-typing were verified. Turning the password requirement on lives in System Settings →
-Lock Screen and needs the owner, not the app.
+typing were verified.
+
+The owner then turned the requirement on, which is worth keeping but does **not** solve the
+lid. `sysadminctl -screenLock status` moved from `screenLock is off` to
+`screenLock delay is immediate`, and `loginwindow` logged `passwordDelay = 0` at 17:23:33.
+The lid was shut at 17:24:00 and `loginwindow` logged it again: `clamshell closed, but
+screen is not locked.  Ignoring`, with `session-state` returning `UNLOCKED` six times over
+the following minute. The lock follows **display sleep**, not the clamshell, so a lid close
+alone never triggers it while `displaysleep` is 0. `/usr/bin/pmset displaysleepnow` locks
+within four seconds by contrast. Putting the display to sleep when the lid closes is
+therefore the fix, not the checkbox.
+
+Locked with the display asleep is the state the phone meets, and it was measured there:
+the capture came back 14,987 bytes and entirely black at 999x650, and
+`caffeinate -u -t 2` followed by a second capture returned 655,103 bytes showing the real
+lock screen (date, time, account tile, `Enter Password`), with `session-state` still
+`SESSION_LOCKED`. `src/remote-p2p/desktop.ts` already does exactly that on every
+`SESSION_LOCKED` frame. Server mode held throughout: no sleep event in `pmset -g log`,
+`SleepDisabled 1`.
 
 Nothing in the product asks for, keeps or logs the Mac password, and the lid run never
 needed it because every probe returned `UNLOCKED`. The password the app owns is the
