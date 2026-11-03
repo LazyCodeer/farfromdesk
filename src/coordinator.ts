@@ -125,11 +125,13 @@ export class Coordinator {
     const selected=new Set(this.selected().map(b=>`${b.provider}:${this.store.get(`execution-mode:${b.id}`)??'cli'}:${b.native_id}`));
     const warnings=Object.keys(this.errors).map(p=>`${p}: discovery was incomplete; check the native app.`).join('\n');
     const own=this.scope.getStore()?this.registry.entry(this.scope.getStore()!)?.provider:undefined;
+    // Muse is its own platform: a two-way codex/else label printed its sessions under "Claude Code".
+    const providerLabel=(p:string)=>p==='codex'?'Codex':p==='muse'?'Muse Code':'Claude Code';
     const groups=this.enabled().map(p=>{
       // A coordinator only sees its own platform; say where the rest go instead of showing an empty list.
-      if(own&&own!==p)return `${p==='codex'?'Codex':'Claude Code'}\nHandled by the ${p==='codex'?'Codex':'Claude'} proxy. Hand work to it (ffd ask ${p}) instead of looking for its sessions here.`;
+      if(own&&own!==p)return `${providerLabel(p)}\nHandled by the ${providerLabel(p)} proxy. Hand work to it (ffd ask ${p}) instead of looking for its sessions here.`;
       const rows=sessions.map((s,i)=>({s,i})).filter(({s})=>s.provider===p);
-      return `${p==='codex'?'Codex':'Claude Code'}\n${rows.map(({s,i})=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,90)}\n   ${(s.executionMode??'cli')==='desktop'?'Desktop':'CLI'}${s.accountScope?' · account '+s.accountScope.slice(0,6):''} · ${s.updatedAt?new Date(s.updatedAt).toISOString().replace('T',' ').slice(0,16)+' UTC':'Activity time unavailable'}${selected.has(targetOf(s))?' · connected':''}${s.available===false?' · '+s.status.replace(/[\r\n]/g,' ').slice(0,100):''}`).join('\n\n')||'No sessions on this page.'}`;
+      return `${providerLabel(p)}\n${rows.map(({s,i})=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,90)}\n   ${(s.executionMode??'cli')==='desktop'?'Desktop':'CLI'}${s.accountScope?' · account '+s.accountScope.slice(0,6):''} · ${s.updatedAt?new Date(s.updatedAt).toISOString().replace('T',' ').slice(0,16)+' UTC':'Activity time unavailable'}${selected.has(targetOf(s))?' · connected':''}${s.available===false?' · '+s.status.replace(/[\r\n]/g,' ').slice(0,100):''}`).join('\n\n')||'No sessions on this page.'}`;
     }).join('\n\n');
     return `${exhausted?'No older matches. Showing the last page.\n\n':''}${sessions.length?`Your coding sessions${browse.search?` matching “${browse.search}”`:''} · page ${browse.page+1} (recent first, up to 5 per connection):\n\n${groups}\n\nTell me the session name you want, or reply with its number. Say “show more” for older sessions, “previous page” to go back, or “find sessions named …” to search.`:'No matching sessions. Try another name or enable the platform in the app.'}${warnings?'\n\n'+warnings:''}`;
   }
@@ -150,7 +152,7 @@ export class Coordinator {
       visited.add(root);const link=this.store.get(`parent:${root}`);if(!link)throw new Error('Delegation has no owner request.');root=link;
     }
     const original=this.store.job(root);
-    const validRoot=/^(wa|tg|local):/.test(root)||(root.startsWith('schedule:')&&scheduleRootState(this.router,root)==='ready');
+    const validRoot=this.store.ownerInputId(root)||(root.startsWith('schedule:')&&scheduleRootState(this.router,root)==='ready');
     if(!validRoot||!original||!['queued','dispatched','submitted'].includes(original.status))throw new Error('This owner request is closed or uncertain; a new owner request is required.');
     if(!['queued','dispatched','submitted'].includes(parent.status))throw new Error('This owner request is closed or uncertain; a new owner request is required.');
     return parent;

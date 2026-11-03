@@ -154,6 +154,12 @@ export class Store {
       return claim;
     }catch{return undefined;}
   }
+  /**
+   * A request id that may carry the owner's own words: the two transports and the local inbox,
+   * plus the app's composer while its single-use claim is present. A transported id can never
+   * satisfy the app branch, so an app id without a claim stays untrusted.
+   */
+  ownerInputId(id:string){return /^(wa|tg|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   recordIncomingInput(id:string){
     this.assertIncomingOwner();const owner=this.incomingOwnerContext.getStore();
     if(owner)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_inputs VALUES(?,?,?,?,?)').run(id,owner.owner,owner.destination,owner.channel,owner.generation);
@@ -427,7 +433,7 @@ export class Store {
   /** Internal brain replies have an owner ledger row, not a fabricated agent job. */
   outputBrain(requestId:string,text:string,source=`brain:${requestId}`) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
-    if(!task||!/^(wa|tg|local):/.test(requestId))throw new Error('A recorded owner request is required');
+    if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
     const mode=this.get(`brain-mode:${requestId}`);if(mode)text+='\n\n'+mode;
     const prior=this.db.prepare('SELECT request_id,text_hash,binding_id FROM reply_receipts WHERE source=?').get(source) as any;
     if(prior){if(prior.request_id!==requestId||prior.text_hash!==hash(text)||prior.binding_id!==null)throw new Error('Brain reply identity was reused');return false;}

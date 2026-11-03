@@ -107,7 +107,7 @@ export class MetaBrain {
     const c=router.coordinator,proxy=c?.master(),policy=brainPolicy(this.store);
     if(!policy.allowRouting)return answer('Routing is disabled in Meta Settings, so nothing was sent.');
     if(!c||!proxy?.enabled||!c.enabled().includes(proxy.provider)||!policy.providers.includes(proxy.provider)||c.registry.identity(proxy).key!==c.registry.entry(proxy.id)?.key)return answer('Your current proxy isn\'t ready, so nothing was sent. Check Coding platforms.');
-    const original=item.jobs.map(j=>this.store.job(String(j.id))).filter(j=>j&&/^(wa|tg|local):/.test(j.id)).at(-1);
+    const original=item.jobs.map(j=>this.store.job(String(j.id))).filter(j=>j&&this.store.ownerInputId(j.id)).at(-1);
     if(!original)return answer(`I don't have the original request for #${item.id}, so nothing was sent. Send the task again in your own words.`);
     const name=(this.store.get(`name:${proxy.id}`)??proxy.alias).replace(/\s+/g,' ').slice(0,60);
     this.store.db.exec('SAVEPOINT brain_restart');
@@ -286,8 +286,11 @@ export class MetaBrain {
     if(!this.store.incomingOwnerCurrent())return true;
     const policy=brainPolicy(this.store);
     if(!policy.enabled)return false;
-    // IDs from internal delegation/reports cannot masquerade as owner input.
-    if(!/^(wa|tg|local):/.test(m.id)||this.store.get(`parent:${m.id}`)||this.store.get(`report-parent:${m.id}`))return false;
+    // IDs from internal delegation/reports cannot masquerade as owner input. The app's own
+    // composer is owner input: its id is only trusted with the single-use claim the admin
+    // route mints, which a transported wa:/tg:-style id can never carry.
+    const shaped=this.store.ownerInputId(m.id);
+    if(!shaped||this.store.get(`parent:${m.id}`)||this.store.get(`report-parent:${m.id}`))return false;
     const origin=m.activityScope;
     const observeMeta=origin?metaObserver(this.store,'sorted',origin.destination,origin.owner):undefined;
     const prior=this.get(m.id);
