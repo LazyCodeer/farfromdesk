@@ -52,6 +52,18 @@ test('a line too long for a phone is broken at a space, not mid word', () => {
   assert.ok(bullet.split('\n').every(line => line.length <= 320), 'a long item is wrapped too');
 });
 
+test('a dash never eats a newline, and a code span is left alone', () => {
+  // The rule used to allow whitespace on both sides of the dash, which swallowed the
+  // newline: three lines became one run-on sentence.
+  assert.equal(ownerReply('Result:\n- first\n- second'), 'Result:\n- first\n- second');
+  assert.equal(ownerReply('Result:\n– first\n– second'), 'Result:\n- first\n- second');
+  assert.equal(ownerReply('Result: first – second'), 'Result: first, second');
+  assert.equal(ownerReply('text\n—'), 'text', 'a line that is only punctuation is not a line');
+  // Quoted code is not prose: a dash inside it is the writer's, not this formatter's.
+  assert.equal(ownerReply('```\nconst a = b – c;\n```'), '```\nconst a = b – c;\n```');
+  assert.equal(ownerReply('Run `a – b` now'), 'Run `a – b` now');
+});
+
 test('control characters cannot ride a reply to a phone', () => {
   assert.equal(ownerReply('done\u0007 \u202eok'), 'done ok');
   assert.equal(ownerReply('  spaced   out  '), 'spaced out');

@@ -427,7 +427,9 @@ export class MetaBrain {
     this.announce(m);
     if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
     // Model wording is only allowed for questions and small talk; claims always come from saved data.
-    const said=(decision.reply??'').replace(/\s*[—–]\s*/g,', ').trim().slice(0,400);
+    // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
+    // once. A second copy would silently stop applying when that one changes.
+    const said=(decision.reply??'').trim().slice(0,400);
     if(decision.intent==='clarify') {this.stop(m.id,said||'Please clarify the task and which coding platform you want. Nothing has been dispatched.','clarification');return true;}
     if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,said||'Send a task, or ask where are we.');return true;}
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);

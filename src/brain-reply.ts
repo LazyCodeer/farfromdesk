@@ -29,7 +29,13 @@ const BOOKKEEPING = [
 ];
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g;
-const LONG_DASH = /\s*[\u2014\u2013]\s*/g;
+/**
+ * A dash that starts a line is that writer's bullet, not punctuation, and the rest become
+ * commas. Horizontal whitespace only: an earlier version used `\s*`, which ate the newline
+ * before a dash and glued three lines into one.
+ */
+const DASH_BULLET = /^[ \t]*[\u2014\u2013][ \t]+/gm;
+const INLINE_DASH = /[ \t]*[\u2014\u2013][ \t]*/g;
 /**
  * The width at which a line is plainly unwrapped rather than merely long. A phone shows
  * about forty characters per line, but wrapping there would reflow every sentence, and the
@@ -41,6 +47,14 @@ const PHONE_LINE = 320;
 export function isBookkeeping(line: string): boolean {
   const value = line.trim();
   return !!value && BOOKKEEPING.some(pattern => pattern.test(value));
+}
+
+/**
+ * Apply the prose rules to prose only. Code spans and fences are quoted material: a dash
+ * inside one is not this formatter's to rewrite, and `toWhatsApp` protects them later.
+ */
+function mapProse(text: string, edit: (part: string) => string): string {
+  return text.split(/(```[\s\S]*?```|`[^`\n]+`)/g).map((part, index) => index % 2 ? part : edit(part)).join('');
 }
 
 /** Break one over-long line at spaces. No break point half way is better than a broken word. */
@@ -87,26 +101,44 @@ function unenvelope(text: string): string {
 
 export function ownerReply(text: string): string {
   if (!text) return text;
-  const cleaned = unenvelope(String(text))
+  const cleaned = mapProse(unenvelope(String(text)), part => part
     .replace(CONTROL, ' ')
-    .replace(LONG_DASH, ', ')
-    .replace(/,(\s*,)+/g, ',')
-    .replace(/[ \t]+/g, ' ');
-  const lines = cleaned.split('\n').map(line => line.trim());
+    .replace(/[ \t]+/g, ' ')
+    .replace(DASH_BULLET, '- ')
+    .replace(INLINE_DASH, ', ')
+    .replace(/,(\s*,)+/g, ','));
   // A reply that is nothing but bookkeeping keeps its own words: an empty answer would
   // fail the receipt's identity check and hide the fact that something did happen.
-  const kept = lines.filter(line => !isBookkeeping(line));
-  const body = kept.length ? kept : lines.slice(0, 1);
+  const dropped: string[] = [];
   const out: string[] = [];
-  for (const line of body) {
+  let fence = false;
+  for (const raw of cleaned.split('\n')) {
+    const line = raw.trim();
+    // A fence is quoted material, its markers included: leave every line of it alone.
+    if (line.startsWith('```')) {
+      fence = !fence;
+      out.push(line);
+      continue;
+    }
+    if (fence) {
+      out.push(raw.replace(/[ \t]+$/, ''));
+      continue;
+    }
     if (!line) {
       if (out.length && out[out.length - 1] !== '') out.push('');
       continue;
     }
+    if (isBookkeeping(line)) {
+      dropped.push(line);
+      continue;
+    }
+    // Punctuation on its own is what is left of a dash or a bullet separator, never content.
+    if (!/[\p{L}\p{N}]/u.test(line)) continue;
     const bullets = asBullets(line);
     if (bullets) out.push(...bullets.flatMap(bullet => wrap(bullet)));
     else out.push(...wrap(line));
   }
+  if (!out.length) return dropped[0] ?? '';
   while (out.length && out[out.length - 1] === '') out.pop();
   return out.join('\n');
 }

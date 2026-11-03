@@ -439,6 +439,9 @@ export class Store {
     // Every brain answer leaves through here, so this is where the owner's format is
     // applied: driver bookkeeping dropped, label dumps bulleted, long lines wrapped.
     text=ownerReply(text);
+    // An empty answer would queue nothing while the caller has already marked the request
+    // answered, so the owner would get silence. The formatter must not be able to do that.
+    if(!text.trim())text='I could not put that answer into a message. Send it again.';
     const prior=this.db.prepare('SELECT request_id,text_hash,binding_id FROM reply_receipts WHERE source=?').get(source) as any;
     if(prior){if(prior.request_id!==requestId||prior.text_hash!==hash(text)||prior.binding_id!==null)throw new Error('Brain reply identity was reused');return false;}
     this.db.exec('SAVEPOINT brain_output');

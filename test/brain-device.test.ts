@@ -74,12 +74,21 @@ test('a failed action reports a sentence and a code, never the driver raw', () =
   assert.doesNotMatch(failed.line, /"type"|pid/);
   assert.match(failed.line, /I could not do that in Comet/);
   // The log gets a code, not the text: request events exclude driver and provider words.
-  assert.equal(failed.code, 'driver_refused');
+  assert.equal(failed.code, 'driver_unavailable', 'machine output from the helper is not a refusal it chose');
+  // Unrecognized helper text is not forwarded: this exact bookkeeping string is what
+  // brain-reply exists to delete, and it arrived inline instead.
+  const bookkeeping = deviceOutcome({ action: 'click', app: 'Comet', name: 'Send' }, { ok: false, observation: 'full read (no usable earlier read of this window to diff against)' });
+  assert.doesNotMatch(bookkeeping.line, /full read/);
+  assert.equal(bookkeeping.line, 'I could not do that in Comet: the helper could not complete it.');
+  const chosen = deviceOutcome({ action: 'click', app: 'Comet', name: 'Send' }, { ok: false, observation: 'no element matched' });
+  assert.equal(chosen.code, 'driver_refused');
   assert.equal(deviceFailureCode(new Error('MCP error -32000: Connection closed')), 'driver_unavailable');
   assert.equal(deviceFailureCode(new Error('DESKTOP_NATIVE_REFUSED: nope')), 'driver_refused');
   assert.equal(deviceFailureCode(new Error('DESKTOP_APP_NOT_RUNNING: Comet')), 'target_unavailable');
   assert.equal(deviceFailureCode(new Error('ACCESSIBILITY_PERMISSION_REQUIRED: x')), 'permission_required');
   assert.equal(deviceFailureCode(new Error('who knows')), 'unknown');
+  // No doubled full stop from a message that already ends in one.
+  assert.equal(deviceRefusal(new Error('DESKTOP_TARGET_STALE: Discover targets for this request again.')), 'I could not do that on your Mac: the helper could not complete it.');
 });
 
 test('a device failure is recorded as a code, never as the driver words', () => {
@@ -136,6 +145,23 @@ test('a field reads as label and value, once', () => {
   const summary = summarizeTree(tree, 8, 'Microsoft Foundry');
   assert.equal(summary, '- Deployment name: claude-fable-5-1\n- Deploy');
   assert.doesNotMatch(summary, /"|= "|\[/);
+});
+
+test('a page is never emptied by the chrome rule', () => {
+  // The chrome rule reads indentation, so a tree that omits the container row between a
+  // toolbar subtree and the page subtree dropped the whole page: the owner would have read
+  // "I read Comet." and nothing else, with no sign that the read had found nothing.
+  const tree = ['- [0] AXWindow "Inbox"', '  - [1] AXToolbar', '    - [2] AXButton "Reload"', '      - [3] AXStaticText = "Amazon Web Services billing alert"'].join('\n');
+  assert.equal(summarizeTree(tree, 8, 'Inbox'), '- Reload\n- Amazon Web Services billing alert');
+  // The strict pass still wins when it finds anything, so a normal tree keeps no chrome.
+  const normal = ['- [0] AXWindow "Inbox"', '  - [1] AXToolbar', '    - [2] AXButton "Reload"', '  - [3] AXStaticText = "AWS billing alert"'].join('\n');
+  assert.equal(summarizeTree(normal, 8, 'Inbox'), '- AWS billing alert');
+});
+
+test('only a heading that is the window title is dropped, not one that mentions it', () => {
+  // "Notes" as a window title used to drop "Notes about the trip" as well.
+  const tree = ['- [0] AXWindow "Notes"', '  - [1] AXStaticText = "Notes about the trip"', '  - [2] AXStaticText = "Shopping list"'].join('\n');
+  assert.equal(summarizeTree(tree, 8, 'Notes'), '- Notes about the trip\n- Shopping list');
 });
 
 test('a heading that repeats the window title is not a second bullet', () => {

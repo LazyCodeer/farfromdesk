@@ -98,6 +98,17 @@ const NOISE = [/^[\d\s:.,%+/-]+$/, /^\d{1,2}:\d{2}(?:\s*[ap]m)?$/i, /\b(?:ctrl|â
  * nothing new.
  */
 export function summarizeTree(markdown: string, limit = 8, skip?: string | null): string {
+  return renderTree(markdown, limit, skip, true) || renderTree(markdown, limit, skip, false);
+}
+
+/**
+ * The two passes behind `summarizeTree`, and the reason there are two: the chrome rule
+ * reads indentation, so a tree that omits the container row between a toolbar subtree and
+ * the page subtree would drop the page and leave the owner with "I read Comet." and no
+ * content. A silent empty answer is worse than a menu bar, so an empty strict pass falls
+ * back to a lenient one that keeps the chrome filter to the bars themselves.
+ */
+function renderTree(markdown: string, limit: number, skip: string | null | undefined, dropChrome: boolean): string {
   const rows: string[] = [];
   const fold = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const title = fold(String(skip ?? ''));
@@ -112,7 +123,7 @@ export function summarizeTree(markdown: string, limit = 8, skip?: string | null)
     }
     if (match[2] === 'AXWindow') continue;   // the caller's line already names the window
     if (CHROME.test(match[2]!)) {
-      chromeIndent = indent;
+      if (dropChrome) chromeIndent = indent;
       continue;
     }
     // A field carries its label and its value ("Deployment name" = "claude-fable-5-1"). On a
@@ -126,9 +137,10 @@ export function summarizeTree(markdown: string, limit = 8, skip?: string | null)
       .trim();
     if (label.length < 3) continue;   // "PM", "OK", "1": never page content, always furniture
     if (NOISE.some(pattern => pattern.test(label))) continue;
-    // A heading that repeats the window title, with or without the icon the title carries.
+    // A heading that is the window title again, with the icon the title carries and without:
+    // only the containing direction, so a page whose text merely starts with the title stays.
     const folded = fold(label);
-    if (title && folded.length > 8 && (title.includes(folded) || folded.includes(title))) continue;
+    if (title && folded.length > 8 && title.includes(folded)) continue;
     rows.push(label.length > 90 ? label.slice(0, 89).trimEnd() + '...' : label);
   }
   // The label alone is redundant once the same label arrives with its value.
@@ -153,6 +165,8 @@ export function summarizeTree(markdown: string, limit = 8, skip?: string | null)
  */
 /** A target the owner named beats a generic sentence: "I could not find "Send" in Comet." */
 const MATCHED_NOTHING = 'nothing there matched that name';
+/** The cause used when the helper's text is machine output, which is most of the time. */
+const NO_CAUSE = 'the helper could not complete it';
 const CAUSES: [RegExp, string][] = [
   [/no element|not found|no match|did not match|nothing matched|no such/i, MATCHED_NOTHING],
   [/ambiguous|more than one|multiple/i, 'more than one thing matched, so I did nothing'],
@@ -161,12 +175,18 @@ const CAUSES: [RegExp, string][] = [
   [/timed? ?out/i, 'it took too long'],
   [/step \d+ of \d+ failed|\d+ step\(s\)|not run/i, 'the action did not complete'],
 ];
+/**
+ * Unrecognized helper text is not forwarded. It is machine output, and the strings it
+ * carries are ones `brain-reply` exists to delete: a live failure was reported as
+ * "I could not do that in Comet: full read (no usable earlier read of this window to diff
+ * against)." A cause from the table above, or a plain refusal, is what the owner gets.
+ */
 export function plainCause(value: unknown): string {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!text) return 'the helper did not say why';
-  if (/mcp error|desktop_native|desktop_stopped|desktop_busy|\bpid\b|window_id|econn|socket hang/i.test(text)) return 'the helper could not complete it';
+  if (/mcp error|desktop_native|desktop_stopped|desktop_busy|\bpid\b|window_id|econn|socket hang/i.test(text)) return NO_CAUSE;
   for (const [pattern, cause] of CAUSES) if (pattern.test(text)) return cause;
-  return (text.split(/(?<=\.)\s/)[0] ?? text).slice(0, 160);
+  return NO_CAUSE;
 }
 
 /**
@@ -198,7 +218,11 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree, 8, result?.window) || null };
   }
   if (!result?.ok) {
-    return { ok: false, line: refusalLine(plan, result?.observation ?? result?.message ?? ''), evidence: null, code: 'driver_refused' };
+    const raw = result?.observation ?? result?.message ?? '';
+    // A failure reported as a result still gets a code that says what kind it was: machine
+    // output from the helper means the helper could not complete it, anything else is a
+    // refusal the helper chose.
+    return { ok: false, line: refusalLine(plan, raw), evidence: null, code: plainCause(raw) === NO_CAUSE ? 'driver_unavailable' : 'driver_refused' };
   }
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };

@@ -439,6 +439,17 @@ test('the owner-facing format is applied to every brain answer',async()=>{
   }finally{f.close();}
 });
 
+test('a blank answer still reaches the owner instead of silence',async()=>{
+  // The callers mark the request answered before they queue, so a formatter that turns an
+  // answer into nothing would leave the owner with silence and no visible failure.
+  const f=fixture();try{
+    f.store.db.prepare("INSERT INTO brain_tasks(id,original,source,destination,state,permission,created_at) VALUES(?,?,?,?,'interpreting','pending',?)").run('wa:blank','hello','text',f.store.destination(),Date.now());
+    assert.equal(f.store.outputBrain('wa:blank','   \u0007 '),true);
+    const body=String((f.out().at(-1) as any).body);
+    assert.match(body,/could not put that answer into a message/);
+  }finally{f.close();}
+});
+
 test('status quotes what a blocked session asked, and the owner answer moves it back to in progress',async()=>{
   const f=fixture(decision('codex'));try{
     await f.router.receive({id:'wa:t1',text:'Codex, fix the export'});
