@@ -17,7 +17,8 @@
     "test:file": "node script/run_node_tests.mjs files",
     "desktop:backend": "npm run build && node script/prepare_desktop_backend.mjs",
     "desktop:preview": "cd desktop && flutter run -d chrome -t lib/preview.dart",
-    "evals": "tsx script/run_brain_evals.mts"
+    "evals": "tsx script/run_brain_evals.mts",
+    "evals:live": "node script/live_transcript.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.68",

@@ -1663,6 +1663,12 @@ refused from anywhere else.
 The multi-session harness is built at this level. A subagent harness is not, and `indexSignature`
 is prepared for an embedding cache that does not exist yet.
 
+`npm run evals:live` (`script/live_transcript.mjs`, `--dry` to check the plumbing) replays the
+same turns against the running app through `POST /api/inbox-send`, then waits and prints what the
+app answered. That is the human half of the harness: the tests replay a transcript against a fake
+driver, this one replays it against the Mac. Verified live on 2389 with "Could you open notes"
+-> "Opened Notes and brought it to the front."
+
 **Known retrieval limit, measured:** the Notes tool's examples include the owner's own note
 sentence "tomorrow meeting at 10pm woth ashitosh", so a calendar request for a meeting with
 Ashitosh still matches the Notes tool. The calendar tool ranks first, and the list is a shortlist
