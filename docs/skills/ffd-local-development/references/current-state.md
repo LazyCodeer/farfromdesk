@@ -1417,3 +1417,35 @@ with it, and 2382 with helper version 4 after the lid lock was measured working.
 `tsc --noEmit` clean, `flutter analyze` clean, backend suite 1750 pass with the 12 known
 failures and no new ones.
 
+## What real desktop actions actually do (3 November 2026, build 2382)
+
+Driven through the installed build's own action layer on the owner's Mac, in the same
+order the route uses (lock gate first, then the action). Not the chat path: no model and
+no binding token, so this proves the layer those two hand off to.
+
+| Action | Result |
+| --- | --- |
+| `check_permissions` | `accessibility: true`, `screenRecording: true` |
+| `list_apps` | works, real app list with Calendar, Claude, Comet and the rest |
+| `open Calendar` | works, launched pid 11959, `window_ready: true` |
+| `list_windows` | works; the window reports `onScreen: false` because the launch suppresses self-activation |
+| `list_browsers` | works, Comet running with `directTabs: true` |
+| `list_tabs` | works, 28 real tabs with titles and URLs |
+| `read_tab` | works, 8.3 s, real page text back |
+| `new_tab` / `close_tab` | opened `https://example.com`, found it as "Example Domain", `close_tab` returned `{closed: true, tab_id: 438992313}`, and the count went 28 to 27 |
+| `read_window` on Calendar | 15 controls (menu bar, `Continue`, toolbar, `Search`, three view buttons) plus a valid 1366x717 frame at `backingScale: 2` |
+| `click` on Calendar's `Search` | sent in `background` mode, answered `effect: unverifiable`, and nothing changed |
+
+Three things that matter for agent reliability, all measured:
+
+1. **A read straight after `open_app` can come back `elementsEmpty`** with
+   `axDegradedReason: ax_window_unresolved`. A retry once the window settles returns the
+   full control list. So the agent must re-read, not conclude the app is unreachable.
+2. **A pre-launch reference goes stale the moment the app gets a new pid**: `list_windows`
+   on the reference from before the launch fails `DESKTOP_APP_STALE`. That is the tool
+   working as designed, and the rule is to discover again.
+3. **A background click may not land on a window that is not on screen.** Calendar
+   launched with self-activation suppressed, so its window was behind, and the click was
+   accepted without a verifiable effect. The documented remedy is one `deliveryMode:
+   foreground` retry, which brings the window forward and is visible to the owner.
+
