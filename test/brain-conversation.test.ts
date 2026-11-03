@@ -156,3 +156,21 @@ test('a bare coding request is not stolen by the last app used', async () => {
     assert.equal(f.rows('task_contracts').length, 1, 'it kept its contract review');
   } finally { f.close(); }
 });
+test('a command for another subsystem is not an answer to a pending contract', async () => {
+  // Live: with a contract pending, "/muse" was answered "The task or connection changed.
+  // Send the task again. Nothing was sent." and the platform switch never ran. A command
+  // is never a correction to a coding task, even when the pending row has gone stale.
+  const f = fixture(); try {
+    f.decisions(proposal('Which item should be opened, and what does "open" mean for it?'));
+    assert.equal((await f.send('1', 'Make the dark theme change')).status, 'handled');
+    f.markSent();
+    assert.equal(f.rows('task_contracts').filter(c => c.state === 'pending').length, 1);
+    // The connection moved on, so the pending row is now stale: exactly what the live
+    // transcript had when the owner switched platforms.
+    f.store.db.prepare("UPDATE task_contracts SET key_hash='moved-on' WHERE state='pending'").run();
+    await f.send('2', '/muse');
+    assert.doesNotMatch(f.last(), /task or connection changed/i);
+    assert.notEqual(f.last(), '', 'the command produced an answer of its own');
+    assert.equal(f.rows('task_contracts').filter(c => c.state === 'pending').length, 1, 'the command did not invalidate the contract');
+  } finally { f.close(); }
+});

@@ -117,6 +117,13 @@ export class TaskContracts {
       if(m.quotedId?this.belongsToDraft(expired,m.quotedId):/^(?:ok|okay|cancel)(?:\s+contract)?[.!]?$/i.test(m.text.trim())){this.answer(m,'That task contract expired. Send the task again. Nothing was sent.');return {kind:'handled'};}
     }
     if(pending){
+      // A command for another subsystem is never an answer to this contract, even when the
+      // pending row has gone stale. "/muse" while a contract waited was answered "The task
+      // or connection changed. Send the task again. Nothing was sent." and the command
+      // never ran (measured 2026-11-03). This flow's own "/contract" command and an
+      // addressed "/to ..." task still belong to the pending row.
+      const command=m.text.trim();
+      if(command.startsWith('/')&&!/^\/(?:contract|to)\b/i.test(command))return {kind:'pass'};
       if(option){this.answer(m,'Finish or cancel the pending task contract before choosing another answer. Nothing was sent.');return {kind:'handled'};}
       if(!contextValid(r,pending)||hash(this.secret.read()??'')!==pending.key_hash){this.store.db.prepare("UPDATE task_contracts SET state='invalid' WHERE id=? AND state='pending'").run(pending.id);this.answer(m,'The task or connection changed. Send the task again. Nothing was sent.');return {kind:'handled'};}
       if(!this.belongsToDraft(pending,m.quotedId)){this.answer(m,'Finish or cancel the pending task contract before starting another task.');return {kind:'handled'};}

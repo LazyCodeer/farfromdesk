@@ -1488,11 +1488,16 @@ What changed:
 - `executeDevice` saves what the driver reported per destination, and that sentence
   replaces model prose when the reply describes the state of the app the driver just
   handled. Ordinary talk about the app is left alone; the fact expires after ten minutes.
+- A command meant for another subsystem (`/muse`, `/claude`, `/help`) is no longer treated
+  as an answer to a pending contract. It used to be answered "The task or connection
+  changed. Send the task again. Nothing was sent." and the command never ran, because the
+  stale-connection check ran before the slash-command pass. Now the command goes through and
+  the stale row is dealt with on the next real turn.
 
 Evidence, with the harness at `test/brain-conversation.test.ts` replayed against the tree
 before the fix (`git archive HEAD` into a scratch copy, HEAD `210abd2`) and after it:
-**the four transcript tests fail before it and pass after**; the other two (ordinary talk
-about the app is not replaced, and a bare "write the failing test" keeps its contract
-review) pass on both, and guard the new rules from over-reaching. Full suite 1779 pass /
-12 known failures / 4 skipped.
+**five of the seven tests fail before it and pass after** (the four transcript tests plus the
+subsystem-command one); the other two (ordinary talk about the app is not replaced, and a
+bare "write the failing test" keeps its contract review) pass on both, and guard the new
+rules from over-reaching. Full suite 1779 pass / 12 known failures / 4 skipped.
 
