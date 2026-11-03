@@ -43,7 +43,7 @@ test('the driver result is reported, not the model guess', () => {
   assert.match(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: false, observation: 'no element matched' }).line, /nothing there matched/);
   // A target the owner named is used in the sentence: "nothing matched" alone leaves them
   // wondering what was looked for.
-  assert.equal(deviceOutcome({ action: 'click', app: 'Comet', name: 'Send' }, { ok: false, observation: 'no element matched' }).line, 'I could not find "Send" in Comet. Nothing was clicked or typed.');
+  assert.equal(deviceOutcome({ action: 'click', app: 'Comet', name: 'Send' }, { ok: false, observation: 'no element matched' }).line, 'I could not find "Send" in Comet. Nothing changed.');
   assert.equal(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: false, observation: 'run_steps: step 1 of 1 failed; 0 step(s) ran before it, 0 not run 1.' }).line, 'I could not do that in Comet: the action did not complete.');
 });
 
@@ -150,6 +150,19 @@ test('an incomplete plan never reaches the driver', async () => {
   const outcome = await runDevicePlan(control, { action: 'type', app: 'Notes' }, 'brain:x', () => {});
   assert.equal(called, 0);
   assert.equal(outcome.ok, false);
+});
+
+test('a thrown native refusal names the target the owner asked for', async () => {
+  // The driver reports this refusal by throwing, which is the path the first live run took:
+  // the reply said only "nothing there matched that name", with no sign of what was looked for.
+  const control: DeviceControl = {
+    assist: async () => { throw new Error('DESKTOP_NATIVE_REFUSED: no element matched a button named Flibbertigibbet'); },
+    targets: async () => [],
+  };
+  const outcome = await runDevicePlan(control, { action: 'click', app: 'Comet', name: 'the Flibbertigibbet button' }, 'brain:x', () => {});
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.line, 'I could not find "the Flibbertigibbet button" in Comet. Nothing changed.');
+  assert.equal(outcome.code, 'driver_refused');
 });
 
 test('the model can express a device action and nothing else can sneak in', () => {

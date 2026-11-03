@@ -156,6 +156,22 @@ export function plainCause(value: unknown): string {
   return (text.split(/(?<=\.)\s/)[0] ?? text).slice(0, 160);
 }
 
+/**
+ * The sentence for a refusal the driver reported, using the owner's own target when that
+ * helps. A named target is better than a cause: measured live, a click on a label that does
+ * not exist produced the bare "nothing there matched that name", which leaves the owner
+ * wondering what was looked for.
+ */
+export function refusalLine(plan: DevicePlan, message: unknown): string {
+  const app = plan.app ?? 'that app';
+  const cause = plainCause(message);
+  if (cause === MATCHED_NOTHING) {
+    if (plan.name) return `I could not find "${plan.name}" in ${app}. Nothing changed.`;
+    if (plan.role) return `I could not find that ${plan.role} in ${app}. Nothing changed.`;
+  }
+  return `I could not do that in ${app}: ${cause}.`;
+}
+
 /** One factual sentence. The composer may rephrase it; it may not contradict it. */
 export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
   const app = String(result?.app ?? plan.app ?? 'the app');
@@ -169,13 +185,7 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     return { ok: true, line: `I read ${app}${result?.window ? ` (${result.window})` : ''}.`, evidence: summarizeTree(result.tree, 8, result?.window) || null };
   }
   if (!result?.ok) {
-    const cause = plainCause(result?.observation ?? result?.message ?? '');
-    const wanted = plan.name ?? plan.role;
-    if (cause === MATCHED_NOTHING && wanted) {
-      const what = plan.name ? `"${plan.name}"` : `that ${plan.role}`;
-      return { ok: false, line: `I could not find ${what} in ${app}. Nothing was clicked or typed.`, evidence: null, code: 'driver_refused' };
-    }
-    return { ok: false, line: `I could not do that in ${app}: ${cause}.`, evidence: null, code: 'driver_refused' };
+    return { ok: false, line: refusalLine(plan, result?.observation ?? result?.message ?? ''), evidence: null, code: 'driver_refused' };
   }
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };
@@ -213,7 +223,11 @@ export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, sc
   } catch (error) {
     // The owner gets a sentence and a code; the driver's own words stay out of both the
     // message and the event log.
-    return { ok: false, line: deviceRefusal(error), evidence: null, code: deviceFailureCode(error) };
+    const message = String((error as Error)?.message ?? error);
+    // A native refusal is the driver declining a named target, so the owner's own words give
+    // the most useful sentence. A grant failure still names the switch to flip instead.
+    const line = message.startsWith('DESKTOP_NATIVE_REFUSED') ? refusalLine(plan, message.slice('DESKTOP_NATIVE_REFUSED:'.length)) : deviceRefusal(error);
+    return { ok: false, line, evidence: null, code: deviceFailureCode(error) };
   }
 }
 /**
