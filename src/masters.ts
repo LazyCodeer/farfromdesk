@@ -160,11 +160,16 @@ export class Masters {
     catch{platform.reason='Muse Code CLI unavailable. Install it with the Meta installer, then try again.';}
     return platform;
   }
-  /** One CLI entry: DeepSeek Harness has no app and no account switch, only the binary it runs. */
+  /**
+   * One CLI entry: DeepSeek Harness has no app and no account switch, only the binary it runs.
+   * `--version` boots the launcher's runtime, and the first invocation after boot can take several
+   * seconds, so this check gets the same headroom as its account check. A short timeout reported a
+   * working install as missing while the account probe in the same pass called it verified.
+   */
   private async deepseekPlatform() {
     const platform:any={provider:'deepseek',executionMode:'cli',label:'DeepSeek Harness',available:false};
     if(this.router.native.discoveryBlocked?.('deepseek'))return this.platforms.find(p=>p.provider==='deepseek')??{...platform,reason:'File access denied · click Detect apps to retry'};
-    try {const command=nativeCommand(dshBinary(),['--version']);await exec(command.binary,command.args,{timeout:5000,maxBuffer:10000,windowsHide:true});platform.available=true;}
+    try {const command=nativeCommand(dshBinary(),['--version']);await exec(command.binary,command.args,{timeout:15000,maxBuffer:10000,windowsHide:true});platform.available=true;}
     catch{platform.reason='DeepSeek Harness CLI unavailable. Install it, then try again.';}
     return platform;
   }
