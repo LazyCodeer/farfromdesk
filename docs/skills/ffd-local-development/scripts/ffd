@@ -309,28 +309,39 @@ cmd_permissions() {
   if [ -n "$compare" ] && [ -d "$compare" ]; then
     step "changed since $(dirname "$compare" | xargs basename)"
     grant_table "$compare" > /tmp/ffd-perms-other.txt
-    local changed=0 rel cdhash other
-    while IFS=$'\t' read -r rel cdhash _; do
+    local changed=0 rel cdhash ident other
+    : > /tmp/ffd-perms-reset.txt
+    while IFS=$'\t' read -r rel cdhash ident _; do
       other="$(awk -F'\t' -v k="$rel" '$1==k{print $2}' /tmp/ffd-perms-other.txt)"
       if [ -z "$other" ]; then
         printf '  %s: not in the other bundle\n' "$rel"
       elif [ "$other" != "$cdhash" ]; then
         changed=1
         printf '  %s CHANGED  %s -> %s\n' "$rel" "${other:0:12}" "${cdhash:0:12}"
+        printf '    %s\n' "${ident:-no identifier}"
+        [ -n "$ident" ] && printf '%s\n' "$ident" >> /tmp/ffd-perms-reset.txt
       fi
     done < /tmp/ffd-perms.txt
     if [ "$changed" = "0" ]; then
       say "  none: every grant holder is byte-identical, so macOS still sees the same apps"
     else
       say ""
-      say "  macOS stores an ad-hoc app's grant against its exact bytes, so each changed"
-      say "  binary has to be allowed again in System Settings > Privacy & Security:"
-      say "    Accessibility, and Screen Recording for phone screen control."
-      say "  If the row is there but will not switch on, clear the dead entry first:"
-      say "    tccutil reset Accessibility $FFD_BOUNDLE_ID.accessibility"
-      say "    tccutil reset ScreenCapture $FFD_BOUNDLE_ID.accessibility"
-      say "  A build that reuses the installed helpers needs none of this; a real signing"
-      say "  identity would make it unnecessary even when the helper source changes."
+      say "  Each changed binary is, to macOS, a different app with no grants. tccd says"
+      say "  so itself: AUTHREQ_SUBJECT names the subject it evaluates, and for this app"
+      say "  that is the app bundle (com.codecylabs.farfromdesk.localtest), not the helper"
+      say "  it launches. So the app's own bytes decide whether the grant applies, and an"
+      say "  ad-hoc signature's bytes change with every build."
+      say ""
+      say "  Re-approve in System Settings > Privacy & Security: Accessibility, and Screen"
+      say "  Recording for phone screen control. If the row is present but will not switch"
+      say "  on, clear the dead entry first:"
+      sort -u /tmp/ffd-perms-reset.txt | while read -r id; do
+        say "    tccutil reset Accessibility $id"
+        say "    tccutil reset ScreenCapture $id"
+      done
+      say "  A signing identity is the only thing that stops this recurring: it makes the"
+      say "  stored requirement name the team instead of the bytes. The vendored cua-driver"
+      say "  is the proof: it is vendor-signed, so its grant survives every rebuild."
     fi
   else
     note "nothing to compare against (pass --compare /path/to/Other.app)"

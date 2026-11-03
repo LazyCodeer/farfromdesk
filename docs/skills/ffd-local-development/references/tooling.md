@@ -80,64 +80,65 @@ ffd test backend --update-baseline     # only after confirming every entry is no
 
 A subset test run is reported but never compared against the full-suite baseline.
 
-## macOS grants, and why a rebuild loses them
+## macOS grants, and why every rebuild loses them
 
-Measured on 3 November from the installed bundles with `codesign`:
+Measured on 3 November. It corrected an earlier guess that blamed the helper binaries.
 
-- Every grant-holding binary in the Local app is **ad-hoc signed**, and an ad-hoc
-  signature's designated requirement is a bare `cdhash H"…"` (`codesign -d -r-`
-  prints exactly that). macOS stores the Accessibility and Screen Recording grants
-  against that requirement, so a grant belongs to those exact bytes: change one byte
-  and macOS sees a different app with no grants.
-- `script/prepare_desktop_backend.mjs`, through `script/build_accessibility_helper.py`,
-  **recompiles both Swift helpers on every full packaging run**: `FarFromDesk
-  Accessibility.app` (`com.codecylabs.farfromdesk.localtest.accessibility`) and
-  `session-state`, which serves the phone remote. `session-state` is not even given
-  an `--identifier`, so the linker derives one from the binary's UUID and it changes
-  with every build (`session-state-55554944…`), so both the identifier and the cdhash
-  move.
-- `cua-driver` is the exception. It keeps its vendor signature (Team ID
-  `YCK386LBJ7`), so its desktop-control grants survive rebuilds while the vendored
-  binary is unchanged.
-- **An ordinary `ffd ship` install does not recompile helpers.** It copies the
-  installed `Resources/backend` forward and overlays only `dist/` and `skills/`.
-  Measured across 2355, 2356 and 2357: helper, driver and session-state cdhashes were
-  identical, so those installs dropped nothing. The loss comes from builds that
-  re-run the native packaging step (the release pipeline, or a Local build that calls
-  `npm run desktop:backend`).
+**The subject is the app, not the helper.** tccd names it itself:
 
-Three fixes, cheapest first:
-
-1. **Reuse an unchanged helper.** Key a cache on the Swift source hash plus the
-   swiftc and SDK versions; on a hit, copy the previously built, already granted
-   binary instead of recompiling and re-signing it. Recompiling unchanged source is
-   reproducible here (verified: the current source reproduces the installed helper's
-   cdhash exactly), and both helper sources last changed on 27-28 October, so the
-   grant would then survive essentially every rebuild.
-2. **Give `session-state` a real identifier**
-   (`--identifier com.codecylabs.farfromdesk.localtest.session-state`) so its TCC
-   client is nameable and `tccutil reset` has a stable target.
-3. **Sign with an identity.** `security find-identity -v -p codesigning` reported
-   **0 valid identities** on this Mac. An Apple Development certificate (a free Apple
-   ID through Xcode > Settings > Accounts > Manage Certificates) makes the
-   requirement `identifier + anchor apple generic + certificate leaf[subject.OU] =
-   TEAMID`, which does not depend on the bytes. That is the only fix which survives a
-   real change to the helper source.
-
-Until one of these lands: `ffd permissions` prints each grant holder with its
-identifier, cdhash and whether its identity is byte-based or team-based, and diffs it
-against another bundle (default: the newest stage). `ffd ship` prints that impact for
-every build and records it in the stage's `RESULTS.md`. When System Settings shows a
-row that will not switch on, clear the dead entry first:
-
-```sh
-tccutil reset Accessibility com.codecylabs.farfromdesk.localtest.accessibility
-tccutil reset ScreenCapture com.codecylabs.farfromdesk.localtest.accessibility
+```
+AUTHREQ_ATTRIBUTION: attribution={responsible={identifier=com.codecylabs.farfromdesk.localtest, ...},
+                                   accessing={identifier=...localtest.accessibility, ...ffd-accessibility}}
+AUTHREQ_SUBJECT: subject=com.codecylabs.farfromdesk.localtest
+-[TCCDAccessIdentity staticCode]: static code for: identifier com.codecylabs.farfromdesk.localtest ... at /Users/sagar/Applications/FarFromDesk Local.app
 ```
 
-`tccutil reset` only removes. Nothing can grant: macOS has no API for that, so the
-owner still has to switch the row on. Budget one re-grant after any build that
-changes a helper, and none after a build that does not.
+So the Accessibility and Screen Recording grants belong to the app bundle, and the
+helper that asks for them is only the `accessing` process. An ad-hoc signature's
+designated requirement is a bare cdhash (`codesign -d -r-` prints exactly that), and
+the app's cdhash changes on **every** build (measured across 2355, 2356 and 2357).
+That is the whole mechanism: to macOS each rebuild is a different app, with no grants.
+
+Things that follow from that, each of which cost time to learn:
+
+- Keeping the helper binaries stable does **not** prevent it. The helper cache in
+  `build_accessibility_helper.py` is still worth having (it removes a narrower
+  identity drift and makes the emitted bytes reproducible), but it is not the fix
+  for this, and neither is the session-state identifier.
+- The **production** app is ad-hoc signed too (`app.sessionbridge.mac`,
+  `TeamIdentifier=not set`, requirement `cdhash H"4c0a8f70..."`), so every released
+  update asks every user to re-approve Accessibility and Screen Recording.
+- `cua-driver` is the in-repo proof of the fix: it is vendor-signed (Team ID
+  `YCK386LBJ7`), so its requirement names the team rather than the bytes, and its
+  grant survives every rebuild.
+- A process tree that already holds the grants answers for itself. Running a
+  byte-different copy of the helper from a grant-holding shell reported "allowed",
+  because TCC attributes to the responsible process, not the helper. Never read one
+  helper run as proof of what the app will see.
+
+**The fix is a signing identity.** `security find-identity -v -p codesigning` reported
+**0 valid identities** on this Mac on 3 November. Xcode 27.1 is installed, so a free
+Apple ID plus Xcode > Settings > Accounts > Manage Certificates > Apple Development
+produces one. The app's requirement then becomes `identifier + anchor apple generic +
+certificate leaf[subject.OU] = TEAMID`, the stored grant keeps matching across
+rebuilds, and the owner allows the two services once instead of after every install.
+
+Until then, re-approve after each Local install (`ffd permissions` names what changed
+and what to click), and clear a row that will not switch on with
+`tccutil reset Accessibility com.codecylabs.farfromdesk.localtest` (and
+`ScreenCapture` for the same identifier). `tccutil` cannot grant anything; only the
+owner can switch it on.
+
+### What build_accessibility_helper.py does about the helper side
+
+It caches each helper under `build/native-helper-cache/`, keyed on the Swift source
+bytes, the swiftc and SDK versions and the exact compile arguments, and reuses an
+unchanged helper instead of recompiling and re-signing it. Recompiling unchanged
+source is reproducible (verified: the current source reproduces the installed
+helper's cdhash exactly, and the output does not depend on the output directory), and
+`session-state` now carries an explicit
+`--identifier com.codecylabs.farfromdesk.localtest.session-state` instead of a
+linker-derived UUID. `--no-cache` forces a clean compile for a release.
 
 ## Renders
 
