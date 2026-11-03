@@ -120,8 +120,9 @@ test('a clock and a shortcut are furniture, not content', () => {
   const tree = ['- [0] AXWindow "Meet - SpliceAI discussion"',
     '  - [1] AXStaticText = "1:13"',
     '  - [2] AXStaticText = "PM"',
-    '  - [3] AXButton "Raise hand (ctrl + ⌘ + h)"',
-    '  - [4] AXStaticText = "Nihal singh"'].join('\n');
+    '  - [3] AXStaticText = "1:05 PM"',
+    '  - [4] AXButton "Raise hand (ctrl + ⌘ + h)"',
+    '  - [5] AXStaticText = "Nihal singh"'].join('\n');
   assert.equal(summarizeTree(tree, 8, 'Meet - SpliceAI discussion'), '- Nihal singh');
 });
 

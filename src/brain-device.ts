@@ -80,7 +80,7 @@ const CHROME = /^AX(?:MenuBar|MenuBarItem|Menu|MenuItem|MenuButton|Toolbar)$/;
  * advertises its keyboard shortcut, which makes it a command rather than content. Measured
  * live on a meeting page, three of eight bullets were the clock and a shortcut.
  */
-const NOISE = [/^[\d\s:.,%+/-]+$/, /\b(?:ctrl|⌘|cmd|shift|opt|alt)\s*\+/i];
+const NOISE = [/^[\d\s:.,%+/-]+$/, /^\d{1,2}:\d{2}(?:\s*[ap]m)?$/i, /\b(?:ctrl|⌘|cmd|shift|opt|alt)\s*\+/i];
 
 /**
  * Turn the driver's markdown tree into something readable on a phone.
