@@ -163,7 +163,7 @@ export class ServerMode {
       this.store.set('server-mode','true');
       this.writeState();
       try{
-        if(!this.helperCurrent())await this.install();
+        if(!this.helperCurrent()||!await this.daemonLoaded())await this.install();
       }catch(e){
         this.store.set('server-mode','false');this.writeState();
         this.stopHeartbeat();
@@ -241,6 +241,13 @@ export class ServerMode {
     }catch{return false;}
   }
 
+  /** A file on disk is not a running daemon. Server mode must not report itself
+   * on while nothing is left to hold sleep off, so a missing job reinstalls. */
+  private async daemonLoaded():Promise<boolean>{
+    try{await this.deps.run('/bin/launchctl',['print',`system/${SERVER_MODE.label}`]);return true;}
+    catch{return false;}
+  }
+
   private installScript():string{
     const source=this.deps.helperSource();
     if(!source.includes('FarFromDesk server mode helper'))throw new Error('The bundled server mode helper is missing.');
@@ -282,8 +289,16 @@ export class ServerMode {
       `/bin/chmod 644 ${quote(this.deps.plistPath)}`,
       `/usr/sbin/chown root:wheel ${quote(this.deps.plistPath)}`,
       `/bin/launchctl bootout system/${SERVER_MODE.label} 2>/dev/null || true`,
-      `/bin/launchctl bootstrap system ${quote(this.deps.plistPath)}`,
+      // bootout is asynchronous. Bootstrapping the same label while the old job is
+      // still going away fails with "Bootstrap failed: 5: Input/output error", which
+      // 2377 did on this machine: the helper and plist were written and nothing was
+      // loaded, leaving server mode switched on with no daemon behind it. So wait for
+      // the old job to disappear, retry once, and then fail loudly rather than claim
+      // an install that did not load.
+      `w=0; while [ "$w" -lt 20 ] && /bin/launchctl print system/${SERVER_MODE.label} >/dev/null 2>&1; do w=$((w+1)); sleep 0.5; done`,
+      `if ! /bin/launchctl bootstrap system ${quote(this.deps.plistPath)} 2>/dev/null; then sleep 2; /bin/launchctl bootstrap system ${quote(this.deps.plistPath)}; fi`,
       '/bin/launchctl enable system/'+SERVER_MODE.label,
+      `/bin/launchctl print system/${SERVER_MODE.label} >/dev/null`,
       '',
     ].join('\n');
   }

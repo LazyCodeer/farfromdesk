@@ -120,7 +120,7 @@ test('server mode with no state file leaves normal sleep in place', () => {
   assert.ok(!calls.includes('-a disablesleep 1'));
 });
 
-function fixture() {
+function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ffd-server-mode-'));
   const approved: string[] = [];
   const calls: string[] = [];
@@ -136,8 +136,13 @@ function fixture() {
       // A real install writes the bundled source, so the version check can then say it is current.
       writeFileSync(join(dir, 'helper.sh'), HELPER);
     },
-    run: async (_file, args) => {
+    run: async (file, args) => {
       calls.push(args.join(' '));
+      // The daemon the helper plist bootstrap is supposed to leave behind.
+      if (file === '/bin/launchctl') {
+        if (!daemonLoaded) throw new Error('launchctl: Could not find service');
+        return 'com.codecylabs.farfromdesk.servermode = { state = running }\n';
+      }
       if (args[1] === 'batt') return powerOff ? "Now drawing from 'Battery Power'\n" : "Now drawing from 'AC Power'\n";
       return 'System-wide power settings:\n SleepDisabled\t\t1\n';
     },
@@ -156,6 +161,9 @@ test('enabling server mode installs the helper once and records the owner heartb
     const script = f.approved[0];
     assert.match(script, /com\.codecylabs\.farfromdesk\.servermode/);
     assert.match(script, /launchctl bootstrap system/);
+    // The 2377 install wrote the files and failed to load them, so the script has to
+    // wait out the previous job and then verify the daemon really came up.
+    assert.match(script, /launchctl print system\/com\.codecylabs\.farfromdesk\.servermode/);
     assert.match(script, new RegExp(String(process.getuid?.() ?? 0)));
     assert.match(script, /FarFromDesk server mode helper/);
     assert.match(script, /FFD_GRACE_MAX_AGE/);
@@ -266,6 +274,16 @@ test('an installed helper with no version marker is replaced too', async () => {
     writeFileSync(join(f.dir, 'helper.sh'), '#!/bin/sh\necho older\n');
     await f.mode.setEnabled(true);
     assert.equal(f.approved.length, 1);
+  } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('a current helper with no loaded daemon is reinstalled', async () => {
+  const f = fixture({ daemonLoaded: false });
+  try {
+    // Byte-identical to the bundled source, so only the missing job can explain an install.
+    writeFileSync(join(f.dir, 'helper.sh'), HELPER);
+    await f.mode.setEnabled(true);
+    assert.equal(f.approved.length, 1, 'a file on disk is not a running daemon');
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 

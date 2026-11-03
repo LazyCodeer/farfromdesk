@@ -28,7 +28,9 @@ The build output is `desktop/build/macos/Build/Products/Release/FarFromDesk Loca
 
 ## Package
 
-Create a fresh task artifact folder outside Applications. Copy the new Flutter app there. Copy existing installed Local `Contents/Resources/backend` and `speech` (when present) to retain runtime, native helpers and dependencies. Overlay current source `dist/` and `skills/` into staged `Contents/Resources/backend/`. This copies app resources, not app state. If runtime dependencies/native helpers changed, rebuild/package those explicitly instead of blindly reusing them.
+Create a fresh task artifact folder outside Applications. Copy the new Flutter app there. Copy existing installed Local `Contents/Resources/backend` and `speech` (when present) to retain runtime, native helpers and dependencies. Overlay current source `dist/`, `skills/` **and `native/`** into staged `Contents/Resources/backend/`. This copies app resources, not app state.
+
+The carry-forward is only right for the compiled native helpers, whose bytes the macOS grants are bound to; `ditto` merges, so overlaying `native/` refreshes the sources without touching a binary that exists only in the installed app. Until 2379 the stage took all of `native/` from the installed bundle and overlaid only `dist/` and `skills/`, so a change to anything under `native/` could not ship at all: `native/server-mode/helper.sh` was rewritten in the checkout, sat unchanged in the installed app through a build, and the version guard that replaced it then refused to install. `script/prepare_desktop_backend.mjs` builds a backend payload that this workflow never uses, so do not read it as the source of the staged backend.
 
 Update staged backend/build.json with a descriptive Local buildId, localSource and `localChanges:true`. Preserve provenance honestly; a copied sourceCommit is not an exact commit for uncommitted local changes. Confirm bundle ID `com.codecylabs.farfromdesk.localtest` and chosen version before signing.
 

@@ -14,8 +14,8 @@ A real Git worktree on branch `codex/local-desktop-work` (PR #49), shared with o
 
 Installed testing app: `/Users/sagar/Applications/FarFromDesk Local.app`
 Bundle ID: `com.codecylabs.farfromdesk.localtest`
-Last installed version: **2377** (`local-local-lid-grace-2377`)
-Backend build ID: `local-local-lid-grace-2377`
+Last installed version: **2379** (`local-local-lid-grace-2379`)
+Backend build ID: `local-local-lid-grace-2379`
 The UI/backend/helpers were observed running from that path. Unauthenticated loopback health returned 401 as expected; this alone does not verify authenticated owner features. The isolated package smoke did verify authenticated startup.
 
 Main app: `/Users/sagar/Applications/FarFromDesk.app`, untouched by this work.
@@ -1255,11 +1255,40 @@ skipped with **no new failures** (the 12 are the known families); packaged smoke
 installed 2377, health 401 at 16 s. Rollback bundle
 `/Volumes/Personal/Developer/FarFromDesk/Builds/local-lid-grace-2377/local-2376-rollback.bundle`.
 
-Not verified: a lid-close with **no external display** attached, where no display may
-remain to capture; the login window, which the code refuses by design (`MAC_UNAVAILABLE`);
-relock after display sleep mid-session; and fast user switching. The helper upgrade itself
-has not run on this machine yet, because it needs the owner's administrator approval, so
-the installed helper is still the pre-2377 copy until server mode is toggled off and on
-once. FileVault is on and there is no auto-login, so a restart still requires the owner
+Still not tested, and not claimed: a lid-close with no external display attached, where
+no display may remain to capture; relock after display sleep mid-session; fast user
+switching; and the login window, which the code refuses by design.
+
+FileVault is on and there is no auto-login, so a restart still requires the owner
 physically; no code change affects that.
+
+### 2378 and 2379 closed two gaps left by 2377
+
+Live verification then failed, and both causes were real defects rather than test noise.
+
+1. **Nothing under `native/` could ship.** The `ffd ship` stage copies the whole backend
+   from the *installed* app and overlaid only `dist/` and `skills/`, so
+   `native/server-mode/helper.sh` stayed at its old bytes inside a build that had
+   rewritten it in the checkout. The version guard then refused with "The bundled server
+   mode helper is not the expected version", which is the guard working. 2378 overlays
+   `native/` from the checkout with `ditto`, which merges and therefore leaves the
+   compiled helpers that exist only in the installed app alone. `script/prepare_desktop_backend.mjs`
+   builds a payload this workflow never consumes, so it is not the source of anything shipped.
+2. **The install could write the files and load nothing.** `bootout` is asynchronous, and
+   bootstrapping the same label while the old job is still going away fails with
+   `Bootstrap failed: 5: Input/output error`. 2377 did exactly that: helper and plist
+   written, no daemon loaded, `SleepDisabled 0`, and server mode rolled back. 2379 makes
+   the script wait for the old job, retry once, and verify with `launchctl print`; and
+   `setEnabled(true)` now reinstalls when the daemon is not loaded, not only when the file
+   differs, so a file with no job behind it cannot leave server mode reporting itself on.
+
+Verified after 2379, on this machine: the daemon is loaded (`active count = 1`,
+`state = running`, pid 96932) with the version 2 helper; `SleepDisabled 1`;
+`/api/preferences` reports `enabled: true, lidSleepDisabled: true, active: true,
+heartbeatAgeMs: 1990, graceRemainingMs: 7198010`; the helper log shows
+`2026-11-03T10:05:42Z lid-closed sleep disabled (server mode on, on power)` after the
+bootout/restore pair at 09:56:24Z; and `helper.sh --once` against the real state file
+returns `reason=ok sleep=1`. Server-mode tests are 21, `tsc` clean. The grace window
+itself is covered by unit tests and by a live decision probe with a backdated state file;
+it was not exercised by a real six-minute app outage.
 

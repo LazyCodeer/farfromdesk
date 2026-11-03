@@ -539,7 +539,12 @@ cmd_ship() {
   [ -d "$built" ] || die "no release build at $built"
   rm -rf "$stage"; mkdir -p "$stage"
   # The Flutter build does not produce the runtime, native helpers or skills, so
-  # they are carried forward from the installed bundle.
+  # they are carried forward from the installed bundle. That carry-forward is only
+  # right for the compiled helpers, whose bytes the macOS grants are bound to.
+  # Everything under native/ that is source has to come from the checkout, or a
+  # change there can never ship: native/server-mode/helper.sh sat unchanged in the
+  # installed app through a build that rewrote it, and the version guard that
+  # replaced it then refused to install.
   cp -R -c "$built" "$app" || die "copying the Flutter app into the stage failed"
   rm -rf "$app/Contents/Resources/backend" "$app/Contents/Resources/speech"
   cp -R -c "$FFD_INSTALLED/Contents/Resources/backend" "$app/Contents/Resources/backend" || die "copying the backend in failed"
@@ -547,6 +552,9 @@ cmd_ship() {
   rm -rf "$app/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/skills"
   ditto "$FFD_SOURCE/dist" "$app/Contents/Resources/backend/dist" || die "overlaying dist failed"
   ditto "$FFD_SOURCE/skills" "$app/Contents/Resources/backend/skills" || die "overlaying skills failed"
+  # Merge, never replace: ditto only writes what the checkout has, so a compiled
+  # helper that exists only in the installed app is left alone.
+  ditto "$FFD_SOURCE/native" "$app/Contents/Resources/backend/native" || die "overlaying native helpers failed"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$app/Contents/Info.plist"
   python3 - "$app/Contents/Resources/backend/build.json" "$FFD_SOURCE" "local-$note-$build" "$FFD_SOURCE" <<'PY'
 import json,sys
