@@ -9,7 +9,7 @@ import { DesktopControl } from '../src/desktop-control.js';
  *   "press escape" was refused by the driver with "observe: pid and window_id are required",
  *   because the batch named no window for the observation to attach to.
  */
-function control(tree: any, windows: any[], results: Record<string, any> = {}) {
+function control(tree: any, windows: any[], results: Record<string, any> = {}, activate: (app: string, bundleId?: string) => Promise<unknown> = async () => {}) {
   const calls: { name: string; args: any }[] = [];
   const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
   const driver = {
@@ -21,7 +21,7 @@ function control(tree: any, windows: any[], results: Record<string, any> = {}) {
       return results[name] ?? {};
     },
   };
-  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now);
+  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, activate as any);
   return { c, calls, of: (name: string) => calls.filter(x => x.name === name) };
 }
 
@@ -110,4 +110,44 @@ test('a successful action reports that something changed, never the window text'
   assert.equal(out.changes, 'The window changed.');
   assert.equal('diff' in out, false, 'the raw diff must not leave this layer');
   assert.equal(JSON.stringify(out).includes('costalerts'), false);
+});
+
+test('opening an app brings it to the front', async () => {
+  // The owner asked for this: "when we told it to open something then it should be able to
+  // bring it in the focus automatically". launch_app alone suppresses self-activation.
+  let activated = 0;
+  const h = control(COMET_TREE, COMET_WINDOWS, {
+    launch_app: { name: 'Comet', pid: 52476, launch_state: { process_running: true, window_ready: true }, self_activation_suppressed: true },
+    bring_to_front: { activated: true, status: 'activated', window_id: 3091 },
+  }, async () => { activated++; });
+  const out = await h.c.assist('brain:t', { action: 'open_app', app: 'Comet' });
+  assert.equal(out.fronted, true);
+  assert.equal(out.stoleFocus, true);
+  assert.equal(h.of('bring_to_front')[0].args.pid, 52476);
+  assert.equal(activated, 0, 'the driver fronted it, so LaunchServices was not needed');
+});
+
+test('an app the driver cannot front is activated through LaunchServices', async () => {
+  // Measured live on Notes: launch_app suppresses self-activation and the app kept only stale
+  // off-screen windows, so bring_to_front refused with "No eligible top-level windows found
+  // for pid 16976". Only LaunchServices activation gave it a real on-screen window.
+  const seen: string[] = [];
+  let attempts = 0;
+  const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
+  const driver = {
+    call: async (name: string, args: any) => {
+      seen.push(name);
+      if (name === 'check_permissions') return { accessibility: true, screen_recording: true };
+      if (name === 'get_accessibility_tree') return COMET_APPS;
+      if (name === 'list_windows') return { windows: COMET_WINDOWS };
+      if (name === 'launch_app') return { name: 'Comet', pid: 52476, launch_state: { process_running: true, window_ready: false }, self_activation_suppressed: true };
+      if (name === 'bring_to_front') { attempts++; if (attempts === 1) throw new Error('DESKTOP_NATIVE_REFUSED: No eligible top-level windows found for pid 52476.'); return { activated: true, status: 'activated' }; }
+      return {};
+    },
+  };
+  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, (async (_app: string, bundleId?: string) => { seen.push('activate:' + bundleId); }) as any);
+  const out = await c.assist('brain:t', { action: 'open_app', app: 'Comet' });
+  assert.equal(out.fronted, true, 'the second attempt succeeded');
+  assert.equal(attempts, 2);
+  assert.ok(seen.includes('activate:ai.perplexity.comet'), 'LaunchServices was asked by bundle id');
 });

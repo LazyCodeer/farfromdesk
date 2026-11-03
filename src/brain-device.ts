@@ -213,6 +213,9 @@ export function refusalLine(plan: DevicePlan, message: unknown): string {
 export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
   const app = String(result?.app ?? plan.app ?? 'the app');
   if (plan.action === 'open_app') {
+    // The owner asked for an opened app to come forward, so that is the fact to report when
+    // the driver confirmed it. Otherwise the honest sentence is what launch reported.
+    if (result?.fronted) return { ok: true, line: `Opened ${app} and brought it to the front.`, evidence: null };
     if (result?.windowReady) return { ok: true, line: `Opened ${app}.`, evidence: null };
     if (result?.running) return { ok: true, line: `Opened ${app}. It is running but has not drawn a window yet.`, evidence: null };
     return { ok: false, line: `${app} did not open.`, evidence: null };

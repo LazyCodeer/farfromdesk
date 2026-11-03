@@ -40,6 +40,8 @@ type Input=z.infer<typeof desktopInput>;
  * validates and bounds it; this layer only gates and delivers.
  */
 export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_key';app?:string;window?:string;role?:string;name?:string;text?:string;key?:string};
+/** LaunchServices activation, injectable so a test never opens a real app. */
+type Activator=(app:string,bundleId:string|undefined)=>Promise<unknown>;
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
 export type BrowserCall=(q:Record<string,unknown>,signal?:AbortSignal)=>Promise<any>;
 const execute=promisify(execFile);
@@ -116,7 +118,7 @@ export class DesktopControl {
   private capability:{ok:boolean;detail:string|null;checkedAt:number}|null=null;
   private capabilityPending?:Promise<{ok:boolean;detail:string|null}>;
   private targetCache?:{value:{name:string;bundleId:string;windows:string[]}[];checkedAt:number};
-  constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now){}
+  constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now,private activate:Activator=(app,bundleId)=>execute('/usr/bin/open',bundleId?['-b',bundleId]:['-a',app],{timeout:5000})){}
   view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',driverVersion:'0.38.0',browserAdapters:Object.keys(desktopBrowsers),actions:desktopActions,permission:this.permission,capability:this.capability};}
   /**
    * Read-only driver permission probe.
@@ -165,9 +167,12 @@ export class DesktopControl {
    * The ref-based path in `run` needs a discover/select/read loop, which an owner
    * typing one sentence cannot supply. The driver already resolves role/name/app
    * targets itself, so this reuses that instead of inventing a second addressing
-   * scheme. Background delivery stays on: the owner keeps working and the pointer
-   * does not move. A batch that cannot be delivered in the background is reported
-   * as refused rather than silently foregrounded.
+   * scheme. Background delivery stays on for the acting steps: the owner keeps working and
+   * the pointer does not move. A batch that cannot be delivered in the background is
+   * reported as refused rather than silently foregrounded. Opening an app is the one
+   * exception, and it is the owner's own request: "when we told it to open something then
+   * it should be able to bring it in the focus automatically", so `open_app` brings the app
+   * to the front (see `frontApp`).
    */
   async assist(scope:string,plan:AssistPlan,authorize:()=>void=()=>{}):Promise<any>{
     if(this.platform!=='darwin')throw new Error('DESKTOP_MACOS_ONLY');
@@ -182,7 +187,9 @@ export class DesktopControl {
       if(plan.action==='open_app'){
         const found=await this.resolve(plan.app);
         const launched=await this.driver.call('launch_app',found?.bundle_id?{bundle_id:found.bundle_id}:{name:plan.app!},controller.signal);
-        return {action:plan.action,app:launched?.name??plan.app,running:launched?.launch_state?.process_running===true,windowReady:launched?.launch_state?.window_ready===true,stoleFocus:launched?.self_activation_suppressed===false};
+        const app=launched?.name??plan.app;
+        const fronted=await this.frontApp(app,launched?.pid??found?.pid,found?.bundle_id??launched?.bundle_id,controller.signal);
+        return {action:plan.action,app,running:launched?.launch_state?.process_running===true,windowReady:launched?.launch_state?.window_ready===true,stoleFocus:fronted||launched?.self_activation_suppressed===false,fronted};
       }
       if(plan.action==='read_window'){
         const target=await this.resolve(plan.app,plan.window);
@@ -211,6 +218,31 @@ export class DesktopControl {
       // and reads like a diff line in a chat message.
       return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,changes:ok&&total?'The window changed.':null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
+  }
+  /**
+   * Bring a just-opened app to the front.
+   *
+   * `launch_app` suppresses self-activation on purpose, so an app that was already running
+   * can keep only stale, off-screen windows and the driver's own activation refuses it:
+   * "No eligible top-level windows found for pid 16976", measured live on Notes. The app was
+   * running, the owner was told nothing was wrong, and the window never appeared.
+   * LaunchServices activation is what gives such an app a real on-screen window; the driver's
+   * verified `bring_to_front` then confirms it on whatever display and Space it landed, so
+   * the driver stays the source of truth for what is in front. Never throws: a failed
+   * activation must leave the honest "Opened X" answer in place, not turn it into an error.
+   */
+  private async frontApp(app:string,pid:number|undefined,bundleId:string|undefined,signal:AbortSignal):Promise<boolean>{
+    if(!pid)return false;
+    const attempt=async()=>{
+      try{
+        const r=await this.driver.call('bring_to_front',{pid},signal);
+        return r?.activated===true||r?.status==='activated';
+      }catch{return false;}
+    };
+    if(await attempt())return true;
+    try{await this.activate(app,bundleId);}catch{return false;}
+    await new Promise(resolve=>setTimeout(resolve,700));
+    return attempt();
   }
   /**
    * Resolve an app by name or bundle id, and optionally one of its windows by title.

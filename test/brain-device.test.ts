@@ -31,6 +31,11 @@ test('the driver result is reported, not the model guess', () => {
   assert.deepEqual(
     deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: true, windowReady: true }),
     { ok: true, line: 'Opened Comet.', evidence: null });
+  // The owner asked for an opened app to come forward, so that is the sentence when the
+  // driver confirmed the activation.
+  assert.deepEqual(
+    deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: true, windowReady: true, fronted: true }),
+    { ok: true, line: 'Opened Comet and brought it to the front.', evidence: null });
   // Opened but no window is a different fact from opened with a window.
   assert.match(deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: true, windowReady: false }).line, /has not drawn a window/i);
   assert.equal(deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: false }).ok, false);
