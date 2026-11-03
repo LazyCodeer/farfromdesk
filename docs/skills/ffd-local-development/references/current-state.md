@@ -4,7 +4,9 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2389** (`local-local-read-help-2389`).
+app is **2390** (`local-local-note-find-2390`, installed 2026-11-04 03:01, health 401
+after 30s). 2390 carries the read-only `notes_find` tool and the read/write split; the
+fan-out harness after it is test-only, so it needs no new build.
 
 ## Source and installation
 
