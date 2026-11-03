@@ -8,6 +8,7 @@
 #   ffd render <scenario> [--out DIR]            render one screen to a PNG and clean up after itself
 #   ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
 #   ffd rollback [bundle]                        put a saved bundle back into ~/Applications
+#   ffd permissions                              which binaries hold macOS grants, and what changed
 #
 # Deliberately NOT `set -e`: the failure this script exists to prevent was an
 # install that aborted before printing its own report because `set -e` plus
@@ -245,6 +246,97 @@ cmd_test_desktop() {
   return $compared
 }
 
+# ---------------------------------------------------------------- permissions
+
+# Every executable macOS can hold a TCC grant for, relative to the app bundle.
+# The helper app and the owner-view helper are rebuilt by the packaging step and
+# are ad-hoc signed, so their identity is a bare cdhash: if their bytes change,
+# macOS sees a different app and its Accessibility / Screen Recording grant is
+# gone. cua-driver is signed by its vendor, so its identity is stable.
+grant_subjects() {
+  local app="$1" exec
+  exec="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null)"
+  printf '%s\n' "Contents/MacOS/${exec:-FarFromDesk Local}"
+  printf '%s\n' "Contents/Resources/backend/native/FarFromDesk Accessibility.app"
+  printf '%s\n' "Contents/Resources/backend/native/session-state"
+  printf '%s\n' "Contents/Resources/backend/native/cua-driver/cua-driver"
+}
+
+# rel<TAB>cdhash<TAB>identifier<TAB>identity-kind, one line per existing subject.
+grant_table() {
+  local app="$1" rel path ident cdhash team req kind
+  while read -r rel; do
+    path="$app/$rel"
+    [ -e "$path" ] || continue
+    ident="$(codesign -d -vvv "$path" 2>&1 | grep -m1 '^Identifier=' | cut -d= -f2)"
+    cdhash="$(codesign -d -vvv "$path" 2>&1 | grep -m1 '^CDHash=' | cut -d= -f2)"
+    team="$(codesign -d -vvv "$path" 2>&1 | grep -m1 '^TeamIdentifier=' | cut -d= -f2)"
+    req="$(codesign -d -r- "$path" 2>&1 | grep -m1 'designated')"
+    if [ -n "$team" ] && [ "$team" != "not set" ]; then
+      kind="identity $team (a rebuild keeps the grant)"
+    elif printf '%s' "$req" | grep -q 'cdhash'; then
+      kind="bare cdhash (any byte change loses the grant)"
+    else
+      kind="unknown requirement"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$rel" "$cdhash" "$ident" "$kind"
+  done < <(grant_subjects "$app")
+}
+
+cmd_permissions() {
+  local compare="" app="$FFD_INSTALLED"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --app) app="$2"; shift 2;;
+      --compare) compare="$2"; shift 2;;
+      *) die "unknown option for 'ffd permissions': $1";;
+    esac
+  done
+  [ -d "$app" ] || die "no app bundle at $app"
+  if [ -z "$compare" ]; then
+    compare="$(ls -dt "$FFD_BUILDS"/*/"FarFromDesk Local.app" 2>/dev/null | head -1 || true)"
+  fi
+
+  step "grant holders in $(basename "$app")"
+  grant_table "$app" > /tmp/ffd-perms.txt
+  while IFS=$'\t' read -r rel cdhash ident kind; do
+    printf '  %s\n' "$rel"
+    printf '    identifier  %s\n' "${ident:-none}"
+    printf '    cdhash      %s\n' "${cdhash:-none}"
+    printf '    identity    %s\n' "$kind"
+  done < /tmp/ffd-perms.txt
+
+  if [ -n "$compare" ] && [ -d "$compare" ]; then
+    step "changed since $(dirname "$compare" | xargs basename)"
+    grant_table "$compare" > /tmp/ffd-perms-other.txt
+    local changed=0 rel cdhash other
+    while IFS=$'\t' read -r rel cdhash _; do
+      other="$(awk -F'\t' -v k="$rel" '$1==k{print $2}' /tmp/ffd-perms-other.txt)"
+      if [ -z "$other" ]; then
+        printf '  %s: not in the other bundle\n' "$rel"
+      elif [ "$other" != "$cdhash" ]; then
+        changed=1
+        printf '  %s CHANGED  %s -> %s\n' "$rel" "${other:0:12}" "${cdhash:0:12}"
+      fi
+    done < /tmp/ffd-perms.txt
+    if [ "$changed" = "0" ]; then
+      say "  none: every grant holder is byte-identical, so macOS still sees the same apps"
+    else
+      say ""
+      say "  macOS stores an ad-hoc app's grant against its exact bytes, so each changed"
+      say "  binary has to be allowed again in System Settings > Privacy & Security:"
+      say "    Accessibility, and Screen Recording for phone screen control."
+      say "  If the row is there but will not switch on, clear the dead entry first:"
+      say "    tccutil reset Accessibility $FFD_BOUNDLE_ID.accessibility"
+      say "    tccutil reset ScreenCapture $FFD_BOUNDLE_ID.accessibility"
+      say "  A build that reuses the installed helpers needs none of this; a real signing"
+      say "  identity would make it unnecessary even when the helper source changes."
+    fi
+  else
+    note "nothing to compare against (pass --compare /path/to/Other.app)"
+  fi
+}
+
 # ---------------------------------------------------------------- render
 
 cmd_render() {
@@ -395,6 +487,15 @@ PY
   say "  build $build, buildId local-$note-$build" >> "$stage/RESULTS.md"
   say "  staged $(date '+%Y-%m-%d %H:%M')" >> "$stage/RESULTS.md"
 
+  # A grant holder whose bytes changed has to be allowed again by hand: macOS
+  # stores an ad-hoc app's Accessibility and Screen Recording grants against its
+  # exact bytes. Better to say so here than to leave the owner with a page that
+  # says "Not allowed" and no idea why.
+  step "permissions impact"
+  cmd_permissions --app "$FFD_INSTALLED" --compare "$app" > /tmp/ffd-perms-impact.txt
+  sed -n '/^== changed since/,$p' /tmp/ffd-perms-impact.txt | tail -n +3
+  { echo; echo "Permissions impact:"; sed -n '/^== changed since/,$p' /tmp/ffd-perms-impact.txt | tail -n +3; } >> "$stage/RESULTS.md"
+
   if [ "$install" = 0 ]; then
     say "  --no-install: leaving the installed app at $ver"
     return 0
@@ -523,6 +624,8 @@ ffd: one entry point for FarFromDesk Local work.
   ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
                                                build, stage, sign, smoke, install, report
   ffd rollback [bundle]                        put a saved bundle back into ~/Applications
+  ffd permissions [--app PATH] [--compare PATH]
+                                               which binaries hold macOS grants, and what changed
 
 Paths come from scripts/ffd.conf; an environment variable of the same name wins.
 See references/tooling.md for what each step encodes and the traps it avoids.
@@ -538,6 +641,7 @@ case "${1:-}" in
       *) die "usage: ffd test backend|desktop";;
     esac;;
   render) shift; cmd_render "$@";;
+  permissions|perms) shift; cmd_permissions "$@";;
   ship) shift; cmd_ship "$@";;
   rollback) shift; cmd_rollback "$@";;
   -h|--help|help|"") usage;;

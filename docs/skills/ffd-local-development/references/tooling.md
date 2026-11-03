@@ -20,6 +20,7 @@ ffd render --list
 ffd render <scenario> [--out DIR]           # one screen to a PNG, harness cleaned up after
 ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
 ffd rollback [bundle]                       # put a saved bundle back
+ffd permissions [--app PATH] [--compare PATH]   # who holds macOS grants, and what changed
 ```
 
 Paths come from `scripts/ffd.conf`; any environment variable of the same name wins.
@@ -78,6 +79,65 @@ ffd test backend --update-baseline     # only after confirming every entry is no
   `flutter analyze` exit 1 and look like a failure)
 
 A subset test run is reported but never compared against the full-suite baseline.
+
+## macOS grants, and why a rebuild loses them
+
+Measured on 3 November from the installed bundles with `codesign`:
+
+- Every grant-holding binary in the Local app is **ad-hoc signed**, and an ad-hoc
+  signature's designated requirement is a bare `cdhash H"…"` (`codesign -d -r-`
+  prints exactly that). macOS stores the Accessibility and Screen Recording grants
+  against that requirement, so a grant belongs to those exact bytes: change one byte
+  and macOS sees a different app with no grants.
+- `script/prepare_desktop_backend.mjs`, through `script/build_accessibility_helper.py`,
+  **recompiles both Swift helpers on every full packaging run**: `FarFromDesk
+  Accessibility.app` (`com.codecylabs.farfromdesk.localtest.accessibility`) and
+  `session-state`, which serves the phone remote. `session-state` is not even given
+  an `--identifier`, so the linker derives one from the binary's UUID and it changes
+  with every build (`session-state-55554944…`), so both the identifier and the cdhash
+  move.
+- `cua-driver` is the exception. It keeps its vendor signature (Team ID
+  `YCK386LBJ7`), so its desktop-control grants survive rebuilds while the vendored
+  binary is unchanged.
+- **An ordinary `ffd ship` install does not recompile helpers.** It copies the
+  installed `Resources/backend` forward and overlays only `dist/` and `skills/`.
+  Measured across 2355, 2356 and 2357: helper, driver and session-state cdhashes were
+  identical, so those installs dropped nothing. The loss comes from builds that
+  re-run the native packaging step (the release pipeline, or a Local build that calls
+  `npm run desktop:backend`).
+
+Three fixes, cheapest first:
+
+1. **Reuse an unchanged helper.** Key a cache on the Swift source hash plus the
+   swiftc and SDK versions; on a hit, copy the previously built, already granted
+   binary instead of recompiling and re-signing it. Recompiling unchanged source is
+   reproducible here (verified: the current source reproduces the installed helper's
+   cdhash exactly), and both helper sources last changed on 27-28 October, so the
+   grant would then survive essentially every rebuild.
+2. **Give `session-state` a real identifier**
+   (`--identifier com.codecylabs.farfromdesk.localtest.session-state`) so its TCC
+   client is nameable and `tccutil reset` has a stable target.
+3. **Sign with an identity.** `security find-identity -v -p codesigning` reported
+   **0 valid identities** on this Mac. An Apple Development certificate (a free Apple
+   ID through Xcode > Settings > Accounts > Manage Certificates) makes the
+   requirement `identifier + anchor apple generic + certificate leaf[subject.OU] =
+   TEAMID`, which does not depend on the bytes. That is the only fix which survives a
+   real change to the helper source.
+
+Until one of these lands: `ffd permissions` prints each grant holder with its
+identifier, cdhash and whether its identity is byte-based or team-based, and diffs it
+against another bundle (default: the newest stage). `ffd ship` prints that impact for
+every build and records it in the stage's `RESULTS.md`. When System Settings shows a
+row that will not switch on, clear the dead entry first:
+
+```sh
+tccutil reset Accessibility com.codecylabs.farfromdesk.localtest.accessibility
+tccutil reset ScreenCapture com.codecylabs.farfromdesk.localtest.accessibility
+```
+
+`tccutil reset` only removes. Nothing can grant: macOS has no API for that, so the
+owner still has to switch the row on. Budget one re-grant after any build that
+changes a helper, and none after a build that does not.
 
 ## Renders
 
