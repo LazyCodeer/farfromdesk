@@ -11,8 +11,9 @@ class ImageSettingsGateway extends FakeLocalSocial {
   Map<String, dynamic>? saved;
   @override
   Future<Map<String, dynamic>> get(String path) async {
-    if (path == '/api/social/settings')
+    if (path == '/api/social/settings') {
       return {'imageProvider': provider, 'metaConfigured': configured};
+    }
     final data = await super.get(path);
     if (path == '/api/status') data['metaBrain'] = {'configured': configured};
     return data;
