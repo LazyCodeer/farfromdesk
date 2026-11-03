@@ -399,3 +399,10 @@ test('the Automation grant is named as the exact switch to flip', () => {
   assert.match(deviceRefusal(new Error('APP_TOOL_ARGUMENT_MISSING: calendar_create_event needs start.')), /needs start/);
   assert.match(deviceRefusal(new Error('APP_TOOL_UNKNOWN: notes_send_fax')), /reviewed tool/i);
 });
+
+test('a bad tool argument is told to the owner as the tool described it', () => {
+  const line = deviceRefusal(new Error('APP_TOOL_ARGUMENT_INVALID: A date has to look like 2026-11-04 09:00:00, not "tomorrow at 5".'));
+  assert.match(line, /^I could not use those details, so I did nothing: A date has to look like/);
+  assert.equal(deviceFailureCode(new Error('APP_TOOL_ARGUMENT_INVALID: nope')), 'invalid_arguments');
+  assert.equal(deviceFailureCode(new Error('APP_TOOL_ARGUMENT_MISSING: calendar_create_event needs start.')), 'invalid_arguments');
+});

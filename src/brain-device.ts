@@ -90,6 +90,7 @@ export function deviceFailureCode(error: unknown): string {
   if (/mcp error|connection closed|econn|socket hang|terminated/i.test(text)) return 'driver_unavailable';
   if (/ACCESSIBILITY_PERMISSION_REQUIRED|MAC_CONTROL_DISABLED|SENSITIVE_TARGET/.test(text)) return 'permission_required';
   if (text.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'target_unavailable';
+  if (text.startsWith('APP_TOOL_ARGUMENT_MISSING') || text.startsWith('APP_TOOL_ARGUMENT_INVALID')) return 'invalid_arguments';
   if (text.startsWith('DESKTOP_BUSY')) return 'driver_busy';
   if (text.startsWith('DESKTOP_STOPPED')) return 'cancelled';
   return text.startsWith('DESKTOP_NATIVE_REFUSED') ? 'driver_refused' : 'unknown';
@@ -298,6 +299,7 @@ export function deviceRefusal(error: unknown): string {
   if (message.startsWith('SENSITIVE_TARGET')) return 'I am not allowed to drive System Settings, keychain or password apps.';
   if (message.startsWith('APP_TOOL_UNKNOWN')) return 'I do not have a reviewed tool for that app action yet, so I did nothing.';
   if (message.startsWith('APP_TOOL_ARGUMENT_MISSING')) return `I need one more detail before I can do that: ${message.slice('APP_TOOL_ARGUMENT_MISSING: '.length)}`;
+  if (message.startsWith('APP_TOOL_ARGUMENT_INVALID')) return `I could not use those details, so I did nothing: ${message.slice('APP_TOOL_ARGUMENT_INVALID: '.length)}`;
   if (message.startsWith('AUTOMATION_PERMISSION_REQUIRED')) return message.slice('AUTOMATION_PERMISSION_REQUIRED: '.length) || 'macOS needs your permission before I can control that app.';
   if (message.startsWith('APP_TOOL_FAILED')) return `I could not do that: ${plainCause(message.slice('APP_TOOL_FAILED:'.length))}.`;
   if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app has no open window right now, so there is nothing to act on yet.';

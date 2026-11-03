@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { EmbeddedDesktopDriver,type DesktopDriver } from './desktop-driver.js';
 import { toolByName } from './app-tools/packs.js';
+import type { AppToolPlan } from './app-tools/types.js';
 
 export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','stop'] as const;
 /**
@@ -268,7 +269,15 @@ export class DesktopControl {
     const controller=new AbortController(),generation=this.generation;this.pending=controller;
     try{
       authorize();
-      const plan=tool.plan(args);
+      let plan:AppToolPlan;
+      try{
+        plan=tool.plan(args);
+      }catch(error){
+        // A tool refusing its own arguments is a guard inside the plan (a date that is not a
+        // date, an end before the start), not a driver failure. The owner gets the tool's own
+        // sentence instead of the generic "I could not do that on your Mac".
+        throw new Error('APP_TOOL_ARGUMENT_INVALID: '+String((error as Error)?.message??error));
+      }
       if(plan.kind==='osascript'){
         try{
           const run=await execute('/usr/bin/osascript',['-e',plan.script],{timeout:20000,signal:controller.signal,maxBuffer:1024*1024});

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
-import { PACKS, allPackTools, appleDate, asStr, packFor, toolByName } from '../src/app-tools/packs.js';
+import { PACKS, allPackTools, appleDate, appleDateAssign, asStr, packFor, toolByName } from '../src/app-tools/packs.js';
 import { buildIndex, describeTools, selectTools, tokenize, toolText } from '../src/app-tools/retrieve.js';
 
 const tools = allPackTools();
@@ -71,10 +71,16 @@ test('creating a note never types into the search field', () => {
 });
 
 test('apple dates are refused unless they are the one shape AppleScript accepts', () => {
-  assert.equal(appleDate('2026-11-04 09:00:00'), 'date "2026-11-04 09:00:00"');
-  for (const bad of ['tomorrow at 5', '2026-11-04', '04/11/2026 09:00', '']) {
+  assert.equal(appleDate('2026-11-04 09:00:00'), '2026-11-04 09:00:00');
+  for (const bad of ['tomorrow at 5', '2026-11-04', '04/11/2026 09:00', '', '2026-11-04 25:00:00']) {
     assert.throws(() => appleDate(bad), /has to look like/);
   }
+  // The date is built from its parts, because a `date "..."` literal is coerced with the Mac's
+  // own date settings and would fail on a machine set to another format.
+  const assign = appleDateAssign('d1', '2026-11-04 17:30:00');
+  assert.equal(assign, 'set d1 to current date\nset day of d1 to 1\nset year of d1 to 2026\nset month of d1 to 11\nset day of d1 to 4\nset time of d1 to 63000\n');
+  const plans = allPackTools().map(tool => JSON.stringify(tool.plan({ title: 'x', start: '2026-11-04 17:00:00', end: '2026-11-04 17:30:00', query: 'x', days: '7' }))).join(' ');
+  assert.ok(!/date \"/.test(plans), 'no plan may contain a locale-parsed date literal');
   assert.equal(asStr('he said "hi"\\'), '"he said \\"hi\\"\\\\"');
 });
 

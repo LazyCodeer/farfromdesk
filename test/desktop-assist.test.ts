@@ -187,3 +187,18 @@ test('an app tool with no open window is refused before the driver is asked', as
   await assert.rejects(() => h.c.packTool('brain:t', 'notes_create_note', { body: 'x' }), /DESKTOP_APP_NOT_RUNNING/);
   assert.equal(h.of('run_steps').length, 0);
 });
+
+test('a tool that refuses its own arguments answers with its own sentence', async () => {
+  const h = control({ apps: [{ name: 'Calendar', bundle_id: 'com.apple.iCal', pid: 42 }], windows: [] }, []);
+  // The model has to work the date out itself, so a bad one is a plan-level guard rather than a
+  // driver failure: it must not reach osascript and must not read as "I could not do that".
+  await assert.rejects(
+    () => h.c.packTool('brain:t', 'calendar_create_event', { title: 'Call Ashitosh', start: 'tomorrow at 5', end: 'tomorrow at 6' }),
+    /^Error: APP_TOOL_ARGUMENT_INVALID: A date has to look like/,
+  );
+  await assert.rejects(
+    () => h.c.packTool('brain:t', 'calendar_create_event', { title: 'Call Ashitosh', start: '2026-11-04 17:00:00', end: '2026-11-04 16:00:00' }),
+    /^Error: APP_TOOL_ARGUMENT_INVALID: The end time has to be after the start time\./,
+  );
+  assert.equal(h.of('run_steps').length, 0);
+});

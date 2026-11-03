@@ -9,12 +9,33 @@ export function asStr(value: string): string {
 }
 
 /** AppleScript only accepts `date "YYYY-MM-DD HH:MM:SS"`; anything else is refused by us. */
+/**
+ * A validated date, written as AppleScript parts.
+ *
+ * A `date "2026-11-04 09:00:00"` literal is coerced using the Mac's own date settings, so the
+ * same script fails on a machine set to another format. Assigning the parts is locale-proof;
+ * the day is set to 1 before the month so that setting a 31-day month onto the current date
+ * cannot overflow. `set time of d` takes seconds since midnight.
+ */
 export function appleDate(value: string): string {
-  const text = value.trim();
-  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
-    throw new Error(`A date has to look like 2026-11-04 09:00:00, not "${value}".`);
-  }
-  return `date ${asStr(text)}`;
+  return appleDateParts(value).text;
+}
+
+/** The validated parts of `YYYY-MM-DD HH:MM:SS`, or a sentence saying what is wrong. */
+export function appleDateParts(value: string): { text: string; year: number; month: number; day: number; seconds: number } {
+  const text = String(value ?? '').trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text);
+  if (!match) throw new Error(`A date has to look like 2026-11-04 09:00:00, not "${value}".`);
+  const [, year, month, day, hour, minute, second] = match;
+  const hours = Number(hour), minutes = Number(minute), seconds = Number(second);
+  if (hours > 23 || minutes > 59 || seconds > 59) throw new Error(`A date has to look like 2026-11-04 09:00:00, not "${value}".`);
+  return { text, year: Number(year), month: Number(month), day: Number(day), seconds: hours * 3600 + minutes * 60 + seconds };
+}
+
+/** The lines that put a validated date into an AppleScript variable. */
+export function appleDateAssign(name: string, value: string): string {
+  const parts = appleDateParts(value);
+  return `set ${name} to current date\nset day of ${name} to 1\nset year of ${name} to ${parts.year}\nset month of ${name} to ${parts.month}\nset day of ${name} to ${parts.day}\nset time of ${name} to ${parts.seconds}\n`;
 }
 
 const notesCreate: AppTool = {
@@ -140,11 +161,16 @@ const calendarCreateEvent: AppTool = {
     const target = args.calendar?.trim()
       ? `tell calendar ${asStr(args.calendar.trim())}`
       : 'tell calendar 1';
+    // Both times are validated here, so a model that wrote "tomorrow at 5" gets a clear refusal
+    // instead of an event at the wrong time. The fixed-width format compares as a string.
+    const start = appleDateParts(String(args.start ?? ''));
+    const end = appleDateParts(String(args.end ?? ''));
+    if (end.text <= start.text) throw new Error('The end time has to be after the start time.');
     return {
       kind: 'osascript',
       script:
-        `set d1 to ${appleDate(String(args.start ?? ''))}\n` +
-        `set d2 to ${appleDate(String(args.end ?? ''))}\n` +
+        appleDateAssign('d1', start.text) +
+        appleDateAssign('d2', end.text) +
         `tell application "Calendar"\n` +
         `  ${target}\n` +
         `    set newEvent to make new event at end of events with properties {summary:${asStr(String(args.title ?? ''))}, start date:d1, end date:d2}\n` +

@@ -1647,6 +1647,21 @@ Two rules came out of it, both tested.
   which, whichever comes first, and a tool whose `writes` is the opposite is dropped before
   scoring. Copulas are deliberately excluded: "my head is full" is not a read. Measured on the
   paraphrase set this took wrong-first from 3 to 1 and recall@1 from 0.6 to 0.8.
+- A plan that refuses its own arguments answers with its own sentence. `packTool` wraps
+  `tool.plan(args)` and rethrows as `APP_TOOL_ARGUMENT_INVALID`, which `deviceRefusal` turns into
+  "I could not use those details, so I did nothing: <the tool's sentence>" with the failure code
+  `invalid_arguments`. This is a real path, not a theory: the model works out the date and time
+  itself, so "tomorrow at 5" arriving in a `start` field is a mistake it can make, and the guard
+  also refuses an end time that is not after the start. Without it the throw escaped as the
+  generic "I could not do that on your Mac".
+- Every date in a plan is built from its parts. `appleDateAssign` emits `set d1 to current date`
+  / `set day of d1 to 1` / year / month / day / `set time of d1 to <seconds>`; the day is set to
+  1 first so that setting a 31-day month cannot overflow, and no plan contains a
+  `date "2026-11-04 09:00:00"` literal, which AppleScript coerces with the Mac's own date
+  settings and would therefore break on a machine set to another format. The suite asserts both
+  (`appleDateAssign`'s exact text and that no plan contains `date "`), and every osascript plan
+  is compiled with `osacompile` on every run.
+
 - Example sentences must not be shared between a read tool and a write tool. Two collisions were
   measured, both of which put the wrong tool first: the note-search example reused the create
   tool's "the roof is leaking" sentence, and the calendar-create example contains "Ashitosh",
