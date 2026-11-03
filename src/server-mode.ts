@@ -17,6 +17,9 @@ export const SERVER_MODE = {
 
 export const SERVER_MODE_PLIST = `/Library/LaunchDaemons/${SERVER_MODE.label}.plist`;
 export const SERVER_MODE_HELPER = `${SERVER_MODE.support}/helper.sh`;
+/** Must match FFD_HELPER_VERSION in native/server-mode/helper.sh. */
+export const SERVER_MODE_HELPER_VERSION = 2;
+const HELPER_VERSION = /^FFD_HELPER_VERSION=(\d+)$/m;
 
 export type ServerModeView = {
   supported: boolean;
@@ -25,6 +28,9 @@ export type ServerModeView = {
   lidSleepDisabled: boolean | null;
   onAcPower: boolean | null;
   heartbeatAgeMs: number | null;
+  /** How much of the window is left in which the helper holds sleep off although
+   * the app is not heartbeating. Null when there is no heartbeat to measure. */
+  graceRemainingMs: number | null;
   active: boolean;
   /** How long the reported system state has been unchanged, so a helper that
    * never takes effect can be reported instead of spinning forever. */
@@ -44,6 +50,7 @@ export type ServerModeDeps = {
   now: () => number;
   heartbeatMs: number;
   heartbeatMaxAgeSeconds: number;
+  graceMaxAgeSeconds: number;
 };
 
 function commandFailure(file:string,error:Error,stderr:string|Buffer){
@@ -87,6 +94,7 @@ export function systemDeps(overrides:Partial<ServerModeDeps>={}):ServerModeDeps{
     now:()=>Date.now(),
     heartbeatMs:20_000,
     heartbeatMaxAgeSeconds:300,
+    graceMaxAgeSeconds:7200,
     ...overrides,
   };
 }
@@ -108,13 +116,16 @@ export class ServerMode {
 
   view():ServerModeView{
     const state=this.readState();
+    const age=state.heartbeat===null?null:Math.max(0,this.deps.now()-state.heartbeat);
+    const grace=this.deps.graceMaxAgeSeconds*1000;
     return {
       supported:this.supported,
       enabled:this.enabled,
       helperInstalled:existsSync(this.deps.helperPath),
       lidSleepDisabled:this.lidSleepDisabled,
       onAcPower:this.onAcPower,
-      heartbeatAgeMs:state.heartbeat===null?null:Math.max(0,this.deps.now()-state.heartbeat),
+      heartbeatAgeMs:age,
+      graceRemainingMs:age===null?null:Math.max(0,grace-age),
       active:this.enabled&&this.lidSleepDisabled===true&&this.onAcPower===true,
       statusAgeMs:this.statusChangedAt===0?0:Math.max(0,this.deps.now()-this.statusChangedAt),
       error:this.error,
@@ -152,7 +163,7 @@ export class ServerMode {
       this.store.set('server-mode','true');
       this.writeState();
       try{
-        if(!existsSync(this.deps.helperPath))await this.install();
+        if(!this.helperCurrent())await this.install();
       }catch(e){
         this.store.set('server-mode','false');this.writeState();
         this.stopHeartbeat();
@@ -187,6 +198,10 @@ export class ServerMode {
     await this.refresh();
   }
 
+  /** Stops the heartbeat but keeps `enabled=true` in the state file. A clean
+   * shutdown must not release the hold: the backend is a KeepAlive agent and a
+   * restart is routine, so releasing here would open a window in which a
+   * lid-closed Mac could sleep. Only turning the setting off releases it. */
   close(){this.stopHeartbeat();}
 
   private startHeartbeat(){
@@ -215,9 +230,21 @@ export class ServerMode {
     try{return statSync(this.deps.stateFile).mtimeMs;}catch{return null;}
   }
 
+  /** The bundled source and the installed copy must agree. Without this an
+   * installed helper is never replaced, so every machine that already had one
+   * would keep the old decision rules forever. */
+  private helperCurrent():boolean{
+    try{
+      const want=HELPER_VERSION.exec(this.deps.helperSource())?.[1];
+      const have=HELPER_VERSION.exec(readFileSync(this.deps.helperPath,'utf8'))?.[1];
+      return want!==undefined&&have===want;
+    }catch{return false;}
+  }
+
   private installScript():string{
     const source=this.deps.helperSource();
     if(!source.includes('FarFromDesk server mode helper'))throw new Error('The bundled server mode helper is missing.');
+    if(HELPER_VERSION.exec(source)?.[1]!==String(SERVER_MODE_HELPER_VERSION))throw new Error('The bundled server mode helper is not the expected version.');
     const uid=process.getuid?.();
     if(uid===undefined)throw new Error('Server mode needs a signed-in owner account.');
     const plist=[
@@ -230,6 +257,7 @@ export class ServerMode {
       `<key>FFD_STATE_FILE</key><string>${xml(this.deps.stateFile)}</string>`,
       `<key>FFD_STATE_UID</key><string>${uid}</string>`,
       `<key>FFD_HEARTBEAT_MAX_AGE</key><string>${this.deps.heartbeatMaxAgeSeconds}</string>`,
+      `<key>FFD_GRACE_MAX_AGE</key><string>${this.deps.graceMaxAgeSeconds}</string>`,
       '</dict>',
       '<key>RunAtLoad</key><true/>',
       '<key>KeepAlive</key><true/>',

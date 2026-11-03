@@ -51,6 +51,11 @@ Recommended first remote transport: a private authenticated network between the 
 | Unlocked active GUI, both grants, exact visible target | Candidate for live local tests; not yet verified for this increment |
 | Locked or unknown GUI state | Refuse capture/input and stop session; no password entry through Telegram |
 | Sleeping Mac | No live service guarantee; explicit keep-awake policy would need its own owner choice |
+
+This table describes the owner-view path. The newer `src/remote-p2p` phone control does
+the opposite at a locked screen on purpose, and that behaviour was verified on 3 November
+2026 in `docs/remote-control-lock-screen.md`, together with the first lid-close run for
+server mode.
 | Offline/disconnected Mac | No live view/control; never queue and replay clicks when it returns |
 | macOS permission prompt/security app | Owner handles native consent locally; not auto-approved by agents or this view |
 

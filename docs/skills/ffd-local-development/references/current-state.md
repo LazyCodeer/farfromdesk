@@ -4,19 +4,18 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2356** (`local-settings-remote-2356`).
+app is **2377** (`local-local-lid-grace-2377`).
 
 ## Source and installation
 
-Actual current Local source:
-`/Users/sagar/Documents/ChatGPT/Personal/whatsapp-session-bridge/.local/social-session-wiring-20261031`
+Actual current Local source: `/private/tmp/ffd-pr`
 
-This is an ignored copied snapshot under the parent repository, not a Git worktree. `git status` walks up to the parent. Preserve dirty work. Inspect `desktop/macos/Flutter/ephemeral/Flutter-Generated.xcconfig` when verifying which directory supplied a build. Do not assume other Build folders or the main checkout are current.
+A real Git worktree on branch `codex/local-desktop-work` (PR #49), shared with other sessions, so check `git status` there before building and never reset it or assume its edits are committed. This supersedes the `/.local/social-session-wiring-20261031` snapshot named in earlier revisions of this file, which is no longer the source any build comes from. `ffd status` reports which checkout a build actually used.
 
 Installed testing app: `/Users/sagar/Applications/FarFromDesk Local.app`
 Bundle ID: `com.codecylabs.farfromdesk.localtest`
-Last installed version: **2362** (`local-driver-permission-model-2362`)
-Backend build ID: `local-driver-permission-model-2362`
+Last installed version: **2377** (`local-local-lid-grace-2377`)
+Backend build ID: `local-local-lid-grace-2377`
 The UI/backend/helpers were observed running from that path. Unauthenticated loopback health returned 401 as expected; this alone does not verify authenticated owner features. The isolated package smoke did verify authenticated startup.
 
 Main app: `/Users/sagar/Applications/FarFromDesk.app`, untouched by this work.
@@ -1192,4 +1191,75 @@ and the live driver read returns 18 windows, so the row reads Allowed in the ins
 app. Renders of both states are beside the build. One backend suite failure appeared while
 the desktop suite ran in parallel and passed alone: a 5 ms timer test, now warned about by
 `ffd test backend`.
+
+## 2377 — the lid stays shut and the Mac stays reachable (`local-local-lid-grace-2377`)
+
+Installed 3 November 2026, signed with the Apple Development identity. The owner asked
+whether the laptop can really act as a server: lid closed, every screen usable, no cloud.
+
+**What was already there.** The whole privileged half existed from 2325: the root
+LaunchDaemon `com.codecylabs.farfromdesk.servermode`, `native/server-mode/helper.sh`, the
+`serverMode` preference and its Settings switch. On this machine it was installed, loaded
+and holding `SleepDisabled 1`.
+
+**Two things the record got wrong, and one it never had.**
+
+1. The lid-closed case had never been exercised. Cross-referencing
+   `/var/log/farfromdesk-servermode.log` with `pmset -g log`: the only lid event since
+   server mode existed was `2026-11-01 16:20:02 Clamshell Sleep`, and the helper log shows
+   server mode was **off** at that moment (restored 10:35:57Z, re-enabled 10:52:30Z, sleep
+   at 10:50:02Z). Every later sleep was `Low Power Sleep` on battery, which is the on-power
+   rule working. So no lid-close on AC with server mode active had ever happened.
+2. Two documents disagreed about the lock screen: the 0.9.1 release note claims you can
+   unlock the Mac from your phone, while `owner-view-native-validation.md` and
+   `owner-view-hackathon.md` say lock transitions were never tested and that a locked
+   screen is refused. The refusal is the older owner-view path; the claim belongs to
+   `src/remote-p2p`. Neither had evidence. Now it does:
+   `docs/remote-control-lock-screen.md`.
+3. The helper's decision rules could never change on a machine that already had one.
+   `setEnabled(true)` installed only when the file was missing, so every existing install
+   kept its old rules forever.
+
+**Changed.** The heartbeat rule gained a second threshold as the owner chose: fresh under
+`FFD_HEARTBEAT_MAX_AGE` (300s) is a running app, between that and `FFD_GRACE_MAX_AGE`
+(7200s) the app is away and the Mac stays awake anyway, and past the window or on battery
+normal sleep returns. The helper logs entering the window because the app being absent is
+what starts it. A clean shutdown deliberately does **not** release the hold: the backend is
+a KeepAlive LaunchAgent, so a restart is routine, and releasing on the way down would open
+a window in which a lid-closed Mac could sleep. The helper now carries
+`FFD_HELPER_VERSION` and `setEnabled(true)` reinstalls on a mismatch, so the cost of a
+helper change is one administrator prompt on the next enable.
+
+**Verified live on 2376 and 2377**, with the lid physically closed (`AppleClamshellState =
+Yes`) and on AC:
+
+- No sleep event at any point, including across the app replacement by the 2377 install.
+  The helper log gained no `normal sleep restored` line.
+- The lock screen was captured at full resolution, one typed character appeared as a dot in
+  the password field, and a delete cleared it, with `session-state` reporting
+  `SESSION_LOCKED` throughout.
+- A capture came back entirely black while the display reported `Online: Yes` and
+  `displaysleep 0`, after the assertion chain had a gap during the app replacement.
+  `/usr/bin/caffeinate -u -t 2` restored a full frame. `src/remote-p2p/desktop.ts` already
+  does exactly this on `SESSION_LOCKED`, and `begin()` runs `ready(true)` before its first
+  capture, so the phone's first frame takes that path.
+- `check_permissions` returned `accessibility: true` and `screen_recording: true` after the
+  rebuild, with `attribution: host` and `host_bundle_id
+  ...localtest.accessibility`.
+
+Validation: 20 server-mode tests (7 new: grace inside the window, past the window, the
+window length being configurable, battery beating grace, an out-of-date helper replaced, a
+helper with no marker replaced, a current helper not reinstalled, and a clean shutdown not
+releasing the hold); `tsc --noEmit` clean; full backend suite 1739 pass / 12 fail / 4
+skipped with **no new failures** (the 12 are the known families); packaged smoke passed;
+installed 2377, health 401 at 16 s. Rollback bundle
+`/Volumes/Personal/Developer/FarFromDesk/Builds/local-lid-grace-2377/local-2376-rollback.bundle`.
+
+Not verified: a lid-close with **no external display** attached, where no display may
+remain to capture; the login window, which the code refuses by design (`MAC_UNAVAILABLE`);
+relock after display sleep mid-session; and fast user switching. The helper upgrade itself
+has not run on this machine yet, because it needs the owner's administrator approval, so
+the installed helper is still the pre-2377 copy until server mode is toggled off and on
+once. FileVault is on and there is no auto-login, so a restart still requires the owner
+physically; no code change affects that.
 

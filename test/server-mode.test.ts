@@ -20,7 +20,7 @@ fi
 exit 0
 `;
 
-type HelperCase = { enabled?: boolean; power?: 'AC Power' | 'Battery Power'; ageSeconds?: number; uid?: string; sleepDisabled?: string; raw?: string };
+type HelperCase = { enabled?: boolean; power?: 'AC Power' | 'Battery Power'; ageSeconds?: number; graceSeconds?: number; uid?: string; sleepDisabled?: string; raw?: string };
 
 function helperRun(input: HelperCase) {
   const dir = mkdtempSync(join(tmpdir(), 'ffd-helper-'));
@@ -37,7 +37,7 @@ function helperRun(input: HelperCase) {
   }
   const result = spawnSync('/bin/sh', [new URL('../native/server-mode/helper.sh', import.meta.url).pathname, '--once'], {
     encoding: 'utf8',
-    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: input.uid ?? String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_TEST_LOG: log, FAKE_POWER: input.power ?? 'AC Power', FAKE_SLEEPDISABLED: input.sleepDisabled ?? '0' },
+    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: input.uid ?? String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_TEST_LOG: log, FAKE_POWER: input.power ?? 'AC Power', FAKE_SLEEPDISABLED: input.sleepDisabled ?? '0', ...(input.graceSeconds === undefined ? {} : { FFD_GRACE_MAX_AGE: String(input.graceSeconds) }) },
   });
   const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean);
   const out = (result.stdout ?? '').trim();
@@ -58,9 +58,33 @@ test('server mode never disables sleep on battery, and restores normal sleep', (
   assert.ok(run.calls.includes('-a disablesleep 0'), 'an already disabled sleep must be restored');
 });
 
-test('a stale heartbeat restores normal sleep', () => {
-  const run = helperRun({ enabled: true, ageSeconds: 900, sleepDisabled: '1' });
+test('a heartbeat that stopped inside the grace window holds sleep off', () => {
+  const run = helperRun({ enabled: true, ageSeconds: 900, sleepDisabled: '0' });
+  assert.match(run.out, /reason=grace/);
+  assert.ok(run.calls.includes('-a disablesleep 1'), 'the app being away must not end the hold inside the window');
+  assert.ok(!run.calls.includes('-a disablesleep 0'));
+});
+
+test('a heartbeat older than the grace window restores normal sleep', () => {
+  const run = helperRun({ enabled: true, ageSeconds: 3 * 60 * 60, sleepDisabled: '1' });
   assert.match(run.out, /reason=stale-heartbeat/);
+  assert.ok(run.calls.includes('-a disablesleep 0'));
+  assert.ok(!run.calls.includes('-a disablesleep 1'));
+});
+
+test('the grace window is the configured length, not a fixed hour', () => {
+  const inside = helperRun({ enabled: true, ageSeconds: 300, graceSeconds: 600, sleepDisabled: '0' });
+  assert.match(inside.out, /reason=grace/);
+  assert.ok(inside.calls.includes('-a disablesleep 1'));
+
+  const past = helperRun({ enabled: true, ageSeconds: 900, graceSeconds: 600, sleepDisabled: '1' });
+  assert.match(past.out, /reason=stale-heartbeat/);
+  assert.ok(past.calls.includes('-a disablesleep 0'));
+});
+
+test('the grace window never applies on battery', () => {
+  const run = helperRun({ enabled: true, ageSeconds: 900, power: 'Battery Power', sleepDisabled: '1' });
+  assert.match(run.out, /reason=on-battery/);
   assert.ok(run.calls.includes('-a disablesleep 0'));
 });
 
@@ -109,7 +133,8 @@ function fixture() {
     plistPath: join(dir, 'daemon.plist'),
     approve: async script => {
       approved.push(script);
-      writeFileSync(join(dir, 'helper.sh'), '#!/bin/sh\n');
+      // A real install writes the bundled source, so the version check can then say it is current.
+      writeFileSync(join(dir, 'helper.sh'), HELPER);
     },
     run: async (_file, args) => {
       calls.push(args.join(' '));
@@ -133,6 +158,7 @@ test('enabling server mode installs the helper once and records the owner heartb
     assert.match(script, /launchctl bootstrap system/);
     assert.match(script, new RegExp(String(process.getuid?.() ?? 0)));
     assert.match(script, /FarFromDesk server mode helper/);
+    assert.match(script, /FFD_GRACE_MAX_AGE/);
     const state = JSON.parse(readFileSync(join(f.dir, 'server-mode.json'), 'utf8'));
     assert.equal(state.enabled, true);
     const view = f.mode.view();
@@ -140,6 +166,8 @@ test('enabling server mode installs the helper once and records the owner heartb
     assert.equal(view.helperInstalled, true);
     assert.equal(view.active, true);
     assert.equal(view.lidSleepDisabled, true);
+    assert.ok(view.heartbeatAgeMs !== null && view.heartbeatAgeMs < 5_000, 'a running app heartbeats now');
+    assert.ok(view.graceRemainingMs !== null && view.graceRemainingMs > 0, 'the grace window is measurable while it holds');
     // The app itself must never need root: only the helper changes sleep policy.
     assert.ok(!f.calls.some(call => call.startsWith('-a disablesleep')));
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
@@ -218,5 +246,49 @@ test('removing the helper restores normal sleep and deletes the daemon', async (
     assert.match(script, /pmset -a disablesleep 0/);
     assert.match(script, /rm -rf '\/Library\/Application Support\/FarFromDesk\/server-mode'/);
     assert.equal(f.approved.length, 2);
+  } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('an installed helper from an older build is replaced on the next enable', async () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.dir, 'helper.sh'), '#!/bin/sh\nFFD_HELPER_VERSION=1\n');
+    await f.mode.setEnabled(true);
+    assert.equal(f.approved.length, 1, 'an out-of-date helper must be reinstalled, not kept');
+    assert.match(f.approved[0], /FFD_HELPER_VERSION=2/);
+    assert.equal(f.mode.view().enabled, true);
+  } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('an installed helper with no version marker is replaced too', async () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.dir, 'helper.sh'), '#!/bin/sh\necho older\n');
+    await f.mode.setEnabled(true);
+    assert.equal(f.approved.length, 1);
+  } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('a current helper is not reinstalled on every enable', async () => {
+  const f = fixture();
+  try {
+    await f.mode.setEnabled(true);
+    await f.mode.setEnabled(false);
+    await f.mode.setEnabled(true);
+    assert.equal(f.approved.length, 1, 'the installed helper already matches the bundled one, so no prompt');
+  } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('a clean shutdown does not release the hold, so a restart cannot sleep the Mac', async () => {
+  const f = fixture();
+  try {
+    await f.mode.setEnabled(true);
+    assert.equal(JSON.parse(readFileSync(join(f.dir, 'server-mode.json'), 'utf8')).enabled, true);
+    f.mode.close();
+    const state = JSON.parse(readFileSync(join(f.dir, 'server-mode.json'), 'utf8'));
+    assert.equal(state.enabled, true, 'a restarting backend must not open a window where the Mac can sleep');
+    // Turning the setting off is the one thing that releases it at once.
+    await f.mode.setEnabled(false);
+    assert.equal(JSON.parse(readFileSync(join(f.dir, 'server-mode.json'), 'utf8')).enabled, false);
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
