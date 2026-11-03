@@ -76,6 +76,13 @@ export function deviceFailureCode(error: unknown): string {
 const CHROME = /^AX(?:MenuBar|MenuBarItem|Menu|MenuItem|MenuButton|Toolbar)$/;
 
 /**
+ * Furniture inside the page: a clock or a counter ("1:13", "PM", "12"), and a control that
+ * advertises its keyboard shortcut, which makes it a command rather than content. Measured
+ * live on a meeting page, three of eight bullets were the clock and a shortcut.
+ */
+const NOISE = [/^[\d\s:.,%+/-]+$/, /\b(?:ctrl|⌘|cmd|shift|opt|alt)\s*\+/i];
+
+/**
  * Turn the driver's markdown tree into something readable on a phone.
  *
  * Roles, element ids and indentation are dropped: the owner wants the labels, and
@@ -117,7 +124,8 @@ export function summarizeTree(markdown: string, limit = 8, skip?: string | null)
       .replace(/^[=:]\s*/, '')
       .replace(/^"|"$/g, '')
       .trim();
-    if (label.length < 2) continue;
+    if (label.length < 3) continue;   // "PM", "OK", "1": never page content, always furniture
+    if (NOISE.some(pattern => pattern.test(label))) continue;
     // A heading that repeats the window title, with or without the icon the title carries.
     const folded = fold(label);
     if (title && folded.length > 8 && (title.includes(folded) || folded.includes(title))) continue;

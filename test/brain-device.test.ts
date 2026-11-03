@@ -114,6 +114,17 @@ test('a window summary is content, not the menu bar', () => {
   assert.equal(summarizeTree(Array.from({ length: 250 }, (_, i) => `- [${i}] AXStaticText = "row ${i}"`).join('\n')).split('\n').length, 8);
 });
 
+test('a clock and a shortcut are furniture, not content', () => {
+  // Measured live on a meeting page: "1:13", "PM" and "(Raise hand (ctrl + ⌘ + h))" took
+  // three of the eight bullets the owner asked to be filled with what is on screen.
+  const tree = ['- [0] AXWindow "Meet - SpliceAI discussion"',
+    '  - [1] AXStaticText = "1:13"',
+    '  - [2] AXStaticText = "PM"',
+    '  - [3] AXButton "Raise hand (ctrl + ⌘ + h)"',
+    '  - [4] AXStaticText = "Nihal singh"'].join('\n');
+  assert.equal(summarizeTree(tree, 8, 'Meet - SpliceAI discussion'), '- Nihal singh');
+});
+
 test('a field reads as label and value, once', () => {
   // Measured live on a settings page: the label arrived alone and then with its value, so
   // two of eight bullets were spent on one row, and the pair kept its quotes and equals sign.
