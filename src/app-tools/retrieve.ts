@@ -29,9 +29,38 @@ function stem(word: string): string {
   return word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
 }
 
+/**
+ * How owners actually spell the apps over chat. Measured 4 November 2026 on Local: "Check my
+ * calender" matched nothing, so the companion answered "I could not read Calendar" without ever
+ * offering the Calendar tools. Whole words only, so a word inside another word is never rewritten.
+ */
+const SPELLINGS: Record<string, string> = {
+  calender: 'calendar', calandar: 'calendar', calander: 'calendar', calendr: 'calendar', calnder: 'calendar', agenda: 'calendar today',
+  email: 'mail', emails: 'mail', mails: 'mail', inbox: 'mail', gmail: 'mail',
+  ntoes: 'notes', noets: 'notes', notse: 'notes', nots: 'notes',
+  remiders: 'reminders', reminers: 'reminders', remainders: 'reminders', remindrs: 'reminders', todos: 'reminders', todo: 'reminders',
+  chek: 'check', chk: 'check', cehck: 'check', chck: 'check', whats: 'what', wat: 'what',
+  msgs: 'messages', imessage: 'messages', imessages: 'messages', texts: 'messages',
+  sumarise: 'summarise', summarize: 'summarise', sumarize: 'summarise', summery: 'summary',
+};
+const APP_NAMES = ['notes', 'calendar', 'reminders', 'mail', 'finder', 'safari', 'music', 'messages'];
+
+/** One edit apart (insert, delete, substitute or swap two neighbours). */
+function oneEditApart(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 1 || a === b) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  if (a.length === b.length) return a.slice(i + 1) === b.slice(i + 1) || (a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2));
+  return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+}
+
+/** Rewrites known misspellings and near-misses of an app name, word by word. */
+export function normalizeRequest(text: string): string {
+  return text.toLowerCase().replace(/[a-z]+/g, word => SPELLINGS[word] ?? (word.length >= 5 && !APP_NAMES.some(name => word === name || word === name + 's' || word + 's' === name) ? APP_NAMES.find(name => oneEditApart(word, name)) ?? word : word));
+}
+
 export function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
+  return normalizeRequest(text)
     .split(/[^a-z0-9]+/)
     .filter(word => word.length > 1 && !STOP.has(word))
     .map(stem);
@@ -110,7 +139,21 @@ const WRITE_VERBS = new Set(['add', 'write', 'jot', 'save', 'note', 'remind', 'r
 // undecided and is left to the scores. "list" is deliberately absent too: it is the noun in
 // "put call the plumber on my reminders list", which the Reminders pack measured as a read
 // request and pointed away from the writing tool.
-const READ_VERBS = new Set(['find', 'search', 'look', 'where', 'read', 'show', 'tell', 'what', 'which']);
+const READ_VERBS = new Set(['find', 'search', 'look', 'where', 'read', 'show', 'tell', 'what', 'which', 'check', 'see', 'view', 'any', 'recent', 'latest', 'summarise', 'summary']);
+
+/**
+ * The tool that answers "check my <app>" when the owner names the app and nothing else.
+ *
+ * Measured 4 November 2026 on Local: "check my reminders" and "check my mails" matched no tool,
+ * because "check" is in no tool's text and an app name alone carries no intent. Asking to check
+ * an app is a request for what is in it, so the pack's own overview read answers it.
+ */
+const OVERVIEW: Record<string, string> = {
+  notes: 'notes_recent', calendar: 'calendar_list_events', reminders: 'reminders_open', mail: 'mail_recent',
+  finder: 'finder_recent', safari: 'safari_tabs', music: 'music_current', messages: 'messages_recent',
+};
+/** Words that only ask to look, so a request made of them plus an app name is an overview. */
+const LOOK_WORDS = new Set(['check', 'see', 'view', 'show', 'any', 'recent', 'latest', 'new', 'all', 'last', 'summarise', 'summary', 'what', 'read', 'tell', 'whats', 'today', 'tomorrow', 'week']);
 
 /**
  * A write verb the owner also uses as an ordinary noun, and the words that tell the two apart.
@@ -127,7 +170,7 @@ const DETERMINERS = new Set(['a', 'an', 'the', 'my', 'your', 'our', 'their', 'hi
 
 export function intentPolarity(text: string): 'write' | 'read' | undefined {
   let previous = '';
-  for (const word of text.toLowerCase().split(/[^a-z0-9]+/)) {
+  for (const word of normalizeRequest(text).split(/[^a-z0-9]+/)) {
     if (!word) continue;
     const asNoun = NOUN_AMBIGUOUS_WRITE_VERBS.has(word) && DETERMINERS.has(previous);
     if (!asNoun) {
@@ -184,11 +227,44 @@ export function selectTools(text: string, options: SelectOptions = {}): ToolMatc
     if (index.tools.some(tool => !owners.includes(tool.pack) && (index.tokens.get(tool.name) ?? []).includes(word))) continue;
     for (const pack of owners) namedPacks.add(pack);
   }
+  // "my notes", "check notes" and "remind me" name their app even though the word is shared:
+  // measured 4 November 2026, "Check my recent notes" ranked calendar_find_events first on the
+  // word "notes" (an event field) and "remind me to call mom at 5" reached the Notes tool. The
+  // shared-word rule above is about a word used as a field ("the notes on the standup"); a
+  // possessive or a look verb in front of it makes it the app. With Notes in front, "remind me"
+  // stays a note, which is what the paraphrase set pins.
+  const polarity = intentPolarity(text);
+  const raw = normalizeRequest(text).split(/[^a-z0-9]+/).filter(Boolean);
+  raw.forEach((word, i) => {
+    const before = raw[i - 1] ?? '';
+    const owners = claimed.get(stem(word));
+    // "message" is the ordinary word for an email as much as for a text, so it never names Messages here.
+    if (stem(word) === 'message') return;
+    if (!owners || owners.length !== 1 || !(before === 'my' || before === 'our' || READ_VERBS.has(before) || LOOK_WORDS.has(before))) return;
+    // With Mail in front, "my recent messages" is the inbox: the app in front still decides a
+    // word that its own tools use too.
+    if (app && index.tools.some(tool => tool.app.toLowerCase() === app && tool.pack !== owners[0] && (index.tokens.get(tool.name) ?? []).includes(stem(word)))) return;
+    namedPacks.add(owners[0]);
+  });
+  const remindOwned = raw.includes('remind') && (!app || app === 'reminders');
+  if (remindOwned) namedPacks.add('reminders');
+  // A meeting, an appointment or an event is a calendar thing when no app was named at all.
+  if (!namedPacks.size && !app && polarity !== 'write' && !unique.some(word => claimed.has(word) && word !== 'calendar') && raw.some(word => /^(meeting|appointment|event)s?$/.test(word))) namedPacks.add('calendar');
+  // "remind me to call mom at 5" is the plainest reminder there is, and its words (call, mom, 5)
+  // are in no tool's text, so the scorer below cannot find the adding tool on its own.
+  if (remindOwned && /\bremind me (to|about)\b/.test(raw.join(' '))) {
+    const add = index.tools.find(tool => tool.name === 'reminders_add');
+    if (add) return [{ tool: add, score: 10 }];
+  }
+  const overview = namedPacks.size === 1 ? OVERVIEW[[...namedPacks][0]] : undefined;
+  if (overview && unique.every(word => claimed.has(word) || LOOK_WORDS.has(word) || (overview === 'calendar_list_events' && /^(meeting|appointment|event)$/.test(word))) && raw.some(word => LOOK_WORDS.has(word))) {
+    const tool = index.tools.find(candidate => candidate.name === overview);
+    if (tool) return [{ tool, score: 10 }];
+  }
   // A request made only of app words is not a request. "notes" and "calendar" on their own name
   // a window, not a question about data, and opening an app is not a tool call; whatever app is
   // in front, the owner has to say what they want from it.
   if (unique.every(word => claimed.has(word))) return [];
-  const polarity = intentPolarity(text);
 
   for (const tool of index.tools) {
     const appInFront = Boolean(app && tool.app.toLowerCase() === app);
@@ -309,4 +385,15 @@ export async function shortlistTools(text: string, options: SelectOptions = {}):
     if (tool) entries.push({ tool, score: 0, via: 'embedding' });
   }
   return entries.slice(0, k);
+}
+
+/**
+ * The overview read for "check my notes", "my agenda" or "chek my mails", when that is all the
+ * owner said. Such a request has one honest answer and no arguments to fill, so the brain runs it
+ * in code instead of asking the model, the same way it runs "open Notes".
+ */
+export function overviewTool(text: string, options: SelectOptions = {}): AppTool | undefined {
+  const [first] = selectTools(text, options);
+  if (!first || first.score !== 10 || first.tool.writes || first.tool.args.some(arg => arg.required)) return undefined;
+  return OVERVIEW[first.tool.pack] === first.tool.name ? first.tool : undefined;
 }

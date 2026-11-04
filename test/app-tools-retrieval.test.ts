@@ -72,3 +72,17 @@ test('the shortlist stays small enough to send', () => {
   // tools in reach today, so this guards the shape, not the current size.
   assert.ok(widest <= 5, `a single request returned ${widest} tools`);
 });
+// Regression from the owner's own chat (4 November 2026): these were answered from window chrome,
+// by the wrong app, or not at all. Typos are the owner's.
+test('a bare check of an app runs that app overview read, typos included', async () => {
+  const { overviewTool, normalizeRequest } = await import('../src/app-tools/retrieve.js');
+  const cases: [string, string | undefined][] = [
+    ['Check my recent notes', 'notes_recent'], ['Check my calender', 'calendar_list_events'], ['chek my notes', 'notes_recent'],
+    ['check my reminders', 'reminders_open'], ['check my mails', 'mail_recent'], ['my agenda', 'calendar_list_events'],
+    ['any meetings tomorrow', 'calendar_list_events'], ['Open notes', undefined], ['notes', undefined], ['remind me to call mom at 5', undefined],
+    ['add a retry to the sync loop', undefined],
+  ];
+  for (const [text, want] of cases) assert.equal(overviewTool(text)?.name, want, text);
+  assert.equal(normalizeRequest('Check my calender'), 'check my calendar');
+  assert.equal(normalizeRequest('the calendars'), 'the calendars', 'a correct plural is never rewritten');
+});

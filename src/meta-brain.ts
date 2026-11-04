@@ -13,7 +13,7 @@ import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInve
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
-import { shortlistTools } from './app-tools/retrieve.js';
+import { overviewTool, shortlistTools } from './app-tools/retrieve.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
@@ -513,6 +513,10 @@ export class MetaBrain {
     if(mine){
       const direct=detectDevicePlan(m.text,devices??[]);
       if(direct)return await this.executeDevice(router,m,direct,policy);
+      // "check my notes" or "chek my calender" is a read with one answer; the model used to
+      // answer it from window chrome or not at all (owner chat, 4 November 2026).
+      const overview=overviewTool(m.text);
+      if(overview)return await this.executeDevice(router,m,{action:'app_tool',tool:overview.name,app:overview.app,args:{}},policy);
       // "now write the notes" names no app, so no pattern can match it. The app the owner
       // last used is the target; the text is theirs verbatim. Nothing is invented: if the
       // driver cannot reach that app, its report is what the owner reads. When that app is

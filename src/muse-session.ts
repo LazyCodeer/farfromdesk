@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { museBinary as museBinaryPath } from './muse-paths.js';
+import { museAuthPath, museBinary as museBinaryPath, museHome } from './muse-paths.js';
 
 /**
  * Muse Code is a terminal agent: one `muse exec` runs one prompt to completion and prints
@@ -24,6 +24,15 @@ const MAX_STREAM_BYTES=8*1024*1024;
 const MAX_LINE_BYTES=1024*1024;
 
 export function museBinary():string{return museBinaryPath();}
+
+/**
+ * The Local backend runs with an app-private HOME, and Muse resolves its sign-in from HOME, so a
+ * signed-in owner was told "missing meta credentials" (measured on Local, 4 November 2026). Hand
+ * Muse the owner's real home and credential path; the bridge already reads Muse's files there.
+ */
+export function museEnv(env:NodeJS.ProcessEnv=process.env):NodeJS.ProcessEnv {
+  return {...env,HOME:museHome(env),MUSE_AUTH_PATH:env.MUSE_AUTH_PATH?.trim()||museAuthPath(env),NO_COLOR:'1',CI:'1'};
+}
 
 export function museArgs(options:MuseRunOptions):string[] {
   const args=['exec','--json','--disable-approval','--approval-mode','never'];
@@ -50,7 +59,7 @@ export function runMuse(options:MuseRunOptions):Promise<MuseResult> {
     let settled=false,bytes=0,stderr='',pending='',deltas='',model:string|null=null;
     let sessionId:string|null=options.sessionId??null;
     let usage:MuseResult['usage']=null;
-    const child=spawn(binary,args,{cwd:options.cwd,env:{...process.env,NO_COLOR:'1',CI:'1'},stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32'});
+    const child=spawn(binary,args,{cwd:options.cwd,env:museEnv(),stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32'});
     const finish=(error?:Error,result?:MuseResult)=>{
       if(settled)return;
       settled=true;

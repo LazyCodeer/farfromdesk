@@ -406,3 +406,14 @@ test('a bad tool argument is told to the owner as the tool described it', () => 
   assert.equal(deviceFailureCode(new Error('APP_TOOL_ARGUMENT_INVALID: nope')), 'invalid_arguments');
   assert.equal(deviceFailureCode(new Error('APP_TOOL_ARGUMENT_MISSING: calendar_create_event needs start.')), 'invalid_arguments');
 });
+
+// Regression: notes_recent, mail_recent and reminders_open returned "Done in Notes." and dropped
+// what they read, so a read the owner asked for came back empty.
+test('a reading app tool answers with what it read', () => {
+  const read = deviceOutcome({ action: 'app_tool', app: 'Notes', tool: 'notes_recent' } as DevicePlan, { ok: true, output: 'Groceries: milk, eggs' });
+  assert.equal(read.ok, true);
+  assert.equal(read.evidence, 'Groceries: milk, eggs');
+  assert.match(read.line, /Notes/);
+  assert.equal(deviceOutcome({ action: 'app_tool', app: 'Mail', tool: 'mail_recent' } as DevicePlan, { ok: true, output: '' }).line, 'Mail has nothing to show for that.');
+  assert.equal(deviceOutcome({ action: 'app_tool', app: 'Notes', tool: 'notes_delete' } as DevicePlan, { ok: true }).line, 'Done in Notes.');
+});

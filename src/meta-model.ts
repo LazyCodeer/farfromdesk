@@ -3,6 +3,7 @@ import { generateText, tool, hasToolCall, stepCountIs } from 'ai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { META_ENDPOINT, type BrainPolicy } from './meta-brain-config.js';
 import { DevicePlan } from './brain-device.js';
+import { PACKS } from './app-tools/packs.js';
 import type { MetaObserver } from './meta-timeline.js';
 export const Interpretation=z.object({intent:z.enum(['task','status','update','clarify','manage','chat','device']),normalized:z.string().min(1).max(32000),provider:z.enum(['codex','claude','muse','deepseek','cursor','unspecified']),taskIds:z.array(z.string().max(1000)).max(20),operation:z.enum(['none','add_todo','set_todo','pause_session','resume_session']).optional(),sessionId:z.string().max(100).optional(),title:z.string().max(200).optional(),itemStatus:z.enum(['unchanged','not started','in progress','waiting on owner','blocked','done']).optional(),reply:z.string().max(2000).optional(),device:DevicePlan.optional()}).strict();
 export type Interpretation=z.infer<typeof Interpretation>;
@@ -63,6 +64,7 @@ One action, addressed by name. Fill only the fields that action needs.
 - click: app, then name (the visible label) or role (button, link, textfield, row, tab).
 - type: app, name or role of the field, plus text.
 - press_key: app, and key, one of return, tab, escape, up, down, left, right.
+- What you can do on the Mac, when deviceControl is "brain": reviewed tools that read and change content in ${PACKS.map(pack=>pack.app).join(', ')} (notes, events, reminders, mail drafts, files, tabs) without that app's window being open, plus opening apps, reading a window and clicking, typing or pressing keys in it. When the owner asks what you can do, or why something did not work, answer from this and from the failure sentence in conversation; never claim you can only read what an open window shows (owner chat, 4 November 2026).
 - app_tool: tool (a name from appTools), plus args. Use it when the owner's request matches one of those reviewed tools, because it runs the exact sequence that was checked on this Mac instead of a guessed click. Every argument name must be one the tool lists, and every value a plain string. A date or time goes in as "YYYY-MM-DD HH:MM:SS" worked out from now.
 - app must be a name from devices, except for open_app. Never guess a label, a window or a key.
 - Never use a tool name that is not in appTools, and never invent an argument name. If the request needs a reviewed tool and none of the listed ones fits it, use clarify.

@@ -169,6 +169,18 @@ export const GOLDEN: GoldenUtterance[] = [
   { text: "find the message about the meeting time", tool: "messages_find", note: 'example from the pack itself' },
   { text: "search my messages for that word", app: "Messages", tool: "messages_find", note: 'example from the pack itself' },
   { text: "who said something about the train", tool: "messages_find", note: 'example from the pack itself' },
+  // The owner's own chat, 4 November 2026 on Local, typos kept. Each of these failed live or
+  // matched nothing before the spelling, look-verb and overview rules in retrieve.ts.
+  { text: "Check my recent notes", tool: "notes_recent", note: 'owner chat: ranked a calendar tool first on the event-notes field' },
+  { text: "Check my calender", tool: "calendar_list_events", note: 'owner chat: the typo matched nothing' },
+  { text: "chek my notes", tool: "notes_recent", note: 'owner chat style typo' },
+  { text: "check my reminders", tool: "reminders_open", note: 'check is in no tool text, so this matched nothing' },
+  { text: "check my mails", tool: "mail_recent", note: 'mails is how owners say mail' },
+  { text: "read my latest emails", tool: "mail_recent", note: 'email was not a Mail word and reached Calendar' },
+  { text: "whats on my calender today", tool: "calendar_list_events", note: 'typo plus whats' },
+  { text: "my agenda", tool: "calendar_list_events", note: 'agenda means the calendar today' },
+  { text: "any meetings tomorrow", tool: "calendar_list_events", note: 'reached the note-writing tool before' },
+  { text: "remind me to call mom at 5", tool: "reminders_add", note: 'reached the note-writing tool before' },
 ];
 
 /** The tool names the set refers to, for a pack-coverage check. */

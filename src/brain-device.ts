@@ -268,6 +268,13 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
       const output = String(result?.output ?? '').trim().slice(0, 1500);
       return { ok: true, line: output ? `Here is ${app}:` : `${app} has nothing on that day.`, evidence: output || null };
     }
+    // Every other reading tool answers with what it read. Measured 4 November 2026: notes_recent,
+    // mail_recent and reminders_open all fell through to "Done in Notes." with the content
+    // dropped, so a read the owner asked for came back as an empty acknowledgement.
+    if (toolByName(tool)?.writes === false) {
+      const output = String(result?.output ?? '').trim().slice(0, 3000);
+      return { ok: true, line: output ? `Here is what is in ${app}:` : `${app} has nothing to show for that.`, evidence: output || null };
+    }
     return { ok: true, line: `Done in ${app}.`, evidence: null };
   }
   if (plan.action === 'read_window') {
