@@ -453,13 +453,11 @@ export class DesktopControl {
     for(const k of Object.keys(q))if(k!=='action'&&!fields[q.action].includes(k))throw new Error('Unexpected desktop action parameter: '+k);
     if(q.action==='stop')return this.stop();
     if(q.action==='app_tools'){
-      // Measured 4 November 2026: with Muse as the coordinator, "check my recent notes" reached a
-      // session that only had clicks and window reads, so it could not read a single note.
-      const shortlist=q.text?.trim()?await shortlistTools(q.text,{app:await this.activeApp()}):[];
-      const describe=(tool:AppTool)=>({name:tool.name,app:tool.app,writes:tool.writes,description:tool.description,args:tool.args.map(arg=>({name:arg.name,required:Boolean(arg.required),description:arg.description})),examples:tool.examples.slice(0,3)});
-      return shortlist.length
-        ?{tools:shortlist.map(entry=>describe(entry.tool)),next:'Run the best match with action app_tool, tool and args. A tool that writes needs a new UUID actionId.'}
-        :{tools:[],available:allPackTools().map(tool=>`${tool.name} (${tool.app}${tool.writes?', writes':''})`),next:'Nothing matched those words. Pick from available by name, or ask the owner.'};
+      // The whole catalog, so the session decides, the way an MCP client lists every tool of a server.
+      // The matcher only marks likely ones; it never hides the rest (it used to return its top five).
+      const likely=q.text?.trim()?(await shortlistTools(q.text,{app:await this.activeApp()})).map(entry=>entry.tool.name):[];
+      return {tools:allPackTools().map(tool=>({name:tool.name,app:tool.app,writes:tool.writes,description:tool.description,args:tool.args.map(arg=>({name:arg.name,required:Boolean(arg.required),description:arg.description}))})),likely,
+        next:'Choose the tools this request needs and run each with action app_tool, tool and args. Call several when needed (find, then read, then act). A tool that writes needs a new UUID actionId.'};
     }
     if(q.action==='app_tool'){
       const tool=toolByName(q.tool??'');

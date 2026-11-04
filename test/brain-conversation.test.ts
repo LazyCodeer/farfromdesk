@@ -213,13 +213,14 @@ test('a reviewed tool for the app in front is offered, and the plan the model pi
   } finally { f.close(); }
 });
 
-test('no reviewed tools are offered when the owner is not in one of those apps', async () => {
-  // The shortlist is scoped to the app in front, so coding work in another app never sees it.
+test('the whole tool catalog is offered and nothing runs unless the model calls it', async () => {
+  // The model decides, as with OpenClaw's skills list: the catalog is always there, and a
+  // greeting runs nothing on the Mac.
   const f = fixture(); try {
     f.setFront('Cursor');
     f.replies(chat('Fine.'));
     await f.send('1', 'how are you');
-    assert.equal(f.seen[0]?.appTools, undefined, 'nothing was offered');
+    assert.equal(f.seen[0]?.appTools?.length, 32, 'the whole catalog was offered');
     assert.equal(f.calls.length, 0, 'nothing was run on the Mac');
   } finally { f.close(); }
 });

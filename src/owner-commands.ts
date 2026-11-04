@@ -440,4 +440,12 @@ export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
  */
 export const isOwnerCommand=(text:string)=>/^\/(claude|codex|brain|muse|deepseek|cursor|screen|back|help|reach|research|jobs|social)(?:\s|$)/i.test(text.trim());
 
+/** A coordinator session, not the brain, gets the owner's plain messages right now. */
+export function sessionSelected(r:Router):boolean {
+  try{
+    if(JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='session')return true;
+    const direct=JSON.parse(r.store.get(`direct:${r.store.destination()}`)??'null');
+    return !!(direct&&Date.now()-direct.at<DIRECT_IDLE_MS&&r.store.binding(direct.bindingId)?.enabled);
+  }catch{return false;}
+}
 export function brainSelected(r:Router):boolean {try{return JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='brain';}catch{return false;}}

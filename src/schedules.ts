@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {authenticatedOwner} from './owner-commands.js';
+import {authenticatedOwner,sessionSelected } from './owner-commands.js';
 import {brainPolicy,MetaSecret} from './meta-brain-config.js';
 import {interpretSchedule,type ScheduleInterpreter} from './schedule-model.js';
 import {addDay,localDate,localInstants,nextOccurrence,validZone,type Recurrence} from './schedule-time.js';
@@ -175,6 +175,10 @@ export class Schedules {
   shouldHandle(router:Router,m:Incoming,ownerIntent:boolean) {
     const destination=this.store.destination(),text=m.text.trim();
     if(!destination||!ownerIntent||m.quotedId||!authenticatedOwner(router,m))return false;
+    // With a session selected, the session decides what "remind me" means (Apple Reminders, the
+    // calendar, or a note), the way OpenClaw's agent schedules with its own cron tool. This filter
+    // used to take the message before the chosen session ever saw it.
+    if(sessionSelected(router))return false;
     const snap=this.snapshot(destination),live=!!(snap&&snap.owner===this.owner(destination)&&snap.destination===destination&&snap.expires>this.now());
     const clarify=this.clarification(destination),pending=!!(clarify&&clarify.owner===this.owner(destination)&&clarify.expires>this.now());
     return listCommand(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));

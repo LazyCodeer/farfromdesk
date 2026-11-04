@@ -575,7 +575,7 @@ export class Masters {
       // session id it reports is stored so the next request continues the same conversation.
       const key=`muse-session:${b.id}`,stored=this.store.get(key)||null;
       handedOff=true;
-      const result=await verify(runMuse({prompt:message,cwd:b.cwd,sessionId:stored,timeoutMs:museTurnTimeoutMs,trustWorkspace:this.store.get(`muse-trust:${b.id}`)==='true'}));
+      const result=await verify(runMuse({prompt:message,cwd:b.cwd,sessionId:stored,timeoutMs:museTurnTimeoutMs,trustWorkspace:this.store.get(`muse-trust:${b.id}`)==='true',network:true}));
       if(result.sessionId)this.store.set(key,result.sessionId);
       if(result.usage)this.store.event(jobId,'provider_usage',{provider:'muse',...result.usage});
       if(this.store.job(jobId)?.status==='replaced')return;

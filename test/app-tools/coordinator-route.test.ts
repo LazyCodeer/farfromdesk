@@ -23,11 +23,13 @@ function harness() {
 
 test('a coordinator finds the right app tool from the owner words, typos included', async () => {
   const { control } = harness();
-  assert.equal((await control.run('b:r1', { action: 'app_tools', text: 'Check my calender' })).tools[0].name, 'calendar_list_events');
-  assert.equal((await control.run('b:r1', { action: 'app_tools', text: 'check my recent notes' })).tools[0].name, 'notes_recent');
+  const calendar = await control.run('b:r1', { action: 'app_tools', text: 'Check my calender' });
+  assert.equal(calendar.tools.length, 32, 'the session gets the whole catalog and decides');
+  assert.equal(calendar.likely[0], 'calendar_list_events', 'the matcher only marks the likely tool');
+  assert.equal((await control.run('b:r1', { action: 'app_tools', text: 'check my recent notes' })).likely[0], 'notes_recent');
   const none = await control.run('b:r1', { action: 'app_tools', text: 'refactor the sync loop' });
-  assert.deepEqual(none.tools, []);
-  assert.ok(none.available.some((line: string) => line.startsWith('notes_recent')), 'the catalog is offered when nothing matches');
+  assert.deepEqual(none.likely, []);
+  assert.equal(none.tools.length, 32, 'nothing is hidden when nothing matches');
 });
 
 test('a coordinator runs a reading tool and gets its content back', async () => {

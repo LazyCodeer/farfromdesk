@@ -14,6 +14,7 @@ import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
 import { overviewTool, selectTools, shortlistTools } from './app-tools/retrieve.js';
+import { allPackTools, toolByName } from './app-tools/packs.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
@@ -411,13 +412,17 @@ export class MetaBrain {
    * embeddings may only append candidates for that same app. A failure here is never fatal:
    * the model simply gets no tool list and falls back to the actions it already had.
    */
-  private async reviewedTools(text:string):Promise<{name:string;app:string;summary:string;args:{name:string;description:string;required:boolean}[];examples:string[]}[]|undefined>{
+  /**
+   * Every reviewed tool, compact: what OpenClaw does with its skills list. The model decides; a
+   * matcher only orders the list so the likeliest tools come first.
+   */
+  private async reviewedTools(text:string):Promise<{name:string;app:string;writes:boolean;summary:string;args:{name:string;description:string;required:boolean}[]}[]|undefined>{
     try{
-      const control=this.deviceControl();
-      const front=await control.activeApp?.();
-      const shortlist=await shortlistTools(text,{app:front});
-      if(!shortlist.length)return undefined;
-      return shortlist.map(entry=>({name:entry.tool.name,app:entry.tool.app,summary:entry.tool.description,args:entry.tool.args.map(arg=>({name:arg.name,description:arg.description,required:Boolean(arg.required)})),examples:entry.tool.examples}));
+      const front=await this.deviceControl().activeApp?.();
+      const rank=(await shortlistTools(text,{app:front})).map(entry=>entry.tool.name);
+      const at=(name:string)=>{const i=rank.indexOf(name);return i<0?rank.length:i;};
+      const all=allPackTools().sort((x,y)=>at(x.name)-at(y.name));
+      return all.map(tool=>({name:tool.name,app:tool.app,writes:tool.writes,summary:tool.description.split('. ')[0].slice(0,220),args:tool.args.map(arg=>({name:arg.name,description:arg.description.slice(0,140),required:Boolean(arg.required)}))}));
     }catch{return undefined;}
   }
   /**
@@ -495,33 +500,18 @@ export class MetaBrain {
     }catch{return plain;}
   }
   /** "what tabs are open": every supported browser that is running, plus Safari, as one answer. */
-  private async answerTabs(router:Router,m:Incoming,policy:BrainPolicy):Promise<boolean>{
+  /** The open tabs, as data for the model's list_tabs tool. */
+  private async tabsData(m:Incoming):Promise<string>{
     const control=this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>;view?:()=>{enabled:boolean}};
-    if(!control.run||control.view?.().enabled===false)return false;
-    const browsers:{browser:string;windows:{tabs:{title:string;url:string;active:boolean}[]}[]}[]=[],unread:string[]=[];
+    if(!control.run)return 'Tab listing is not available in this build.';
+    if(control.view?.().enabled===false)return 'Desktop control is switched off in Settings. Turn on Remote control, then ask again.';
+    const browsers:unknown[]=[],unread:string[]=[];
     for(const browser of ['comet','chrome','edge','brave']){
-      try{
-        const listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});
-        browsers.push({browser,windows:(listed?.windows??[]).map((w:any)=>({tabs:(w.tabs??[]).map((t:any)=>({title:String(t.title??'').slice(0,160),url:String(t.url??'').slice(0,200),active:t.tabId!==undefined&&t.tabId===w.activeTabId||t.active===true}))}))});
-      }catch(e){
-        // A browser that is not running is simply left out; one that is running but could not be
-        // read is named with the reason, so the owner is not shown Safari alone with no word on why.
-        const said=String((e as Error)?.message??e);
-        if(!/^DESKTOP_BROWSER_NOT_RUNNING/.test(said))unread.push(`${browser}: ${deviceRefusal(e)} (${said.split(':')[0].slice(0,60)})`);
-      }
+      try{const listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});browsers.push({browser,windows:(listed?.windows??[]).map((w:any)=>({tabs:(w.tabs??[]).map((t:any)=>({title:String(t.title??'').slice(0,160),url:String(t.url??'').slice(0,200)}))}))});}
+      catch(e){const said=String((e as Error)?.message??e);if(!/^DESKTOP_BROWSER_NOT_RUNNING/.test(said))unread.push(`${browser}: ${deviceRefusal(e)}`);}
     }
-    let safari='';
-    try{safari=String((await control.packTool?.(`brain:${m.id}`,'safari_tabs',{}))?.output??'');}catch{}
-    if(router.stopped||this.get(m.id)?.state!=='interpreting')return true;
-    this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
-    if(!browsers.length&&!safari&&!unread.length){this.store.outputBrain(m.id,'I could not see any open browser tabs. Is a browser running?');return true;}
-    const evidence=JSON.stringify({browsers,...(safari?{safari}:{}),...(unread.length?{couldNotRead:unread}:{})}).slice(0,14000);
-    const count=browsers.reduce((n,b)=>n+b.windows.reduce((k,w)=>k+w.tabs.length,0),0);
-    // The reason a browser could not be read is said in the app's own words, never left to the
-    // model: live, it answered "Comet could not be read" and dropped why.
-    const answer=await this.explain(m,policy,{action:'list_tabs'},{ok:true,line:`${count} tab(s) open across ${browsers.map(b=>b.browser).join(', ')||'Safari'}.`,evidence});
-    this.store.outputBrain(m.id,unread.length?`${answer}\n\nNot read: ${unread.map(u=>u.replace(/ \([A-Z_]+\)$/,'')).join(' ')}`.slice(0,3000):answer);
-    return true;
+    let safari='';try{safari=String((await control.packTool?.(`brain:${m.id}`,'safari_tabs',{}))?.output??'');}catch{}
+    return JSON.stringify({browsers,...(safari?{safari}:{}),...(unread.length?{couldNotRead:unread}:{})}).slice(0,14000);
   }
   async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
     if(!this.store.incomingOwnerCurrent())return true;
@@ -568,13 +558,6 @@ export class MetaBrain {
     if(mine){
       const direct=detectDevicePlan(m.text,devices??[]);
       if(direct)return await this.executeDevice(router,m,direct,policy);
-      // "check my notes" or "chek my calender" is a read with one answer; the model used to
-      // answer it from window chrome or not at all (owner chat, 4 November 2026).
-      // "what tabs are open" / "how many tabs": a count and a summary across browsers, not the text
-      // of whichever tab is in front (live, 4 November 2026: Comet's page text came back).
-      if(/\btabs?\b/i.test(m.text)&&!TAB_COMMAND.test(m.text)&&await this.answerTabs(router,m,policy))return true;
-      const overview=overviewTool(m.text);
-      if(overview)return await this.executeDevice(router,m,{action:'app_tool',tool:overview.name,app:overview.app,args:{}},policy);
       // "now write the notes" names no app, so no pattern can match it. The app the owner
       // last used is the target; the text is theirs verbatim. Nothing is invented: if the
       // driver cannot reach that app, its report is what the owner reads. When that app is
@@ -588,7 +571,12 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta));
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
+        // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
+        // model can say why and what to switch on, instead of the loop failing.
+        run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
+        tabs:()=>this.tabsData(m),
+      }:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;

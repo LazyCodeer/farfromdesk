@@ -161,12 +161,12 @@ test('the reviewed tools follow the Mac, not the chat', async () => {
       // example is the sentence "tomorrow meeting at 10pm woth ashitosh", which a calendar
       // request for a meeting with Ashitosh matches; the calendar tool still ranks first.
       assert.equal(names[0], 'calendar_create_event', `expected the calendar tool first, got ${names.join(', ')}`);
-      assert.ok(names.length <= 5, 'the shortlist is capped');
+      assert.equal(names.length, 32, 'the whole catalog is offered; the model decides (OpenClaw-style skills list)');
       assert.ok(input.appTools.every((tool: any) => tool.app), 'every offered tool names its app');
       assert.match(String(input.now), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \w+$/);
     }
     // With the Notes app in front the Notes tool is offered, and the calendar tool stays in
-    // the list for a meeting request. The list is a shortlist, not a decision.
+    // the list for a meeting request. The order is a hint, not a decision.
     f.setFront('Notes');
     f.replies(chat('On it.'));
     await f.send(DEST_B, 'b2', 'write a note that buy milk');

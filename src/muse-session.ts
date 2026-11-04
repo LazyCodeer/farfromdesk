@@ -16,6 +16,7 @@ export type MuseRunOptions={
   timeoutMs?:number;
   maxModelSteps?:number;
   trustWorkspace?:boolean;
+  network?:boolean;
   binary?:string;
   signal?:AbortSignal;
 };
@@ -40,6 +41,10 @@ export function museArgs(options:MuseRunOptions):string[] {
   if(options.model)args.push('--model',options.model);
   if(options.maxModelSteps)args.push('--max-model-steps',String(options.maxModelSteps));
   if(options.trustWorkspace)args.push('--trust-workspace');
+  // The owner chose to run Muse with network access: its default proxy-only sandbox dropped every
+  // call to FarFromDesk on 127.0.0.1, so a Muse coordinator could not reach the owner's apps.
+  // The filesystem sandbox stays on.
+  if(options.network)args.push('--sandbox-network','enabled');
   args.push(options.prompt);
   return args;
 }
