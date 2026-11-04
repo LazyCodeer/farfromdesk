@@ -821,7 +821,9 @@ export class MetaBrain {
     let target:Binding|undefined,coordinator:Binding|undefined,topic:ReturnType<BrainMemory['resolve']>|undefined;
     try {
       // The original text, never cleaned-up consent, controls explicit platform constraints.
-      const named=namedPlatforms(m.text);
+      // A Social brief names platforms as its subject ("a post about Claude and Codex"), so there
+      // a name routes only when the model also read it as the destination. Still owner-named.
+      const named=namedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
       // Display names and aliases of any length name a session: "UX", "开发", "claude-proxy" as surely as "Payments API".

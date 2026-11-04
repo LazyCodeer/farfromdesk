@@ -576,6 +576,14 @@ test('Brain preserves Social and Meta selection while forwarding original text a
   assert.match(prompt,/via Brain.*Mode Social.*Meta API/);assert.match(prompt,/Agent: farfromdesk-social/);assert.doesNotMatch(prompt,/Social content specialist/);
  }finally{f.close();}
 });
+test('Brain sends a Social brief that names Claude and Codex as its subject',async()=>{
+ const f=fixture();try{
+  const send=(id:string,text:string)=>f.router.receive({id:`wa:${id}`,text,ownerIntent:true,ownerCommand:true});
+  await send('select','/brain');await send('mode','/social');
+  await send('social-subject','Make a LinkedIn post about running Claude and Codex sessions from your phone');
+  assert.ok(f.store.job('wa:social-subject'));
+ }finally{f.close();}
+});
 test('Brain rejects a routing result if executor changes during interpretation',async()=>{
  const f=fixture();try{
   await f.router.receive({id:'wa:mode',text:'/social',ownerIntent:true,ownerCommand:true});
