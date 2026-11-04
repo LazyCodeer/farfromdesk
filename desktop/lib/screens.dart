@@ -621,11 +621,8 @@ extension _BridgeScreens on _DeskState {
                 navGroup('Workspace'),
                 navItem(0, titles[0], Icons.home_outlined, 0),
                 navItem(1, titles[1], Icons.inbox_outlined, count),
-                navItem(2, titles[2], Icons.grid_view_rounded, itemsNeedingYou),
                 navGroup('Assistant'),
                 navItem(3, titles[3], Icons.psychology_outlined, 0),
-                if (api.localEmail)
-                  navItem(5, titles[5], Icons.mail_outline, 0),
                 if (api.preview ||
                     const bool.fromEnvironment('FFD_ISOLATED_LOCAL'))
                   navItem(6, titles[6], Icons.auto_awesome_outlined, 0),
@@ -4901,25 +4898,7 @@ extension _BridgeScreens on _DeskState {
   }
 }
 
-extension _BrainAndItems on _DeskState {
-  List<Map<String, dynamic>> get workItems => [
-    for (final i in loadedItems) Map<String, dynamic>.from(i as Map),
-  ];
-  int get itemsNeedingYou => workItems
-      .where((i) => ['waiting on owner', 'blocked'].contains(i['status']))
-      .length;
-
-  Future<void> loadItems({bool fresh = false}) async {
-    try {
-      final data = await api.get(
-        '/api/meta-brain/tasks${fresh ? '?fresh=1' : ''}',
-      );
-      changeView(() => loadedItems = data['workItems'] as List? ?? []);
-    } catch (e) {
-      changeView(() => actionError = 'Could not load items. ${clean(e)}');
-    }
-  }
-
+extension _Brain on _DeskState {
   Widget brainScreen() => MetaBrainPanel(
     key: ValueKey('brain-${status['metaBrain']?['configured']}'),
     gateway: api,
@@ -4930,7 +4909,6 @@ extension _BrainAndItems on _DeskState {
         .map((a) => '${(a as Map)['provider']}')
         .toList(),
     onSaved: refresh,
-    openItems: () => go(2),
   );
 }
 

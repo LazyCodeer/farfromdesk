@@ -8,7 +8,6 @@ import 'package:file_selector/file_selector.dart';
 
 import 'gateway.dart';
 import 'native_gateway.dart';
-import 'local_email_screen.dart';
 import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
 import 'deepseek_panel.dart';
@@ -141,7 +140,6 @@ class _DeskState extends State<Desk> {
   final socialKey = GlobalKey<SocialScreenState>();
   bool editingVoice = false;
   // Item board from the brain; the 3s status poll doesn't carry it.
-  List<dynamic> loadedItems = [];
   bool coordinatorNameEdited = false, showGroups = false, loadingGroups = false;
   bool setupFormRequested = false,
       refreshing = false,
@@ -272,7 +270,6 @@ class _DeskState extends State<Desk> {
           unawaited(loadGroups());
         }
       }
-      unawaited(loadItems());
       bootAttempts = 0;
       armStatusTimer();
       await WidgetsBinding.instance.endOfFrame;
@@ -634,7 +631,6 @@ class _DeskState extends State<Desk> {
           error = null;
         });
         if (recovering) {
-          unawaited(loadItems());
           unawaited(api.reportReady());
         }
         // A hidden or lid-closed app can be App Napped; opt out only while
@@ -859,7 +855,6 @@ class _DeskState extends State<Desk> {
     }
     if (!mounted) return false;
     setState(() => section = index);
-    if (index == 2) unawaited(loadItems());
     if (index == 1) unawaited(loadInboxFeed());
     return true;
   }

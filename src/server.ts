@@ -7,7 +7,7 @@ import {ownerResearchRequest} from './agent-reach-request.js';
 import {sessionResearchRead,sessionResearchRefine,sessionResearchRequest} from './session-research.js';
 import {sessionSpecialty} from './session-specialty.js';
 import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
-import { saveBrainConfig } from './meta-brain-config.js';
+import { saveBrainConfig, fetchMetaModels } from './meta-brain-config.js';
 import { dshSettings, dshStatus, readProfile, credentialRef } from './dsh-provider.js';
 import { DEFAULT_DSH_LABEL, dshActiveLabelKey, dshCancel, dshLabels, dshWorkspaces, dshLegacySessionKey, dshQueueState, dshSessionKey, addDshLabel } from './dsh-sessions.js';
 import { listMessages, pendingMessages, sendMessage } from './dsh-inbox.js';
@@ -430,7 +430,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         }
         json(res,200,{result});return;
       }
-      if(path==='/api/meta-brain'&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Settings.');json(res,200,saveBrainConfig(store,router.brain.secret,await body(req)));return;}
+      if(path==='/api/meta-brain'&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Settings.');const d=await body(req);let view:any=saveBrainConfig(store,router.brain.secret,d);if(d?.key){try{await fetchMetaModels(store,router.brain.secret);view=router.brain.view();}catch{view={...view,modelsError:'Key saved, but Meta did not list its models. The usual models are shown.'};}}json(res,200,view);return;}
       if(path==='/api/memory'&&req.method==='GET'){json(res,200,router.brain.owner.view());return;}
       if(path.startsWith('/api/memory')&&req.method==='POST'){
         if(req.headers.origin)throw new Error('Use native desktop Settings.');

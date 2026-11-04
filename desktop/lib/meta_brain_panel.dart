@@ -43,7 +43,6 @@ class MetaBrainPanel extends StatefulWidget {
   final Gateway gateway;
   final Map<String, dynamic> saved;
   final Future<void> Function() onSaved;
-  final VoidCallback? openItems;
   final String? activityScope;
 
   /// Providers the owner has set up, so switching Brain routing on allows what actually exists.
@@ -53,7 +52,6 @@ class MetaBrainPanel extends StatefulWidget {
     required this.gateway,
     required this.saved,
     required this.onSaved,
-    this.openItems,
     this.activityScope,
     this.platforms = const [],
   });
@@ -375,7 +373,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       if (mounted) {
         setState(() {
           replacingKey = false;
-          message = 'Saved. No API call was made.';
+          message = 'Saved.';
         });
       }
     } catch (_) {
@@ -813,6 +811,11 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     );
   }
 
+  List<String> get models => [
+    for (final m in (widget.saved['models'] as List? ?? fallbackMetaBrainModels))
+      '$m',
+  ];
+
   Widget modelTab(bool configured) => box(
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -822,47 +825,75 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           'The brain sends each phone message to Meta to understand it, using your own key. Usage is billed to your Meta account. A new model applies to your next message.',
         ),
         const SizedBox(height: 8),
-        row(
-          'Model',
-          'Reads each phone message.',
-          DropdownButton<String>(
-            value: model,
-            underline: const SizedBox(),
-            items: [
-              for (final m
-                  in (widget.saved['models'] ?? fallbackMetaBrainModels))
-                DropdownMenuItem(value: m as String, child: Text('Meta · $m')),
-            ],
-            onChanged: saving ? null : (v) => setState(() => model = v!),
+        if (!configured || replacingKey)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Row(
+              children: [
+                Expanded(child: keyField()),
+                const SizedBox(width: 12),
+                FilledButton(
+                  key: const Key('save-meta-key'),
+                  onPressed: saving ? null : save,
+                  child: Text(saving ? 'Saving…' : 'Save'),
+                ),
+                if (replacingKey) ...[
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: saving
+                        ? null
+                        : () => setState(() => replacingKey = false),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ],
+            ),
+          )
+        else
+          row(
+            'Meta Model API key',
+            'Saved. Stored only on this computer.',
+            Wrap(
+              spacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton(
+                  onPressed: saving
+                      ? null
+                      : () => setState(() => replacingKey = true),
+                  child: const Text('Replace key'),
+                ),
+                TextButton(
+                  onPressed: saving ? null : () => save(remove: true),
+                  child: const Text('Remove key'),
+                ),
+              ],
+            ),
           ),
-        ),
-        row(
-          'Meta Model API key',
-          configured
-              ? 'Saved. Stored only on this computer.'
-              : 'Stored only on this computer.',
-          configured
-              ? Wrap(
-                  spacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    OutlinedButton(
-                      onPressed: saving
-                          ? null
-                          : () => setState(() => replacingKey = !replacingKey),
-                      child: Text(
-                        replacingKey ? 'Keep saved key' : 'Replace key',
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: saving ? null : () => save(remove: true),
-                      child: const Text('Remove key'),
-                    ),
-                  ],
-                )
-              : const SizedBox(),
-        ),
-        if (!configured || replacingKey) keyField(),
+        if (widget.saved['modelsError'] is String)
+          Text(
+            widget.saved['modelsError'] as String,
+            style: const TextStyle(fontSize: 12, color: muted),
+          ),
+        if (configured)
+          row(
+            'Model',
+            'Reads each phone message.',
+            DropdownButton<String>(
+              value: models.contains(model) ? model : models.first,
+              underline: const SizedBox(),
+              items: [
+                for (final m in models)
+                  DropdownMenuItem(value: m, child: Text('Meta · $m')),
+              ],
+              onChanged: saving
+                  ? null
+                  : (v) {
+                      setState(() => model = v!);
+                      save();
+                    },
+            ),
+          ),
         row(
           "If the brain can't answer",
           failure == 'legacy'
@@ -966,10 +997,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
         row(
           'Item codes and open items',
           'Titles and numbers of your open items, and codes like P1 from the last list you saw.',
-          OutlinedButton(
-            onPressed: widget.openItems,
-            child: const Text('Open Items'),
-          ),
+          const SizedBox(),
         ),
         row(
           'Task history',

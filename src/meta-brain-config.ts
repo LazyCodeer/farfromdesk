@@ -12,7 +12,7 @@ export const META_MODELS=['muse-spark-1.3','muse-spark-1.2','muse-spark-1.1','mu
 /** Every coding platform the brain can route to. Adding a provider means adding it here. */
 export const PROVIDERS=['codex','claude','muse','deepseek','cursor'] as const;
 export type BrainProvider=(typeof PROVIDERS)[number];
-export const BrainPolicy=z.object({enabled:z.boolean(),model:z.enum(META_MODELS),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(PROVIDERS)).max(PROVIDERS.length),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true),taskContracts:z.boolean().default(true)}).strict();
+export const BrainPolicy=z.object({enabled:z.boolean(),model:z.string().min(1).max(100).regex(/^[\w.:-]+$/),allowRouting:z.boolean(),allowStatus:z.boolean(),allowManagement:z.boolean().default(false),providers:z.array(z.enum(PROVIDERS)).max(PROVIDERS.length),failure:z.enum(['block','legacy']),notes:z.string().max(2000).default(''),learn:z.boolean().default(true),taskContracts:z.boolean().default(true)}).strict();
 export type BrainPolicy=z.infer<typeof BrainPolicy>;
 export const DEFAULT_BRAIN:BrainPolicy={enabled:false,model:'muse-wonder-1.0',allowRouting:false,allowStatus:true,allowManagement:false,providers:[],failure:'legacy',notes:'',learn:true,taskContracts:true};
 /** Platforms the owner has set up. Provisioning a coordinator adds to this list (see masters.ts). */
@@ -43,7 +43,16 @@ export class MetaSecret {
   }
   remove(){rmSync(keyPath(this.root),{force:true});}
 }
-export function brainView(store:Store,secret:MetaSecret) {const policy=brainPolicy(store);return {...policy,configured:secret.present(),state:!policy.enabled?'disabled':secret.present()?'configured':'missing-key',models:META_MODELS};}
+export function brainView(store:Store,secret:MetaSecret) {const policy=brainPolicy(store);return {...policy,configured:secret.present(),state:!policy.enabled?'disabled':secret.present()?'configured':'missing-key',models:storedModels(store)};}
+/** Models this key can use, as Meta lists them; the built-in list until a key is saved and checked. */
+function storedModels(store:Store):string[] {try{const v=JSON.parse(store.get('meta-brain-models')??'null');return Array.isArray(v)&&v.length?v:[...META_MODELS];}catch{return [...META_MODELS];}}
+export async function fetchMetaModels(store:Store,secret:MetaSecret,fetcher:typeof fetch=fetch) {
+  const key=secret.read();if(!key)return;
+  const res=await fetcher(META_ENDPOINT.replace(/chat\/completions$/,'models'),{headers:{authorization:'Bearer '+key},signal:AbortSignal.timeout(10000)});
+  if(!res.ok)throw new Error('Meta did not list models ('+res.status+').');
+  const ids=((await res.json())?.data??[]).map((m:{id?:unknown})=>m?.id).filter((id:unknown):id is string=>typeof id==='string'&&/^[\w.:-]{1,100}$/.test(id));
+  if(ids.length)store.set('meta-brain-models',JSON.stringify(ids));
+}
 export function saveBrainConfig(store:Store,secret:MetaSecret,input:unknown) {
   const d=z.object({policy:BrainPolicy,key:z.string().optional(),removeKey:z.boolean().optional()}).strict().parse(input);
   // Older desktop clients omit the new setting; saving another preference must not re-enable it.
@@ -51,7 +60,7 @@ export function saveBrainConfig(store:Store,secret:MetaSecret,input:unknown) {
   if(submitted&&submitted.taskContracts===undefined)d.policy.taskContracts=brainPolicy(store).taskContracts;
   if(d.removeKey&&d.key)throw new Error('Choose save or remove key.');
   if(d.key)secret.save(d.key);
-  if(d.removeKey)secret.remove();
+  if(d.removeKey){secret.remove();store.db.prepare("DELETE FROM settings WHERE key='meta-brain-models'").run();}
   store.set('meta-brain-policy',JSON.stringify(d.policy));
   store.audit('meta-brain-policy-updated');
   return brainView(store,secret);
