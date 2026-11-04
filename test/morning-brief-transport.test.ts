@@ -1,6 +1,7 @@
 import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync,rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -38,12 +39,32 @@ test('a restart preserves an interrupted brief send as uncertain',async()=>{
     assert.equal(await f.brief.request('owner@s.whatsapp.net','first-message'),false);
   }finally{f.close();}
 });
+test('failure notices are claimed before I/O and interrupted delivery is uncertain',async()=>{
+  const f=fixture();try{
+    const now=Date.now(),day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
+    f.store.db.prepare('INSERT INTO morning_brief_attempts VALUES(?,?,?,?,?)').run('owner@s.whatsapp.net','owner@s.whatsapp.net',day,2,now-1);
+    const brief=new MorningBrief(f.store,f.router,async()=>{throw Error('synthetic failure');},()=>now);await brief.request('owner@s.whatsapp.net','scheduled');
+    let calls=0;f.wa.sock={sendMessage:async()=>{calls++;const row=f.store.db.prepare("SELECT status,attempts FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
+      assert.equal(row.status,'sending');assert.equal(row.attempts,1);f.store.recover();throw Error('simulated interrupted send');},end:()=>{}} as any;
+    await f.wa.flush();const row=f.store.db.prepare("SELECT status,attempts FROM outbox WHERE source LIKE 'morning-brief-error:%'").get() as any;
+    assert.equal(row.status,'uncertain');assert.equal(row.attempts,1);await f.wa.flush();assert.equal(calls,1);
+  }finally{f.close();}
+});
 test('owner changes during group verification cancel the queued brief before any send',async()=>{
   const f=fixture();try{
     const group='team@g.us';f.store.set('destination-jid',group);f.store.set('owned-group:'+group,'true');
     assert.equal(await f.brief.request(group,'first-message'),true);
     let sends=0;f.wa.sock={sendMessage:async()=>{sends++;return {};},end:()=>{}} as any;
     f.wa.verifyGroup=async()=>{f.store.set('whatsapp-owner','new-owner@s.whatsapp.net');f.wa.selfJid='new-owner@s.whatsapp.net';};
+    await f.wa.flush();assert.equal(sends,0);assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'morning-brief:%'").get() as any).status,'cancelled');
+  }finally{f.close();}
+});
+test('owner generation revoked during group verification cancels before sending',async()=>{
+  const f=fixture();try{
+    const group='team@g.us';f.store.set('destination-jid',group);f.store.set('owned-group:'+group,'true');
+    assert.equal(await f.brief.request(group,'first-message'),true);
+    let sends=0;f.wa.sock={sendMessage:async()=>{sends++;return {};},end:()=>{}} as any;
+    f.wa.verifyGroup=async()=>{f.store.set('incoming-owner-generation',randomUUID());};
     await f.wa.flush();assert.equal(sends,0);assert.equal((f.store.db.prepare("SELECT status FROM outbox WHERE source LIKE 'morning-brief:%'").get() as any).status,'cancelled');
   }finally{f.close();}
 });

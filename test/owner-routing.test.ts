@@ -36,7 +36,8 @@ test('every hand-off lands on an item, worker results update it and replies lead
     f.router.channelReply(f.worker,'✅ *Export fixed*\n- Tests pass.',"final",child);
     assert.match(f.c.items().show(1),/Billing API reported: Export fixed/);
     const reply=f.outbox().find(r=>r.request_id===child)!;
-    assert.match(reply.body,/^\*#1 · Codex Desktop · Billing API\*/);
+    // The number trails the answer so the owner can still quote it, but never leads the message.
+    assert.match(reply.body,/🔖 #1/);assert.match(reply.body,/💬 Session Name: Billing API$/);assert.doesNotMatch(reply.body,/^\*/);
   }finally{f.close();}
 });
 

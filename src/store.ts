@@ -1,25 +1,34 @@
+import {specialtyPresentation} from './session-specialty.js';
 import { initializeOptions, createOptions, parseMessageOptions } from './message-options.js';
 import { cancelObsoleteCoordinatorUpdates } from './coordinator-updates.js';
 import { toWhatsApp } from './whatsapp-format.js';
-import { formatWhatsAppMessage } from './coordinator-experience.js';
+import { ownerReply } from './brain-reply.js';
+import { formatWhatsAppMessage, sessionMeta } from './coordinator-experience.js';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { safeEventDetails, errorCode, type ReplyContext, type RequestOutcome, type VoiceStageEvent } from './request-events.js';
 
 const buildSource=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8')).sourceCommit??null;}catch{return null;}})();
 
-export type Provider = 'codex' | 'claude';
+export type Provider = 'codex' | 'claude' | 'muse' | 'deepseek' | 'cursor';
 export type Binding = { id: string; alias: string; provider: Provider; native_id: string; cwd: string; enabled: number; mode: 'desktop' | 'channel'; token_hash: string; created_at: number };
 export type Job = { id: string; binding_id: string; body: string; status: string; created_at: number; error: string | null; destination?:string|null; updated_at?:number; outcome?:RequestOutcome|null; received_at?:number|null; submitted_at?:number|null; first_reply_at?:number|null; final_reply_at?:number|null; last_error?:string|null; last_error_at?:number|null; attempt_id?:string|null };
 export type IncomingOwner={owner:string;destination:string;channel:'whatsapp'|'telegram';generation:string};
+/** One app-composer request, claimed by the route before it is handed to the router. */
+export type AppOriginClaim={at:number;destination:string;channel:'whatsapp'|'telegram';generation:string};
 export const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 export class Store {
   db: DatabaseSync;
   destinationContext=new AsyncLocalStorage<string>();
   incomingOwnerContext=new AsyncLocalStorage<IncomingOwner>();
+  /** Screenshots the brain sends, kept beside the database and read back only by the sender. */
+  readonly mediaDir: string;
   constructor(file: string) {
+    this.mediaDir = file === ':memory:' ? join(tmpdir(), `ffd-brain-media-${process.pid}`) : join(dirname(file), 'brain-media');
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY, alias TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, native_id TEXT NOT NULL, cwd TEXT NOT NULL, mode TEXT NOT NULL, token_hash TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, UNIQUE(provider,native_id));
@@ -47,7 +56,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS item_owner_origins(item_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(item_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_note_origins(note_id INTEGER NOT NULL,destination TEXT NOT NULL,owner TEXT NOT NULL,PRIMARY KEY(note_id,destination,owner));
       CREATE TABLE IF NOT EXISTS item_add_fingerprints(item_id INTEGER PRIMARY KEY,fingerprint TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS brief_dispatch_guards(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,target_id TEXT NOT NULL,target_identity TEXT NOT NULL,item_identity TEXT NOT NULL,assignment_id TEXT,body_hash TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS brief_dispatch_guards(request_id TEXT PRIMARY KEY,owner TEXT NOT NULL,destination TEXT NOT NULL,item_id INTEGER NOT NULL,target_id TEXT NOT NULL,target_identity TEXT NOT NULL,item_identity TEXT NOT NULL,assignment_id TEXT,body_hash TEXT NOT NULL,owner_generation TEXT);
       CREATE TABLE IF NOT EXISTS hook_updates(id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,turn_id TEXT,at INTEGER NOT NULL,text TEXT NOT NULL);
     `);
     if(!this.db.prepare('PRAGMA table_info(inbox)').all().some((c:any)=>c.name==='updated_at')) {
@@ -58,7 +67,10 @@ export class Store {
     for(const [table,columns] of Object.entries({inbox:{outcome:'TEXT',received_at:'INTEGER',submitted_at:'INTEGER',first_reply_at:'INTEGER',final_reply_at:'INTEGER',last_error:'TEXT',last_error_at:'INTEGER',attempt_id:'TEXT'},outbox:{request_id:'TEXT',reply_kind:'TEXT',turn_id:'TEXT',sent_at:'INTEGER',delivered_at:'INTEGER',read_at:'INTEGER'}})) {
       for(const [column,type] of Object.entries(columns))if(!this.db.prepare(`PRAGMA table_info(${table})`).all().some((c:any)=>c.name===column))this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
-    for(const column of ['artifact_id','wa_message'])if(!this.db.prepare('PRAGMA table_info(outbox)').all().some((c:any)=>c.name===column))this.db.exec(`ALTER TABLE outbox ADD COLUMN ${column} TEXT`);
+    for(const column of ['artifact_id','wa_message','media_kind'])if(!this.db.prepare('PRAGMA table_info(outbox)').all().some((c:any)=>c.name===column))this.db.exec(`ALTER TABLE outbox ADD COLUMN ${column} TEXT`);
+    // A legacy queued action has no original owner generation and must not be
+    // silently authorized under the currently paired owner.
+    if(!this.db.prepare('PRAGMA table_info(brief_dispatch_guards)').all().some((c:any)=>c.name==='owner_generation'))this.db.exec('ALTER TABLE brief_dispatch_guards ADD COLUMN owner_generation TEXT');
     if(!this.db.prepare('PRAGMA table_info(artifacts)').all().some((c:any)=>c.name==='destination'))this.db.exec('ALTER TABLE artifacts ADD COLUMN destination TEXT');
     for(const table of ['inbox','outbox']) {
       if(!this.db.prepare(`PRAGMA table_info(${table})`).all().some((c:any)=>c.name==='destination'))this.db.exec(`ALTER TABLE ${table} ADD COLUMN destination TEXT`);
@@ -78,9 +90,54 @@ export class Store {
         WHEN (${row}.key IN ('whatsapp-owner','telegram-owner','telegram-bot-id','control-channel','destination-jid','background-enabled') OR ${row}.key LIKE 'owned-group:%')${changed}
         BEGIN INSERT INTO settings(key,value) VALUES('incoming-owner-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
     }
+    // Existing installations may already have an owner but no generation.
+    // Seed a fresh epoch; records without one cannot be silently revived.
+    this.db.exec("INSERT OR IGNORE INTO settings(key,value) VALUES('incoming-owner-generation',lower(hex(randomblob(16))))");
+    // A paused/re-enabled coordinator must invalidate an in-flight research call
+    // even if it is enabled again before the next asynchronous check.
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS reach_binding_update AFTER UPDATE ON bindings
+      WHEN OLD.enabled IS NOT NEW.enabled OR OLD.token_hash IS NOT NEW.token_hash OR OLD.native_id IS NOT NEW.native_id OR OLD.cwd IS NOT NEW.cwd OR OLD.provider IS NOT NEW.provider OR OLD.mode IS NOT NEW.mode
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-binding-generation:'||NEW.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;
+      CREATE TRIGGER IF NOT EXISTS reach_binding_delete AFTER DELETE ON bindings
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-binding-generation:'||OLD.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;`);
+    for(const operation of ['INSERT','UPDATE','DELETE'] as const){
+      const row=operation==='DELETE'?'OLD':'NEW';
+      const changed=operation==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS reach_authority_${operation.toLowerCase()} AFTER ${operation} ON settings
+        WHEN (${row}.key IN ('enabled-apps','coordinator-registry','master') OR ${row}.key LIKE 'coordinator-retired:%' OR ${row}.key LIKE 'session-route:%' OR ${row}.key LIKE 'execution-mode:%' OR ${row}.key LIKE 'parent:%' OR ${row}.key LIKE 'report-parent:%')${changed}
+        BEGIN INSERT INTO settings(key,value) VALUES('reach-authority-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
+    }
+    // A public-query confirmation must not survive a target switch away and
+    // back. Direct-session timestamps change during normal reads, so only a
+    // change of direct binding (or malformed direct data) advances this epoch.
+    for(const operation of ['INSERT','UPDATE','DELETE'] as const){
+      const row=operation==='DELETE'?'OLD':'NEW';
+      const valueChanged=operation==='UPDATE'?' AND OLD.value IS NOT NEW.value':'';
+      const directChanged=operation==='UPDATE'?" AND (NOT json_valid(OLD.value) OR NOT json_valid(NEW.value) OR json_extract(OLD.value,'$.bindingId') IS NOT json_extract(NEW.value,'$.bindingId'))":'';
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS public_consent_${operation.toLowerCase()} AFTER ${operation} ON settings
+        WHEN (((${row}.key IN ('active','selected','master') OR ${row}.key LIKE 'owner-target:%')${valueChanged}) OR (${row}.key LIKE 'direct:%'${directChanged}))
+        BEGIN INSERT INTO settings(key,value) VALUES('public-consent-generation',lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END`);
+    }
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS reach_request_update AFTER UPDATE ON inbox
+      WHEN (OLD.status IN ('queued','dispatched','submitted') AND NEW.status NOT IN ('queued','dispatched','submitted')) OR OLD.body IS NOT NEW.body OR OLD.binding_id IS NOT NEW.binding_id OR OLD.destination IS NOT NEW.destination
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-request-generation:'||NEW.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;
+      CREATE TRIGGER IF NOT EXISTS reach_request_delete AFTER DELETE ON inbox
+      BEGIN INSERT INTO settings(key,value) VALUES('reach-request-generation:'||OLD.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;`);
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
-  set(key: string, value: string) { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  /** Setting names with this prefix, sorted. Used to find the folders that have conversations. */
+  keys(prefix: string): string[] { return (this.db.prepare('SELECT key FROM settings WHERE key LIKE ? ORDER BY key').all(`${prefix}%`) as any[]).map(row => row.key as string); }
+  set(key: string, value: string) {
+    const authority=key==='whatsapp-owner'||key==='destination-jid'||key==='control-channel'||key.startsWith('owned-group:');
+    if(!authority){this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);return;}
+    this.db.exec('SAVEPOINT errand_authority_change');
+    try {
+      const old=this.get(key);
+      this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
+      if(old!==value)this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('errand-authority-generation',randomUUID());
+      this.db.exec('RELEASE errand_authority_change');
+    } catch(e) {this.db.exec('ROLLBACK TO errand_authority_change; RELEASE errand_authority_change');throw e;}
+  }
   captureIncomingOwner(destination:string,channel:'whatsapp'|'telegram'):IncomingOwner|undefined {
     const owner=this.ownerFor(destination);
     if(!owner||this.controlChannel()!==channel||channel==='telegram'&&owner!==destination)return;
@@ -92,6 +149,27 @@ export class Store {
       (this.get('incoming-owner-generation')??'')===captured.generation;
   }
   assertIncomingOwner(){if(!this.incomingOwnerCurrent())throw new Error('The owner connection changed.');}
+  /** Single use: the first claim for an id wins, and later ones are refused. */
+  claimAppOrigin(id:string,destination:string,channel:'whatsapp'|'telegram',generation:string):boolean {
+    const claimed=this.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(`app-origin:${id}`,JSON.stringify({at:Date.now(),destination,channel,generation}));
+    return !!claimed.changes;
+  }
+  appOriginClaim(id:string):AppOriginClaim|undefined {
+    const raw=this.get(`app-origin:${id}`);if(!raw)return undefined;
+    try {
+      const claim=JSON.parse(raw) as AppOriginClaim;
+      if(!claim||typeof claim!=='object'||!Number.isFinite(claim.at)||typeof claim.destination!=='string'||(claim.channel!=='whatsapp'&&claim.channel!=='telegram')||typeof claim.generation!=='string')return undefined;
+      return claim;
+    }catch{return undefined;}
+  }
+  /**
+   * A request id that may carry the owner's own words: the two transports and the local inbox,
+   * plus the app's composer while its single-use claim is present. A transported id can never
+   * satisfy the app branch, so an app id without a claim stays untrusted.
+   */
+  ownerInputId(id:string){return /^(wa|tg|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
+  /** An owner request the Social session tools may act for, including a claimed app composer turn. */
+  socialRequestId(id:string){return /^(?:wa:|tg:|local:social:)/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   recordIncomingInput(id:string){
     this.assertIncomingOwner();const owner=this.incomingOwnerContext.getStore();
     if(owner)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_inputs VALUES(?,?,?,?,?)').run(id,owner.owner,owner.destination,owner.channel,owner.generation);
@@ -110,6 +188,15 @@ export class Store {
       id=this.get(`report-parent:${id}`)??this.get(`parent:${id}`);
     }
     return undefined;
+  }
+  /** Conservative reachability for collaboration fences. Follow both parent
+   * forms to completion, including cycles and conflicting direct links. */
+  itemsInAncestry(requestId:string):number[] {
+    const rows=this.db.prepare(`WITH RECURSIVE ancestors(id) AS (
+      SELECT ? UNION SELECT s.value FROM ancestors a JOIN settings s
+        ON s.key='parent:'||a.id OR s.key='report-parent:'||a.id
+      ) SELECT DISTINCT item_id FROM item_requests WHERE request_id IN (SELECT id FROM ancestors)`).all(requestId) as {item_id:number}[];
+    return rows.map(r=>r.item_id);
   }
   linkItem(requestId:string,itemId:number){this.db.prepare('INSERT OR IGNORE INTO item_requests VALUES(?,?,?)').run(requestId,itemId,Date.now());}
   /** Only the authenticated inbound WhatsApp path may call this. Never upgrade an existing request to a different owner. */
@@ -135,7 +222,13 @@ export class Store {
         if(!guarded||!job||guarded.channel!=='whatsapp'||this.controlChannel()!=='whatsapp'||guarded.destination!==guarded.owner||this.ownerFor(guarded.destination)!==guarded.owner||job.binding_id!==guarded.binding_id||hash(job.body)!==guarded.body_hash||destinations.some(d=>d!==guarded.destination))return undefined;
         return {owner:guarded.owner,destination:guarded.destination};
       }
-      if(!id.startsWith('wa:'))return undefined;
+      // Request provenance follows the owner's live channels: a Telegram owner
+      // message carries its chat prefix and a WhatsApp one carries wa:. Which
+      // channel is currently selected must not erase an existing owner's
+      // provenance, so both shapes are accepted here and the owner/destination
+      // checks below still decide whether the request is really theirs.
+      const telegramPrefix=`${this.get('telegram-owner')??'tg:unpaired'}:`;
+      if(!id.startsWith('wa:')&&!id.startsWith(telegramPrefix))return undefined;
       const origin=this.db.prepare('SELECT owner,destination FROM owner_request_origins WHERE request_id=?').get(id) as {owner:string;destination:string}|undefined;
       if(!origin||destinations.some(d=>d!==origin.destination)||this.ownerFor(origin.destination)!==origin.owner)return undefined;
       if(origin.destination!==origin.owner&&!this.get(`owned-group:${origin.destination}`))return undefined;
@@ -156,7 +249,17 @@ export class Store {
     return { binding: this.binding(id)!, token };
   }
   authBinding(id: string, token: string) { const b = this.binding(id); return b?.enabled && b.token_hash === hash(token) ? b : undefined; }
-  enable(id: string, enabled: boolean) { this.db.prepare('UPDATE bindings SET enabled=? WHERE id=?').run(enabled ? 1 : 0, id); }
+  enable(id: string, enabled: boolean) {
+    if(enabled){this.db.prepare('UPDATE bindings SET enabled=1 WHERE id=?').run(id);return;}
+    // Invalidate work bound to an earlier enabled session even if it resumes
+    // before an outbox sweep gets a chance to observe the pause.
+    this.db.exec('SAVEPOINT disable_binding');
+    try {
+      const changed=this.db.prepare('UPDATE bindings SET enabled=0 WHERE id=? AND enabled=1').run(id);
+      if(changed.changes)this.set(`binding-disable-generation:${id}`,randomUUID());
+      this.db.exec('RELEASE disable_binding');
+    } catch(e) {this.db.exec('ROLLBACK TO disable_binding; RELEASE disable_binding');throw e;}
+  }
   seen(id: string) { return !!this.db.prepare('SELECT 1 FROM seen WHERE id=?').get(id); }
   remember(id: string) { this.db.prepare('INSERT OR IGNORE INTO seen VALUES(?,?)').run(id, Date.now()); }
   controlChannel(){return this.get('control-channel')==='telegram'?'telegram':'whatsapp';}
@@ -180,9 +283,9 @@ export class Store {
   queued(id: string) { return this.db.prepare("SELECT * FROM inbox WHERE binding_id=? AND status='queued' ORDER BY created_at LIMIT 1").get(id) as Job | undefined; }
   /** Skip scheduled work held for the inactive control channel, without starving ordinary jobs. */
   routableQueued(id:string,channel:string) {return this.db.prepare("SELECT i.* FROM inbox i LEFT JOIN schedule_jobs s ON s.job_id=i.id WHERE i.binding_id=? AND i.status='queued' AND (s.job_id IS NULL OR s.channel=?) ORDER BY i.created_at,i.rowid LIMIT 1").get(id,channel) as Job|undefined;}
-  jobState(id: string, status: string, error: string | null = null, outcome?:RequestOutcome) {
+  jobState(id: string, status: string, error: string | null = null, outcome?:RequestOutcome,dispatchAttempt?:string) {
     const prior=this.job(id);if(!prior)return;
-    const now=Date.now(),attempt=status==='dispatched'?randomUUID():prior.attempt_id??null;
+    const now=Date.now(),attempt=status==='dispatched'?dispatchAttempt??randomUUID():prior.attempt_id??null;
     const resultOutcome=outcome??(['reviewed','auto_closed'].includes(status)?'reviewed':status==='replaced'?'cancelled':null);
     this.db.prepare('UPDATE inbox SET status=?,error=?,updated_at=?,attempt_id=?,outcome=COALESCE(?,outcome),last_error=CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END,last_error_at=CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_at END,submitted_at=CASE WHEN ?=\'submitted\' THEN COALESCE(submitted_at,?) ELSE submitted_at END WHERE id=?').run(status,error,now,attempt,resultOutcome,error,error,error,now,status,now,id);
     if(prior.status!==status||prior.error!==error)this.event(id,status,{...(error?{code:errorCode(error)}:{}),...(resultOutcome?{outcome:resultOutcome}:{})});
@@ -217,8 +320,10 @@ export class Store {
   unlinkedHooks(){return this.db.prepare('SELECT id,binding_id,turn_id,at FROM hook_updates ORDER BY at DESC LIMIT 50').all();}
   hookUpdate(id:string){return this.db.prepare('SELECT text FROM hook_updates WHERE id=?').get(id);}
   recover() {
+    this.db.prepare("UPDATE outbox SET status='uncertain',error='Photo delivery was interrupted; check the chat before retrying.' WHERE status='sending' AND media_kind='photo'").run();
     this.db.prepare("UPDATE outbox SET status='uncertain',error='Telegram delivery was interrupted; check the bot before resending' WHERE status='sending' AND destination LIKE 'tg:%'").run();
-    this.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery was interrupted; check your chat before retrying' WHERE status='sending' AND source LIKE 'morning-brief:%'").run();
+    this.db.prepare("UPDATE outbox SET status='uncertain',error='Morning brief delivery was interrupted; check your chat before retrying' WHERE status='sending' AND (source LIKE 'morning-brief:%' OR source LIKE 'morning-brief-error:%')").run();
+    this.db.prepare("UPDATE outbox SET status='uncertain',error='Stuck notice delivery was interrupted; check your chat before retrying' WHERE status='sending' AND (source LIKE 'stuck-alert:%' OR source LIKE 'stuck-ci-alert:%')").run();
     for(const row of this.db.prepare("SELECT id,destination FROM inbox WHERE status='dispatched'").all() as {id:string;destination:string|null}[]) {
       // The opening receipt survives native submission, so a restart here cannot
       // prove the message was unsent. Never ask the owner to resend blindly.
@@ -228,7 +333,8 @@ export class Store {
       try {
         this.jobState(row.id,'uncertain','Bridge restarted during delivery. Check the native session before retrying.');
         if(opening&&row.destination) this.db.prepare("UPDATE outbox SET status='cancelled',error='Opening notice superseded after bridge restart' WHERE source=? AND destination=? AND status='queued'").run(`native-opening:${row.id}:0`,row.destination);
-        if(opening&&row.destination) this.output(undefined,
+        // Every cut request is said, not only one that had an opening notice (silent ones were found live, 5 Nov 2026).
+        if(row.destination) this.output(undefined,
           'FarFromDesk restarted before this request’s delivery outcome was recorded. Check this exact session before sending your message again.',
           `native-restart:${row.id}`,row.destination,{requestId:row.id,kind:'system',origin:'system'});
         this.db.exec('RELEASE recover_native_delivery');
@@ -284,6 +390,12 @@ export class Store {
     }
     // Stable message IDs are recorded before network I/O. Retries reuse them.
     const optionText=options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';
+    const specialty=context.requestId?specialtyPresentation(this,context.requestId):undefined;
+    const chromeAt=Date.now();
+    // The specialty is context, not a signature: it rides in the metadata tail, and only when it changes.
+    const modeText=specialty?`🎨 Mode: ${specialty.kind[0].toUpperCase()+specialty.kind.slice(1)}${specialty.kind==='social'?` · Images: ${specialty.imageProvider==='meta'?'Meta API':'Local SVG'}`:''}`:'';
+    const modeKey=destination?`chat-mode:${destination}`:'';
+    const modeChanged=!!modeText&&(!modeKey||this.get(modeKey)!==modeText);
     const formatted=toWhatsApp(text+optionText);
     const chunks:string[]=[];let chunk='';
     // Bound UTF-16 length too: emoji occupy two units in Telegram entity offsets.
@@ -291,20 +403,35 @@ export class Store {
     if(chunk)chunks.push(chunk);
     const insert = this.db.prepare('INSERT OR IGNORE INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,request_id,reply_kind,turn_id) VALUES(?,?,?,?,?,?,?,?,?,?)');
     const item=binding?this.itemOf(context.requestId):undefined;
-    const label=binding?`${item?`#${item} · `:''}${binding.provider==='claude'?'Claude':'Codex'} ${this.get(`execution-mode:${binding.id}`)==='desktop'?'Desktop':'CLI'} · ${this.get(`name:${binding.id}`)??binding.alias}`.slice(0,130):'';
-    const coordinator=!!binding&&(binding.id===this.get('master')||this.get(`role-kind:${binding.id}`)==='master');
-    // Owner command replies are short confirmations: no session header, emoji stage or footer.
-    const present=(chunk:string,i:number)=>context.plain?`${chunk}${chunks.length>1?`\n\n(${i+1}/${chunks.length})`:''}`:formatWhatsAppMessage(chunk,label,coordinator,i+1,chunks.length,context.kind);
+    // Provenance trails the answer: provider line, then chat title, and only on the first bubble of a run.
+    const identity=binding?sessionMeta(this,binding):undefined;
+    const chromeKey=destination?`chat-heading:${destination}`:'';
+    let lastHeading:{label:string;at:number}|undefined;
+    if(chromeKey)try{const parsed=JSON.parse(this.get(chromeKey)??'null');if(parsed&&typeof parsed.label==='string'&&typeof parsed.at==='number')lastHeading=parsed;}catch{}
+    const identityKey=identity?`${identity.icon}|${identity.provider}|${identity.name}`:'';
+    const continuing=!!lastHeading&&lastHeading.label===identityKey&&chromeAt-lastHeading.at<10*60_000;
+    // The item number stays on every bubble: the owner follows up by quoting it.
+    const tag=item?` · 🔖 #${item}`:'';
+    const meta=[...(!identity?[]
+      :continuing?[`${identity.icon} ${identity.provider}${tag}`]
+      :[`${identity.icon} Provider: ${identity.provider}${tag}`,`💬 Session Name: ${identity.name}`]),
+      ...(!context.plain&&modeChanged?[modeText]:[])];
+    // Owner command replies are short confirmations: no metadata tail at all.
+    const present=(chunk:string,i:number)=>context.plain?`${chunk}${chunks.length>1?`\n\n(${i+1}/${chunks.length})`:''}`
+      :formatWhatsAppMessage(chunk,'',false,i+1,chunks.length,context.kind,{meta});
     this.db.exec('SAVEPOINT reply_output');
     try {
       const now=Date.now();
       chunks.forEach((chunk,i) => insert.run(randomUUID(), binding?.id ?? null, present(chunk,i), `${source}:${i}`, `3EB0${randomBytes(16).toString('hex').toUpperCase()}`, now,destination,context.requestId??null,context.kind??null,context.turnId??null));
+      // Remember what the chat already shows, so the next bubble stays short.
+      if(chromeKey&&identityKey&&!context.plain)this.set(chromeKey,JSON.stringify({label:identityKey,at:now}));
+      if(modeKey&&modeText&&!context.plain)this.set(modeKey,modeText);
       const origin=this.incomingOwnerContext.getStore();
       if(origin&&destination===origin.destination)for(let i=0;i<chunks.length;i++){
         const part=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:${i}`) as {id:string}|undefined;
         if(part)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_outbox VALUES(?,?,?,?,?)').run(part.id,origin.owner,origin.destination,origin.channel,origin.generation);
       }
-      if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options);}
+      if(options){const row=this.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${source}:0`) as any;createOptions(this,row.id,request!.id,binding!.id,destination!,options,binding);}
       this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,context.requestId??null,binding?.id??null,context.kind??null,context.origin??null,context.turnId??null,receiptHash,now);
       if(request){
         if(context.kind==='progress'||context.kind==='final')this.db.prepare('UPDATE inbox SET first_reply_at=COALESCE(first_reply_at,?),final_reply_at=CASE WHEN ?=\'final\' THEN COALESCE(final_reply_at,?) ELSE final_reply_at END WHERE id=?').run(now,context.kind,now,request.id);
@@ -315,9 +442,55 @@ export class Store {
     } catch (e) { this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output'); throw e; }
   }
   /** Internal brain replies have an owner ledger row, not a fabricated agent job. */
+  /**
+   * A screenshot the owner asked for, as a photo in their chat. Artifacts belong to a session job;
+   * a brain answer has no job, so the image is written beside the database with its hash, and the
+   * sender sends it only if the bytes still match. The caption goes through the same owner checks.
+   */
+  /**
+   * A file from the Mac the owner asked for, sent to their own chat. A copy is taken now, so the
+   * file sent is exactly the one checked here even if the original changes before delivery.
+   */
+  outputBrainFile(requestId:string,bytes:Buffer,filename:string,caption:string) {
+    const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
+    if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    if(!bytes.length||bytes.length>50_000_000)return false;
+    const sha=createHash('sha256').update(bytes).digest('hex'),source=`brain-file:${requestId}:${sha.slice(0,16)}`;
+    mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
+    const path=join(this.mediaDir,`${sha}.bin`);writeFileSync(path,bytes,{mode:0o600});
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||filename,source,task.destination);
+    if(!queued)return false;
+    const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
+    if(!row)return false;
+    this.db.prepare("UPDATE outbox SET media_kind='brain-file' WHERE id=?").run(row.id);
+    this.set(`brain-file:${row.id}`,JSON.stringify({path,sha,filename:filename.replace(/[\\/\u0000-\u001f]/g,'_').slice(0,200)}));
+    return true;
+  }
+  outputBrainPhoto(requestId:string,png:Buffer,caption:string) {
+    const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
+    if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    if(!png.length||png.length>10_000_000)return false;
+    const sha=createHash('sha256').update(png).digest('hex'),source=`brain-photo:${requestId}:${sha.slice(0,16)}`;
+    mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
+    const path=join(this.mediaDir,`${sha}.png`);writeFileSync(path,png,{mode:0o600});
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||'Screenshot',source,task.destination);
+    if(!queued)return false;
+    const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
+    if(!row)return false;
+    this.db.prepare("UPDATE outbox SET media_kind='brain-photo' WHERE id=?").run(row.id);
+    this.set(`brain-photo:${row.id}`,JSON.stringify({path,sha}));
+    return true;
+  }
   outputBrain(requestId:string,text:string,source=`brain:${requestId}`) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
-    if(!task||!/^(wa|tg|local):/.test(requestId))throw new Error('A recorded owner request is required');
+    if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    const mode=this.get(`brain-mode:${requestId}`);if(mode)text+='\n\n'+mode;
+    // Every brain answer leaves through here, so this is where the owner's format is
+    // applied: driver bookkeeping dropped, label dumps bulleted, long lines wrapped.
+    text=ownerReply(text);
+    // An empty answer would queue nothing while the caller has already marked the request
+    // answered, so the owner would get silence. The formatter must not be able to do that.
+    if(!text.trim())text='I could not put that answer into a message. Send it again.';
     const prior=this.db.prepare('SELECT request_id,text_hash,binding_id FROM reply_receipts WHERE source=?').get(source) as any;
     if(prior){if(prior.request_id!==requestId||prior.text_hash!==hash(text)||prior.binding_id!==null)throw new Error('Brain reply identity was reused');return false;}
     this.db.exec('SAVEPOINT brain_output');
@@ -339,8 +512,8 @@ export class Store {
     for(const row of rows)this.db.prepare("UPDATE outbox SET request_id=?,reply_kind='system' WHERE id=?").run(requestId,row.id);
   }
   outbound(channel:'whatsapp'|'telegram'='whatsapp') { cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT * FROM outbox WHERE status='queued' AND next_at<=? AND (CASE WHEN destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (binding_id IS NULL OR binding_id IN (SELECT id FROM bindings WHERE enabled=1)) ORDER BY created_at LIMIT 1").get(Date.now(),channel) as any; }
-  /** A held scheduled message must not block other replies for its transport. */
-  routableOutbound(channel:'whatsapp'|'telegram') {cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT o.* FROM outbox o LEFT JOIN schedule_outbox s ON s.outbox_id=o.id LEFT JOIN task_contract_outbox c ON c.outbox_id=o.id LEFT JOIN task_contracts t ON t.id=c.contract_id WHERE o.status='queued' AND o.next_at<=? AND (CASE WHEN o.destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (o.binding_id IS NULL OR o.binding_id IN (SELECT id FROM bindings WHERE enabled=1)) AND (s.outbox_id IS NULL OR s.channel=?) AND (c.outbox_id IS NULL OR t.channel=?) ORDER BY o.created_at,o.rowid LIMIT 1").get(Date.now(),channel,this.controlChannel(),this.controlChannel()) as any;}
+  /** A held message can be skipped without changing its queued state. */
+  routableOutbound(channel:'whatsapp'|'telegram',after?:{createdAt:number;rowid:number}) {cancelObsoleteCoordinatorUpdates(this);return this.db.prepare("SELECT o.*,o.rowid AS outbox_rowid FROM outbox o LEFT JOIN schedule_outbox s ON s.outbox_id=o.id LEFT JOIN task_contract_outbox c ON c.outbox_id=o.id LEFT JOIN task_contracts t ON t.id=c.contract_id WHERE o.status='queued' AND o.next_at<=? AND (CASE WHEN o.destination LIKE 'tg:%' THEN 'telegram' ELSE 'whatsapp' END)=? AND (o.binding_id IS NULL OR o.binding_id IN (SELECT id FROM bindings WHERE enabled=1)) AND (s.outbox_id IS NULL OR s.channel=?) AND (c.outbox_id IS NULL OR t.channel=?) AND (? IS NULL OR o.created_at>? OR (o.created_at=? AND o.rowid>?)) ORDER BY o.created_at,o.rowid LIMIT 1").get(Date.now(),channel,this.controlChannel(),this.controlChannel(),after?.createdAt??null,after?.createdAt??null,after?.createdAt??null,after?.rowid??null) as any;}
   sent(id: string) { const row=this.db.prepare('SELECT request_id,sent_at FROM outbox WHERE id=?').get(id) as any;this.db.prepare("UPDATE outbox SET status='sent',error=NULL,sent_at=COALESCE(sent_at,?) WHERE id=?").run(Date.now(),id);if(row?.request_id&&!row.sent_at)this.event(row.request_id,'reply_sent'); }
   deliveryReceipt(waId:string,destination:string,kind:'delivered'|'read') {
     const row=this.db.prepare('SELECT id,request_id,delivered_at,read_at FROM outbox WHERE wa_id=? AND destination=?').get(waId,destination) as any;

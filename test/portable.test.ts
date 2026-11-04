@@ -32,6 +32,13 @@ test('desktop launches can find the native Unix CLI without a shell profile',()=
   const command=nativeCommand('claude',['--version'],'darwin',{PATH:'/usr/bin:/bin',HOME:'/Users/test'},p=>p==='/Users/test/.local/bin/claude');
   assert.equal(command.binary,'/Users/test/.local/bin/claude');assert.deepEqual(command.args,['--version']);
 });
+test('an ejected DeepSeek installer volume still finds the installed Harness launcher',()=>{
+  // On PATH the launcher is a symlink into the mounted installer volume, so once that volume is
+  // ejected the symlink dangles and the launcher inside the installed app is the only one left.
+  const bundled='/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh';
+  const command=nativeCommand('dsh',['--version'],'darwin',{PATH:'/usr/bin:/bin',HOME:'/Users/test'},p=>p===bundled);
+  assert.equal(command.binary,bundled);assert.deepEqual(command.args,['--version']);
+});
 test('exact session verification rejects a substituted identity or project before a turn',()=>{
   const expected={id:'exact',cwd:'/project'};
   exactSession(expected,{id:'exact',cwd:'/project'},p=>p);

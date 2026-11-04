@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    This file is embedded into the eventkit-helper binary as the __TEXT,__info_plist section by
+    script/prepare_desktop_backend.mjs. A plain Mach-O CLI has no bundle, and Calendar and
+    Reminders access is granted to the responsible process: with no NS*UsageDescription here,
+    macOS denies the request instantly and silently, with no dialog to explain why.
+
+    CFBundleIdentifier is the identity TCC records the grant against, so it has to be stable
+    across builds. The ship step signs the helper with the app's Developer ID; changing this
+    string after a grant has been made makes macOS ask again, and the only recovery from a
+    confused state is `tccutil reset Calendar com.codecylabs.farfromdesk.localtest.eventkit`
+    (and the Reminders equivalent).
+  -->
+  <key>CFBundleIdentifier</key>
+  <string>com.codecylabs.farfromdesk.localtest.eventkit</string>
+  <key>CFBundleName</key>
+  <string>FarFromDesk EventKit Helper</string>
+  <key>CFBundleExecutable</key>
+  <string>eventkit-helper</string>
+  <key>CFBundlePackageType</key>
+  <string>TOOL</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>FarFromDesk Local reads and changes events in your Calendar when you ask it to.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>FarFromDesk Local reads and changes events in your Calendar when you ask it to.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>FarFromDesk Local reads and changes your reminders when you ask it to.</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>FarFromDesk Local reads and changes your reminders when you ask it to.</string>
+</dict>
+</plist>

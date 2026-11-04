@@ -110,12 +110,12 @@ test('normal final without an outcome requests confirmation without asserting su
 test('a managed Codex final reports the approved checks without asserting verification',async()=>{
   const f=await fixture();const masters=new Masters(f.store,f.router);
   try{
-    const runtime=new EventEmitter() as EventEmitter&{alive:boolean;request:(method:string)=>Promise<void>;close:()=>void};
+    const runtime=new EventEmitter() as EventEmitter&{alive:boolean;request:(method:string)=>Promise<any>;close:()=>void};
     runtime.alive=true;runtime.close=()=>{};
     runtime.request=async(method)=>{assert.equal(method,'turn/start');queueMicrotask(()=>{
-      runtime.emit('notification','item/completed',{threadId:f.binding.native_id,item:{type:'agentMessage',phase:'final_answer',text:'Implemented; tests reported passing.'}});
+      runtime.emit('notification','item/completed',{threadId:f.binding.native_id,turnId:'turn-managed',item:{type:'agentMessage',phase:'final_answer',text:'Implemented; tests reported passing.'}});
       runtime.emit('notification','turn/completed',{threadId:f.binding.native_id,turn:{id:'turn-managed',status:'completed'}});
-    });};
+    });return {turn:{id:'turn-managed'}};};
     masters.connections.assert=async()=>{};
     masters.runtimes.set(f.binding.id,runtime as any);
     masters.runtimeRoles.set(f.binding.id,roleConfig(f.store,f.binding).version);
@@ -125,6 +125,37 @@ test('a managed Codex final reports the approved checks without asserting verifi
     assert.match(f.reports()[0].body,/Session reported \(unverified\): Implemented; tests reported passing/);
     assert.match(f.reports()[0].body,/No test, PR or screenshot has been independently verified/);
   }finally{masters.close();f.close();}
+});
+
+test('managed Codex accepts only the exact started turn, including early events',async()=>{
+  for(const scenario of ['early','mismatched','failed-start','malformed-start'] as const){
+    const f=await fixture(),masters=new Masters(f.store,f.router);
+    try{
+      let resolveStart!:(value:unknown)=>void,rejectStart!:(error:Error)=>void,started!:()=>void;
+      const entered=new Promise<void>(r=>started=r),start=new Promise<unknown>((r,j)=>{resolveStart=r;rejectStart=j;});
+      const runtime=new EventEmitter() as EventEmitter&{alive:boolean;request:(method:string)=>Promise<unknown>;close:()=>void};
+      runtime.alive=true;runtime.close=()=>{};runtime.request=async(method)=>{assert.equal(method,'turn/start');started();return await start;};
+      masters.connections.assert=async()=>{};masters.runtimes.set(f.binding.id,runtime as any);masters.runtimeRoles.set(f.binding.id,roleConfig(f.store,f.binding).version);
+      f.store.jobState(f.id,'dispatched');let finished=false;
+      const task=masters.run(f.binding,f.store.job(f.id)!.body,f.id).finally(()=>{finished=true;});await entered;
+      const item=(id:unknown,text:string)=>runtime.emit('notification','item/completed',{threadId:f.binding.native_id,turnId:id,item:{type:'agentMessage',phase:'final_answer',text}});
+      const done=(id:unknown)=>runtime.emit('notification','turn/completed',{threadId:f.binding.native_id,turn:{id,status:'completed'}});
+      item('other','Unrelated turn');done('other');done(undefined);
+      if(scenario==='early'){item('exact','Approved result.');done('exact');resolveStart({turn:{id:'exact'}});await task;}
+      else if(scenario==='failed-start'){rejectStart(new Error('Synthetic start failure'));await assert.rejects(task,/Synthetic start failure/);}
+      else if(scenario==='malformed-start'){resolveStart({turn:{id:''}});await assert.rejects(task,/identity could not be confirmed/);}
+      else{
+        resolveStart({turn:{id:'exact'}});await new Promise<void>(r=>setImmediate(r));
+        item(undefined,'Malformed event');done(undefined);done('other');await new Promise<void>(r=>setImmediate(r));
+        assert.equal(finished,false);assert.equal(f.store.job(f.id)?.status,'dispatched');assert.equal(f.reports().length,0);
+        item('exact','Approved result.');done('exact');done('exact');await task;
+      }
+      if(scenario==='early'||scenario==='mismatched'){
+        assert.equal(f.store.job(f.id)?.status,'completed');assert.equal(f.reports().length,1);
+        assert.match(f.reports()[0].body,/Approved result/);assert.doesNotMatch(f.reports()[0].body,/Unrelated turn|Malformed event/);
+      }else{assert.equal(f.store.job(f.id)?.status,'dispatched');assert.equal(f.reports().length,0);}
+    }finally{masters.close();f.close();}
+  }
 });
 
 test('a managed Claude final reports the approved checks without asserting verification',async()=>{

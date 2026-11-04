@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {authenticatedOwner} from './owner-commands.js';
+import {authenticatedOwner,brainSelected,sessionSelected } from './owner-commands.js';
 import {brainPolicy,MetaSecret} from './meta-brain-config.js';
 import {interpretSchedule,type ScheduleInterpreter} from './schedule-model.js';
 import {addDay,localDate,localInstants,nextOccurrence,validZone,type Recurrence} from './schedule-time.js';
@@ -20,7 +20,9 @@ function containsExact(text:string,part:string) {
   return false;
 }
 const candidate=(s:string)=>{
-  if(/\bremind(?:\s+me|er|ers)\b/i.test(s)||/^(?:(?:every|each)\s+(?:day|weekday)|daily|weekdays)\b.*\b(?:send|remind|check|ask)\b/i.test(s))return true;
+  // "check my reminders" is a question about Apple Reminders, not a schedule to create: the word
+  // alone took it here and the owner got "I could not confirm that schedule" (live, 4 November 2026).
+  if(/\bremind\s+me\b/i.test(s)||/\breminders?\b/i.test(s)&&/\b(?:at|on|every|daily|tomorrow|tonight|in\s+\d+)\b|\d\s*(?:a\.?m|p\.?m)\b/i.test(s)||/^(?:(?:every|each)\s+(?:day|weekday)|daily|weekdays)\b.*\b(?:send|remind|check|ask)\b/i.test(s))return true;
   const past=/^(?:at|on)\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\s+(?:(?:i|we|he|she|they)|(?:the|a|an)\s+[a-z0-9_-]+)\s+(?:saw|noticed|observed|experienced|received|found|encountered|reported|heard|had|was|were|went|broke|fell|crashed|failed|stopped|disconnected|restarted)\b[^.!?]*[.!?]/i.exec(s);
   if(past&&!/\b(?:at|on)\s+\d|\b(?:later|tomorrow|tonight|next\s+\w+|after|before|remind|schedule)\b/i.test(s.slice(past[0].length)))return false;
   return /^(?:(?:tomorrow|tonight)\s+)?(?:at|on)\s+\d/i.test(s);
@@ -30,9 +32,46 @@ const cancelCommand=(s:string)=>/^(?:please\s+)?cancel\s+(?:(?:reminder|schedule
 const readOnlyPrStatus=(s:string)=>/^(?:please\s+)?check\s+(?:whether|if)\s+(?:pr|pull request)\s+#?\d{1,9}\s+is\s+green\s+and\s+tell\s+me[.!?]*$/i.test(s.trim());
 const cleanAction=(s:string)=>normalized(s).replace(/[.!?]+$/,'');
 function reminderDirective(original:string,body:string):{directive:string;action:string}|undefined {
-  const match=/\bremind\s+me\b[\s\S]*?\bto\s+/i.exec(original);
-  if(!match||cleanAction(original.slice(match.index+match[0].length))!==cleanAction(body))return;
-  return {directive:original.slice(0,match.index+match[0].length),action:original.slice(match.index+match[0].length).trim()};
+  // The reminder text is the owner's own words wherever they put it: "remind me tomorrow 10am for
+  // the submission", "remind me to call mom at 5pm", "remind me about X at 9 am". Only
+  // "remind me at TIME to ACTION" used to pass (live, 4 November 2026). The timing is read from
+  // the rest of the sentence, so a number inside the reminder is never taken as the time.
+  const remind=REMIND.exec(original);
+  if(!remind)return;
+  // A model often hands back the whole sentence as the reminder text. Then the action is worked
+  // out from the owner's words alone: trim timing and filler from both ends of what follows
+  // "remind me", and accept it only if the model's text contains that same action.
+  let want=body.trim().replace(/[.!?]+$/,'').replace(/^(?:to|for|about|that|of)\s+/i,'');
+  if(REMIND.test(want)){
+    const own=ownAction(original.slice(remind.index+remind[0].length));
+    if(!own||!cleanAction(want).includes(cleanAction(own)))return;
+    want=own;
+  }
+  if(!want)return;
+  const at=original.toLowerCase().indexOf(want.toLowerCase(),remind.index+remind[0].length);
+  if(at<0)return;
+  const action=original.slice(at,at+want.length).trim();
+  if(cleanAction(action)!==cleanAction(want))return;
+  const directive=(original.slice(0,at).replace(/\b(?:to|for|about|that|of)\s*$/i,'')+' '+original.slice(at+want.length)).replace(/\s+/g,' ').trim();
+  // Everything left must be timing or filler. A content word left over means the model dropped
+  // part of the owner's request ("check whether it is safe to" + "deploy production"), so refuse.
+  const leftover=directive.toLowerCase()
+    .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?(?![\w:])/g,' ')
+    .replace(/\b[a-z_]+\/[a-z_]+(?:\/[a-z_]+)?\b/g,' ')
+    .replace(/\b(?:please|remind|me|at|on|by|in|the|a|an|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekday|weekdays|o'?clock|hey|atlas|can|could|you|pls|do|not|don|t|never|stop|add|set|create|make|put|schedule|reminder|new)\b/g,' ')
+    .replace(/[^a-z]+/g,' ').trim();
+  if(leftover)return;
+  return {directive,action};
+}
+/** "remind me", or asking for a reminder: "add a reminder", "set me a reminder" (live, 4 November 2026). */
+const REMIND=/\bremind\s+me\b|\b(?:add|set|create|make|put|schedule)\s+(?:me\s+)?(?:a\s+|an\s+)?reminder\b/i;
+const TIMING_WORD=/^(?:please|at|on|by|in|the|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekdays?|o'?clock|\d{4}-\d{2}-\d{2}|\d{1,2}(?::\d{2})?(?:a\.?m\.?|p\.?m\.?)?|a\.?m\.?|p\.?m\.?)[,.]?$/i;
+/** What follows "remind me", with timing and filler words trimmed from both ends. */
+function ownAction(rest:string):string{
+  const words=rest.trim().split(/\s+/).filter(Boolean);
+  while(words.length&&TIMING_WORD.test(words[0]))words.shift();
+  while(words.length&&TIMING_WORD.test(words[words.length-1]))words.pop();
+  return words.join(' ').replace(/[.!?]+$/,'');
 }
 function briefDirective(original:string):string|undefined {
   if(/\b(?:remind\s+me|do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original))return;
@@ -54,7 +93,9 @@ function explicitSessionDispatch(original:string,target:string,body:string):{dir
 /** Independently derive supported timing from the owner's words; never trust model guesses. */
 function checkedTiming(original:string,decision:{time:string;date:string;repeat:Recurrence;action:string},now:number,zone:string) {
   if(/\b(?:do\s+not|don['’]?t|never|stop)\s+(?:remind|schedule|send|ask|tell)\b|\b(?:not|never)\s+(?:every|daily|weekdays)\b/i.test(original))throw new Error('I did not schedule that. Please state the reminder and time without negation.');
-  const matches=[...original.matchAll(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!\w)/gi)];
+  // "at 10am", "10am", "10:30 pm" and "at 18:00" are all one time. A bare number needs "at", so
+  // "remind me to buy 2 milk" is never read as 2 o'clock.
+  const matches=[...original.matchAll(/(\bat\s+)?\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?![\w:])/gi)].filter(m=>m[1]||m[3]||m[4]).map(m=>[m[0],m[2],m[3],m[4]] as unknown as RegExpMatchArray);
   if(matches.length!==1)throw new Error('Please specify one time, for example at 6 PM or at 18:00.');
   const match=matches[0],hour=Number(match[1]),minute=Number(match[2]??'0');let ampm=(match[3]??'').toLowerCase().replace(/\./g,'');
   if(!ampm&&decision.action==='brief'&&hour===9&&/\b(?:every|each)\s+weekday\b/i.test(original))ampm='am';
@@ -136,6 +177,13 @@ export class Schedules {
   shouldHandle(router:Router,m:Incoming,ownerIntent:boolean) {
     const destination=this.store.destination(),text=m.text.trim();
     if(!destination||!ownerIntent||m.quotedId||!authenticatedOwner(router,m))return false;
+    // With a session selected, the session decides what "remind me" means (Apple Reminders, the
+    // calendar, or a note), the way OpenClaw's agent schedules with its own cron tool. This filter
+    // used to take the message before the chosen session ever saw it.
+    if(sessionSelected(router))return false;
+    // With the brain selected it decides too: it has reminder_create, reminder_list and
+    // reminder_cancel in its loop, so no pattern takes the message first.
+    if(brainSelected(router)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
     const snap=this.snapshot(destination),live=!!(snap&&snap.owner===this.owner(destination)&&snap.destination===destination&&snap.expires>this.now());
     const clarify=this.clarification(destination),pending=!!(clarify&&clarify.owner===this.owner(destination)&&clarify.expires>this.now());
     return listCommand(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));
@@ -148,7 +196,7 @@ export class Schedules {
       if(!this.store.incomingOwnerCurrent())return true;
       // A short response to a validation error must not be delivered as a session task.
       if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));
-      throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Please resend the complete reminder. Nothing was scheduled.`);
+      throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Nothing was scheduled.`);
     }
   }
   private async handleOnce(router:Router,m:Incoming,ownerIntent:boolean,contractApproved:boolean):Promise<boolean> {
@@ -159,21 +207,7 @@ export class Schedules {
     if(!this.context(destination,owner,channel)){this.answer(m,'For reminders, please message me in your own self-chat.');return true;}
     if(contractApproved){
       const approved=router.contracts.approvedSchedule(m.id);
-      if(approved){
-        const s=approved.schedule,now=this.now();
-        if(s.owner!==owner||s.destination!==destination||s.channel!==channel||s.valid_until<=now)throw new Error('Your approved schedule or connection changed.');
-        let next=s.next_at;
-        if(next<=now){if(s.repeat==='once')throw new Error('The approved time has passed.');next=nextOccurrence(localDate(now,s.zone),s.time,s.zone,s.repeat,now)??0;}
-        if(!next||next>s.valid_until||!sessionAvailable(router,{binding_id:s.binding_id,binding_identity:s.binding_identity}))throw new Error('The approved schedule or session is no longer available.');
-        this.store.db.exec('SAVEPOINT approved_schedule');
-        try{
-          this.store.db.prepare('INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(s.id,m.id,s.owner,s.destination,s.channel,s.action,s.text,s.binding_id,s.binding_identity,s.date,s.time,s.zone,s.repeat,next,'active',now);
-          router.contracts.saveSchedule(s,approved.contractId,'approved',next);
-          const when=new Intl.DateTimeFormat('en-IN',{timeZone:s.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
-          this.answer(m,`Approved schedule set for ${when} (${s.zone}${s.repeat==='once'?'':`, ${s.repeat}`}).`);
-          this.store.db.exec('RELEASE approved_schedule');return true;
-        }catch(e){this.store.db.exec('ROLLBACK TO approved_schedule; RELEASE approved_schedule');throw e;}
-      }
+      if(approved){this.answer(m,this.saveApproved(router,m,approved,owner,destination,channel));return true;}
     }
     const pending=this.clarification(destination);
     if(pending&&pending.owner===owner&&pending.expires>this.now()&&bareTime(text)){this.answer(m,'Please resend the complete reminder with its date, time and action. Nothing has been scheduled.');return true;}
@@ -239,10 +273,113 @@ export class Schedules {
       if(schedule)router.contracts.saveSchedule(schedule,null,router.contracts.enabled()?'pass':'disabled',next);
       this.store.set(clarifyKey(destination),'null');
       const when=new Intl.DateTimeFormat('en-IN',{timeZone:decision.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
-      this.answer(m,`Reminder set for ${when} (${decision.zone}${repeat==='once'?'':`, ${repeat}`})${binding?` for ${binding.alias}`:''}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString()}.`:''}`);
+      // A confirmation reads back what and when, so the owner can catch a wrong guess at a glance.
+      const what=action==='brief'?'send your brief':action==='session'?`ask ${binding?.alias??'the session'} to: ${body}`:body;
+      this.answer(m,`Done. I will remind you ${when}${repeat==='once'?'':` (${repeat})`}${decision.zone==='Asia/Kolkata'?'':` ${decision.zone}`}: ${what}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`);
       this.store.db.exec('RELEASE schedule_create');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_create; RELEASE schedule_create');throw e;}
     return true;
+  }
+  /** Saves a schedule the owner approved on its review card. Throws when anything changed since. */
+  private saveApproved(router:Router,m:Incoming,approved:NonNullable<ReturnType<Router['contracts']['approvedSchedule']>>,owner:string,destination:string,channel:string):string {
+    const s=approved.schedule,now=this.now();
+    if(s.owner!==owner||s.destination!==destination||s.channel!==channel||s.valid_until<=now)throw new Error('Your approved schedule or connection changed.');
+    let next=s.next_at;
+    if(next<=now){if(s.repeat==='once')throw new Error('The approved time has passed.');next=nextOccurrence(localDate(now,s.zone),s.time,s.zone,s.repeat,now)??0;}
+    if(!next||next>s.valid_until||!sessionAvailable(router,{binding_id:s.binding_id,binding_identity:s.binding_identity}))throw new Error('The approved schedule or session is no longer available.');
+    this.store.db.exec('SAVEPOINT approved_schedule');
+    try{
+      this.store.db.prepare('INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(s.id,m.id,s.owner,s.destination,s.channel,s.action,s.text,s.binding_id,s.binding_identity,s.date,s.time,s.zone,s.repeat,next,'active',now);
+      router.contracts.saveSchedule(s,approved.contractId,'approved',next);
+      this.store.db.exec('RELEASE approved_schedule');
+    }catch(e){this.store.db.exec('ROLLBACK TO approved_schedule; RELEASE approved_schedule');throw e;}
+    const when=new Intl.DateTimeFormat('en-IN',{timeZone:s.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
+    return `Approved schedule set for ${when} (${s.zone}${s.repeat==='once'?'':`, ${s.repeat}`}).`;
+  }
+  /** "YYYY-MM-DD HH:MM" in the owner's zone, checked: a sentence for the brain, or the times. */
+  private brainTime(at:string,repeatIn?:string):string|{date:string;time:string;zone:string;repeat:Recurrence;next:number} {
+    const repeat=(['once','daily','weekdays'] as const).find(r=>r===(repeatIn??'once'));
+    if(!repeat)return 'Repeat must be once, daily or weekdays. Nothing was scheduled.';
+    const m=/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/.exec(at.trim());
+    if(!m||Number(m[2])>23||Number(m[3])>59)return 'Give the time as YYYY-MM-DD HH:MM. Nothing was scheduled.';
+    const zone=this.store.get('schedule-timezone')??'Asia/Kolkata';if(!validZone(zone))return 'Choose a valid reminder time zone in Settings. Nothing was scheduled.';
+    const date=m[1],time=`${m[2]}:${m[3]}`,now=this.now();
+    if(repeat==='once'&&!localInstants(date,time,zone).length)return 'That local time does not exist. Nothing was scheduled.';
+    const next=nextOccurrence(date,time,zone,repeat,now);
+    if(next===undefined)return 'That time has passed. Nothing was scheduled.';
+    if(next>now+2*366*86400000)return 'Choose a time within two years. Nothing was scheduled.';
+    return {date,time,zone,repeat,next};
+  }
+  /**
+   * The brain's tool for work a coding session should do later ("at 6pm ask codex to run the
+   * tests"). The same checks as the typed path: the session must be connected and allowed, and
+   * with task reviews on, the owner approves a card before anything is saved.
+   */
+  async brainScheduleSession(router:Router,m:Incoming,input:{sessionId:string;text:string;at:string;repeat?:string}):Promise<string> {
+    const destination=this.store.destination(),owner=destination?this.owner(destination):'',channel=this.store.controlChannel();
+    if(!destination||!this.context(destination,owner,channel))return 'Scheduled work can be set only from your own chat. Nothing was scheduled.';
+    const approved=router.contracts.approvedSchedule(m.id);
+    if(approved){try{return this.saveApproved(router,m,approved,owner,destination,channel);}catch(e){return `${(e as Error).message} Nothing was scheduled.`;}}
+    const text=input.text.trim().replace(/\s+/g,' ');
+    if(!text||text.length>MAX_TEXT)return 'Say what the session should do. Nothing was scheduled.';
+    const binding=this.store.binding(input.sessionId);
+    if(!binding)return 'No session has that id. Use an id from sessions. Nothing was scheduled.';
+    const identity=bindingFingerprint(router,binding);
+    if(!sessionAvailable(router,{binding_id:binding.id,binding_identity:identity}))return `${this.store.get(`name:${binding.id}`)??binding.alias} is unavailable, or routing to it is off in Settings. Nothing was scheduled.`;
+    const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
+    if(this.store.db.prepare('SELECT 1 FROM schedules WHERE origin_id=?').get(m.id))return 'This message already scheduled work.';
+    if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active schedules. Cancel one first.';
+    const now=this.now(),id=randomUUID();
+    const schedule:ContractSchedule={id,origin:m.id,owner,destination,channel,action:'session',text,binding_id:binding.id,binding_identity:identity,date:t.date,time:t.time,zone:t.zone,repeat:t.repeat,next_at:t.next,valid_until:now+2*366*86400000};
+    const reviewed=router.contracts.enabled();
+    if(reviewed){
+      const contract=await router.contracts.preflight(router,m,text,schedule);
+      if(contract.kind==='handled')return 'A review card for this scheduled work was sent to the owner. It is saved only after they approve it; say that in one line.';
+      if(contract.kind==='replay')return 'Finish the pending task review before scheduling another task. Nothing was scheduled.';
+      if(!this.context(destination,owner,channel)||!sessionAvailable(router,{binding_id:binding.id,binding_identity:identity}))return 'Your session or connection changed. Nothing was scheduled.';
+    }
+    this.store.db.exec('SAVEPOINT brain_schedule');
+    try{
+      this.store.db.prepare("INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id,m.id,owner,destination,channel,'session',text,binding.id,identity,t.date,t.time,t.zone,t.repeat,t.next,'active',now);
+      router.contracts.saveSchedule(schedule,null,reviewed?'pass':'disabled',t.next);
+      this.store.db.exec('RELEASE brain_schedule');
+    }catch(e){this.store.db.exec('ROLLBACK TO brain_schedule; RELEASE brain_schedule');throw e;}
+    const when=new Intl.DateTimeFormat('en-IN',{timeZone:t.zone,dateStyle:'medium',timeStyle:'short'}).format(t.next);
+    // The name the owner sees in the app, not the internal alias (live: "selected-master-04a13fbb").
+    const name=(this.store.get(`name:${binding.id}`)??binding.alias).replace(/\s+/g,' ').slice(0,60);
+    return `Saved. ${when}${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${name} to: ${text}.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
+  }
+  /**
+   * The brain's reminder tools. The brain decides that a message is a reminder and works out
+   * the time; this checks the owner and channel, the time, and the limit, then saves it. The
+   * confirmation reads back what and when, so a wrong guess is caught at a glance.
+   */
+  brainCreate(router:Router,m:Incoming,input:{text:string;at:string;repeat?:string;kind?:string}):string {
+    const destination=this.store.destination(),owner=destination?this.owner(destination):'',channel=this.store.controlChannel();
+    if(!destination||!this.context(destination,owner,channel))return 'Reminders work only in your own chat. Nothing was scheduled.';
+    const kind=input.kind==='brief'?'brief':'message',text=input.text.trim().replace(/\s+/g,' ');
+    if(kind==='message'&&(!text||text.length>MAX_TEXT))return 'Say what the reminder should say. Nothing was scheduled.';
+    if(kind==='brief'&&(channel!=='whatsapp'||!router.scheduledBrief))return 'Scheduled briefs work only in your WhatsApp self-chat. Nothing was scheduled.';
+    const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
+    const {date,time,zone,repeat,next}=t,now=this.now();
+    if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active reminders. Cancel one first.';
+    if(this.store.db.prepare('SELECT 1 FROM schedules WHERE origin_id=?').get(m.id))return 'This message already created a reminder.';
+    this.store.db.prepare("INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(),m.id,owner,destination,channel,kind,kind==='brief'?'':text,null,null,date,time,zone,repeat,next,'active',now);
+    const when=new Intl.DateTimeFormat('en-IN',{timeZone:zone,dateStyle:'medium',timeStyle:'short'}).format(next);
+    return `Saved. I will remind you ${when}${repeat==='once'?'':` (${repeat})`}: ${kind==='brief'?'send your brief':text}.`;
+  }
+  brainList():string {
+    const destination=this.store.destination(),owner=destination?this.owner(destination):'';
+    const rows=this.store.db.prepare("SELECT * FROM schedules WHERE owner=? AND destination=? AND status='active' ORDER BY next_at LIMIT 100").all(owner,destination) as Row[];
+    if(!rows.length)return 'No active reminders.';
+    return JSON.stringify(rows.map(r=>({id:r.id.slice(0,8),what:r.action==='brief'?'Morning brief':r.text,when:new Intl.DateTimeFormat('en-IN',{timeZone:r.zone,dateStyle:'medium',timeStyle:'short'}).format(r.next_at),repeat:r.repeat,...(r.action==='session'?{session:true}:{})})));
+  }
+  brainCancel(id:string):string {
+    const destination=this.store.destination(),owner=destination?this.owner(destination):'';
+    const rows=this.store.db.prepare("SELECT id FROM schedules WHERE owner=? AND destination=? AND status='active' AND id LIKE ?").all(owner,destination,`${id.replace(/[^0-9a-f-]/gi,'')}%`) as {id:string}[];
+    if(rows.length!==1)return rows.length?'That id matches several reminders. Use reminder_list again.':'No active reminder has that id. Use reminder_list.';
+    this.store.db.prepare("UPDATE schedules SET status='cancelled' WHERE id=?").run(rows[0].id);
+    return 'Cancelled.';
   }
   private advance(row:Row,now:number) {
     const start=localDate(now,row.zone),next=row.repeat==='once'?undefined:nextOccurrence(start,row.time,row.zone,row.repeat,now);

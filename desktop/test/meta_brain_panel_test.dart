@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:farfromdesk/meta_brain_panel.dart';
@@ -107,86 +106,6 @@ void main() {
     expect(tester.widget<SwitchListTile>(setting).value, isFalse);
   });
 
-  testWidgets('Meta activity shows only recorded calls and can refresh', (
-    tester,
-  ) async {
-    final api = MetaGateway();
-    api.activity = [
-      {
-        'stage': 'contracted',
-        'status': 'completed',
-        'durationMs': 125,
-        'at': DateTime.now().millisecondsSinceEpoch,
-      },
-      {
-        'stage': 'sorted',
-        'status': 'completed',
-        'durationMs': 2400,
-        'at': DateTime.now().millisecondsSinceEpoch,
-      },
-      {
-        'stage': 'heard',
-        'status': 'failed',
-        'durationMs': 325,
-        'at': DateTime.now().millisecondsSinceEpoch,
-      },
-    ];
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: MetaBrainPanel(
-              gateway: api,
-              activityScope: 'test-scope',
-              saved: const {'enabled': false},
-              onSaved: () async {},
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('Meta activity'), findsOneWidget);
-    expect(find.text('Message interpretation'), findsOneWidget);
-    expect(find.text('Task contract'), findsOneWidget);
-    expect(find.text('2.4 s'), findsOneWidget);
-    expect(find.text('Voice transcription'), findsOneWidget);
-    expect(find.text('Request failed'), findsOneWidget);
-    api.activity = [];
-    await tester.tap(find.text('Refresh'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('No Meta calls recorded in this chat yet.'),
-      findsOneWidget,
-    );
-    api.activityFail = true;
-    await tester.tap(find.text('Refresh'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('Could not load Meta activity. Try refresh.'),
-      findsOneWidget,
-    );
-    expect(find.textContaining('raw provider error'), findsNothing);
-  });
-  testWidgets('activity from an earlier chat or mismatched response is discarded', (tester) async {
-    final oldResponse = Completer<Map<String, dynamic>>();
-    final newResponse = Completer<Map<String, dynamic>>();
-    var calls = 0;
-    final api = MetaGateway()..activityRequest = () => (++calls == 1 ? oldResponse : newResponse).future;
-    Widget panel(String scope) => MaterialApp(home: Scaffold(body: SingleChildScrollView(
-      child: MetaBrainPanel(gateway: api, activityScope: scope, saved: const {'enabled': false}, onSaved: () async {}),
-    )));
-    final oldEvent = {'stage': 'sorted', 'status': 'completed', 'durationMs': 10, 'at': DateTime.now().millisecondsSinceEpoch};
-    await tester.pumpWidget(panel('old'));
-    await tester.pumpWidget(panel('new'));
-    newResponse.complete({'scope': 'wrong', 'events': [oldEvent]});
-    await tester.pump();
-    expect(find.text('Could not load Meta activity. Try refresh.'), findsOneWidget);
-    oldResponse.complete({'scope': 'old', 'events': [oldEvent]});
-    await tester.pump();
-    expect(find.text('Message interpretation'), findsNothing);
-    expect(find.text('Could not load Meta activity. Try refresh.'), findsOneWidget);
-  });
   for (final savedModel in [null, 'muse-spark-1.2']) {
     testWidgets(
       'model selection ${savedModel ?? 'defaults to Wonder'} is retained',
@@ -198,7 +117,7 @@ void main() {
               body: SingleChildScrollView(
                 child: MetaBrainPanel(
                   gateway: api,
-                  saved: {'enabled': true, 'model': savedModel},
+                  saved: {'enabled': true, 'configured': true, 'model': savedModel},
                   onSaved: () async {},
                 ),
               ),
@@ -218,9 +137,7 @@ void main() {
             'muse-wonder-1.0',
           ]),
         );
-        final save = find.text('Save changes');
-        await tester.ensureVisible(save);
-        await tester.tap(save);
+        dropdown.onChanged!(dropdown.value);
         await tester.pumpAndSettle();
         expect(
           api.submitted?['policy']['model'],
@@ -253,7 +170,7 @@ void main() {
         expect(tester.widget<TextField>(input).obscureText, isTrue);
         expect(tester.widget<TextField>(input).autocorrect, isFalse);
         await tester.enterText(input, 'synthetic-widget-key');
-        final save = find.text('Save changes');
+        final save = find.byKey(const Key('save-meta-key'));
         await tester.ensureVisible(save);
         await tester.tap(save);
         await tester.pumpAndSettle();
@@ -261,12 +178,8 @@ void main() {
         expect(tester.widget<TextField>(input).controller!.text, isEmpty);
         expect(find.textContaining('raw provider error'), findsNothing);
         expect(
-          find.text(
-            fail
-                ? 'Could not save. Check the key and background service.'
-                : 'Saved. No API call was made.',
-          ),
-          findsOneWidget,
+          find.text('Could not save. Check the key and background service.'),
+          fail ? findsOneWidget : findsNothing,
         );
       },
     );
@@ -298,33 +211,6 @@ void main() {
       expect(policy['failure'], 'legacy');
       expect(find.text('What it may do'), findsNothing);
       expect(find.text('First hello'), findsNothing);
-    },
-  );
-  testWidgets(
-    'shared todo board shows assigned session and separate execution state',
-    (tester) async {
-      final api = MetaGateway();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SingleChildScrollView(
-              child: MetaBrainPanel(
-                gateway: api,
-                saved: const {'enabled': true},
-                onSaved: () async {},
-              ),
-            ),
-          ),
-        ),
-      );
-      final ledger = find.text('View task history');
-      await tester.ensureVisible(ledger);
-      await tester.tap(ledger);
-      await tester.pumpAndSettle();
-      expect(api.lastGet, '/api/meta-brain/tasks?fresh=1');
-      expect(find.text('#1 Invoice export'), findsOneWidget);
-      expect(find.textContaining('execution: blocked'), findsOneWidget);
-      expect(find.textContaining('invoice-worker'), findsOneWidget);
     },
   );
   testWidgets('memory cards add, remove, edit as text and undo', (

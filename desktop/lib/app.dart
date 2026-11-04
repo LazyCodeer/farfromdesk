@@ -4,37 +4,81 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
+import 'package:file_selector/file_selector.dart';
 
 import 'gateway.dart';
+import 'native_gateway.dart';
 import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
+import 'deepseek_panel.dart';
 import 'updates.dart';
 import 'connection_status.dart';
+import 'ffd_select.dart';
 import 'startup_trace.dart';
+import 'social_preview.dart';
+import 'server_mode_activity.dart';
+import 'social_screen.dart';
+import 'chat_message_text.dart';
 
 import 'bridge_theme.dart';
 part 'screens.dart';
 part 'mac_control_panel.dart';
 part 'remote_control_panel.dart';
 part 'studio_panes.dart';
+part 'overview_metric_art.dart';
+
+class DesktopCloseGuard {
+  Future<bool> Function()? _check;
+  void Function()? _release;
+  void attach(Future<bool> Function() check, void Function() release) {
+    _check = check;
+    _release = release;
+  }
+
+  void detach(Future<bool> Function() check) {
+    if (_check == check) {
+      _check = null;
+      _release = null;
+    }
+  }
+
+  Future<bool> allowClose() async => await _check?.call() ?? true;
+  void release() => _release?.call();
+}
 
 class FarFromDeskApp extends StatelessWidget {
   final Gateway gateway;
   final Future<void> Function()? initialize;
-  const FarFromDeskApp({super.key, required this.gateway, this.initialize});
+  final DesktopCloseGuard? closeGuard;
+  const FarFromDeskApp({
+    super.key,
+    required this.gateway,
+    this.initialize,
+    this.closeGuard,
+  });
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'FarFromDesk',
     debugShowCheckedModeBanner: false,
     theme: bridgeTheme(),
-    home: Desk(gateway: gateway, initialize: initialize),
+    home: Desk(
+      gateway: gateway,
+      initialize: initialize,
+      closeGuard: closeGuard,
+    ),
   );
 }
 
 class Desk extends StatefulWidget {
   final Gateway gateway;
   final Future<void> Function()? initialize;
-  const Desk({super.key, required this.gateway, this.initialize});
+  final DesktopCloseGuard? closeGuard;
+  const Desk({
+    super.key,
+    required this.gateway,
+    this.initialize,
+    this.closeGuard,
+  });
   @override
   State<Desk> createState() => _DeskState();
 }
@@ -43,31 +87,60 @@ class _DeskState extends State<Desk> {
   Map<String, dynamic> status = {};
   String? error, actionError;
   bool ready = false, busy = false, polling = false, startup = false;
+  bool coordinatorSubmitting = false;
+  // Which step of the add-a-coordinator flow is showing.
+  int setupStep = 1;
+  // Muse runs headless and cannot ask to trust a folder, so this is chosen up front.
+  bool workspaceTrust = true;
   // Lets the owner reach the app before linking a chat; not persisted.
   bool onboardingSkipped = false;
+  // An explicit request from the offline banner to reopen setup.
+  bool setupRequested = false;
+  // A project folder the owner picked with Choose folder…, offered beside the detected ones.
+  String? pickedFolder;
   int section = 0, page = 0;
   String platform = 'codex:cli',
       setupAction = 'new',
+          // The project a new coordinator runs in; empty means its own private folder.
+          selectedWorkspaceId =
+          '',
       selectedNativeId = '',
-      activityFilter = 'All',
-      activityQuery = '',
       itemQuery = '',
-      settingsTab = 'This Mac';
-  // A stable binding identity, never a request title or session display name.
-  String? inboxSelected, inboxError, inboxRequestSelected, inboxCommandSelected;
-  String inboxTab = 'Requests';
-  List<Map> inboxAttention = [];
-  bool inboxAttentionLoaded = false;
-  List<Map>? inboxGroups;
-  final inboxThreads = <String, Map<String, dynamic>>{};
-  final inboxScrolls = <String, ScrollController>{};
-  bool inboxLoading = false, inboxOlderLoading = false, inboxShowThread = false;
-  int inboxEpoch = 0;
+          // Stable Settings tab id, not a display title: the title carries the
+          // machine name and would drift.
+          settingsTab =
+          'this-mac';
+  // The Inbox is one conversation per view, all of it read from
+  // /api/inbox-feed. Nothing here is derived from the status poll.
+  String? inboxError, inboxRequestSelected;
+  String inboxViewId = 'all', inboxQuery = '';
+  List<Map> metaEvents = [];
+  List<Map> inboxViews = [], inboxFilters = [];
+  Map<String, dynamic> inboxView = {}, inboxStats = {};
+  List<Map> inboxMessages = [];
+  Map<String, dynamic>? inboxNext;
+  ScrollController? inboxScroll;
+  final inboxReply = TextEditingController();
+  // Which messages have their details panel open. Collapsed by default.
+  final inboxExpanded = <String>{};
+  bool inboxLoading = false,
+      inboxOlderLoading = false,
+      inboxShowConversation = false,
+      // True once a feed request finished, so a failure is reported once instead
+      // of the pane re-asking for a conversation it cannot load.
+      inboxAttempted = false,
+      // True once an earlier page was pulled in. Until then the newest page IS
+      // the whole history, so a refresh replaces it and a reviewed entry that
+      // the feed no longer returns really disappears.
+      inboxLoadedOlder = false,
+      inboxSending = false;
+  // The epoch of the page request that is in flight, so the poll cannot stack a
+  // second request while a view switch is still allowed to replace it.
+  int inboxEpoch = 0, inboxLoadingEpoch = -1;
   Timer? inboxSearchTimer;
-  final settingsKeys = <String, GlobalKey>{};
+  final socialKey = GlobalKey<SocialScreenState>();
   bool editingVoice = false;
   // Item board from the brain; the 3s status poll doesn't carry it.
-  List<dynamic> loadedItems = [];
   bool coordinatorNameEdited = false, showGroups = false, loadingGroups = false;
   bool setupFormRequested = false,
       refreshing = false,
@@ -92,14 +165,44 @@ class _DeskState extends State<Desk> {
   String? voicePathChoice, voiceProviderChoice;
   bool replacingVoiceKey = false;
   final voiceKey = TextEditingController();
-  Timer? timer, updateTimer;
+  Timer? timer, updateTimer, bootRetryTimer;
+  /// Started, not stuck. A busy launch can outrun the gateway's own health wait,
+  /// and the app used to show a permanent "the local backend did not start"
+  /// banner for that, because the status poll was only armed after a successful
+  /// boot. The first attempts now keep the spinner, and the poll runs either way,
+  /// so a slow start resolves itself instead of needing a tab switch to clear it.
+  int bootAttempts = 0;
+  bool booting = false;
+  /// Set when a start was refused because an older copy of this app is still
+  /// holding the backend port, so the banner can offer to end it in one press
+  /// instead of asking the owner to go find the process.
+  int? stuckHolderPid;
+  static const _bootRetryDelay = Duration(seconds: 3);
+  static const _bootGraceAttempts = 5;
+  static const _bootMaxAttempts = 40;
+
+  /// How long a manual "Check now" keeps its spinner up even when the check
+  /// answers instantly, so pressing the button visibly does something.
+  static const _updateCheckFloor = Duration(milliseconds: 700);
+  /// The cadence the Updates pane displays and the checker enforces. One value,
+  /// two readers, so the sentence under the dropdown cannot drift from what
+  /// actually runs - which is exactly what had happened.
+  UpdateSchedule updateSchedule = UpdateSchedule.hourly;
+  /// Stored alongside the schedule so the preference file keeps its shape; the
+  /// App updates switch that would read it is not built yet, so nothing here
+  /// can silently start installing on its own.
+  bool autoUpdate = true;
   DateTime macCheckedAt = DateTime(0);
   bool macChecking = false;
+  /// Set while the desktop driver is being tested, so the two driver rows show one
+  /// spinner and a second press cannot stack.
+  bool driverChecking = false;
   Map<String, dynamic> remoteLink = {}, phoneRemote = {}, legacyRemote = {};
   List<dynamic> phoneApps = [], phoneWindows = [];
   int? phonePid, phoneWindowId;
   String? phoneAddress, remoteError;
   bool remoteBusy = false, changingRemotePassword = false;
+  bool remotePasswordVisible = false, remoteConfirmVisible = false;
   int remoteEpoch = 0;
   bool phoneAddressInitialized = false;
   final remotePassword = TextEditingController(),
@@ -109,26 +212,57 @@ class _DeskState extends State<Desk> {
   bool installingUpdate = false;
   Map<String, dynamic> updateProgress = {};
   Gateway get api => widget.gateway;
-  List<dynamic> get platforms => status['masterSetup']?['platforms'] ?? [];
+
+  /// Muse Code, DeepSeek Harness and Cursor are channel mode, so a desktop entry for them never
+  /// reaches the UI. Cursor is app-driven but still runs one turn per request, not a desktop session.
+  List<dynamic> get platforms => [
+    for (final p in status['masterSetup']?['platforms'] ?? const [])
+      if (!const ['muse', 'deepseek', 'cursor'].contains(p['provider']) ||
+          p['executionMode'] != 'desktop')
+        p,
+  ];
   Map<String, dynamic> get preferences =>
       Map<String, dynamic>.from(status['preferences'] ?? {});
   @override
   void initState() {
     super.initState();
     section = api.initialScreen;
+    widget.closeGuard?.attach(allowClose, releaseCloseLock);
     boot();
     unawaited(checkUpdates());
-    updateTimer = Timer.periodic(
-      const Duration(hours: 1),
-      (_) => checkUpdates(),
-    );
+    armUpdateTimer();
+  }
+
+  /// Wakes on the cadence the pane shows. The checker enforces the same interval
+  /// too, so an early wake is a no-op rather than an extra network call.
+  void armUpdateTimer() {
+    updateTimer?.cancel();
+    updateTimer = Timer.periodic(updateSchedule.interval, (_) => checkUpdates());
   }
 
   Future<void> boot() async {
+    // "Try again" already proved this is safe to call repeatedly; the guard only
+    // stops two starts from overlapping while one is still waiting on health.
+    if (booting) {
+      scheduleBootRetry();
+      return;
+    }
+    booting = true;
     try {
       await widget.initialize?.call();
       traceStartup('reading login registration');
       startup = await api.startupEnabled();
+      traceStartup('reading update preferences');
+      final updatePrefs = await api.loadUpdatePreferences();
+      if (mounted) {
+        setState(() {
+          updateSchedule = updatePrefs.schedule;
+          autoUpdate = updatePrefs.automatic;
+        });
+        // Re-armed with whatever was actually stored, so the first automatic
+        // check after launch already uses the owner's cadence.
+        armUpdateTimer();
+      }
       traceStartup('reading initial status');
       await refresh();
       if (mounted) {
@@ -137,8 +271,8 @@ class _DeskState extends State<Desk> {
           unawaited(loadGroups());
         }
       }
-      unawaited(loadItems());
-      timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
+      bootAttempts = 0;
+      armStatusTimer();
       await WidgetsBinding.instance.endOfFrame;
       if (mounted && error == null) {
         await api.reportReady();
@@ -147,8 +281,75 @@ class _DeskState extends State<Desk> {
       unawaited(showUpdateOutcome());
     } catch (e) {
       traceStartup('startup failed');
-      if (mounted) setState(() => error = clean(e));
+      bootAttempts++;
+      if (!mounted) return;
+      // A backend that is merely slow is a state to recover from, so it keeps the
+      // spinner, retries by itself, and starts the status poll. A Local state
+      // problem is named at once, because the message says which file or path is
+      // wrong and the owner can act on it, but it still retries: those causes are
+      // often a leftover temporary file that a running session removes by itself.
+      // Any other failure (a refused window call, a broken install) is reported at
+      // once, exactly as before: retrying those would only hide a real error.
+      final retryable = e is BackendNotReady || e is LocalStateUnsafe;
+      final stuck = e is BackendNotReady && e.holderIsOurs ? e.holderPid : null;
+      // A blocker we can name is information, so it is shown at once with the way
+      // out. Only an unnamed slow launch keeps the spinner, because there is
+      // nothing to report yet and a busy start usually clears itself.
+      final silentGrace =
+          retryable && e is! LocalStateUnsafe && stuck == null && !showStartupError;
+      setState(() {
+        stuckHolderPid = stuck;
+        error = silentGrace ? null : clean(e);
+      });
+      if (retryable) {
+        armStatusTimer();
+        scheduleBootRetry();
+      }
+    } finally {
+      booting = false;
     }
+  }
+
+  /// Ends the older copy that is still holding the app port, then starts again.
+  /// The gateway refuses unless the process is confirmed to be our own backend,
+  /// so a shared port never turns this press into killing someone else's work.
+  Future<void> stopStuckCopy() async {
+    final pid = stuckHolderPid;
+    if (pid == null) return;
+    setState(() {
+      stuckHolderPid = null;
+      error = null;
+    });
+    await api.stopStuckBackend(pid);
+    // The pending retry belongs to the copy that was just ended.
+    bootRetryTimer?.cancel();
+    bootAttempts = 0;
+    await boot();
+  }
+
+  /// A slow launch and a broken install look identical for the first seconds, so
+  /// neither the start nor a failed status poll claims failure until the retries
+  /// have had their chance. One rule, read by both.
+  bool get showStartupError => bootAttempts >= _bootGraceAttempts;
+  /// True while a retryable start is still being retried, so a status poll that
+  /// lands in that window does not put a startup error over the spinner.
+  bool get startupRetrying => bootRetryTimer?.isActive == true;
+
+  /// Bounded, so a genuinely broken install does not spin forever, but long
+  /// enough that a busy launch recovers without the owner touching anything.
+  void scheduleBootRetry() {
+    if (bootAttempts >= _bootMaxAttempts) return;
+    bootRetryTimer?.cancel();
+    bootRetryTimer = Timer(_bootRetryDelay, () {
+      if (mounted && !ready) unawaited(boot());
+    });
+  }
+
+  /// Startup must never be the only thing that can arm the poll: it is what turns
+  /// a slow or refused launch into a working app instead of an unclearable banner.
+  void armStatusTimer() {
+    if (timer != null) return;
+    timer = Timer.periodic(const Duration(seconds: 3), (_) => refresh());
   }
 
   Future<void> showUpdateOutcome() async {
@@ -185,12 +386,13 @@ class _DeskState extends State<Desk> {
   String clean(Object e) => e.toString().replaceFirst('Bad state: ', '');
   @override
   void dispose() {
+    widget.closeGuard?.detach(allowClose);
     timer?.cancel();
     inboxSearchTimer?.cancel();
-    for (final controller in inboxScrolls.values) {
-      controller.dispose();
-    }
+    inboxScroll?.dispose();
+    inboxReply.dispose();
     updateTimer?.cancel();
+    unawaited(ServerModeActivity.setActive(false));
     api.closeUpdates();
     search.dispose();
     customName.dispose();
@@ -203,6 +405,7 @@ class _DeskState extends State<Desk> {
   Future<void> checkUpdates({bool manual = false}) async {
     if (checkingUpdates) return;
     setState(() => checkingUpdates = true);
+    final started = DateTime.now();
     try {
       final result = await api.checkUpdates(manual: manual);
       if (mounted) setState(() => update = result);
@@ -216,7 +419,32 @@ class _DeskState extends State<Desk> {
         );
       }
     } finally {
+      // A check against a local or already-cached feed returns in a couple of
+      // milliseconds, so the spinner never got a frame and the button read as
+      // dead. Hold the busy state briefly so the press is acknowledged.
+      final elapsed = DateTime.now().difference(started);
+      if (manual && elapsed < _updateCheckFloor) {
+        await Future<void>.delayed(_updateCheckFloor - elapsed);
+      }
       if (mounted) setState(() => checkingUpdates = false);
+    }
+  }
+
+  /// Changes how often the app checks, and persists it.
+  ///
+  /// This is the whole of the schedule feature: the value the pane renders its
+  /// sentence from is the same value the checker throttles on, so the app can no
+  /// longer claim a cadence it is not keeping.
+  Future<void> setUpdateSchedule(UpdateSchedule next) async {
+    setState(() => updateSchedule = next);
+    armUpdateTimer();
+    try {
+      await api.saveUpdatePreferences(
+        UpdatePreferences(schedule: next, automatic: autoUpdate),
+      );
+    } catch (_) {
+      // The choice still applies for this run; a failed write must not undo the
+      // option the owner just picked.
     }
   }
 
@@ -377,9 +605,14 @@ class _DeskState extends State<Desk> {
     polling = true;
     try {
       final next = await api.get('/api/status');
+      // A status that arrives without a completed startup still means the backend
+      // is there, so finish starting rather than leaving a spinner or a banner no
+      // later event would clear. This is what a tab switch used to do by hand.
+      final recovering = !ready && !booting;
       if (mounted) {
         setState(() {
           status = next;
+          if (recovering) ready = true;
           if (!setupActive &&
               !platforms.any(
                 (p) =>
@@ -398,8 +631,18 @@ class _DeskState extends State<Desk> {
           if (!ready) showGroups = next['destination']?['kind'] == 'group';
           error = null;
         });
+        if (recovering) {
+          unawaited(api.reportReady());
+        }
+        // A hidden or lid-closed app can be App Napped; opt out only while
+        // server mode is actually keeping sleep off.
+        final serverMode = Map<String, dynamic>.from(
+          next['preferences']?['serverMode'] ?? const {},
+        );
+        unawaited(ServerModeActivity.setActive(serverMode['active'] == true));
         modalUpdate?.call(() {});
-        if (section == 1) unawaited(loadInbox());
+        if (section == 1) unawaited(loadInboxFeed());
+        if (section == 6) unawaited(socialKey.currentState?.refreshQuietly());
         if (section == 4 &&
             next['macControl']?['supported'] == true &&
             !remoteBusy) {
@@ -422,7 +665,19 @@ class _DeskState extends State<Desk> {
         }
       }
     } catch (e) {
-      if (mounted) setState(() => error = clean(e));
+      if (mounted) {
+        // While the app has never started, the error is the whole state and must be
+        // shown. Once it is running, one slow or refused poll keeps the last good
+        // status instead of putting a startup error over a working screen; the
+        // retry two seconds later clears it anyway.
+        // Silent while a retryable start is still being retried, including during
+        // the retry's own status read: that window is exactly the slow launch this
+        // is meant to ride out. Once the retries stop, a failure is reported.
+        if (!ready && !booting && !startupRetrying) {
+          setState(() => error = clean(e));
+        }
+        modalUpdate?.call(() {});
+      }
     } finally {
       polling = false;
     }
@@ -434,11 +689,60 @@ class _DeskState extends State<Desk> {
     if (mounted) setState(() => macChecking = true);
     try {
       final next = await api.post('/api/mac-control', {'action': 'check'});
-      if (mounted) setState(() => status['macControl'] = next);
+      if (mounted) {
+        // Merge, never replace: a check response that omits `supported` used to
+        // wipe the flag and hide the whole Permissions section until the next
+        // status poll put it back.
+        final previous = Map<String, dynamic>.from(status['macControl'] ?? {});
+        final capture = Map<String, dynamic>.from(previous['capture'] ?? {});
+        final nextCapture = Map<String, dynamic>.from(next['capture'] ?? {});
+        setState(
+          () => status['macControl'] = {
+            ...previous,
+            ...next,
+            'capture': {...capture, ...nextCapture},
+          },
+        );
+      }
     } catch (_) {
       // The next poll shows the backend's own error state.
     } finally {
       if (mounted) setState(() => macChecking = false);
+    }
+  }
+
+  /// Try the desktop driver and report what happened.
+  ///
+  /// The driver's own permission preflight is not trustworthy in embedded mode: it
+  /// was measured saying `accessibility: false` while a read through the same driver
+  /// returned a window's accessibility tree. So the driver rows in Settings are
+  /// decided by this test, which asks the backend to make one harmless read.
+  Future<void> probeDriverAccess() async {
+    if (driverChecking) return;
+    if (mounted) setState(() => driverChecking = true);
+    try {
+      final next = await api.post('/api/desktop-control-permission', {
+        'action': 'probe',
+      });
+      if (mounted) {
+        // Merge, never replace: the response carries the permission and the test,
+        // and a partial answer must not wipe what the status poll already knew.
+        final previous = Map<String, dynamic>.from(
+          status['desktopControl'] ?? {},
+        );
+        setState(
+          () => status['desktopControl'] = {
+            ...previous,
+            ...next,
+            'permission': next['permission'] ?? previous['permission'],
+            'capability': next['capability'] ?? previous['capability'],
+          },
+        );
+      }
+    } catch (_) {
+      // The next poll shows the backend's own error state.
+    } finally {
+      if (mounted) setState(() => driverChecking = false);
     }
   }
 
@@ -448,15 +752,20 @@ class _DeskState extends State<Desk> {
       busy = true;
       actionError = null;
     });
+    modalUpdate?.call(() {});
     try {
       await action();
       if (mounted) setState(() => error = null);
     } catch (e) {
-      if (mounted) setState(() => actionError = clean(e));
+      if (mounted) {
+        setState(() => actionError = clean(e));
+        modalUpdate?.call(() {});
+      }
     } finally {
       if (mounted) {
         setState(() => busy = false);
         await refresh();
+        if (mounted) modalUpdate?.call(() {});
       }
     }
   }
@@ -527,10 +836,28 @@ class _DeskState extends State<Desk> {
     modalUpdate?.call(() {});
   }
 
+  Future<bool> allowClose() async {
+    if (section != 6 || socialKey.currentState == null) return true;
+    return socialKey.currentState!.allowLeave(forClose: true);
+  }
+
+  void releaseCloseLock() => socialKey.currentState?.releaseCloseLock();
+
   void go(int index) {
+    unawaited(navigate(index));
+  }
+
+  Future<bool> navigate(int index) async {
+    if (section == 6 &&
+        index != 6 &&
+        socialKey.currentState != null &&
+        !await socialKey.currentState!.allowLeave()) {
+      return false;
+    }
+    if (!mounted) return false;
     setState(() => section = index);
-    if (index == 2) unawaited(loadItems());
-    if (index == 1) unawaited(loadInbox());
+    if (index == 1) unawaited(loadInboxFeed());
+    return true;
   }
 
   Widget button(
@@ -724,7 +1051,7 @@ class _DeskState extends State<Desk> {
     child: Text(text, style: const TextStyle(color: muted, fontSize: 12)),
   );
 
-  /// Brand tile: WhatsApp, Claude or Codex (OpenAI) mark on its own colour.
+  /// Brand tile: WhatsApp, Claude, Codex (OpenAI) or Muse Code on its colour.
   Widget logoTile(String brand, {double size = 40, bool dim = false}) {
     if (brand == 'telegram') {
       return Opacity(
@@ -737,11 +1064,20 @@ class _DeskState extends State<Desk> {
         ),
       );
     }
+    // Muse Code ships a dark-mode mark (blue chevron, white M), so its tile is dark and the mark
+    // is the real one from the CLI rather than a stand-in glyph. DeepSeek Harness ships a blue
+    // whale drawn for a light tile. Cursor ships a dark geometric mark, so its tile is dark too.
     final (bg, asset) = switch (brand) {
       'whatsapp' => (whatsappGreen, 'whatsapp'),
       'claude' => (const Color(0xfff4ede4), 'claude'),
+      'muse' => (const Color(0xff1b1b20), 'muse'),
+      'deepseek' => (const Color(0xffffffff), 'deepseek'),
+      'cursor' => (const Color(0xff1b1b20), 'cursor'),
       _ => (const Color(0xfff3f1ea), 'openai'),
     };
+    final mark = brand == 'muse' || brand == 'cursor'
+        ? .62
+        : (brand == 'deepseek' ? .74 : .53);
     final tile = Container(
       width: size,
       height: size,
@@ -752,8 +1088,9 @@ class _DeskState extends State<Desk> {
       alignment: Alignment.center,
       child: Image.asset(
         'assets/logo-$asset.png',
-        width: size * .53,
-        height: size * .53,
+        width: size * mark,
+        height: size * mark,
+        fit: BoxFit.contain,
       ),
     );
     return dim
@@ -1022,8 +1359,20 @@ class _DeskState extends State<Desk> {
     Widget card(Map op, {bool detailed = false}) {
       final desktopClaude =
           op['provider'] == 'claude' && op['executionMode'] == 'desktop';
+      // Muse Code is CLI only, so a waiting CLI setup must not read as an app.
+      final desktopApp = op['executionMode'] == 'desktop';
+      final label = providerLabel(op['provider']);
       final waiting = op['status'] == 'needs_action',
           creating = op['status'] == 'creating';
+      final heading = creating
+          ? 'Setting up your coordinator'
+          : waiting
+          ? desktopClaude
+                ? 'Start your session in Claude'
+                : desktopApp
+                ? 'Start the session in $label'
+                : 'Setup needs you'
+          : 'Setup not completed';
       final at = stepOf(op);
       return Container(
         width: double.infinity,
@@ -1044,11 +1393,7 @@ class _DeskState extends State<Desk> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        creating
-                            ? 'Setting up your coordinator'
-                            : waiting
-                            ? 'Start your session in Claude'
-                            : 'Setup not completed',
+                        heading,
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
@@ -1093,9 +1438,11 @@ class _DeskState extends State<Desk> {
               note('You can close this window. Progress stays on Home.'),
             if (waiting)
               note(
-                op['workspaceId'] == null
-                    ? 'Claude opened a new chat with the setup message filled in. Confirm the folder and press Send. FarFromDesk detects it and connects automatically.'
-                    : 'Claude shows a card for this session. Click Start on it once. FarFromDesk detects it and connects automatically.',
+                !desktopApp
+                    ? '$label is running in its terminal. FarFromDesk connects the session automatically when it is ready.'
+                    : op['workspaceId'] == null
+                    ? '$label opened a new chat with the setup message filled in. Confirm the folder and press Send. FarFromDesk detects it and connects automatically.'
+                    : '$label shows a card for this session. Click Start on it once. FarFromDesk detects it and connects automatically.',
               )
             else if (op['error'] != null)
               note(op['error']),
@@ -1110,7 +1457,7 @@ class _DeskState extends State<Desk> {
                 runSpacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (waiting)
+                  if (waiting && desktopApp)
                     button(
                       'Open Claude',
                       () => post('/api/master-open-proposal', {
@@ -1238,7 +1585,7 @@ class _DeskState extends State<Desk> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              '${s['provider']} ${s['executionMode']} · ${s['cwd']}\n${s['status'] ?? ''}',
+                              '${providerLabel(s['provider'])} ${s['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'} · ${s['cwd']}\n${s['status'] ?? ''}',
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -1329,7 +1676,7 @@ class _DeskState extends State<Desk> {
     if (selected == null || selected.isEmpty) return;
     if (!await confirm(
       'Resume these selected sessions?',
-      '${selected.map((s) => "${s['name']} · ${s['provider']} ${s['executionMode']}\n${s['connectionLabel']}").join('\n\n')}\n\nThese exact connections will be added or reviewed. Queued work may run using the selected connection. Native permissions still apply.',
+      '${selected.map((s) => "${s['name']} · ${providerLabel(s['provider'])} ${s['executionMode'] == 'desktop' ? 'Desktop' : 'CLI'}\n${s['connectionLabel']}").join('\n\n')}\n\nThese exact connections will be added or reviewed. Queued work may run using the selected connection. Native permissions still apply.',
     )) {
       return;
     }

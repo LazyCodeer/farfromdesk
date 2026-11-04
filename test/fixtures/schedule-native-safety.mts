@@ -31,7 +31,8 @@ if(scenario==='composition'){
   store.recordOwnerOrigin('wa:brief',owner,owner);store.enqueue('wa:brief',binding,'Continue the item',owner);
   const stamp=Date.now(),insert=store.db.prepare("INSERT INTO items(title,status,binding_id,created_at,updated_at) VALUES('Test item','in progress',?,?,?)").run(binding.id,stamp,stamp),item=Number(insert.lastInsertRowid);
   store.db.prepare('INSERT INTO item_owner_origins VALUES(?,?,?)').run(item,owner,owner);store.linkItem('wa:brief',item);
-  recordBriefDispatch(router,store.job('wa:brief')!,item,binding.id);
+  const captured=store.captureIncomingOwner(owner,'whatsapp')!;
+  store.incomingOwnerContext.run(captured,()=>recordBriefDispatch(router,store.job('wa:brief')!,item,binding.id));
   assert.equal(router.assertDispatchAllowed(scheduled.id,binding),true);assert.equal(router.assertDispatchAllowed('wa:brief',binding),true);
   store.db.prepare("UPDATE items SET status='done' WHERE id=?").run(item);
   assert.throws(()=>router.assertDispatchAllowed('wa:brief',binding));assert.equal(router.assertDispatchAllowed(scheduled.id,binding),true);

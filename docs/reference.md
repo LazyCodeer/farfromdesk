@@ -71,6 +71,20 @@ The optional Claude **channel** mode runs an MCP server inside a chosen Claude s
 - `/answer CODE text`: answer a channel question.
 - `/pause NAME` and `/resume NAME`: disable/enable forwarding for that session.
 - `/stop NAME`: deny bridge-held permission requests. It does **not** kill or interrupt a native session. Use the native app's stop control to interrupt work.
+- `/stuck ci #ITEM https://github.com/OWNER/REPO/pull/NUMBER`: watch one public pull request for a failed check for an open, owner-linked item. Send this as a new text in your own WhatsApp chat with Brain status enabled. The watch expires after 24 hours; `/stuck ci remove #ITEM` removes it. The bridge checks at a bounded rate, and a notice describes one check observed failing at a particular time, not overall CI or merge readiness. Changes to the owner, item, or session can invalidate the watch; an unsent notice is rechecked after restart.
+- `/reach github search WORDS`, `/reach github read OWNER/REPOSITORY`, or `/reach web search WORDS`: retrieve public research for this one owner request.
+
+Public research requires a separately installed [Agent-Reach](https://github.com/Panniantong/Agent-Reach) on macOS or Linux. It is unavailable on Windows in this build. FarFromDesk does not install it or run its setup. GitHub requests use the anonymous GitHub API; web searches send the search words to Exa. The bridge gives the tool a fresh temporary home and does not pass account credentials or browser profiles. The installed executable still runs with the user's normal OS permissions; this is not an OS sandbox, so install a trusted version. Results include source links and short excerpts; source text is untrusted and may be incomplete. These commands do not post or publish, and other Agent-Reach channels are not enabled by this integration.
+
+To install the tested source version separately, use `uv` and Python 3.10 or newer:
+
+```sh
+uv tool install 'git+https://github.com/Panniantong/Agent-Reach.git@14c213405669414492bda0f8d52cc6531d062c45'
+```
+
+No `agent-reach setup` or browser login is needed for these public operations. The bridge looks for `agent-reach` in `~/.local/bin` and its inherited PATH. This integration was tested with the pinned source above; other versions may return incompatible responses.
+
+To let the coordinator use one result in a draft, send a new typed owner message whose first line is `Research: /reach web search YOUR WORDS` (or a supported GitHub command). Put any draft instructions on later lines. The coordinator can call `master_reach` or `master reach REQUEST-ID`; the bridge takes the exact query from that original message, not from the agent. Each request permits one attempt; if it fails or is interrupted, send a new request to try again. Requests that were forwarded, quoted, transcribed, changed during review, closed, or sent under a different owner are refused. An unavailable Agent-Reach installation is reported as such.
 
 Claude and Codex keep their normal tools, model choice, instructions, skills, MCP configuration and approval policies. A normal WhatsApp request does not override native permissions.
 
@@ -194,7 +208,11 @@ Activity allows selecting up to 500 eligible requests and closing them together.
 
 Settings → Request cleanup is off by default. When enabled, choose 24, 72 or 168 hours without a recorded update. `/api/request-cleanup` persists this choice. A once-per-minute background check marks eligible submitted/uncertain/failed requests `auto_closed`; queued requests are retained, progress resets the inactivity clock, and active delivery/approvals/delegation are protected. Existing old requests are included after enabling. This is tracking cleanup, not proof that the native session stopped: a submitted session can be working without emitting updates. History and late final replies remain available. The Closed tab distinguishes automatic closure from owner review. Auto-closed owner requests cannot authorize new delegation.
 
-Settings → Keep awake while locked uses macOS idle-sleep prevention (`caffeinate -i`) while background access is enabled. It allows screen locking/display sleep without disabling the password. If its assertion process exits, the service retries once per minute while the option remains enabled. It does not override manual sleep, low-battery shutdown or lid-close sleep. Closed-lid operation requires Apple's supported powered external-display setup; no unsupported lid override or system-wide sleep setting is installed.
+Settings → Keep awake while locked uses macOS idle-sleep prevention (`caffeinate -i`) while background access is enabled. It allows screen locking/display sleep without disabling the password. If its assertion process exits, the service retries once per minute while the option remains enabled. It does not override manual sleep, low-battery shutdown or lid-close sleep.
+
+Lid-closed sleep is held off by a separate setting, server mode. It installs a small root helper with administrator approval that disables system sleep only while FarFromDesk's heartbeat is current and the power cable is connected: up to 5 minutes of a missing heartbeat normally, and up to 2 hours while the Mac is still on AC power after the app stops. Unplugging the cable, turning the setting off, or a heartbeat older than the grace window restores normal sleep. This is an unsupported system-wide sleep setting, so a closed lid keeps the Mac warm and needs clear airflow. Verified on 3 November 2026; see [remote-control-lock-screen.md](remote-control-lock-screen.md).
+
+Neither setting touches the Mac password. The setting that makes a Mac ask for its password again is System Settings → Lock Screen → "Require password after screen saver begins or display is turned off", and it can be off entirely. Measured on 3 November 2026: even with that set to Immediately, a lid close alone does **not** lock the Mac, because the lock follows display sleep rather than the clamshell. `pmset displaysleepnow` locks within seconds (`SESSION_LOCKED`), and forcing the lid shut does not, which macOS logs as `clamshell closed, but screen is not locked`. The lock screen itself refuses nothing: when the Mac is locked the phone can display it, recover the display with `caffeinate -u` when it has gone black, and type into it.
 
 
 ### Replacing a master with pending work

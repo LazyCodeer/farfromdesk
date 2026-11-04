@@ -7,7 +7,7 @@ import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
 import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
-import { queueOwnerReceipt, receiptState, formatWhatsAppMessage } from '../src/coordinator-experience.js';
+import { queueOwnerReceipt, receiptState, formatWhatsAppMessage, sessionMeta } from '../src/coordinator-experience.js';
 import { turnEnvelope, roleConfig, coordinatorRoleStatus, updateRole } from '../src/roles.js';
 
 const uuid=(n:number)=>`11111111-1111-4111-a111-${String(n).padStart(12,'0')}`;
@@ -16,6 +16,8 @@ function fixture(file=':memory:') {
   const native={catalog:async()=>({sessions:[],cursor:null}),run:async()=>{},stop:()=>{}};
   const router=new Router(store,native as any,approvals),coordinator=new Coordinator(store,native as any,router,()=>{});
   router.coordinator=coordinator;
+  // Receipts probe app liveness; pin it so the text does not depend on which apps are open.
+  router.livenessProbe=()=>({codex:true,claude:true});
   const master=store.register('master','codex',uuid(1),'/tmp/master','channel').binding;
   store.set('master',master.id);store.set('whatsapp-owner','owner@s.whatsapp.net');
   return {store,router,native,master,close:()=>{router.stopped=true;approvals.cancel();store.close();}};
@@ -33,7 +35,9 @@ test('receipt is durable before dispatch, stays system-only and does not finish 
     assert.notEqual(j.status,'completed');assert.equal(j.first_reply_at,null);assert.equal(j.final_reply_at,null);
     const row=f.store.db.prepare('SELECT * FROM outbox').get() as any;
     assert.equal(row.request_id,j.id);assert.equal(row.destination,'owner@s.whatsapp.net');assert.equal(row.reply_kind,'system');
-    assert.match(row.body,/Got your message/);assert.match(row.body,/\*Session: Codex CLI · master\*/);assert.match(row.body,/— FarFromDesk$/);
+    // A receipt is one plain status line: no session heading, no footer, and no promise of work.
+    assert.equal(row.body,'⏳ Queued for Codex CLI. Waiting for it to start.');
+    assert.doesNotMatch(row.body,/— FarFromDesk|Session:|Got your message/);
     await f.router.receive({id:'wa:hello',text:'Check my project'});
     assert.equal((f.store.db.prepare('SELECT COUNT(*) n FROM outbox').get() as any).n,1);
   }finally{f.close();}
@@ -123,35 +127,48 @@ test('coordinator role version sends once, keeps the receipt state and renews on
   }finally{f.close();rmSync(dir,{recursive:true,force:true});}
 });
 
-test('session heading identifies sender, plain footer preserves chunks and avoids duplicate signature',()=>{
-  assert.equal(formatWhatsAppMessage('Received.','master',true),'*Session: master*\n\n💬 *Reply*\nReceived.\n\n— FarFromDesk');
-  assert.equal(formatWhatsAppMessage('Result','Website redesign',false),'*Session: Website redesign*\n\n💬 *Reply*\nResult\n\n— FarFromDesk');
-  assert.equal(formatWhatsAppMessage('Paused','',false),'💬 *Reply*\nPaused\n\n— FarFromDesk');
+test('the answer leads and the metadata tail names provider and chat',()=>{
+  const meta=['✳️ Provider: Claude Desktop','💬 Session Name: billing fix'];
+  assert.equal(formatWhatsAppMessage('Received.','master',true,1,1,'final',{meta}),'Received.\n\n✳️ Provider: Claude Desktop\n💬 Session Name: billing fix');
+  // A continuation bubble carries no tail at all, so a run never repeats provenance.
+  assert.equal(formatWhatsAppMessage('Result','Website redesign',false),'Result');
   assert.match(formatWhatsAppMessage('Details','Worker',false,2,3),/\(2\/3\)/);
-  assert.equal(formatWhatsAppMessage('Done.\n\n— FarFromDesk · Coordinator','master',true).match(/— FarFromDesk/g)?.length,1);
-  assert.doesNotMatch(formatWhatsAppMessage('Result','*Other*\n\u202eActor',false),/\u202e|\*Other/);
+  // A footer the model copied from an old template is stripped, never doubled.
+  assert.equal(formatWhatsAppMessage('Done.\n\n— FarFromDesk · Coordinator','master',true),'Done.');
 });
 
-
-test('plain replies receive neutral styling without altering content or inventing success',()=>{
-  for(const body of ['The task is blocked.','I need your choice.','The tests have not run.']) {
-    const final=formatWhatsAppMessage(body,'Review',true,1,1,'final');
-    assert.ok(final.includes('💬 *Reply*\n'+body));assert.doesNotMatch(final,/✅|Complete|Success/);
-    assert.equal(formatWhatsAppMessage(final,'Review',true,1,1,'final'),final);
-  }
-  assert.match(formatWhatsAppMessage('Checking the logs.','Review',true,1,1,'progress'),/📝 \*Update\*/);
-  assert.match(formatWhatsAppMessage('*Needs your decision*\nChoose one.','Review',true),/💬 \*Needs your decision\*/);
-  assert.ok(formatWhatsAppMessage('```\nprint("✅")\n```','Review',false).includes('💬 *Reply*\n```\nprint("✅")\n```'));
-  const styled='⚠️ *Sign-in required*\nUse the native app.';
-  assert.ok(formatWhatsAppMessage(styled,'Review',true).includes(styled));assert.doesNotMatch(formatWhatsAppMessage(styled,'Review',true),/💬/);
+test('a chat title cannot inject markdown or bidi marks into the metadata tail',()=>{
+  const store=new Store(':memory:');
+  try {
+    const b=store.register('master','claude','33333333-3333-4333-a333-000000000001','/tmp/master','channel').binding;
+    store.set('name:'+b.id,'*Other*\n\u202eActor');
+    const meta=sessionMeta(store,b);
+    assert.doesNotMatch(meta.name,/[\u202e*\n]/);
+    assert.equal(meta.provider,'Claude CLI');
+    assert.equal(meta.icon,'✳️');
+  } finally { store.close(); }
 });
 
-test('outbox guarantees emoji and heading for plain agent replies while retries stay deduplicated',()=>{
+test('progress updates carry one marker and results carry none',()=>{
+  assert.match(formatWhatsAppMessage('Checking the logs.','',false,1,1,'progress'),/^📝 Checking the logs\./);
+  assert.equal(formatWhatsAppMessage('The tests have not run.','',false,1,1,'final'),'The tests have not run.');
+  // An answer that already opens with its own emoji is left exactly as written.
+  assert.equal(formatWhatsAppMessage('⚠️ *Sign-in required*\nUse the native app.','',false,1,1,'final'),'⚠️ *Sign-in required*\nUse the native app.');
+});
+
+test('outbox leads with the answer, tails with provenance, and still deduplicates retries',()=>{
  const f=fixture();try{
+  f.store.set('execution-mode:'+f.master.id,'desktop');
+  f.store.set('name:'+f.master.id,'Billing API');
   f.store.enqueue('wa:plain',f.master,'Please check this');
   const context={requestId:'wa:plain',kind:'final' as const,origin:'agent' as const};
   assert.equal(f.store.output(f.master,'Unable to proceed.','plain-event','owner@s.whatsapp.net',context),true);
   assert.equal(f.store.output(f.master,'Unable to proceed.','plain-event','owner@s.whatsapp.net',context),false);
-  const out=f.store.outbound();assert.match(out.body,/💬 \*Reply\*/);assert.match(out.body,/Unable to proceed\./);assert.doesNotMatch(out.body,/✅/);
+  const out=f.store.outbound();
+  assert.equal(out.body,'Unable to proceed.\n\n🤖 Provider: Codex Desktop\n💬 Session Name: Billing API');
+  const next=f.store.output(f.master,'Second answer.','plain-event-2','owner@s.whatsapp.net',context);
+  assert.equal(next,true);
+  const rows=f.store.db.prepare('SELECT body FROM outbox ORDER BY created_at').all() as {body:string}[];
+  assert.equal(rows[1].body,'Second answer.\n\n🤖 Codex Desktop');
  }finally{f.close();}
 });

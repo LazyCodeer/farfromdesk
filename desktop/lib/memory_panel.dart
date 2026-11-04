@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'bridge_theme.dart';
+import 'connection_status.dart';
 import 'gateway.dart';
 import 'meta_brain_panel.dart' show infoTip;
 
@@ -255,11 +256,17 @@ class _MemoryFilesState extends State<MemoryFiles> {
   };
 
   Widget platformChip(String value) {
-    final brand = switch (value.toLowerCase()) {
+    const ids = {'muse code': 'muse', 'deepseek harness': 'deepseek', 'cursor': 'cursor'};
+    final id = ids[value.toLowerCase()] ?? value.toLowerCase();
+    final brand = switch (id) {
       'codex' => 'openai',
       'claude' => 'claude',
+      'muse' => 'muse',
+      'deepseek' => 'deepseek',
+      'cursor' => 'cursor',
       _ => null,
     };
+    final label = brand == null ? value : providerLabel(id);
     return Container(
       padding: EdgeInsets.fromLTRB(brand == null ? 12 : 3, 3, 12, 3),
       decoration: ShapeDecoration(
@@ -274,21 +281,29 @@ class _MemoryFilesState extends State<MemoryFiles> {
               height: 24,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: brand == 'claude'
-                    ? const Color(0xfff4ede4)
-                    : const Color(0xfff3f1ea),
+                color: switch (brand) {
+                  'claude' => const Color(0xfff4ede4),
+                  // The Muse mark is white and blue: it needs a dark tile on any card.
+                  'muse' => const Color(0xff1b1b20),
+                  // The DeepSeek whale is blue and needs a light tile.
+                  'deepseek' => const Color(0xffffffff),
+                  // Cursor's mark is drawn for a dark tile, like Muse's.
+                  'cursor' => const Color(0xff1b1b20),
+                  _ => const Color(0xfff3f1ea),
+                },
                 borderRadius: BorderRadius.circular(7),
               ),
               child: Image.asset(
                 'assets/logo-$brand.png',
-                width: 13,
-                height: 13,
+                width: brand == 'muse' || brand == 'cursor' ? 15 : 13,
+                height: brand == 'muse' || brand == 'cursor' ? 15 : 13,
+                fit: BoxFit.contain,
               ),
             ),
             const SizedBox(width: 7),
           ],
           Text(
-            value,
+            label,
             style: brand == null
                 ? _mono.copyWith(color: ink, fontSize: 12)
                 : const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
@@ -534,7 +549,7 @@ class _MemoryFilesState extends State<MemoryFiles> {
                     value: platform,
                     underline: const SizedBox(),
                     items: [
-                      for (final p in ['Codex', 'Claude'])
+                      for (final p in ['Codex', 'Claude', 'Muse Code', 'DeepSeek Harness', 'Cursor'])
                         DropdownMenuItem(value: p, child: Text(p)),
                     ],
                     onChanged: (v) => setState(() => platform = v),

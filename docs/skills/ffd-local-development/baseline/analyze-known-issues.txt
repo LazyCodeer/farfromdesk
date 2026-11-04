@@ -1,0 +1,5 @@
+# Pre-existing analyzer issues (infos/warnings) that do not count against a run.
+# Snapshot taken 2026-11-03 from build 2356.
+# Refresh: replace with the lines from /tmp/ffd-analyze.log that you have confirmed
+# are not yours, keeping the format ' info • message • file:line:col • code'.
+   info • Statements in an if should be enclosed in a block. Try wrapping the statement in a block • test/social_image_settings_test.dart:15:7 • curly_braces_in_flow_control_structures

@@ -1,0 +1,812 @@
+#!/usr/bin/env bash
+# ffd: one entry point for FarFromDesk Local work.
+#
+#   ffd status                                   what is installed, from which source, what is running
+#   ffd test backend [--baseline|--update-baseline]
+#   ffd test desktop [--all | <test files...>]
+#   ffd render --list
+#   ffd render <scenario> [--out DIR]            render one screen to a PNG and clean up after itself
+#   ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
+#   ffd rollback [bundle]                        put a saved bundle back into ~/Applications
+#   ffd permissions                              which binaries hold macOS grants, and what changed
+#
+# Deliberately NOT `set -e`: the failure this script exists to prevent was an
+# install that aborted before printing its own report because `set -e` plus
+# `pipefail` turned an empty `pgrep` into a fatal error. Every step here checks
+# its own status and the report always prints.
+set -uo pipefail
+
+# Resolve symlinks, because this is usually reached through ~/.local/bin/ffd and
+# everything else (config, baselines, templates) lives beside the real file.
+FFD_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+FFD_DIR="$(cd "$(dirname "$FFD_SELF")" && pwd)"
+# shellcheck source=/dev/null
+[ -f "$FFD_DIR/ffd.conf" ] && source "$FFD_DIR/ffd.conf"
+
+FFD_SOURCE="${FFD_SOURCE:-/private/tmp/ffd-pr}"
+FFD_FLUTTER="${FFD_FLUTTER:-/Volumes/Personal/DevTools/flutter/bin/flutter}"
+FFD_INSTALLED="${FFD_INSTALLED:-$HOME/Applications/FarFromDesk Local.app}"
+FFD_BUILDS="${FFD_BUILDS:-/Volumes/Personal/Developer/FarFromDesk/Builds}"
+FFD_STATE="${FFD_STATE:-$HOME/Library/Application Support/FarFromDesk Local}"
+FFD_BOUNDLE_ID="com.codecylabs.farfromdesk.localtest"
+FFD_PORT="${FFD_PORT:-47961}"
+FFD_SKILL="${FFD_SKILL:-$HOME/.codex/skills/ffd-local-development}"
+FFD_SMOKE="${FFD_SMOKE:-$FFD_SKILL/scripts/packaged_smoke.mjs}"
+FFD_BASELINE="$FFD_DIR/../baseline"
+FFD_TEMPLATES="$FFD_DIR/../templates"
+FFD_NOTE="${FFD_NOTE:-settings}"   # used in the stage folder and buildId
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n== %s ==\n' "$*"; }
+note() { printf '   %s\n' "$*"; }
+die()  { printf 'ffd: %s\n' "$*" >&2; exit 1; }
+
+need_source() {
+  [ -d "$FFD_SOURCE/desktop" ] || die "no source at $FFD_SOURCE (set FFD_SOURCE)"
+  [ -d "$FFD_SOURCE/dist" ] || die "$FFD_SOURCE/dist is missing; run: (cd $FFD_SOURCE && npm run build)"
+}
+need_flutter() { [ -x "$FFD_FLUTTER" ] || die "no flutter at $FFD_FLUTTER (set FFD_FLUTTER)"; }
+need_installed() { [ -d "$FFD_INSTALLED" ] || die "no installed Local app at $FFD_INSTALLED"; }
+
+installed_version() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$FFD_INSTALLED/Contents/Info.plist" 2>/dev/null || echo none
+}
+installed_build_id() {
+  grep -o '"buildId"[^,]*' "$FFD_INSTALLED/Contents/Resources/backend/build.json" 2>/dev/null | cut -d'"' -f4 || true
+}
+health_code() {
+  # curl prints 000 itself when it cannot connect, so do not append another one.
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$FFD_PORT/health" 2>/dev/null)" || true
+  if [ -n "$code" ]; then printf '%s' "$code"; else printf '000'; fi
+}
+# A second `flutter build macos` in the same checkout writes the same output
+# directory, so builds must be serialised across sessions.
+builders_running() {
+  pgrep -fl 'flutter_tools|xcodebuild|frontend_server' 2>/dev/null || true
+}
+local_pids() {
+  pgrep -f "$FFD_INSTALLED/Contents" 2>/dev/null || true
+}
+# `ps` is blocked in some session sandboxes; say so rather than printing a bare pid.
+proc_cmd() {
+  local out
+  out="$(ps -p "$1" -o command= 2>/dev/null | cut -c1-110)"
+  if [ -n "$out" ]; then printf '%s' "$out"; else printf 'command not readable from this sandbox'; fi
+}
+# Highest build number documented in the handoff note, so a stale note is visible.
+# The header line wins: it is the one field the note keeps current.
+documented_version() {
+  local h
+  h="$(grep -m1 -oE 'Last installed version: \*\*[0-9]{4}' "$FFD_SKILL/references/current-state.md" 2>/dev/null | grep -oE '[0-9]{4}')"
+  if [ -n "$h" ]; then printf '%s' "$h"; return; fi
+  grep -oE '^## [0-9]{4} ' "$FFD_SKILL/references/current-state.md" 2>/dev/null | grep -oE '[0-9]{4}' | sort -n | tail -1
+}
+next_build_after() {
+  case "$1" in ''|none|unknown|*[!0-9]*) echo 1;; *) echo $(( $1 + 1 ));; esac
+}
+
+# The signing identity to use, if the keychain has one.
+#
+# An ad-hoc signature ("-") gives the app a TCC requirement of a bare cdhash, so
+# every rebuild is a different app to macOS and the owner has to allow Accessibility
+# and Screen Recording again. A real identity makes the requirement name the team
+# instead of the bytes, so the grant is asked for once and survives rebuilds.
+# FFD_SIGN_IDENTITY overrides the search.
+sign_identity() {
+  if [ -n "${FFD_SIGN_IDENTITY:-}" ]; then printf '%s' "$FFD_SIGN_IDENTITY"; return; fi
+  security find-identity -v -p codesigning 2>/dev/null \
+    | grep -E '"(Apple Development|Developer ID Application)' \
+    | head -1 \
+    | sed -E 's/^[[:space:]]*[0-9]+\) [0-9A-F]+ "(.*)"/\1/'
+}
+identity_count() {
+  security find-identity -v -p codesigning 2>/dev/null | grep -c '^ *[0-9]*)' || true
+}
+# Sign the nested TCC subjects too, so their requirements also name the team.
+# cua-driver is deliberately never touched: it carries the vendor's signature, and
+# re-signing it would replace the very requirement that keeps its grant working.
+# With no identity, nothing is re-signed at all: the staged helpers are already
+# ad-hoc signed, and re-signing them for no reason can only disturb their bytes.
+sign_grant_holders() {
+  local app="$1" identity="$2" rel target
+  [ -n "$identity" ] || return 0
+  for rel in "Contents/Resources/backend/native/FarFromDesk Accessibility.app" \
+             "Contents/Resources/backend/native/session-state" \
+             "Contents/Resources/backend/native/eventkit-helper"; do
+    target="$app/$rel"
+    [ -e "$target" ] || continue
+    if /usr/bin/codesign --force --sign "$identity" --preserve-metadata=entitlements "$target" >/dev/null 2>&1; then
+      say "  signed $rel"
+    else
+      note "could not sign $rel with $identity; leaving its existing signature"
+    fi
+  done
+}
+# The designated requirement is what macOS stores and matches a grant against.
+requirement_of() {
+  codesign -d -r- "$1" 2>&1 | grep -m1 'designated' | sed 's/^# designated => //'
+}
+
+# ---------------------------------------------------------------- status
+
+cmd_status() {
+  local ver build_id src_head src_branch dirty doc
+  ver="$(installed_version)"
+  build_id="$(installed_build_id)"
+  doc="$(documented_version)"
+
+  step "installed Local"
+  say "  version    $ver"
+  say "  buildId    ${build_id:-unknown}"
+  [ -n "$doc" ] && [ "$ver" != "$doc" ] && note "handoff note documents $doc; installed is $ver (another session may have moved it)"
+
+  local pids; pids="$(local_pids)"
+  if [ -n "$pids" ]; then
+    say "  running    yes"
+    echo "$pids" | head -3 | while read -r pid; do
+      printf '             %s %s\n' "$pid" "$(proc_cmd "$pid")"
+    done
+    say "  health     $(health_code)  (401 means reachable; 000 means not answering)"
+  else
+    say "  running    no"
+  fi
+
+  step "source"
+  if [ -d "$FFD_SOURCE" ]; then
+    say "  path       $FFD_SOURCE"
+    src_branch="$(git -C "$FFD_SOURCE" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    src_head="$(git -C "$FFD_SOURCE" log -1 --format='%h %ad %s' --date=format:'%H:%M' 2>/dev/null)"
+    dirty="$(git -C "$FFD_SOURCE" status --porcelain 2>/dev/null | grep -v node_modules | wc -l | tr -d ' ')"
+    say "  branch     ${src_branch:-unknown}"
+    say "  HEAD       ${src_head:-unknown}"
+    say "  uncommitted files: ${dirty}"
+    [ "$dirty" != "0" ] && note "another session may be mid-edit; commit or check before you reset anything"
+  else
+    say "  path       $FFD_SOURCE (MISSING)"
+  fi
+
+  step "build environment"
+  say "  flutter    $( [ -x "$FFD_FLUTTER" ] && echo "$FFD_FLUTTER" || echo "MISSING at $FFD_FLUTTER")"
+  local running; running="$(builders_running)"
+  if [ -n "$running" ]; then
+    say "  busy       a build looks in progress:"
+    echo "$running" | head -3 | sed 's/^/             /'
+    note "wait for it: two flutter builds share one output directory"
+  else
+    say "  busy       no flutter/xcodebuild process seen"
+  fi
+  say "  next build $(next_build_after "$ver") (override with: ffd ship --build N)"
+  say "  stage dir  $FFD_BUILDS/<note>-<build>"
+  local id idcount; id="$(sign_identity)"; idcount="$(identity_count)"
+  if [ -n "$id" ]; then
+    say "  identity   $id  (grants survive a rebuild)"
+  else
+    if [ "$idcount" = "0" ]; then
+      say "  identity   none in the keychain: ad-hoc only"
+    else
+      say "  identity   none usable of $idcount (need Apple Development or Developer ID Application)"
+    fi
+    note "so this app's TCC requirement is a cdhash, and every rebuild needs Accessibility"
+    note "and Screen Recording allowed again. An Apple Development certificate fixes that."
+  fi
+  note "writing to $FFD_BUILDS and \$HOME/Applications needs the file sandbox widened"
+}
+
+# ---------------------------------------------------------------- tests
+
+# Compare the failures a run produced against the stored baseline. The point is
+# to never need two full suite runs to answer "did I break this?".
+compare_baseline() {
+  local baseline_file="$1" actual_file="$2" label="$3"
+  if [ ! -f "$baseline_file" ]; then
+    say "  no baseline at $baseline_file: treating every failure as new"
+    sed 's/^/    /' "$actual_file"
+    return
+  fi
+  grep -v '^#' "$baseline_file" | sed '/^$/d' | sort > /tmp/ffd-base.txt
+  sort "$actual_file" -o "$actual_file"
+  local added removed
+  added="$(comm -13 /tmp/ffd-base.txt "$actual_file")"
+  removed="$(comm -23 /tmp/ffd-base.txt "$actual_file")"
+  say "  $label: $(wc -l < "$actual_file" | tr -d ' ') failed, $(wc -l < /tmp/ffd-base.txt | tr -d ' ') known"
+  if [ -n "$added" ]; then
+    say "  NEW FAILURES (not in the baseline):"
+    echo "$added" | sed 's/^/    /'
+  else
+    say "  new failures: none"
+  fi
+  [ -n "$removed" ] && { say "  baseline entries that passed this run:"; echo "$removed" | sed 's/^/    /'; }
+  [ -n "$added" ] && return 1
+  return 0
+}
+
+cmd_test_backend() {
+  need_source
+  local update=0 diff=1
+  for arg in "$@"; do
+    case "$arg" in
+      --update-baseline) update=1; diff=0;;
+      --baseline|--diff) diff=1;;
+      --no-baseline) diff=0;;
+      *) die "unknown option for 'ffd test backend': $arg";;
+    esac
+  done
+  step "backend suite"
+  # Several backend tests drive 5ms timers; under a parallel flutter test they miss
+  # their second notice and report a failure that vanishes when run alone.
+  local also; also="$(pgrep -fl 'flutter_tools|flutter_tester|frontend_server' 2>/dev/null || true)"
+  [ -n "$also" ] && note "a flutter test looks to be running: expect false NEW FAILURES from the 5ms timer tests"
+  ( cd "$FFD_SOURCE" && npm test ) > /tmp/ffd-backend.log 2>&1
+  local status=$?
+  grep '^not ok' /tmp/ffd-backend.log | sed -E 's/^not ok [0-9]+ - //' | sort > /tmp/ffd-backend-fails.txt
+  grep -E '^# (pass|fail|skipped)' /tmp/ffd-backend.log | sed 's/^/  /'
+  say "  exit status $status, log /tmp/ffd-backend.log"
+  if [ "$update" = "1" ]; then
+    [ "${FFD_I_MEAN_IT:-}" = "1" ] || die "refusing to overwrite the baseline; re-run with FFD_I_MEAN_IT=1 once every listed failure is confirmed not yours"
+    { echo "# Known-failing backend tests. Refresh only after confirming each entry is not your change."
+      echo "# Refreshed $(date '+%Y-%m-%d %H:%M') from build $(installed_version)."
+      cat /tmp/ffd-backend-fails.txt; } > "$FFD_BASELINE/backend-known-failures.txt"
+    say "  baseline updated: $FFD_BASELINE/backend-known-failures.txt"
+    return 0
+  fi
+  [ "$diff" = "1" ] || return 0
+  compare_baseline "$FFD_BASELINE/backend-known-failures.txt" /tmp/ffd-backend-fails.txt "backend"
+}
+
+cmd_test_desktop() {
+  need_flutter
+  local all=0 files=()
+  for arg in "$@"; do
+    case "$arg" in
+      --all) all=1;;
+      *) files+=("$arg");;
+    esac
+  done
+  [ "$all" = "1" ] || [ ${#files[@]} -gt 0 ] || { all=1; }
+
+  step "flutter analyze"
+  ( cd "$FFD_SOURCE/desktop" && "$FFD_FLUTTER" analyze ) > /tmp/ffd-analyze.log 2>&1
+  local analyze_status=$?
+  # The analyzer reports pre-existing infos and exits 1 for them, so only errors
+  # and issues that are not in the stored list count against this run.
+  grep -E '^ *error •' /tmp/ffd-analyze.log | sed 's/^/  /' > /tmp/ffd-analyze-errors.txt
+  grep -E '^ *(info|warning) •' /tmp/ffd-analyze.log > /tmp/ffd-analyze-other.txt
+  if [ -f "$FFD_BASELINE/analyze-known-issues.txt" ]; then
+    grep -v -F -f <(grep -v '^#' "$FFD_BASELINE/analyze-known-issues.txt") /tmp/ffd-analyze-other.txt > /tmp/ffd-analyze-new.txt || true
+  else
+    cp /tmp/ffd-analyze-other.txt /tmp/ffd-analyze-new.txt
+  fi
+  local nerr nnew
+  nerr="$(wc -l < /tmp/ffd-analyze-errors.txt | tr -d ' ')"
+  nnew="$(wc -l < /tmp/ffd-analyze-new.txt | tr -d ' ')"
+  say "  errors: $nerr, issues not in the known list: $nnew (analyzer exit $analyze_status, log /tmp/ffd-analyze.log)"
+  [ "$nerr" != "0" ] && sed 's/^/  /' /tmp/ffd-analyze-errors.txt
+  [ "$nnew" != "0" ] && { say "  new analyzer issues:"; sed 's/^/  /' /tmp/ffd-analyze-new.txt; }
+
+  step "desktop tests"
+  local args=()
+  [ "$all" = "1" ] && args=() || args=("${files[@]}")
+  ( cd "$FFD_SOURCE/desktop" && "$FFD_FLUTTER" test "${args[@]}" ) > /tmp/ffd-desktop-tests.log 2>&1
+  local test_status=$?
+  tail -20 /tmp/ffd-desktop-tests.log | grep -E 'passed|failed|Failing tests' | sed 's/^/  /'
+  awk '/^Failing tests:/{f=1;next} f' /tmp/ffd-desktop-tests.log \
+    | sed -E 's#^ *[^ ]*/desktop/test/##' | sed '/^$/d' | sort > /tmp/ffd-desktop-fails.txt
+  sed -n 's/^ *\(.*\)$/\1/p' /tmp/ffd-desktop-fails.txt | sed 's/^/  /' | head -20
+  if [ "$all" = "1" ]; then
+    compare_baseline "$FFD_BASELINE/desktop-known-failures.txt" /tmp/ffd-desktop-fails.txt "desktop"
+    local compared=$?
+  else
+    say "  (subset run: not compared against the full-suite baseline, exit $test_status)"
+    local compared=0
+  fi
+  [ "$nerr" = "0" ] && [ "$nnew" = "0" ] || return 1
+  return $compared
+}
+
+# ---------------------------------------------------------------- permissions
+
+# Every executable macOS can hold a TCC grant for, relative to the app bundle.
+# The helper app and the owner-view helper are rebuilt by the packaging step and
+# are ad-hoc signed, so their identity is a bare cdhash: if their bytes change,
+# macOS sees a different app and its Accessibility / Screen Recording grant is
+# gone. cua-driver is signed by its vendor, so its identity is stable.
+grant_subjects() {
+  local app="$1" exec
+  exec="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null)"
+  printf '%s\n' "Contents/MacOS/${exec:-FarFromDesk Local}"
+  printf '%s\n' "Contents/Resources/backend/native/FarFromDesk Accessibility.app"
+  printf '%s\n' "Contents/Resources/backend/native/session-state"
+  printf '%s\n' "Contents/Resources/backend/native/cua-driver/cua-driver"
+}
+
+# rel<TAB>cdhash<TAB>identifier<TAB>identity-kind, one line per existing subject.
+grant_table() {
+  local app="$1" rel path ident cdhash team req kind
+  while read -r rel; do
+    path="$app/$rel"
+    [ -e "$path" ] || continue
+    ident="$(codesign -d -vvv "$path" 2>&1 | grep -m1 '^Identifier=' | cut -d= -f2)"
+    cdhash="$(codesign -d -vvv "$path" 2>&1 | grep -m1 '^CDHash=' | cut -d= -f2)"
+    team="$(codesign -d -vvv "$path" 2>&1 | grep -m1 '^TeamIdentifier=' | cut -d= -f2)"
+    req="$(codesign -d -r- "$path" 2>&1 | grep -m1 'designated')"
+    if [ -n "$team" ] && [ "$team" != "not set" ]; then
+      kind="identity $team (a rebuild keeps the grant)"
+    elif printf '%s' "$req" | grep -q 'cdhash'; then
+      kind="bare cdhash (any byte change loses the grant)"
+    else
+      kind="unknown requirement"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$rel" "$cdhash" "$ident" "$kind"
+  done < <(grant_subjects "$app")
+}
+
+cmd_permissions() {
+  local compare="" app="$FFD_INSTALLED"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --app) app="$2"; shift 2;;
+      --compare) compare="$2"; shift 2;;
+      *) die "unknown option for 'ffd permissions': $1";;
+    esac
+  done
+  [ -d "$app" ] || die "no app bundle at $app"
+  if [ -z "$compare" ]; then
+    compare="$(ls -dt "$FFD_BUILDS"/*/"FarFromDesk Local.app" 2>/dev/null | head -1 || true)"
+  fi
+
+  step "grant holders in $(basename "$app")"
+  grant_table "$app" > /tmp/ffd-perms.txt
+  while IFS=$'\t' read -r rel cdhash ident kind; do
+    printf '  %s\n' "$rel"
+    printf '    identifier  %s\n' "${ident:-none}"
+    printf '    cdhash      %s\n' "${cdhash:-none}"
+    printf '    identity    %s\n' "$kind"
+  done < /tmp/ffd-perms.txt
+
+  # The app's own requirement is the one that decides this build's grants, so say
+  # what it means in plain words rather than leaving it in the table above.
+  local app_exec app_req
+  app_exec="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null)"
+  app_req="$(requirement_of "$app_exec")"
+  if printf '%s' "$app_req" | grep -q cdhash; then
+    say ""
+    say "  The app's own requirement is a byte hash, and macOS stores these grants"
+    say "  against it (tccd: AUTHREQ_SUBJECT is the app bundle, not the helper it"
+    say "  launches). Every rebuild therefore needs the two services allowed again."
+    if [ -n "$(sign_identity)" ]; then
+      say "  A signing identity is available, so sign the build with it and that stops:"
+      say "    $(sign_identity)"
+    else
+      say "  $(identity_count) code signing identities in the keychain, so there is nothing"
+      say "  to sign with yet. An Apple Development certificate (Xcode > Settings >"
+      say "  Accounts > Manage Certificates) makes this requirement name the team."
+    fi
+  fi
+
+  if [ -n "$compare" ] && [ -d "$compare" ]; then
+    step "changed since $(dirname "$compare" | xargs basename)"
+    grant_table "$compare" > /tmp/ffd-perms-other.txt
+    local changed=0 rel cdhash ident other
+    : > /tmp/ffd-perms-reset.txt
+    while IFS=$'\t' read -r rel cdhash ident _; do
+      other="$(awk -F'\t' -v k="$rel" '$1==k{print $2}' /tmp/ffd-perms-other.txt)"
+      if [ -z "$other" ]; then
+        printf '  %s: not in the other bundle\n' "$rel"
+      elif [ "$other" != "$cdhash" ]; then
+        changed=1
+        printf '  %s CHANGED  %s -> %s\n' "$rel" "${other:0:12}" "${cdhash:0:12}"
+        printf '    %s\n' "${ident:-no identifier}"
+        [ -n "$ident" ] && printf '%s\n' "$ident" >> /tmp/ffd-perms-reset.txt
+      fi
+    done < /tmp/ffd-perms.txt
+    if [ "$changed" = "0" ]; then
+      say "  none: every grant holder is byte-identical, so macOS still sees the same apps"
+    else
+      say ""
+      say "  Each changed binary is, to macOS, a different app with no grants. tccd says"
+      say "  so itself: AUTHREQ_SUBJECT names the subject it evaluates, and for this app"
+      say "  that is the app bundle (com.codecylabs.farfromdesk.localtest), not the helper"
+      say "  it launches. So the app's own bytes decide whether the grant applies, and an"
+      say "  ad-hoc signature's bytes change with every build."
+      say ""
+      say "  Re-approve in System Settings > Privacy & Security: Accessibility, and Screen"
+      say "  Recording for phone screen control. If the row is present but will not switch"
+      say "  on, clear the dead entry first:"
+      sort -u /tmp/ffd-perms-reset.txt | while read -r id; do
+        say "    tccutil reset Accessibility $id"
+        say "    tccutil reset ScreenCapture $id"
+      done
+      say "  A signing identity is the only thing that stops this recurring: it makes the"
+      say "  stored requirement name the team instead of the bytes. The vendored cua-driver"
+      say "  is the proof: it is vendor-signed, so its grant survives every rebuild."
+    fi
+  else
+    note "nothing to compare against (pass --compare /path/to/Other.app)"
+  fi
+}
+
+# ---------------------------------------------------------------- render
+
+cmd_render() {
+  local scenario="${1:-}" out=""
+  [ -n "$scenario" ] || die "usage: ffd render <scenario>   (ffd render --list)"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --out) out="$2"; shift 2;;
+      *) die "unknown option for 'ffd render': $1";;
+    esac
+  done
+  [ "$scenario" = "--list" ] && { list_scenarios; return 0; }
+  case "$scenario" in --*) list_scenarios; return 0;; esac
+  # Fail before paying for a flutter run: the template knows which scenarios exist.
+  if ! list_scenarios | grep -qx "  $scenario"; then
+    step "render: no scenario named '$scenario'"
+    list_scenarios
+    die "unknown scenario '$scenario'"
+  fi
+
+  need_flutter; need_source
+  out="${out:-/tmp/ffd-renders/$(installed_version)-$scenario}"
+  mkdir -p "$out"
+  local harness="$FFD_SOURCE/desktop/test/zz_ffd_render_test.dart"
+  local goldens="$FFD_SOURCE/desktop/test/goldens"
+
+  # The repo keeps no goldens: they break on every unrelated UI change, and with
+  # another session editing the same tree they fail for reasons that are not
+  # yours. The harness is copied in, used, and removed even if the run fails.
+  cp "$FFD_TEMPLATES/render_scenarios.dart" "$harness"
+  cleanup_render() { rm -f "$harness"; rm -rf "$goldens"; }
+  trap cleanup_render EXIT
+
+  step "render $scenario"
+  ( cd "$FFD_SOURCE/desktop" && FFD_RENDER_SCENARIO="$scenario" "$FFD_FLUTTER" test test/zz_ffd_render_test.dart --update-goldens ) > /tmp/ffd-render.log 2>&1
+  local status=$?
+  if [ $status -ne 0 ]; then
+    tail -30 /tmp/ffd-render.log
+    die "render failed; log /tmp/ffd-render.log"
+  fi
+  [ -f "$goldens/$scenario.png" ] || { tail -20 /tmp/ffd-render.log; die "no PNG produced for '$scenario'"; }
+  cp "$goldens/$scenario.png" "$out/$scenario.png"
+  local size; size=$(stat -f%z "$out/$scenario.png" 2>/dev/null || echo 0)
+  say "  $out/$scenario.png  ${size} bytes"
+  # Real glyphs roughly triple the file size; a sudden drop means font
+  # registration stopped working and every glyph is a box.
+  [ "$size" -lt 60000 ] && note "suspiciously small: check that the system font still loads (text renders as boxes otherwise)"
+  say "  harness removed"
+  cleanup_render
+  trap - EXIT
+}
+
+list_scenarios() {
+  step "render scenarios"
+  grep -oE "^  '[a-z0-9-]+':" "$FFD_TEMPLATES/render_scenarios.dart" | tr -d " ':" | sed 's/^/  /'
+}
+
+# ---------------------------------------------------------------- ship
+
+cmd_ship() {
+  local build="" note="$FFD_NOTE" dry=0 install=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --build) build="$2"; shift 2;;
+      --note) note="$2"; shift 2;;
+      --dry-run) dry=1; shift;;
+      --no-install) install=0; shift;;
+      *) die "unknown option for 'ffd ship': $1";;
+    esac
+  done
+  need_source; need_flutter; need_installed
+  local ver; ver="$(installed_version)"
+  [ -n "$build" ] || build="$(next_build_after "$ver")"
+  case "$ver" in ''|none|unknown|*[!0-9]*) die "no readable installed version; pass --build N explicitly";; esac
+  [ "$build" -gt "$ver" ] || die "build $build is not above the installed $ver"
+  local stage="$FFD_BUILDS/$note-$build"
+  local app="$stage/FarFromDesk Local.app"
+  local busy; busy="$(builders_running)"
+  [ -n "$busy" ] && die "a build is already running; wait for it (two flutter builds share one output directory): $(echo "$busy" | head -1)"
+
+  step "plan"
+  say "  installed   $ver"
+  say "  building    $build  (buildId local-$note-$build)"
+  say "  source      $FFD_SOURCE"
+  say "  stage       $stage"
+  say "  install     $([ "$install" = 1 ] && echo "yes, replacing $FFD_INSTALLED" || echo no)"
+
+  if [ "$dry" = 1 ]; then
+    say "  dry run: nothing built or replaced"
+    [ -e "$stage" ] && note "stage dir already exists and would be deleted"
+    return 0
+  fi
+
+  step "backend build"
+  ( cd "$FFD_SOURCE" && npm run build ) > /tmp/ffd-backend-build.log 2>&1 \
+    || { tail -20 /tmp/ffd-backend-build.log; die "backend build failed"; }
+  say "  tsc + package ok"
+
+  step "flutter release build"
+  ( cd "$FFD_SOURCE/desktop" && "$FFD_FLUTTER" build macos --release --no-pub --build-number="$build" \
+      --dart-define=FFD_ISOLATED_LOCAL=true \
+      "--dart-define=FFD_LOCAL_STATE=$FFD_STATE" \
+      --dart-define=FFD_LOCAL_PORT="$FFD_PORT" \
+      --dart-define=FFD_LOCAL_CODEX_HOME="$HOME/.codex" \
+      "--dart-define=FFD_OWNER_HOME=$HOME" ) > /tmp/ffd-flutter-build.log 2>&1 \
+    || { tail -30 /tmp/ffd-flutter-build.log; die "flutter build failed"; }
+  grep -E '✓ Built|Built ' /tmp/ffd-flutter-build.log | tail -1 | sed 's/^/  /'
+
+  step "stage"
+  local built="$FFD_SOURCE/desktop/build/macos/Build/Products/Release/FarFromDesk Local.app"
+  [ -d "$built" ] || die "no release build at $built"
+  rm -rf "$stage"; mkdir -p "$stage"
+  # The Flutter build does not produce the runtime, native helpers or skills, so
+  # they are carried forward from the installed bundle. That carry-forward is only
+  # right for the compiled helpers, whose bytes the macOS grants are bound to.
+  # Everything under native/ that is source has to come from the checkout, or a
+  # change there can never ship: native/server-mode/helper.sh sat unchanged in the
+  # installed app through a build that rewrote it, and the version guard that
+  # replaced it then refused to install.
+  cp -R -c "$built" "$app" || die "copying the Flutter app into the stage failed"
+  rm -rf "$app/Contents/Resources/backend" "$app/Contents/Resources/speech"
+  cp -R -c "$FFD_INSTALLED/Contents/Resources/backend" "$app/Contents/Resources/backend" || die "copying the backend in failed"
+  [ -d "$FFD_INSTALLED/Contents/Resources/speech" ] && cp -R -c "$FFD_INSTALLED/Contents/Resources/speech" "$app/Contents/Resources/speech"
+  rm -rf "$app/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/skills"
+  ditto "$FFD_SOURCE/dist" "$app/Contents/Resources/backend/dist" || die "overlaying dist failed"
+  ditto "$FFD_SOURCE/skills" "$app/Contents/Resources/backend/skills" || die "overlaying skills failed"
+  # Merge, never replace: ditto only writes what the checkout has, so a compiled
+  # helper that exists only in the installed app is left alone.
+  ditto "$FFD_SOURCE/native" "$app/Contents/Resources/backend/native" || die "overlaying native helpers failed"
+  # The embedding helper is compiled here rather than committed: nothing under native/ that
+  # is a binary is tracked. A machine without the Swift toolchain simply ships without it, and
+  # retrieval falls back to the lexical shortlist, which is measured to hold the golden set on
+  # its own.
+  if command -v xcrun >/dev/null 2>&1; then
+    if xcrun swiftc -O "$FFD_SOURCE/native/tool-embed.swift" -o "$app/Contents/Resources/backend/native/tool-embed" 2>/tmp/ffd-tool-embed.log; then
+      say "  tool-embed ok"
+    else
+      say "  tool-embed skipped (see /tmp/ffd-tool-embed.log)"
+    fi
+  else
+    say "  tool-embed skipped (no Swift toolchain)"
+  fi
+  # The Calendar and Reminders helper is compiled here for the same reason as tool-embed.
+  # It is compiled with its usage descriptions embedded, because macOS reads them from the
+  # helper itself; without them the Calendar grant is denied instantly and silently.
+  if command -v xcrun >/dev/null 2>&1; then
+    if xcrun swiftc -O -framework EventKit -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$FFD_SOURCE/native/eventkit-helper-Info.plist" "$FFD_SOURCE/native/eventkit-helper.swift" -o "$app/Contents/Resources/backend/native/eventkit-helper" 2>/tmp/ffd-eventkit-helper.log; then
+      say "  eventkit-helper ok"
+    else
+      say "  eventkit-helper skipped (see /tmp/ffd-eventkit-helper.log)"
+    fi
+  else
+    say "  eventkit-helper skipped (no Swift toolchain)"
+  fi
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$app/Contents/Info.plist"
+  python3 - "$app/Contents/Resources/backend/build.json" "$FFD_SOURCE" "local-$note-$build" "$FFD_SOURCE" <<'PY'
+import json,sys
+path,src,build_id,local_source=sys.argv[1:5]
+meta=json.load(open(path))
+meta['buildId']=build_id
+meta['localSource']=local_source
+meta['localChanges']=True
+json.dump(meta,open(path,'w'),indent=2)
+PY
+  grep -o '"buildId"[^,]*' "$app/Contents/Resources/backend/build.json" | sed 's/^/  /'
+  # Say exactly what this ships: every compiled file that differs from what is installed.
+  local changed; changed="$(diff -rq "$FFD_INSTALLED/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/dist" 2>/dev/null | wc -l | tr -d ' ')"
+  say "  compiled files differing from the installed backend: $changed"
+  diff -rq "$FFD_INSTALLED/Contents/Resources/backend/dist" "$app/Contents/Resources/backend/dist" 2>/dev/null \
+    | sed -E 's#.*/dist/([^ ]+).*#    \1#' | head -20
+
+  step "sign"
+  local identity; identity="$(sign_identity)"
+  sign_grant_holders "$app" "$identity"
+  if [ -n "$identity" ]; then
+    /usr/bin/codesign --force --sign "$identity" --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$app" >/dev/null 2>&1 \
+      || die "signing the app with $identity failed"
+    say "  signed with $identity"
+  else
+    /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$app" >/dev/null 2>&1 \
+      && say "  signed ad-hoc (no signing identity in the keychain)" \
+      || note "ad-hoc signing refused; keeping the staged signature"
+    note "ad-hoc means the app's requirement is a cdhash, so the owner must allow Accessibility"
+    note "and Screen Recording again for this build. A certificate ends that for good."
+  fi
+  /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
+    && say "  signature verified" || die "signature does not verify"
+  say "  requirement: $(requirement_of "$app")"
+
+  step "packaged smoke"
+  node "$FFD_SMOKE" "$app" || die "packaged smoke failed"
+  say "  $stage" > "$stage/RESULTS.md"
+  say "  build $build, buildId local-$note-$build" >> "$stage/RESULTS.md"
+  say "  staged $(date '+%Y-%m-%d %H:%M')" >> "$stage/RESULTS.md"
+
+  # A grant holder whose bytes changed has to be allowed again by hand: macOS
+  # stores an ad-hoc app's Accessibility and Screen Recording grants against its
+  # exact bytes. Better to say so here than to leave the owner with a page that
+  # says "Not allowed" and no idea why.
+  step "permissions impact"
+  cmd_permissions --app "$FFD_INSTALLED" --compare "$app" > /tmp/ffd-perms-impact.txt
+  sed -n '/^== changed since/,$p' /tmp/ffd-perms-impact.txt | tail -n +3
+  { echo; echo "Permissions impact:"; sed -n '/^== changed since/,$p' /tmp/ffd-perms-impact.txt | tail -n +3; } >> "$stage/RESULTS.md"
+
+  if [ "$install" = 0 ]; then
+    say "  --no-install: leaving the installed app at $ver"
+    return 0
+  fi
+
+  step "install"
+  [ -d "$app" ] || die "stage vanished"
+  rm -rf "$stage/local-$ver-rollback.bundle"
+  ditto "$FFD_INSTALLED" "$stage/local-$ver-rollback.bundle" || die "could not save the rollback bundle"
+  osascript -e 'quit app "FarFromDesk Local"' >/dev/null 2>&1 || true
+  local waited=0
+  while [ "$waited" -lt 20 ] && pgrep -f "$FFD_INSTALLED/Contents" >/dev/null 2>&1; do sleep 1; waited=$((waited+1)); done
+  # An orphaned backend (ppid 1) survives SIGTERM, keeps the sqlite service lock
+  # and the port, and the relaunched app's backend then crash-loops on the lock.
+  # Escalate to SIGKILL, and only ever for processes inside this exact bundle.
+  local round
+  for round in $(seq 1 10); do
+    local stragglers; stragglers="$(pgrep -f "$FFD_INSTALLED/Contents" 2>/dev/null || true)"
+    [ -z "$stragglers" ] && break
+    local pid cmd
+    for pid in $stragglers; do
+      # pgrep already matched this pid against the exact installed path, so an
+      # unreadable command line ("(name)" means the process is mid-exit) is not
+      # evidence that it belongs to someone else. Only a readable command that
+      # points elsewhere is. Reading it wrong leaves a stale helper behind, which
+      # is how an orphaned backend ends up holding the port and the service lock.
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      case "$cmd" in
+        '') kill -KILL "$pid" 2>/dev/null || true;;
+        "($FFD_INSTALLED"*|"(${FFD_INSTALLED##*/}"*) kill -KILL "$pid" 2>/dev/null || true;;
+        "$FFD_INSTALLED/"*) kill -KILL "$pid" 2>/dev/null || true;;
+        *) note "not killing pid $pid (outside this bundle): $cmd" ;;
+      esac
+    done
+    sleep 1
+  done
+  for round in $(seq 1 10); do
+    lsof -nP -iTCP:"$FFD_PORT" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if lsof -nP -iTCP:"$FFD_PORT" >/dev/null 2>&1; then
+    die "something still holds port $FFD_PORT; the new app was not installed"
+  fi
+  rm -rf "$FFD_INSTALLED"
+  for round in $(seq 1 10); do [ ! -e "$FFD_INSTALLED" ] && break; sleep 2; rm -rf "$FFD_INSTALLED"; done
+  [ -e "$FFD_INSTALLED" ] && die "could not remove the installed app; nothing was replaced"
+  # ditto is denied writing into ~/Applications on this machine while cp -R -P
+  # copies the same bundle completely, so retry and never accept a partial copy.
+  local copied=0
+  for round in 1 2 3; do
+    rm -rf "$FFD_INSTALLED"
+    if cp -R -P "$app" "$FFD_INSTALLED" 2>/dev/null \
+        && [ -e "$FFD_INSTALLED/Contents/Info.plist" ] \
+        && [ -d "$FFD_INSTALLED/Contents/Frameworks" ] \
+        && [ -d "$FFD_INSTALLED/Contents/Resources/backend/node_modules" ]; then
+      copied=1; break
+    fi
+    sleep 3
+  done
+  [ "$copied" = "1" ] || die "copy into ~/Applications was incomplete; the staged build is intact at $stage"
+  # A copy keeps the staged signature, and re-signing a team-signed bundle ad-hoc
+  # would replace the identity requirement the grant is stored against. Only sign
+  # again if the copy actually broke the signature, and then with the same identity.
+  if ! /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1; then
+    local identity; identity="$(sign_identity)"
+    if [ -n "$identity" ]; then
+      /usr/bin/codesign --force --sign "$identity" --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 \
+        || note "re-signing the copied app failed; keeping what it has"
+    else
+      /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 \
+        || note "ad-hoc re-sign skipped; keeping the staged signature"
+    fi
+  fi
+  /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1 || die "signature invalid after copy"
+  open -a "$FFD_INSTALLED"
+
+  # The report always prints, whatever happened above. The backend can take
+  # longer than a minute to come up on a busy launch.
+  local report="$stage/RESULTS.md"
+  say "" >> "$report"
+  say "Installed $(date '+%Y-%m-%d %H:%M')" >> "$report"
+  say "version $(installed_version)  buildId $(installed_build_id)" >> "$report"
+  local code=000 waited2=0
+  while [ "$waited2" -lt 120 ]; do
+    code="$(health_code)"
+    [ "$code" = "401" ] && break
+    sleep 2; waited2=$((waited2+2))
+  done
+  say "health $code after ${waited2}s" >> "$report"
+  local pids; pids="$(local_pids)"
+  say "processes:" >> "$report"
+  for pid in $pids; do say "  $pid $(proc_cmd "$pid")" >> "$report"; done
+  if [ "$code" = "401" ]; then
+    note "reachable. A 401 only proves the port answers: check again 90 seconds after launch before calling it healthy."
+  else
+    note "the backend is not answering yet; the app shows its own startup state and retries itself."
+  fi
+  say "rollback $stage/local-$ver-rollback.bundle" >> "$report"
+  step "report"
+  cat "$report"
+}
+
+# ---------------------------------------------------------------- rollback
+
+cmd_rollback() {
+  local bundle="${1:-}"
+  if [ -z "$bundle" ]; then
+    bundle="$(ls -dt "$FFD_BUILDS"/*/local-*-rollback.bundle 2>/dev/null | head -1)"
+    [ -n "$bundle" ] || die "no rollback bundle found under $FFD_BUILDS"
+  fi
+  [ -d "$bundle" ] || die "no bundle at $bundle"
+  local ver; ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$bundle/Contents/Info.plist" 2>/dev/null || echo unknown)"
+  step "rollback to $ver"
+  say "  from $bundle"
+  osascript -e 'quit app "FarFromDesk Local"' >/dev/null 2>&1 || true
+  sleep 3
+  local pid cmd
+  for pid in $(pgrep -f "$FFD_INSTALLED/Contents" 2>/dev/null || true); do
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$cmd" in "$FFD_INSTALLED/"*) kill -KILL "$pid" 2>/dev/null || true;; esac
+  done
+  sleep 2
+  rm -rf "$FFD_INSTALLED"
+  cp -R -P "$bundle" "$FFD_INSTALLED" || die "copying the bundle back failed"
+  # Keep the saved signature: the bundle being restored was signed when it was
+  # built, and re-signing it ad-hoc would change the requirement its grant was
+  # stored against. Only repair a signature the copy actually broke.
+  if ! /usr/bin/codesign --verify --deep --strict "$FFD_INSTALLED" >/dev/null 2>&1; then
+    local identity; identity="$(sign_identity)"
+    if [ -n "$identity" ]; then
+      /usr/bin/codesign --force --sign "$identity" --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 || true
+    else
+      /usr/bin/codesign --force --sign - --identifier "$FFD_BOUNDLE_ID" --preserve-metadata=entitlements "$FFD_INSTALLED" >/dev/null 2>&1 || true
+    fi
+  fi
+  open -a "$FFD_INSTALLED"
+  say "  installed $(installed_version); health $(health_code)"
+}
+
+# ---------------------------------------------------------------- dispatcher
+
+usage() {
+  # Written out rather than sliced from the header comment: a fixed line range
+  # breaks the moment the comment above changes.
+  cat <<'USAGE'
+ffd: one entry point for FarFromDesk Local work.
+
+  ffd status                                   installed version, source, running state, next build
+  ffd test backend [--baseline]                npm test, diffed against baseline/
+  ffd test backend --update-baseline           refresh the baseline (needs FFD_I_MEAN_IT=1)
+  ffd test desktop [--all | <test files...>]   flutter analyze + widget tests
+  ffd render --list                            the scenarios the template can render
+  ffd render <scenario> [--out DIR]            render one screen to a PNG, harness cleaned up
+  ffd ship [--build N] [--note NAME] [--dry-run] [--no-install]
+                                               build, stage, sign, smoke, install, report
+  ffd rollback [bundle]                        put a saved bundle back into ~/Applications
+  ffd permissions [--app PATH] [--compare PATH]
+                                               which binaries hold macOS grants, and what changed
+
+Paths come from scripts/ffd.conf; an environment variable of the same name wins.
+See references/tooling.md for what each step encodes and the traps it avoids.
+USAGE
+}
+
+case "${1:-}" in
+  status) shift; cmd_status "$@";;
+  test) shift
+    case "${1:-}" in
+      backend) shift; cmd_test_backend "$@";;
+      desktop) shift; cmd_test_desktop "$@";;
+      *) die "usage: ffd test backend|desktop";;
+    esac;;
+  render) shift; cmd_render "$@";;
+  permissions|perms) shift; cmd_permissions "$@";;
+  ship) shift; cmd_ship "$@";;
+  rollback) shift; cmd_rollback "$@";;
+  -h|--help|help|"") usage;;
+  *) die "unknown subcommand '${1}'; try: ffd --help";;
+esac

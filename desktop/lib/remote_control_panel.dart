@@ -104,105 +104,256 @@ extension _RemoteControl on _DeskState {
     });
   }
 
-  List<Widget> remoteControlPanels() => [
-    if (remoteError != null) ...[
-      Text(remoteError!, style: const TextStyle(color: Color(0xffff9d92))),
-      gap(12),
-    ],
-    remoteControlCard(),
-  ];
+  /// Which of the three setup steps are already done, read from real state so
+  /// the stepper never claims progress the backend does not have.
+  ({bool permissions, bool password, bool connected}) remoteSetupState() {
+    final mac = status['macControl'] ?? {};
+    final capture = Map<String, dynamic>.from(mac['capture'] ?? {});
+    final accessibility = mac['trusted'] == true;
+    final screenRecording =
+        capture['supported'] == false || capture['trusted'] == true;
+    return (
+      permissions: accessibility && screenRecording,
+      password: remotePasswordSet,
+      connected: (remoteLink['state'] ?? 'idle') == 'connected',
+    );
+  }
 
-  Widget remoteControlCard() {
-    final state = remoteLink['state'] ?? 'idle';
-    final stateTag = switch (state) {
-      'offered' => tag('Link sent', tint: warning),
-      'connecting' => tag('Connecting', spinning: true),
-      'connected' => tag('Connected', good: true),
-      _ => remotePasswordSet ? tag('Ready', good: true) : tag('Off'),
-    };
-    return panel(
-      'Control from anywhere',
-      subtitle: remotePasswordSet
-          ? 'Your phone asks for the remote password on every new connection.'
-          : 'Set a remote password to get started.',
-      trailing: stateTag,
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (legacyRemote['enabled'] == true) ...[
-            settingRow(
-              'Earlier Remote Desktop access is enabled',
-              'Review or turn off the earlier Remote Desktop connection.',
-              button(
-                'Manage',
-                () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => RemoteDesktopPage(gateway: api),
-                  ),
-                ),
-                compact: true,
-                key: const Key('remote-desktop-settings'),
-              ),
-            ),
-            const Divider(height: 32),
-          ],
-          if (status['macControl']?['supported'] == true) ...[
-            macControlPanel(),
-            const Divider(height: 32),
-          ],
-          LayoutBuilder(
-            builder: (context, constraints) {
-              if (constraints.maxWidth < 600) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    remotePasswordContents(),
-                    const Divider(height: 32),
-                    remoteLinkContents(),
-                  ],
-                );
-              }
-              return IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: remotePasswordContents()),
-                    Container(
-                      width: 1,
-                      margin: const EdgeInsets.symmetric(horizontal: 20),
-                      color: line2,
-                    ),
-                    Expanded(child: remoteLinkContents()),
-                  ],
-                ),
-              );
-            },
+  List<Widget> remoteControlPanels() {
+    final done = remoteSetupState();
+    return [
+      if (remoteError != null) ...[
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          decoration: BoxDecoration(
+            color: sand,
+            borderRadius: BorderRadius.circular(12),
           ),
-          if (phoneRemote['running'] == true) ...[
-            const Divider(height: 32),
-            settingRow(
-              'An existing local phone session is active',
-              'Stop this session when you are finished.',
-              button(
-                'Stop phone access',
-                () => remoteRun(
-                  () => phoneCommand({'action': 'stop'}),
-                  interrupt: true,
-                ),
-                ignoreBusy: true,
-                destructive: true,
-                compact: true,
-                icon: Icons.stop_rounded,
-                key: const Key('wifi-stop'),
-              ),
+          child: Text(
+            remoteError!,
+            style: const TextStyle(fontSize: 12.5, color: Color(0xffff9d92)),
+          ),
+        ),
+        gap(12),
+      ],
+      remoteSetupCard(done),
+      if (status['macControl']?['supported'] == true) ...[
+        gap(24),
+        settingsSubheading(
+          'Permissions',
+          'Required to allow remote access and screen control.',
+        ),
+        gap(12),
+        macControlPanel(),
+      ],
+      gap(26),
+      remoteColumns(),
+      if (legacyRemote['enabled'] == true) ...[
+        gap(16),
+        settingCard(
+          Icons.desktop_windows_outlined,
+          'Earlier Remote Desktop access is enabled',
+          'Review or turn off the earlier Remote Desktop connection.',
+          control: button(
+            'Manage',
+            () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => RemoteDesktopPage(gateway: api)),
             ),
-          ],
-        ],
+            compact: true,
+            key: const Key('remote-desktop-settings'),
+          ),
+        ),
+      ],
+      if (phoneRemote['running'] == true) ...[
+        gap(10),
+        settingCard(
+          Icons.wifi_tethering_rounded,
+          'An existing local phone session is active',
+          'Stop this session when you are finished.',
+          control: button(
+            'Stop phone access',
+            () => remoteRun(
+              () => phoneCommand({'action': 'stop'}),
+              interrupt: true,
+            ),
+            ignoreBusy: true,
+            destructive: true,
+            compact: true,
+            icon: Icons.stop_rounded,
+            key: const Key('wifi-stop'),
+          ),
+        ),
+      ],
+    ];
+  }
+
+  /// The three steps as the owner sees them: what is left to do sits beside the
+  /// sentence that says what this panel is for.
+  Widget remoteSetupCard(
+    ({bool permissions, bool password, bool connected}) done,
+  ) {
+    final complete = done.permissions && done.password && done.connected;
+    final heading = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          complete ? 'Remote control is set up' : 'Setup remote control',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        gap(5),
+        Text(
+          complete
+              ? 'Permissions, password and phone are all in place.'
+              : 'Grant permissions, set a remote password, and connect your phone.',
+          style: const TextStyle(fontSize: 12.5, height: 1.45, color: muted),
+        ),
+      ],
+    );
+    final steps = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        remoteStepNode(
+          1,
+          'Permissions',
+          done: done.permissions,
+          current: !done.permissions,
+        ),
+        remoteStepLine(done.permissions),
+        remoteStepNode(
+          2,
+          'Password',
+          done: done.password,
+          current: done.permissions && !done.password,
+        ),
+        remoteStepLine(done.password),
+        remoteStepNode(
+          3,
+          'Connect',
+          done: done.connected,
+          current: done.password && !done.connected,
+        ),
+      ],
+    );
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
+      decoration: BoxDecoration(
+        color: accentWash,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: .4)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, box) => box.maxWidth < 720
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [heading, gap(20), steps],
+              )
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(width: 300, child: heading),
+                  const SizedBox(width: 32),
+                  Expanded(child: steps),
+                ],
+              ),
       ),
     );
   }
 
-  Widget remotePasswordContents() {
+  Widget remoteStepNode(
+    int n,
+    String label, {
+    bool done = false,
+    bool current = false,
+  }) {
+    final color = done ? success : current ? accent : faint;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: done
+                ? successWash
+                : current
+                ? accent
+                : Colors.transparent,
+            border: Border.all(color: current ? accent : color),
+          ),
+          child: done
+              ? const Icon(Icons.check_rounded, size: 17, color: success)
+              : Text(
+                  '$n',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: current ? onAction : faint,
+                  ),
+                ),
+        ),
+        gap(9),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: ink,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget remoteStepLine(bool filled) => Expanded(
+    child: Padding(
+      padding: const EdgeInsets.only(top: 15, left: 10, right: 10),
+      child: Container(
+        height: 1.5,
+        color: filled ? success.withValues(alpha: .55) : line2,
+      ),
+    ),
+  );
+
+  /// Two columns split by a rule rather than two cards, so the password and the
+  /// phone steps read as one thing done in two places.
+  Widget remoteColumns() => LayoutBuilder(
+    builder: (context, constraints) {
+      if (constraints.maxWidth < 620) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            remotePasswordColumn(),
+            gap(26),
+            remoteConnectColumn(),
+          ],
+        );
+      }
+      return IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: remotePasswordColumn()),
+            Container(
+              width: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 30),
+              color: line2,
+            ),
+            Expanded(child: remoteConnectColumn()),
+          ],
+        ),
+      );
+    },
+  );
+
+  /// One card, two states. The form is the whole card while there is no password
+  /// (that is the only thing to do), and one stored-password row with a single
+  /// action once there is, so the page never shows fields that would overwrite a
+  /// working password by accident.
+  Widget remotePasswordColumn() {
     final editing = !remotePasswordSet || changingRemotePassword;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -212,7 +363,7 @@ extension _RemoteControl on _DeskState {
             const Expanded(
               child: Text(
                 'Remote password',
-                style: TextStyle(fontWeight: FontWeight.w600),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
               ),
             ),
             remotePasswordSet
@@ -222,40 +373,73 @@ extension _RemoteControl on _DeskState {
         ),
         gap(8),
         if (editing) ...[
-          small(
-            'Use a separate password, not your $computer login. Your phone asks for it on each new connection.',
+          Text(
+            remotePasswordSet
+                ? 'Setting a new one ends any phone session that is open now.'
+                : 'Use a separate password, not your $computer login. Your phone '
+                      'asks for it on each new connection.',
+            style: const TextStyle(fontSize: 13, height: 1.5, color: muted),
           ),
-          gap(12),
+          gap(14),
           TextField(
             key: const Key('remote-password'),
             controller: remotePassword,
-            obscureText: true,
+            obscureText: !remotePasswordVisible,
             enableSuggestions: false,
             autocorrect: false,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Password, at least 12 characters',
+              suffixIcon: IconButton(
+                key: const Key('remote-password-reveal'),
+                tooltip: remotePasswordVisible ? 'Hide' : 'Show',
+                iconSize: 19,
+                color: muted,
+                onPressed: () => changeView(
+                  () => remotePasswordVisible = !remotePasswordVisible,
+                ),
+                icon: Icon(
+                  remotePasswordVisible
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
+                ),
+              ),
             ),
           ),
           gap(8),
           TextField(
             key: const Key('remote-password-confirm'),
             controller: remoteConfirm,
-            obscureText: true,
+            obscureText: !remoteConfirmVisible,
             enableSuggestions: false,
             autocorrect: false,
-            decoration: const InputDecoration(labelText: 'Confirm password'),
+            decoration: InputDecoration(
+              labelText: 'Confirm password',
+              suffixIcon: IconButton(
+                key: const Key('remote-confirm-reveal'),
+                tooltip: remoteConfirmVisible ? 'Hide' : 'Show',
+                iconSize: 19,
+                color: muted,
+                onPressed: () => changeView(
+                  () => remoteConfirmVisible = !remoteConfirmVisible,
+                ),
+                icon: Icon(
+                  remoteConfirmVisible
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
+                ),
+              ),
+            ),
             onSubmitted: (_) => saveRemotePassword(),
           ),
-          gap(12),
+          gap(14),
           Wrap(
             spacing: 8,
             children: [
               button(
-                'Save password',
+                remotePasswordSet ? 'Save new password' : 'Set password',
                 saveRemotePassword,
                 enabled: !remoteBusy,
                 primary: true,
-                compact: true,
                 key: const Key('remote-password-save'),
               ),
               if (remotePasswordSet)
@@ -271,19 +455,63 @@ extension _RemoteControl on _DeskState {
             ],
           ),
         ] else ...[
-          small('Changing it ends any phone session that is open now.'),
-          gap(12),
+          remotePasswordStoredRow(),
+          gap(10),
+          Text(
+            'Changing it ends any phone session that is open now.',
+            style: const TextStyle(fontSize: 13, height: 1.5, color: muted),
+          ),
+          gap(14),
           button(
-            'Change',
+            'Change password',
             () => changeView(() => changingRemotePassword = true),
             compact: true,
+            key: const Key('remote-password-change'),
           ),
         ],
       ],
     );
   }
 
-  Widget remoteLinkContents() {
+  /// The stored password, as the only thing about it that can be shown: a lock
+  /// and a fixed mask. The backend keeps a salt and a scrypt hash and does not
+  /// store the length, so this is a fixed twelve dots and never a character
+  /// count, and the row says plainly where the password lives.
+  ///
+  /// A [Wrap], not a [Row]: this column is about 277 px wide in the owner's
+  /// window and the label carries the computer's name, so a long name drops the
+  /// label onto its own line instead of overflowing the row.
+  Widget remotePasswordStoredRow() => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+    decoration: BoxDecoration(
+      color: toneCharcoal,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: line2),
+    ),
+    child: Wrap(
+      spacing: 12,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.lock_outline_rounded, size: 18, color: muted),
+            const SizedBox(width: 12),
+            const Text(
+              '••••••••••••',
+              maxLines: 1,
+              style: TextStyle(fontSize: 14, letterSpacing: 2, color: ink),
+            ),
+          ],
+        ),
+        small('Stored on this $computer'),
+      ],
+    ),
+  );
+
+  Widget remoteConnectColumn() {
     final state = remoteLink['state'] ?? 'idle';
     final active = ['offered', 'connecting', 'connected'].contains(state);
     final reason = remoteLink['reason'] as String?;
@@ -292,15 +520,16 @@ extension _RemoteControl on _DeskState {
       children: [
         const Text(
           'Connect from your phone',
-          style: TextStyle(fontWeight: FontWeight.w600),
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
         gap(8),
-        small(
+        Text(
           remotePasswordSet
               ? 'Send the request from your connected chat:'
               : 'Once your password is set:',
+          style: const TextStyle(fontSize: 13, height: 1.5, color: muted),
         ),
-        gap(14),
+        gap(16),
         remoteStep(
           1,
           'Send "control my screen" to FarFromDesk in $channelName.',
@@ -309,17 +538,17 @@ extension _RemoteControl on _DeskState {
         remoteStep(3, 'Send back the code the phone page shows.'),
         remoteStep(4, 'Enter your remote password on the phone.'),
         if (state == 'offered') ...[
-          gap(8),
+          gap(10),
           small(
             'Waiting for the code from your phone. The link expires after 5 minutes.',
           ),
         ],
         if (state == 'ended' && reason != null) ...[
-          gap(8),
+          gap(10),
           small('Last session ended. ${remoteMessage(reason)}'),
         ],
         if (active) ...[
-          gap(12),
+          gap(14),
           button(
             'Stop phone access',
             () => remoteRun(
@@ -338,21 +567,21 @@ extension _RemoteControl on _DeskState {
   }
 
   Widget remoteStep(int n, String text) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.only(bottom: 10),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          width: 20,
-          height: 20,
+          width: 22,
+          height: 22,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(color: hairline),
           ),
-          child: Text('$n', style: const TextStyle(fontSize: 11, color: muted)),
+          child: Text('$n', style: const TextStyle(fontSize: 11.5, color: muted)),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 12),
         Expanded(child: Text(text, style: const TextStyle(fontSize: 13))),
       ],
     ),

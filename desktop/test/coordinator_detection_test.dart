@@ -35,7 +35,7 @@ class DetectionGateway extends PreviewGateway {
                 'state': checks > 0 ? 'configured' : 'unknown',
                 'label': checks > 0
                     ? 'Claude API / token configured · model access not tested'
-                    : 'CLI account check unavailable · click Check apps to retry',
+                    : 'CLI account check unavailable · click Detect apps to retry',
                 'revision': 'test-$checks',
               },
             },
@@ -67,23 +67,25 @@ void main() {
       await tester.ensureVisible(find.text('Set up a coordinator'));
       await tester.tap(find.text('Set up a coordinator'));
       await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('coordinator-platform-claude:cli')),
-        findsOneWidget,
-      );
-      for (final id in ['codex:cli', 'codex:desktop', 'claude:desktop']) {
-        expect(find.byKey(ValueKey('coordinator-platform-$id')), findsNothing);
-      }
-      expect(find.text('Check unavailable'), findsOneWidget);
+      // The coding app row names every platform and shows which one is ready.
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude CLI').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Needs setup'), findsOneWidget);
       expect(find.text('Sign in first'), findsNothing);
-      await tester.ensureVisible(find.text('Check apps'));
-      await tester.tap(find.text('Check apps'));
+      await tester.ensureVisible(find.text('Detect apps'));
+      await tester.tap(find.text('Detect apps'));
       await tester.pump(const Duration(seconds: 1));
       await tester.pumpAndSettle();
       expect(api.checks, 1);
-      expect(find.text('API / token configured'), findsOneWidget);
+      expect(find.text('Ready'), findsOneWidget);
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
       final create = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Create Claude CLI coordinator'),
+        find.widgetWithText(FilledButton, 'Add coordinator'),
       );
       expect(create.onPressed, isNotNull);
       expect(tester.takeException(), isNull);
@@ -101,17 +103,20 @@ void main() {
       await tester.ensureVisible(find.text('Set up a coordinator'));
       await tester.tap(find.text('Set up a coordinator'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('No coding apps detected.'), findsOneWidget);
-      expect(find.text('Create Codex CLI coordinator'), findsNothing);
-      await tester.ensureVisible(find.text('Check apps'));
-      await tester.tap(find.text('Check apps'));
-      await tester.pump(const Duration(seconds: 1));
-      await tester.pumpAndSettle();
+      expect(find.text('Needs setup'), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('coordinator-platform-claude:cli')),
+        find.textContaining('This coding app is not ready'),
         findsOneWidget,
       );
-      expect(find.text('API / token configured'), findsOneWidget);
+      await tester.ensureVisible(find.text('Detect apps'));
+      await tester.tap(find.text('Detect apps'));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('coordinator-coding-app')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Claude CLI').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Ready'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },

@@ -9,6 +9,14 @@ cpSync(join(root,'dist'),join(target,'dist'),{recursive:true});
 // Retain the existing Mac desktop transport and its helpers.
 if(process.platform==='darwin') {
   cpSync(join(root,'native'),join(target,'native'),{recursive:true});
+  if(process.env.FFD_LOCAL_BUILD==='1')for(const helper of ['local-mail-keychain','local-mail-approval']){
+    const result=spawnSync('/usr/bin/swiftc',[join(root,'native',helper+'.swift'),'-o',join(target,'native',helper)],{stdio:'inherit'});
+    if(result.status!==0)throw new Error('Could not build the Local email helper.');
+  }
+  if(process.env.FFD_LOCAL_BUILD==='1'){
+    const eventkit=spawnSync('/usr/bin/swiftc',[join(root,'native','eventkit-helper.swift'),'-O','-framework','EventKit','-Xlinker','-sectcreate','-Xlinker','__TEXT','-Xlinker','__info_plist','-Xlinker',join(root,'native','eventkit-helper-Info.plist'),'-o',join(target,'native','eventkit-helper')],{stdio:'inherit'});
+    if(eventkit.status!==0)throw new Error('Could not build the Calendar and Reminders helper.');
+  }
   const ax=spawnSync('python3',[join(root,'script/build_accessibility_helper.py'),join(target,'native'),...(process.env.FFD_LOCAL_BUILD==='1'?['--bundle-id','com.codecylabs.farfromdesk.localtest.accessibility']:[])],{stdio:'inherit'});
   if(ax.status!==0)throw new Error('Could not build the macOS Accessibility helper.');
   const driver=spawnSync('python3',[join(root,'script/prepare_desktop_driver.py'),join(target,'native/cua-driver')],{stdio:'inherit'});

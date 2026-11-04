@@ -1,0 +1,243 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DesktopControl } from '../src/desktop-control.js';
+
+/**
+ * Two defects this file exists for, both found by asking a live build to act:
+ *   "what is in Comet right now" summarized a menu bar, because the first of Comet's four
+ *   windows was chrome-less and the resolver took the first one.
+ *   "press escape" was refused by the driver with "observe: pid and window_id are required",
+ *   because the batch named no window for the observation to attach to.
+ */
+function control(tree: any, windows: any[], results: Record<string, any> = {}, activate: (app: string, bundleId?: string) => Promise<unknown> = async () => {}, exec?: (file: string, args: string[], options: any) => Promise<{ stdout: string; stderr: string }>) {
+  const calls: { name: string; args: any }[] = [];
+  const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
+  const driver = {
+    call: async (name: string, args: any) => {
+      calls.push({ name, args });
+      if (name === 'check_permissions') return { accessibility: true, screen_recording: true };
+      if (name === 'get_accessibility_tree') return tree;
+      if (name === 'list_windows') return { windows };
+      return typeof results[name] === 'function' ? results[name](args) : results[name] ?? {};
+    },
+  };
+  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, activate as any, exec as any);
+  return { c, calls, of: (name: string) => calls.filter(x => x.name === name) };
+}
+
+const COMET_APPS = { apps: [{ name: 'Comet', bundle_id: 'ai.perplexity.comet', pid: 52476 }] };
+// Measured live: the tree reported only one chrome-less window for Comet, while list_windows
+// reported twelve, including the titled page window. Both shapes are reproduced here.
+const COMET_TREE = { ...COMET_APPS, windows: [{ pid: 52476, title: '', window_id: 3097 }] };
+const COMET_WINDOWS = [
+  { pid: 52476, app_name: 'Comet', title: '', window_id: 3097 },
+  { pid: 52476, app_name: 'Comet', title: '', window_id: 3095 },
+  { pid: 52476, app_name: 'Comet', title: 'Private Email', window_id: 3091 },
+];
+
+test('a read finds the titled window even when the tree does not list it as on screen', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { get_window_state: { window_title: 'Private Email', tree_markdown: '- [0] AXWindow "Private Email"\n  - [1] AXButton "Compose"', element_count: 2 } });
+  const out = await h.c.assist('brain:t', { action: 'read_window', app: 'Comet' });
+  assert.equal(out.window, 'Private Email');
+  assert.equal(h.of('get_window_state')[0].args.window_id, 3091, 'the window the tree omitted is the one that was read');
+});
+
+test('a named window wins over the default one', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { get_window_state: { window_title: 'Private Email', tree_markdown: '', element_count: 0 } });
+  await h.c.assist('brain:t', { action: 'read_window', app: 'Comet', window: 'private' });
+  assert.equal(h.of('get_window_state')[0].args.window_id, 3091);
+});
+
+test('the target list offers an app whose window is not on screen', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS);
+  assert.deepEqual(await h.c.targets(0), [{ name: 'Comet', bundleId: 'ai.perplexity.comet', windows: ['Private Email'] }]);
+});
+
+test('an action batch names the window so its observation can attach', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: true, observation: { summary: 'changed 1' } } });
+  const out = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'escape' });
+  const args = h.of('run_steps')[0].args;
+  assert.equal(args.pid, 52476);
+  assert.equal(args.window_id, 3091, 'the observation needs a window to attach to');
+  assert.deepEqual(args.steps, [{ press_key: { key: 'escape' } }]);
+  assert.equal(out.ok, true);
+});
+
+test('delivery stays in the background and never silently escalates', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: true } });
+  await h.c.assist('brain:t', { action: 'click', app: 'Comet', name: 'Compose' });
+  const args = h.of('run_steps')[0].args;
+  assert.equal(args.delivery_mode, 'background');
+  assert.equal('foreground_fallback' in args, false, 'a refused step must be reported, not foregrounded');
+});
+
+test('an app with no open window is refused before the driver is asked to act', async () => {
+  const h = control({ apps: [{ name: 'Ghost', bundle_id: 'x.ghost', pid: 1 }], windows: [] }, []);
+  await assert.rejects(() => h.c.assist('brain:t', { action: 'click', app: 'Ghost', name: 'Go' }), /DESKTOP_APP_NOT_RUNNING/);
+  assert.equal(h.of('run_steps').length, 0);
+});
+
+test('the exclusions are checked before anything is read or launched', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS);
+  await assert.rejects(() => h.c.assist('brain:t', { action: 'read_window', app: 'System Settings' }), /SENSITIVE_TARGET/);
+  await assert.rejects(() => h.c.assist('brain:t', { action: 'open_app', app: 'Keychain Access' }), /SENSITIVE_TARGET/);
+  assert.equal(h.of('get_accessibility_tree').length, 0, 'no app was even enumerated');
+});
+
+test('a revoked grant stops the action with the grant named', async () => {
+  const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
+  const driver = { call: async () => ({ accessibility: false, screen_recording: false }) };
+  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now);
+  await assert.rejects(() => c.assist('brain:t', { action: 'open_app', app: 'Comet' }), /ACCESSIBILITY_PERMISSION_REQUIRED/);
+});
+test('driver bookkeeping never reaches the owner as if it were the answer', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: true, observation: { summary: 'full read (no usable earlier read of this window to diff against)' } } });
+  const out = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'escape' });
+  assert.equal(out.ok, true);
+  assert.equal(out.observation, null);
+  assert.equal(out.changes, null, 'nothing changed, so there is nothing to report');
+  // A refusal still explains itself.
+  const f = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: false, observation: { summary: 'no element matched' } } });
+  assert.equal((await f.c.assist('brain:t', { action: 'click', app: 'Comet', name: 'Nope' })).observation, 'no element matched');
+});
+
+test('a successful action reports that something changed, never the window text', async () => {
+  // Measured: the raw diff put a sender address and a subject line from a mail page into the
+  // owner's chat. "The window changed" describes the same outcome without carrying content,
+  // and without the element count, which reads like a diff line in a message.
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: true, observation: { state: { diff_counts: { added: 1, changed: 2, removed: 0 }, tree_diff: '~ AXStaticText = "freetier@costalerts.amazonaws.com AWS Free Tier"' } } } });
+  const out = await h.c.assist('brain:t', { action: 'click', app: 'Comet', name: 'Inbox' });
+  assert.equal(out.changes, 'The window changed.');
+  assert.equal('diff' in out, false, 'the raw diff must not leave this layer');
+  assert.equal(JSON.stringify(out).includes('costalerts'), false);
+});
+
+test('opening an app brings it to the front', async () => {
+  // The owner asked for this: "when we told it to open something then it should be able to
+  // bring it in the focus automatically". launch_app alone suppresses self-activation.
+  let activated = 0;
+  const h = control(COMET_TREE, COMET_WINDOWS, {
+    launch_app: { name: 'Comet', pid: 52476, launch_state: { process_running: true, window_ready: true }, self_activation_suppressed: true },
+    bring_to_front: { activated: true, status: 'activated', window_id: 3091 },
+  }, async () => { activated++; });
+  const out = await h.c.assist('brain:t', { action: 'open_app', app: 'Comet' });
+  assert.equal(out.fronted, true);
+  assert.equal(out.stoleFocus, true);
+  assert.equal(h.of('bring_to_front')[0].args.pid, 52476);
+  assert.equal(activated, 0, 'the driver fronted it, so LaunchServices was not needed');
+});
+
+test('an app the driver cannot front is activated through LaunchServices', async () => {
+  // Measured live on Notes: launch_app suppresses self-activation and the app kept only stale
+  // off-screen windows, so bring_to_front refused with "No eligible top-level windows found
+  // for pid 16976". Only LaunchServices activation gave it a real on-screen window.
+  const seen: string[] = [];
+  let attempts = 0;
+  const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
+  const driver = {
+    call: async (name: string, args: any) => {
+      seen.push(name);
+      if (name === 'check_permissions') return { accessibility: true, screen_recording: true };
+      if (name === 'get_accessibility_tree') return COMET_APPS;
+      if (name === 'list_windows') return { windows: COMET_WINDOWS };
+      if (name === 'launch_app') return { name: 'Comet', pid: 52476, launch_state: { process_running: true, window_ready: false }, self_activation_suppressed: true };
+      if (name === 'bring_to_front') { attempts++; if (attempts === 1) throw new Error('DESKTOP_NATIVE_REFUSED: No eligible top-level windows found for pid 52476.'); return { activated: true, status: 'activated' }; }
+      return {};
+    },
+  };
+  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, (async (_app: string, bundleId?: string) => { seen.push('activate:' + bundleId); }) as any);
+  const out = await c.assist('brain:t', { action: 'open_app', app: 'Comet' });
+  assert.equal(out.fronted, true, 'the second attempt succeeded');
+  assert.equal(attempts, 2);
+  assert.ok(seen.includes('activate:ai.perplexity.comet'), 'LaunchServices was asked by bundle id');
+});
+
+const NOTES_WINDOWS = [
+  { pid: 16976, app_name: 'Notes', title: 'Search - No Results', window_id: 19220 },
+  { pid: 16976, app_name: 'Notes', title: 'Notes', window_id: 19221 },
+];
+
+test('a reviewed Notes tool runs one AppleScript and never a keystroke batch', async () => {
+  // The old Notes create was a background keystroke batch (escape, click "New Note", type_text).
+  // Live on 2026-11-04 that batch typed into whatever note was open when the search field was not
+  // there, which appended to the owner's own note. It is one AppleScript now, and the guarantee
+  // worth pinning is that no app tool writes a note through keystrokes at all.
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 16976 }], windows: [] }, NOTES_WINDOWS, {}, async () => {}, async (file, args) => {
+    assert.equal(file, '/usr/bin/osascript');
+    return { stdout: 'Wrote the note tomorrow meeting at 10pm in Notes.', stderr: '' };
+  });
+  const out = await h.c.packTool('brain:t', 'notes_create_note', { body: 'tomorrow meeting at 10pm\nsecond line' });
+  assert.equal(h.of('run_steps').length, 0, 'a note is never written with keystrokes');
+  assert.equal(out.output, 'Wrote the note tomorrow meeting at 10pm in Notes.');
+});
+
+test('an unknown tool or a missing argument is refused before the driver acts', async () => {
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 16976 }], windows: [] }, NOTES_WINDOWS, {});
+  await assert.rejects(() => h.c.packTool('brain:t', 'notes_send_fax', {}), /APP_TOOL_UNKNOWN/);
+  await assert.rejects(() => h.c.packTool('brain:t', 'notes_create_note', {}), /APP_TOOL_ARGUMENT_MISSING/);
+  assert.equal(h.of('run_steps').length, 0);
+});
+
+test('a reading action with no open window is refused before the driver is asked', async () => {
+  // An AppleScript tool needs no window; a window action still does, and it must refuse before
+  // anything reaches the Mac rather than reading whatever happens to be in front.
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 1 }], windows: [] }, []);
+  await assert.rejects(() => h.c.assist('brain:t', { action: 'read_window', app: 'Notes' }), /DESKTOP_APP_NOT_RUNNING/);
+  assert.equal(h.of('get_window_state').length, 0);
+  assert.equal(h.of('run_steps').length, 0);
+});
+
+test('a tool that refuses its own arguments answers with its own sentence', async () => {
+  const h = control({ apps: [{ name: 'Calendar', bundle_id: 'com.apple.iCal', pid: 42 }], windows: [] }, []);
+  // The model has to work the date out itself, so a bad one is a plan-level guard rather than a
+  // driver failure: it must not reach osascript and must not read as "I could not do that".
+  await assert.rejects(
+    () => h.c.packTool('brain:t', 'calendar_create_event', { title: 'Call Ashitosh', start: 'tomorrow at 5', end: 'tomorrow at 6' }),
+    /^Error: APP_TOOL_ARGUMENT_INVALID: A date has to look like/,
+  );
+  await assert.rejects(
+    () => h.c.packTool('brain:t', 'calendar_create_event', { title: 'Call Ashitosh', start: '2026-11-04 17:00:00', end: '2026-11-04 16:00:00' }),
+    /^Error: APP_TOOL_ARGUMENT_INVALID: The end time has to be after the start time\./,
+  );
+  assert.equal(h.of('run_steps').length, 0);
+});
+
+test('a key press refused in the background retries in front, as in a system file picker', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: false, observation: { summary: 'press_key ERROR (action): Background input refused (off_space_or_ax_unresolved)' } }, press_key: { ok: true } });
+  const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'return' });
+  assert.equal(h.of('press_key')[0].args.delivery_mode, 'foreground');
+  assert.equal(r.ok, true);
+});
+
+test('a key press the driver refuses by throwing also retries in front', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: () => { throw new Error('DESKTOP_NATIVE_REFUSED: run_steps: press_key ERROR (action): Background input refused (off_space_or_ax_unresolved)'); }, press_key: { ok: true } });
+  const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'escape' });
+  assert.equal(h.of('press_key')[0].args.delivery_mode, 'foreground');
+  assert.equal(r.ok, true);
+});
+
+test('foreground input goes to the window the driver says holds focus, such as an open file picker', async () => {
+  let first = true;
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: () => { throw new Error('DESKTOP_NATIVE_REFUSED: Background input refused'); }, press_key: (args: any) => { if (first) { first = false; throw new Error('press_key delivery failed: exact target window did not become focused for foreground HID delivery: window_id 26620 "" of the same app holds focus'); } return { ok: true, w: args.window_id }; } });
+  const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'return' });
+  assert.equal(h.of('press_key').at(-1).args.window_id, 26620);
+  assert.equal(r.ok, true);
+});
+
+test('typing into a field whose label shares its name retries as the text field', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: (args: any) => { if (!args.steps[0].type_text.role) throw new Error('DESKTOP_NATIVE_REFUSED: type_text ERROR (find): 2 elements match element "Phone"'); return { ok: true }; } });
+  const r: any = await h.c.assist('brain:t', { action: 'type', app: 'Comet', name: 'Phone', text: '9000000000' });
+  assert.equal(h.of('run_steps').at(-1).args.steps[0].type_text.role, 'textfield');
+  assert.equal(r.ok, true);
+});
+
+test('pick_file sends Go to, the path and two Returns to the frontmost app, where the file picker is', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, {});
+  const r: any = await h.c.assist('brain:t', { action: 'pick_file', app: 'Comet', text: '/Users/me/Downloads/a.pdf' });
+  assert.equal(r.ok, true);
+  assert.deepEqual(h.of('hotkey')[0].args.keys, ['cmd', 'shift', 'g']);
+  assert.equal(h.of('type_text')[0].args.scope, 'desktop');
+  assert.equal(h.of('type_text')[0].args.text, '/Users/me/Downloads/a.pdf');
+  assert.equal(h.of('press_key').length, 2);
+  assert.equal('window_id' in h.of('press_key')[0].args, false, 'never aimed at the browser window');
+});

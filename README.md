@@ -133,7 +133,7 @@ FarFromDesk uses an unofficial WhatsApp connection and the official Telegram Bot
 
 **Does my computer need to stay on?** Yes. FarFromDesk runs on your computer, so it must stay awake and connected for real-time control.
 
-**Can I close the lid?** The awake option prevents idle sleep; it does not override every closed-lid condition. Supported external-display setups may keep the Mac available. It never removes your lock-screen password.
+**Can I close the lid?** Yes, if server mode is on and the power cable is connected: a root helper holds system sleep off while FarFromDesk is alive, with no external display needed. If the app stops, or on battery, the Mac sleeps normally and remote control stops. It never removes your lock-screen password, and it does not lock the lid for you either: closing the lid only locks the Mac if you have turned on "Require password after screen saver begins or display is turned off" in System Settings → Lock Screen.
 
 **What happens if the app closes during a request?** Request history is saved. Activity shows work that needs a reply or review. If a request may already have run, check its native conversation before retrying.
 

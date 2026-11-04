@@ -19,8 +19,10 @@ export type ContractDecision=z.infer<typeof ContractDecision>;
 export type ContractInterpreter=(key:string,original:string,edits:string[],observe?:MetaObserver)=>Promise<ContractDecision>;
 
 export const interpretContract:ContractInterpreter=async(key,original,edits,observe)=>{
+  let status=0;
   const request:typeof fetch=async(url,init)=>{
     const response=await fetch(url,{...init,redirect:'error'});
+    status=response.status;
     if(!response.ok||!response.body)throw new Error('Contract interpretation unavailable.');
     const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
     for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>131072){await reader.cancel();throw new Error('Contract response exceeded limit.');}chunks.push(value);}
@@ -34,5 +36,18 @@ export const interpretContract:ContractInterpreter=async(key,original,edits,obse
       prompt:JSON.stringify({original,edits}),tools:{decide:tool({description:'Return a proposed contract or pass decision.',inputSchema:ContractDecision})},stopWhen:[hasToolCall('decide'),stepCountIs(1)]});
     const call=result.steps.flatMap(s=>s.toolCalls).find(c=>c.toolName==='decide');if(!call)throw new Error('No contract decision.');
     return ContractDecision.parse(call.input);
-  }catch{throw new Error('Meta could not check the task. Nothing was sent.');}
+  }catch(e){
+    // A bare catch here made one live failure undiagnosable: the owner saw a friendly
+    // sentence and the timeline showed only "failed". Carry the code out with the message,
+    // so the next occurrence can be attributed without forensics. No key or model text leaves.
+    const failure=new Error('Meta could not check the task. Nothing was sent.') as Error&{code:string};
+    failure.code=status===401||status===403?'authentication_required'
+      :status===429?'rate_limited'
+      :status>=500?'provider_unavailable'
+      :status>=400?'provider_rejected'
+      :status===200?'invalid_response'
+      :(e as Error)?.name==='TimeoutError'||(e as Error)?.name==='AbortError'?'timeout'
+      :'provider_unavailable';
+    throw failure;
+  }
 };

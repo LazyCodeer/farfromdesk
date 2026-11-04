@@ -4,12 +4,13 @@ import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
-import { join,basename,dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { mkdirSync,writeFileSync,realpathSync,existsSync,statSync } from 'node:fs';
+import { join, basename, dirname, resolve, sep } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { cursorOwnerHome } from './cursor-paths.js';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
-import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
+import { stateDir,currentStateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
 import type { Store,Binding,Provider } from './store.js';
 import type { Router } from './router.js';
 import { saveBindingCredentials } from './server.js';
@@ -23,51 +24,99 @@ import { ClaudeSession } from './claude-session.js';
 import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { masterPolicy } from './master-policy.js';
-import { roleConfig, coordinatorRoleStatus } from './roles.js';
+import { roleConfig, rolePointer, coordinatorRoleStatus } from './roles.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections, usableCLIConnection } from './connections.js';
-import { projectWorkspace } from './project-workspace.js';
 import { WorkspaceScanner,type ResolvedWorkspaces } from './workspace-scanner.js';
 import { scopedBridgeCommand } from './reply-args.js';
 import { openCodexDesktop } from './session-activation.js';
+import { museBinary, runMuse } from './muse-session.js';
+import { dshBinary } from './dsh-session.js';
+import { runDshQueued, DEFAULT_DSH_LABEL } from './dsh-sessions.js';
+import { claimMessages, settleMessages, messagePrompt } from './dsh-inbox.js';
+import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
+import { dshHome } from './dsh-paths.js';
+import { runCursorTurn, findCursorCli } from './cursor-desktop.js';
+import { cursorAppBinary } from './cursor-paths.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
-const masterMode=(provider:Provider,value:unknown):ExecutionMode=>provider==='codex'&&value==='desktop'?'desktop':executionMode(provider,value);
+// Muse has one connection kind and no app, so a requested Desktop mode is refused rather than coerced.
+const masterMode=(provider:Provider,value:unknown):ExecutionMode=>{
+  if(provider==='muse'){if(value!==undefined&&value!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');return 'cli';}
+  if(provider==='deepseek'){if(value!==undefined&&value!=='cli')throw new Error('DeepSeek Harness has only a CLI connection. Choose CLI.');return 'cli';}
+  // Cursor is driven through its desktop app but runs channel-mode, so a requested Desktop mode is refused too.
+  if(provider==='cursor'){if(value!==undefined&&value!=='cli')throw new Error('Cursor is driven through its desktop app, so choose the CLI/channel connection.');return 'cli';}
+  return provider==='codex'&&value==='desktop'?'desktop':executionMode(provider,value);
+};
+const museTurnTimeoutMs=20*60*1000;
+const deepseekTurnTimeoutMs=20*60*1000;
+const cursorTurnTimeoutMs=10*60*1000;
 const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
-export function codexDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
+export function codexDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
 }
-export function claudeDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
+export function claudeDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Claude.app')));
 }
 export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
   if(value!==undefined&&typeof value!=='string')throw new Error('Session name must be text.');
   const name=(value as string|undefined)?.trim()??'';
   if(name.length>80||/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name))throw new Error('Use a session name of up to 80 characters without control characters.');
-  return name||`FarFromDesk Orbit · ${provider==='claude'?'Claude':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
+  return name||`FarFromDesk Orbit · ${provider==='claude'?'Claude':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'Codex'} ${mode==='desktop'?'Desktop':'CLI'}`;
 }
 // Workspace identity includes runtime and account; folder names are display only.
 export function coordinatorFolder(operationId:string,name:string) {
   const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'coordinator';
   return join(coordinatorHome,'coordinators',`${slug}-${operationId.slice(0,8)}`);
 }
+/** A system temporary directory is scratch space a CLI happened to run in, not a project. */
+export function isScratchFolder(path:string) {
+  return [tmpdir(),'/private/tmp','/tmp','/var/folders']
+    .map(root=>root.replace(/\/+$/,''))
+    .some(root=>path===root||path.startsWith(root+sep));
+}
+export function isCoordinatorFolder(path:string) {
+  const marker=join('.farfromdesk','coordinators'),own=join(coordinatorHome,'coordinators');
+  // The Local app keeps its coordinators under its own projects folder, not ~/.farfromdesk.
+  return path.includes(sep+marker+sep)||path.endsWith(sep+marker)||path===own||path.startsWith(own+sep);
+}
+/** A folder the owner picked in the system dialog: an existing real folder, never app scaffolding. */
+export function pickedWorkspace(path:string) {
+  if(!path.startsWith('/'))throw new Error('Choose an existing project folder.');
+  let cwd:string;try{cwd=realpathSync(path);}catch{throw new Error('That folder no longer exists. Choose it again.');}
+  if(!statSync(cwd).isDirectory())throw new Error('Choose a folder, not a file.');
+  if(isCoordinatorFolder(cwd)||isScratchFolder(cwd)||cwd==='/'||cwd===cursorOwnerHome())throw new Error('Choose a project folder, not the home folder or an app folder.');
+  return {id:`folder:${path}`,name:basename(cwd)||cwd,cwd,accountScope:null,available:true};
+}
 export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[],resolved?:ResolvedWorkspaces) {
   const choices=new Map<string,any>();
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
     if(typeof s.cwd!=='string'||!s.cwd)continue;
     try {
+      // The scanner canonicalises folders and maps a worktree to its root project, and it does that
+      // in its own process because project metadata can block inside an OS permission prompt. This
+      // loop runs on the bridge's own thread, where one blocked call freezes the port and every
+      // permission prompt with it, so nothing here may touch the disk: when the scanner could not
+      // run, the folder the CLI itself reported is offered as its own project. The owner still sees
+      // why the list is flat, because the caller publishes the scanner's error beside the workspaces.
       const location=resolved?.get(s.cwd);
-      if(resolved&&!location)continue;
-      const sessionCwd=location?.sessionCwd??realpathSync(s.cwd),cwd=location?.cwd??projectWorkspace(sessionCwd);
+      const sessionCwd=location?.sessionCwd??resolve(s.cwd),cwd=location?.cwd??sessionCwd;
+      // A coordinator's own folder is bridge scaffolding, not a project to run in. Match any home:
+      // the backend runs with an isolated one, so folders made earlier sit under the owner's.
+      if(isCoordinatorFolder(cwd)||isScratchFolder(cwd))continue;
       const accountScope=s.accountScope??null;
-      const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,accountScope])).digest('hex');
-      const available=provider!=='claude'||mode!=='desktop'||s.available===true;
+      // One row per folder for a new Desktop chat: it opens in whichever Claude account is signed in.
+      const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,provider==='claude'&&mode==='desktop'?null:accountScope])).digest('hex');
+      // A new Claude Desktop coordinator opens its own chat in the folder, so any folder Claude has
+      // worked in is a valid place; only a launcher needs an open chat with a reachable inbox.
+      const available=true,launcher=provider==='claude'&&mode==='desktop'&&s.available===true;
       const existing=choices.get(id);
       // Prefer a reachable root-project chat over a newer temporary worktree.
-      const rank=(available?2:0)+(sessionCwd===cwd?1:0);
-      if(!existing||rank>existing.rank)choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,rank,launcherId:provider==='claude'&&mode==='desktop'?s.id:undefined});
+      const rank=(launcher?2:0)+(sessionCwd===cwd?1:0);
+      if(!existing||rank>existing.rank)choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,rank,launcherId:launcher?s.id:undefined});
     }catch{/* A moved or inaccessible folder is not a creation target. */}
   }
   const result=[...choices.values()];
@@ -88,6 +137,7 @@ export class Masters {
   set creating(value:boolean){const c=this.setupContext.getStore();if(value)this.setupLocks.set(c?.connection??'legacy',c?.id??'legacy');else if(this.setupLocks.get(c?.connection??'legacy')===(c?.id??'legacy'))this.setupLocks.delete(c?.connection??'legacy');}
   platforms:any[]=[];
   private discovery?:Promise<any[]>;
+  private discoveryFresh=false;
   private discoveryAt=0;
   private catalogRevision=randomUUID();
   private catalogDigest='';
@@ -124,22 +174,68 @@ export class Masters {
     do {const page=await this.router.native.catalog(provider,cursor,{fresh});sessions.push(...page.sessions);cursor=page.cursor??undefined;if(cursor){if(seen.has(cursor))throw new Error('Session pagination repeated. Refresh apps.');seen.add(cursor);}}while(cursor);
     return sessions;
   }
-  async discover(fresh=false){
+  /** One CLI entry: Muse has no app and no account switch, only the binary it runs. */
+  private async musePlatform() {
+    const platform:any={provider:'muse',executionMode:'cli',label:'Muse Code',available:false};
+    if(this.router.native.discoveryBlocked?.('muse'))return this.platforms.find(p=>p.provider==='muse')??{...platform,reason:'File access denied · click Detect apps to retry'};
+    try {const command=nativeCommand(museBinary(),['--version']);await exec(command.binary,command.args,{timeout:5000,maxBuffer:10000,windowsHide:true});platform.available=true;}
+    catch{platform.reason='Muse Code CLI unavailable. Install it with the Meta installer, then try again.';}
+    return platform;
+  }
+  /**
+   * One CLI entry: DeepSeek Harness has no app and no account switch, only the binary it runs.
+   * `--version` boots the launcher's runtime, and the first invocation after boot can take several
+   * seconds, so this check gets the same headroom as its account check. A short timeout reported a
+   * working install as missing while the account probe in the same pass called it verified.
+   */
+  private async deepseekPlatform() {
+    const platform:any={provider:'deepseek',executionMode:'cli',label:'DeepSeek Harness',available:false};
+    if(this.router.native.discoveryBlocked?.('deepseek'))return this.platforms.find(p=>p.provider==='deepseek')??{...platform,reason:'File access denied · click Detect apps to retry'};
+    try {const command=nativeCommand(dshBinary(),['--version']);await exec(command.binary,command.args,{timeout:15000,maxBuffer:10000,windowsHide:true});platform.available=true;}
+    catch{platform.reason='DeepSeek Harness CLI unavailable. Install it, then try again.';}
+    return platform;
+  }
+  /**
+   * One app-driven channel entry: Cursor runs the turn inside its signed-in desktop app, reached
+   * through the prompt deeplink, so there is no CLI binary to shell out to. The deeplink handler only
+   * prefills the Composer and never opens a window. Measured: on this install Cursor then submitted
+   * the prefilled prompt and answered it with nobody at the keyboard, but the same surface later went
+   * inert for two hours with no error at all, so a delivery can never be assumed - see `runCursorTurn`.
+   * The app bundle is the whole availability check; a missing bundle is a missing run, not a missing
+   * credential.
+   */
+  private async cursorPlatform() {
+    const platform:any={provider:'cursor',executionMode:'cli',label:'Cursor',available:false};
+    if(this.router.native.discoveryBlocked?.('cursor'))return this.platforms.find(p=>p.provider==='cursor')??{...platform,reason:'File access denied · click Detect apps to retry'};
+    if(existsSync(cursorAppBinary()))platform.available=true;
+    else platform.reason='Cursor desktop app not found. Install Cursor and sign in, then try again.';
+    return platform;
+  }
+  async discover(fresh=false):Promise<any[]>{
     if(!fresh&&this.platforms.length&&Date.now()-this.discoveryAt<15000)return this.platforms;
-    if(this.discovery)return this.discovery;
+    if(this.discovery){
+      if(!fresh||this.discoveryFresh)return this.discovery;
+      // A user-requested refresh must not be satisfied by the background
+      // discovery, which deliberately does not probe Local's selected profile.
+      await this.discovery;return this.discover(true);
+    }
+    this.discoveryFresh=fresh;
     this.discovery=(async()=>{
     const platforms:any[]=await Promise.all(([['codex',codexBin],['claude',claudeBin]] as const).map(async([provider,bin])=>{
-      if(this.router.native.discoveryBlocked?.(provider))return this.platforms.find(p=>p.provider===provider&&p.executionMode==='cli')??{provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'File access denied · click Check apps to retry'};
+      if(this.router.native.discoveryBlocked?.(provider))return this.platforms.find(p=>p.provider===provider&&p.executionMode==='cli')??{provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'File access denied · click Detect apps to retry'};
       try {const command=nativeCommand(bin,['--version']);await exec(command.binary,command.args,{timeout:5000,maxBuffer:10000,windowsHide:true});return {provider,executionMode:'cli',available:true,label:provider==='codex'?'Codex · native CLI':'Claude Code · background CLI'};}
       catch{return {provider,executionMode:'cli',available:false,label:provider==='codex'?'Codex':'Claude Code',reason:'Native CLI unavailable. Claude Desktop uses its separate app session.'};}
     }));
+    platforms.push(await this.musePlatform());
+    platforms.push(await this.deepseekPlatform());
+    platforms.push(await this.cursorPlatform());
     const fallback=(provider:Provider)=>this.platforms.filter(p=>p.provider===provider&&(provider==='claude'||p.executionMode==='cli')).flatMap(p=>(p.sessions??[]).map((s:any)=>({...s,provider,executionMode:p.executionMode})));
     const errors=new Set<Provider>();
     const load=(provider:Provider)=>this.catalog(provider,fresh).catch(()=>{errors.add(provider);return fallback(provider);});
-    const [claude,codex]=await Promise.all([load('claude'),load('codex')]);
+    const [claude,codex,muse,deepseek,cursor]=await Promise.all([load('claude'),load('codex'),load('muse'),load('deepseek'),load('cursor')]);
     if(!errors.has('claude'))this.registry.adoptAccounts('claude',claude);
-    const rows=(sessions:any[])=>sessions.map(s=>({id:s.id,desktopId:s.desktopId,executionMode:s.executionMode,accountScope:s.accountScope,name:s.name,cwd:s.cwd,status:s.status,updatedAt:s.updatedAt,available:s.available===true}));
-    for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):codex);
+    const rows=(sessions:any[])=>sessions.map(s=>({id:s.id,desktopId:s.desktopId,executionMode:s.executionMode,accountScope:s.accountScope,name:s.name,cwd:s.cwd,status:s.status,model:s.model,updatedAt:s.updatedAt,available:s.available===true}));
+    for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):platform.provider==='muse'?muse:platform.provider==='deepseek'?deepseek:platform.provider==='cursor'?cursor:codex);
     platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claudeDesktopInstalled()||claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'New coordinators open directly in Claude Desktop. Existing chats still require verified session discovery.'});
     platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
     if(portableAgents)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
@@ -153,6 +249,12 @@ export class Masters {
         if(!usableCLIConnection(connection))platform.reason=connection.label;
       }
       if(platform.provider==='codex'&&platform.executionMode==='desktop')platform.reason='Existing chats use the native desktop queue and that chat’s account. New chats create a history record, then use Desktop for requests. CLI authentication is not used for model execution.';
+      // Muse publishes history from its own index, but a turn needs its local credential and CLI.
+      if(platform.provider==='muse'&&!usableCLIConnection(connection))platform.reason=connection.label;
+      // DeepSeek publishes history from its own session store, but a turn needs its credential and CLI.
+      if(platform.provider==='deepseek'&&!usableCLIConnection(connection))platform.reason=connection.label;
+      // Cursor publishes chat history from the app's transcripts, but a turn needs the signed-in app.
+      if(platform.provider==='cursor'&&!usableCLIConnection(connection))platform.reason=connection.label;
       if(platform.provider==='claude'&&platform.executionMode==='desktop') {
         const preference=JSON.parse(this.store.get('platform-preference:claude')??'null');
         const coordinators=this.registry.entries().filter(r=>r.provider==='claude'&&r.executionMode==='desktop'&&this.store.binding(r.bindingId)?.enabled);
@@ -163,7 +265,7 @@ export class Masters {
       }
     }));
     let resolved:ResolvedWorkspaces=new Map(),workspaceError:string|undefined;
-    try{resolved=await this.workspaceScanner.scan([...claude,...codex].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
+    try{resolved=await this.workspaceScanner.scan([...claude,...codex,...muse,...deepseek,...cursor].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
     catch(error){workspaceError=error instanceof Error?error.message:'Workspace discovery unavailable';}
     for(const platform of platforms){platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[],resolved);if(workspaceError)platform.workspaceError=workspaceError;}
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
@@ -188,6 +290,13 @@ export class Masters {
     });
   }
   async setPlatformPreference(provider:Provider,requestedMode:unknown,desktopParentId?:string,connectionRevision?:string) {
+    // "No preference" is a real choice an owner may return to: it drops the stored route so every
+    // detected mode stays eligible for routing, which is the state before anything was chosen.
+    if(String(requestedMode)==='none'){
+      if(!['codex','claude'].includes(provider))throw new Error('Choose a detected coding platform explicitly.');
+      this.store.db.prepare('DELETE FROM settings WHERE key=?').run(`platform-preference:${provider}`);
+      return this.platformPreferences();
+    }
     if(!['codex','claude'].includes(provider)||!['desktop','cli'].includes(String(requestedMode)))throw new Error('Choose a detected coding platform and Desktop or CLI explicitly.');
     const mode=executionMode(provider,requestedMode);requirePortableCLI(mode);
     const detected=this.platforms.find(p=>p.provider===provider&&p.executionMode===mode);
@@ -205,7 +314,7 @@ export class Masters {
   setupError(error:unknown) {
     const message=error instanceof Error?error.message:String(error);
     if(/^Codex (has not saved|conversation history)/.test(message))return message;
-    if(/^(Desktop (creation|start|setup|project)|Claude Desktop could not|The selected Claude Desktop|No owner-connected|Connected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
+    if(/^(Desktop (creation|start|setup|project|session ID|child)|Claude Desktop could not|The selected Claude Desktop|No owner-connected|Connected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
     if(/^(CLI account|CLI signed out|Connection changed|Review this existing|Custom provider|Configured|Session connection)/.test(message))return message.slice(0,400);
     if(/Claude authentication expired|OAuth|Failed to authenticate/i.test(message))return 'Claude authentication expired. Sign in to the selected Claude app or CLI, then recover this exact setup.';
     if(/workspace not trusted|Claude needs you to trust/i.test(message))return 'Claude needs you to trust this master folder. Open Claude setup, accept its workspace trust prompt, then return here and retry this setup.';
@@ -232,7 +341,7 @@ export class Masters {
   }
   async recover(operationId?:string) {
     const op=this.operation(operationId);if(!op)throw new Error('No exact setup to recover.');
-    return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.recoverScoped(op.id));
+    return withProviderSetup(this.store,'coordinator-recover',()=>this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.recoverScoped(op.id)));
   }
   private async recoverScoped(operationId?:string) {
     this.assertIdle();
@@ -241,7 +350,7 @@ export class Masters {
     const b=this.store.binding(op.bindingId);if(!b||(op.nativeId&&b.native_id!==op.nativeId))throw new Error('Creation identity is incomplete.');
     this.setAside();this.creating=true;this.saveOperation({...op,status:'creating',stage:'Connecting your created session',error:undefined});
     void (async()=>{
-      await this.connections.assert(b);
+      await this.connections.assert(b);assertProviderSetup(this.store);
       if(b.provider==='claude'&&op.executionMode==='desktop')await this.desktop.confirm(b,true);
       else if(b.provider==='codex') {
         const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(b,m,p));
@@ -252,7 +361,7 @@ export class Masters {
       }else if(op.needsTrust||/workspace not trusted/i.test(op.error??''))await this.provisionClaude(b);
       else if(/Claude authentication expired/i.test(op.error??'')) {
         const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
-        try{await runtime.initialize();await runtime.run('Connection recovery only. Return READY without tools. Do not repeat earlier work.');this.store.set(`managed-claude:${b.id}`,'true');}
+        try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('Connection recovery only. Return READY without tools. Do not repeat earlier work.');this.store.set(`managed-claude:${b.id}`,'true');}
         catch(e){this.stopWorker(b.id);throw e;}
       }else await this.router.native.validate(b.provider,b.native_id,b.cwd);
       this.activate(this.store.binding(b.id)!,op.id);
@@ -261,7 +370,7 @@ export class Masters {
   }
   abandon(operationId?:string) {
     const op=this.operation(operationId);if(!op)throw new Error('No exact setup to abandon.');
-    return this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.abandonScoped(op.id));
+    return withProviderSetup(this.store,'coordinator-abandon',()=>this.setupContext.run({id:op.id,connection:`${op.provider}:${op.executionMode??'cli'}`},()=>this.abandonScoped(op.id)));
   }
   private abandonScoped(operationId?:string) {
     this.assertIdle();const op=this.operation(operationId);
@@ -271,6 +380,9 @@ export class Masters {
     return this.operation(op.id);
   }
   activate(b:Binding,operationId?:string) {
+    return withProviderSetup(this.store,'coordinator-activate',()=>this.activateScoped(b,operationId));
+  }
+  private activateScoped(b:Binding,operationId?:string) {
     if(operationId&&this.operation()?.id!==operationId)throw new Error('This setup was superseded.');
     const old=this.registry.bindingFor(b);
     const replacing=old&&old.id!==b.id;
@@ -315,7 +427,8 @@ export class Masters {
   mcpConfig(b:Binding){return {command:process.execPath,args:[join(root,'dist/master-channel.js'),join(stateDir,'bindings',`${b.alias}.json`)],env:{WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port}};}
   async useDesktop(sessionId:string,operationId:string){return this.useSession('claude','desktop',sessionId,operationId);}
   async useSession(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string,connectionRevision?:string) {
-    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.useSessionScoped(provider,requestedMode,sessionId,operationId,connectionRevision));
+    if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
+    return withProviderSetup(this.store,'coordinator-select',()=>this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.useSessionScoped(provider,requestedMode,sessionId,operationId,connectionRevision)));
   }
   private async useSessionScoped(provider:Provider,requestedMode:unknown,sessionId:string,operationId:string,connectionRevision?:string) {
     if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId)||typeof sessionId!=='string')throw new Error('A supported platform, session and stable selection ID are required.');
@@ -337,7 +450,7 @@ export class Masters {
       const priorRoute=b?this.connections.route(b):undefined;
       if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountKey!==route.accountKey||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
       if(b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
-      this.setAside();
+      assertProviderSetup(this.store);this.setAside();
       if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
       this.stopWorker(b.id);this.store.set(`execution-mode:${b.id}`,mode);
       this.connections.save(b,route);
@@ -348,30 +461,34 @@ export class Masters {
       return this.operation();
     }finally{this.creating=false;}
   }
-  async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string):Promise<any> {
-    return this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId));
+  async create(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string,trustWorkspace?:unknown):Promise<any> {
+    if(!['codex','claude','muse','deepseek','cursor'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+    return withProviderSetup(this.store,'coordinator-create',()=>this.setupContext.run({id:operationId,connection:`${provider}:${requestedMode??'cli'}`},()=>this.createScoped(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId,trustWorkspace)));
   }
-  private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string):Promise<any> {
-    if(!['codex','claude'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
+  private async createScoped(provider:Provider,operationId:string,requestedMode?:unknown,desktopParentId?:string,requestedName?:unknown,connectionRevision?:string,workspaceId?:string,trustWorkspace?:unknown):Promise<any> {
+    if(!['codex','claude','muse','deepseek','cursor'].includes(provider)||!/^[0-9a-f-]{36}$/i.test(operationId))throw new Error('Choose a supported platform and a stable creation ID.');
     requirePortableCLI(requestedMode);
     const mode=masterMode(provider,requestedMode),name=masterName(provider,mode,requestedName),previous=this.operation(operationId);
-    if(previous){if(previous.workspaceId!==workspaceId||previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():''))throw new Error('Creation ID cannot change platform, workspace or desktop launcher.');return previous;}
+    if(previous){if(previous.workspaceId!==workspaceId||previous.selectedSessionId||previous.provider!==provider||(previous.executionMode??'cli')!==mode||previous.desktopParentId!==desktopParentId||(previous.requestedName??'')!==(typeof requestedName==='string'?requestedName.trim():'')||(previous.trustWorkspace===true)!==(trustWorkspace===true))throw new Error('Creation ID cannot change platform, workspace or desktop launcher.');return previous;}
     this.assertIdle();
     if(!this.platforms.find(p=>p.provider===provider&&(p.executionMode??'cli')===mode)?.available)throw new Error('The selected execution mode is not available.');
     let workspace:any,sessions:any[]|undefined;
     if(workspaceId!==undefined) {
       if(typeof workspaceId!=='string'||!workspaceId)throw new Error('Choose a detected workspace.');
+      if(workspaceId.startsWith('folder:'))workspace=pickedWorkspace(workspaceId.slice(7));
+      else {
       sessions=await this.catalog(provider,true);
       const resolved=await this.workspaceScanner.scan(sessions.map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));
       workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode),resolved).find(w=>w.id===workspaceId);
+      }
       if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
       if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
     }
     const route=await this.connections.prepare({provider,cwd:workspace?.cwd??coordinatorFolder(operationId,name)},mode,mode==='cli',workspace?.accountScope??undefined,connectionRevision);
     if(this.operation(operationId))return this.create(provider,operationId,requestedMode,desktopParentId,requestedName,connectionRevision,workspaceId);
     this.assertIdle();
-    this.setAside();this.creating=true;
-    const op={id:operationId,provider,executionMode:mode,desktopParentId,workspaceId,workspaceCwd:workspace?.cwd,route,status:'creating',stage:'Preparing workspace',startedAt:Date.now(),name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
+    assertProviderSetup(this.store);this.setAside();this.creating=true;
+    const op={id:operationId,provider,executionMode:mode,desktopParentId,workspaceId,workspaceCwd:workspace?.cwd,trustWorkspace:trustWorkspace===true,route,status:'creating',stage:'Preparing workspace',startedAt:Date.now(),name,requestedName:typeof requestedName==='string'?requestedName.trim():''};this.saveOperation(op);
     void (async()=>{
       const launcher=provider==='claude'&&mode==='desktop'&&workspace?await this.desktop.parent(workspace?.launcherId??desktopParentId,workspace?.accountScope??undefined,sessions):undefined;
       if(launcher)this.saveOperation({...this.operation(),route:{...route,accountScope:launcher.accountScope},resolvedDesktopParentId:launcher.id});
@@ -380,6 +497,9 @@ export class Masters {
     return op;
   }
   async provision(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
+    return withProviderSetup(this.store,'coordinator-provision',()=>this.provisionScoped(provider,operationId,mode,desktopParentId));
+  }
+  private async provisionScoped(provider:Provider,operationId:string,mode:ExecutionMode='cli',desktopParentId?:string) {
     const selected=this.operation()?.workspaceCwd;
     let cwd=selected?realpathSync(selected):coordinatorFolder(operationId,this.operation()?.name??'coordinator');
     if(selected&&cwd!==selected)throw new Error('Selected workspace path changed. Choose it again.');
@@ -390,15 +510,23 @@ export class Masters {
     if(realpathSync(support)!==support)throw new Error('Workspace setup directory must not be a symbolic link.');
     if(selected)writeFileSync(join(support,'.gitignore'),'*\n',{mode:0o600,flag:'wx'});
     const alias=`whatsapp-master-${operationId.slice(0,8)}`;
-    const registered=this.store.register(alias,provider,randomUUID(),cwd);
+    // A Muse, DeepSeek or Cursor master is driven per request by the bridge, so it is registered in
+    // channel mode: it has no persistent runtime and no bridge MCP connection of its own. Cursor is
+    // app-driven: each request is handed to an open Cursor window as a prefilled prompt and the bridge
+    // waits for that turn's `turn_ended` record.
+    const registered=this.store.register(alias,provider,randomUUID(),cwd,provider==='muse'||provider==='deepseek'||provider==='cursor'?'channel':'desktop');
     let b=registered.binding;this.store.set(`execution-mode:${b.id}`,mode);this.store.enable(b.id,false);saveBindingCredentials(b,registered.token);
     const route=this.operation()?.route??await this.connections.prepare(b,mode,mode==='cli');this.connections.save(b,route);
-    await this.connections.assert(b);
+    await this.connections.assert(b);assertProviderSetup(this.store);
     this.store.set(`master-support:${b.id}`,support);
     this.saveOperation({...this.operation(),bindingId:b.id,cwd,stage:'Starting native session'});
     const name=this.operation().name??'WhatsApp master';this.store.set(`name:${b.id}`,name);
     this.store.set(`role-kind:${b.id}`,'master');
-    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:'Use the session_bridge MCP tools for coordination and replies.';
+    // A headless Muse turn gets no trust prompt, so project skills and rules load only when the
+    // owner chose a real project and kept trust on. The private coordinator folder has none to load.
+    if(provider==='muse')this.store.set(`muse-trust:${b.id}`,this.operation()?.trustWorkspace===true?'true':'false');
+    // Muse runs headless with no bridge tools, so its finished answer is the reply the bridge delivers.
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run, except the Mac app command each request envelope gives under macApps.':'Use the session_bridge MCP tools for coordination and replies.';
     // Support files are written once and may be auto-loaded beside the provider instructions,
     // so they point to the versioned role instead of carrying a copy that would go stale.
     // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
@@ -409,7 +537,7 @@ export class Masters {
       mkdirSync(join(support,directory),{recursive:true,mode:0o700});
       writeFileSync(join(support,directory,'SKILL.md'),`---\nname: whatsapp-master\ndescription: Coordinate owner-selected coding sessions and send supportive, request-bound WhatsApp replies.\n---\n${pointer}`,{mode:0o600});
     }
-    const instruction=`${roleConfig(this.store,b,'master').instructions}\n\n${tools}${access} Your native permissions still apply.`;
+    const instruction=`${rolePointer(this.store,b)}\n\n${tools}${access} Your native permissions still apply.`;
     if(provider==='claude'&&mode==='desktop') {
       // The role arrives once with the first request envelope; the launcher session never sees it.
       if(selected)await this.desktop.create(b,desktopParentId!,name,`You will be the owner's FarFromDesk coordinator. ${tools}`);
@@ -417,7 +545,7 @@ export class Masters {
       b=this.store.binding(b.id)!;saveBindingCredentials(b,registered.token);
     } else if(provider==='codex') {
       const runtime=new CodexSession(codexBin,cwd,(method,params)=>this.approval(b,method,params));
-      this.runtimes.set(b.id,runtime);await runtime.initialize();
+      this.runtimes.set(b.id,runtime);await runtime.initialize();assertProviderSetup(this.store);
       const created=await runtime.request('thread/start',{cwd,approvalPolicy:'on-request',sandbox:'read-only',developerInstructions:instruction,config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
       if(!/^[0-9a-f-]{36}$/i.test(created?.thread?.id??''))throw new Error('Native creation did not return an exact session ID.');
       this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(created.thread.id,b.id);
@@ -428,6 +556,11 @@ export class Masters {
       try{await confirmCodexSession(runtime,b.native_id,b.cwd);}catch(e){this.stopWorker(b.id);throw e;}
       if(mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
       else {runtime.close();this.runtimes.delete(b.id);this.saveOperation({...this.operation(),stage:'Opening Codex Desktop'});await this.openCodex(b.native_id);}
+    } else if(provider==='muse'||provider==='deepseek'||provider==='cursor') {
+      // The provider owns its session on disk. Setup only pins the verified CLI route; the first
+      // request creates the session id that later requests resume. Cursor does not resume, so its
+      // recorded chat id is for audit and display.
+      this.saveOperation({...this.operation(),nativeId:b.native_id,stage:'Ready for the first request'});
     } else {
       this.saveOperation({...this.operation(),nativeId:b.native_id});
       await this.provisionClaude(b);
@@ -436,11 +569,14 @@ export class Masters {
     await this.router.coordinator?.refresh().catch(()=>{});
   }
   async provisionClaude(b:Binding) {
+    return withProviderSetup(this.store,'claude-provision',()=>this.provisionClaudeScoped(b));
+  }
+  private async provisionClaudeScoped(b:Binding) {
     // Keep generated configuration separate from the selected project's instructions.
     // Use Claude's supported headless interface; never edit Claude's trust database.
     const mcp=join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{session_bridge:this.mcpConfig(b)}}),{mode:0o600});
     const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
-    try{await runtime.initialize();await runtime.run('Return exactly READY without using tools. Wait for the owner’s first WhatsApp message.');this.store.set(`managed-claude:${b.id}`,'true');}
+    try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('Return exactly READY without using tools. Wait for the owner’s first WhatsApp message.');this.store.set(`managed-claude:${b.id}`,'true');}
     catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
   }
   async run(b:Binding,message:string,jobId:string) {
@@ -450,6 +586,74 @@ export class Masters {
     await verify(this.connections.assert(b));
     const role=roleConfig(this.store,b);
     if(this.runtimeRoles.get(b.id)!==role.version){this.stopWorker(b.id);this.runtimeRoles.set(b.id,role.version);}
+    if(b.provider==='muse') {
+      // One headless turn per request. Only its terminal record proves an answer, and the
+      // session id it reports is stored so the next request continues the same conversation.
+      const key=`muse-session:${b.id}`,stored=this.store.get(key)||null;
+      handedOff=true;
+      const result=await verify(runMuse({prompt:message,cwd:b.cwd,sessionId:stored,timeoutMs:museTurnTimeoutMs,trustWorkspace:this.store.get(`muse-trust:${b.id}`)==='true',network:true}));
+      if(result.sessionId)this.store.set(key,result.sessionId);
+      if(result.usage)this.store.event(jobId,'provider_usage',{provider:'muse',...result.usage});
+      if(this.store.job(jobId)?.status==='replaced')return;
+      if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);
+      return;
+    }
+    if(b.provider==='deepseek') {
+      // One headless `dsh` run per request. Its exit code plus its terminal event are the only
+      // proof of an answer, and the session id it opens with is stored so the next request
+      // continues the same conversation. This profile reports no usage, so none is emitted.
+      const key=`deepseek-session:${b.id}`,stored=this.store.get(key)||null;
+      handedOff=true;
+      // A message another session left for this folder is carried into this turn, and claimed before
+      // the prompt is built so it can never be delivered twice.
+      const claimed=claimMessages(currentStateDir(),b.cwd,DEFAULT_DSH_LABEL);
+      // A headless run needs a key, and the app cannot borrow the desktop session's credential.
+      // Say what to fix instead of spawning a turn that fails on an error the owner cannot act on.
+      const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
+      const settings=dshSettings(name=>this.store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
+      // One conversation per folder, so a second request waits for the first instead of adopting a
+      // session that is still being written.
+      const {env}=keyEnvironment(settings,process.env,keyOf);
+      const {result:queued,queued:waiting}=runDshQueued(b.cwd,{prompt:messagePrompt(claimed)+message,cwd:b.cwd,sessionId:stored,patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:deepseekTurnTimeoutMs},undefined,DEFAULT_DSH_LABEL);
+      if(waiting&&this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,'DeepSeek is still on the previous task in this folder. This one is queued behind it.','progress',jobId,`native-progress:${jobId}`);
+      let result;
+      try {
+        result=await verify(queued);
+      } catch(error) {
+        // The run is attempted even without a configured key, because the CLI may resolve its own
+        // credential. Only a credential failure is replaced by the next step the owner can take.
+        const reason=(error as Error)?.message??String(error);
+        settleMessages(currentStateDir(),b.cwd,DEFAULT_DSH_LABEL,claimed.map(m=>m.id),'unknown',reason);
+        const hint=credentialHint(reason,status);
+        if(!hint)throw error;
+        if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,hint,'final',jobId,`native-final:${jobId}`);
+        return;
+      }
+      settleMessages(currentStateDir(),b.cwd,DEFAULT_DSH_LABEL,claimed.map(m=>m.id),'received');
+      if(result.sessionId)this.store.set(key,result.sessionId);
+      if(this.store.job(jobId)?.status==='replaced')return;
+      if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);
+      return;
+    }
+    if(b.provider==='cursor') {
+      // One completed app turn per request. The deeplink only prefills the Composer - it never opens a
+      // window. Measured: Cursor submitted and answered four delivered prompts on its own, but the same
+      // surface then took no prompt at all for two hours, so submission is Cursor's own behaviour and
+      // cannot be relied on. `runCursorTurn` waits for the transcript's `turn_ended` record and rejects
+      // on timeout, so a delivery that is never picked up is reported as unfinished rather than as an
+      // answer. The deeplink has no chat-id parameter, so every request is a new chat and cannot
+      // continue an earlier one; the returned chat id is stored for audit and display only. Cursor
+      // reports no usage, so none is emitted. `workspace` is deliberately not passed: a name that
+      // matches no open Cursor window is silently ignored, which is the likeliest cause of the inert
+      // window we measured, and the prompt is then never submitted.
+      const key=`cursor-chat:${b.id}`;
+      handedOff=true;
+      const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs,cli:findCursorCli(),cwd:b.cwd}));
+      if(result.sessionId)this.store.set(key,result.sessionId);
+      if(this.store.job(jobId)?.status==='replaced')return;
+      if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);
+      return;
+    }
     if(b.provider==='claude'&&(this.store.get(`managed-worker:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true')) {
       let runtime=this.claudeRuntimes.get(b.id);
       if(!runtime?.alive){runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);await verify(runtime.initialize());}
@@ -473,38 +677,66 @@ export class Masters {
       const worker=this.store.get(`managed-worker:${b.id}`)==='true';
       await verify(checkCodexEnvironment(runtime,b.cwd));
       this.router.assertDispatchAllowed(jobId,b);
-      const resumed=await verify(runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',developerInstructions:role.instructions,config:{'mcp_servers.session_bridge':this.mcpConfig(b)}}));
+      const resumed=await verify(runtime.request('thread/resume',{threadId:b.native_id,cwd:b.cwd,excludeTurns:true,approvalPolicy:'on-request',sandbox:worker?'workspace-write':'read-only',developerInstructions:rolePointer(this.store,b),config:{'mcp_servers.session_bridge':this.mcpConfig(b)}}));
       if((resumed.thread?.id!==b.native_id||typeof resumed.thread?.cwd!=='string'||realpathSync(resumed.thread.cwd)!==realpathSync(b.cwd))){this.stopWorker(b.id);throw new Error('Native resume returned a different session or project. Delivery stopped.');}
     }
     const active=runtime;
     const input=[{type:'text',text:message,text_elements:[]},...this.router.attachments.references(b,jobId,true).filter(a=>['image/jpeg','image/png','image/webp','image/gif'].includes(a.mime)&&a.bytes<=10*1024*1024).map(a=>({type:'localImage',path:a.path!}))];
     this.router.assertDispatchAllowed(jobId,b);
     await new Promise<void>((resolve,reject)=>{
-      let text='';
-      const cleanup=()=>{active.off('notification',event);active.off('closed',closed);};
-      const closed=()=>{cleanup();reject(new Error('Native master disconnected during a request; check it before resending.'));};
+      let text='',turnId:string|undefined,settled=false,earlyBytes=0;
+      const early:{method:string;payload:any}[]=[];
+      const validTurnId=(id:unknown):id is string=>typeof id==='string'&&id.length>0&&id.length<=200&&!/[\x00-\x20]/.test(id);
+      const cleanup=()=>{active.off('notification',event);active.off('closed',closed);early.length=0;};
+      const fail=(error:unknown)=>{if(settled)return;settled=true;cleanup();reject(error);};
+      const succeed=()=>{if(settled)return;settled=true;cleanup();resolve();};
+      const closed=()=>fail(new Error('Native master disconnected during a request; check it before resending.'));
+      const deliver=(method:string,p:any)=>{
+        if(settled)return;
+        const id=method==='turn/started'||method==='turn/completed'?p.turn?.id:p.turnId;
+        if(id!==turnId)return;
+        try {
+          if(method==='thread/tokenUsage/updated'&&p.tokenUsage?.last)this.store.event(jobId,'provider_usage',{provider:'codex',inputTokens:p.tokenUsage.last.inputTokens,outputTokens:p.tokenUsage.last.outputTokens},id);
+          if(method==='turn/started')this.store.event(jobId,'provider_turn_started',{provider:'codex'},id);
+          if(method==='item/completed')text=p.item.text;
+          if(method!=='turn/completed')return;
+          if(p.turn.status!=='completed')throw new Error(p.turn.error?.message??'Native master did not finish this request.');
+          if(this.store.job(jobId)?.status==='replaced'){succeed();return;}
+          if(this.store.job(jobId)?.status!=='completed') {
+            if(!text.trim()&&(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))){succeed();return;}
+            if(!text.trim())throw new Error('Native master ended without a reply. Check the session before sending again.');
+            this.router.channelReply(b,text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`,{turnId:id});
+          }
+          succeed();
+        }catch(e){fail(e);}
+      };
       const event=(method:string,p:any)=>{
-        if(p?.threadId!==b.native_id)return;
-        if(method==='thread/tokenUsage/updated'&&p.tokenUsage?.last)this.store.event(jobId,'provider_usage',{provider:'codex',inputTokens:p.tokenUsage.last.inputTokens,outputTokens:p.tokenUsage.last.outputTokens},p.turnId);
-        if(method==='turn/started'&&p.turn?.id)this.store.event(jobId,'provider_turn_started',{provider:'codex'},p.turn.id);
-        if(method==='item/completed'&&p.item?.type==='agentMessage'&&p.item.phase!=='commentary')text=p.item.text??'';
-        if(method==='turn/completed'){
-          cleanup();
-          if(p.turn?.status!=='completed'){reject(new Error(p.turn?.error?.message??'Native master did not finish this request.'));return;}
-          try {
-            if(this.store.job(jobId)?.status==='replaced'){resolve();return;}
-            if(this.store.job(jobId)?.status!=='completed') {
-              if(!text.trim()&&(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))){resolve();return;}
-              if(!text.trim())throw new Error('Native master ended without a reply. Check the session before sending again.');
-              this.router.channelReply(b,text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`,{turnId:p.turn.id});
-            }
-            resolve();
-          }catch(e){reject(e);}
-        }
+        if(settled||p?.threadId!==b.native_id)return;
+        // Retain only bounded fields needed for this turn while turn/start is
+        // pending. Events from other turns cannot prove this turn has ended.
+        let payload:any;
+        if(method==='turn/started'||method==='turn/completed'){
+          if(!validTurnId(p.turn?.id))return;
+          payload={turn:{id:p.turn.id,status:typeof p.turn.status==='string'?p.turn.status.slice(0,40):undefined,error:{message:typeof p.turn.error?.message==='string'?p.turn.error.message.slice(0,2000):undefined}}};
+        }else if(method==='item/completed'){
+          if(!validTurnId(p.turnId)||p.item?.type!=='agentMessage'||p.item.phase==='commentary'||typeof p.item.text!=='string'||p.item.text.length>100000)return;
+          payload={turnId:p.turnId,item:{text:p.item.text}};
+        }else if(method==='thread/tokenUsage/updated'){
+          if(!validTurnId(p.turnId)||!p.tokenUsage?.last)return;
+          payload={turnId:p.turnId,tokenUsage:{last:{inputTokens:typeof p.tokenUsage.last.inputTokens==='number'?p.tokenUsage.last.inputTokens:undefined,outputTokens:typeof p.tokenUsage.last.outputTokens==='number'?p.tokenUsage.last.outputTokens:undefined}}};
+        }else return;
+        if(!turnId){earlyBytes+=JSON.stringify(payload).length;if(early.length>=256||earlyBytes>1000000){fail(new Error('Managed turn events exceeded the limit. Check the session before retrying.'));return;}early.push({method,payload});return;}
+        deliver(method,payload);
       };
       active.on('notification',event);active.on('closed',closed);
       handedOff=true;
-      active.request('turn/start',{threadId:b.native_id,input}).catch(e=>{cleanup();reject(e);});
+      active.request('turn/start',{threadId:b.native_id,input}).then(result=>{
+        if(settled)return;
+        const id=result?.turn?.id;
+        if(!validTurnId(id)){fail(new Error('Managed turn identity could not be confirmed. Check the session before retrying.'));return;}
+        turnId=id;
+        const queued=early.splice(0);for(const pending of queued){deliver(pending.method,pending.payload);if(settled)break;}
+      }).catch(fail);
     });
     }catch(e){
       if(guarded&&!handedOff&&!(e instanceof DispatchNotSubmittedError)){
@@ -519,32 +751,35 @@ export class Masters {
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{session_bridge:this.mcpConfig(b)},undefined,roleConfig(this.store,b).instructions);
+    },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b));
     return new ClaudeSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:roleConfig(this.store,b).instructions,...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
+    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:rolePointer(this.store,b),...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['session_research','master_reach','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
   }
   async provisionWorker(b:Binding) {
+    return withProviderSetup(this.store,'worker-provision',()=>this.provisionWorkerScoped(b));
+  }
+  private async provisionWorkerScoped(b:Binding) {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
-    await this.connections.assert(b);
+    await this.connections.assert(b);assertProviderSetup(this.store);
     if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop') {
       // The owner's Send press in Claude is the direct request; no launcher chat relays it.
       await this.desktop.createDirect(b,'Your role arrives with the first request; use its bridge CLI reply command.',`Set up this folder as my FarFromDesk project session “${this.store.get(`name:${b.id}`)??'FarFromDesk project'}”.`);return;
     }
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,false);this.claudeRuntimes.set(b.id,runtime);
-      try{await runtime.initialize();await runtime.run('This newly created empty project is explicitly approved by the owner. Return exactly READY without using any tools. Wait for the actual task.');}
+      try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('This newly created empty project is explicitly approved by the owner. Return exactly READY without using any tools. Wait for the actual task.');}
       catch(e){runtime.close();this.claudeRuntimes.delete(b.id);throw e;}
       return;
     }
     const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));
-    this.runtimes.set(b.id,runtime);await runtime.initialize();
+    this.runtimes.set(b.id,runtime);await runtime.initialize();assertProviderSetup(this.store);
     this.store.set(`worker-preflight:${b.id}`,'blocked');
     if(this.store.get(`execution-mode:${b.id}`)!=='desktop')await checkCodexEnvironment(runtime,b.cwd);
     this.store.set(`worker-preflight:${b.id}`,'passed');
-    const r=await runtime.request('thread/start',{cwd:b.cwd,approvalPolicy:'on-request',sandbox:'workspace-write',developerInstructions:roleConfig(this.store,b).instructions,config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
+    assertProviderSetup(this.store);const r=await runtime.request('thread/start',{cwd:b.cwd,approvalPolicy:'on-request',sandbox:'workspace-write',developerInstructions:rolePointer(this.store,b),config:{'mcp_servers.session_bridge':this.mcpConfig(b)},ephemeral:false});
     if(!/^[0-9a-f-]{36}$/i.test(r.thread?.id??''))throw new Error('Native worker creation did not return an exact session ID.');
     this.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(r.thread.id,b.id);
     if(this.store.get(`execution-mode:${b.id}`)!=='desktop')this.store.set(`managed-codex:${b.id}`,'true');
@@ -561,16 +796,19 @@ export class Masters {
   }
   stopWorker(id:string){this.runtimeRoles.delete(id);this.runtimes.get(id)?.close();this.runtimes.delete(id);this.claudeRuntimes.get(id)?.close();this.claudeRuntimes.delete(id);}
   async recoverWorker(b:Binding) {
+    return withProviderSetup(this.store,'worker-recover-runtime',()=>this.recoverWorkerScoped(b));
+  }
+  private async recoverWorkerScoped(b:Binding) {
     requirePortableCLI(this.store.get(`execution-mode:${b.id}`));
-    this.stopWorker(b.id);
-    await this.connections.assert(b);
+    assertProviderSetup(this.store);this.stopWorker(b.id);
+    await this.connections.assert(b);assertProviderSetup(this.store);
     // A failed configuration read occurs before thread/start. Recovering this
     // exact binding can safely make its first native session; it is not a replay.
     if(b.provider==='codex'&&this.store.get(`worker-preflight:${b.id}`)==='blocked'){await this.provisionWorker(b);return;}
     if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)==='desktop'){await this.desktop.confirm(b,true);return;}
     if(b.provider==='claude') {
       const runtime=this.claudeWorker(b,true);this.claudeRuntimes.set(b.id,runtime);
-      try{await runtime.initialize();await runtime.run('Resume this exact project for a connection check only. Return READY without using tools or repeating any prior work.');}
+      try{await runtime.initialize();assertProviderSetup(this.store);await runtime.run('Resume this exact project for a connection check only. Return READY without using tools or repeating any prior work.');}
       catch(e){this.stopWorker(b.id);throw e;}return;
     }
     const runtime=new CodexSession(codexBin,b.cwd,(m,p)=>this.approval(this.store.binding(b.id)!,m,p));

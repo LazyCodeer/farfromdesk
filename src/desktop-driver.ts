@@ -7,6 +7,17 @@ import { createMacNative } from './mac-native.js';
 
 export type DesktopDriver={readonly revision?:number;call(name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<any>;stop():void};
 const nativeRoot=fileURLToPath(new URL('../native/',import.meta.url));
+/**
+ * The driver reports a refusal as MCP content, an array of typed parts. Passing that
+ * envelope on as JSON put `[{"type":"text","text":"run_steps rejected ..."}]` in the
+ * owner's chat, so keep the sentence and drop the envelope. Bounded because it ends up
+ * in a message before anything decides how to word it.
+ */
+export function refusalText(content:unknown){
+  const parts=Array.isArray(content)?content:[content];
+  const text=parts.map((part:any)=>typeof part?.text==='string'?part.text:typeof part==='string'?part:'').filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  return (text||'the driver refused it').slice(0,300);
+}
 /** A native app helper parents the vendor daemon so normal macOS TCC attribution applies. */
 export class EmbeddedDesktopDriver implements DesktopDriver {
   private host:ReturnType<typeof createMacNative>;
@@ -14,7 +25,7 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
     this.host=viaLaunchServices?launchServicesNative(nativeDirectory+helperBundle):createMacNative(nativeDirectory+helperBundle+'/Contents/MacOS/ffd-accessibility',new Set(['DESKTOP_DRIVER_MISSING','DESKTOP_DRIVER_HASH_MISMATCH','DESKTOP_DRIVER_FAILED']));
   }
   private client?:Client; private transport?:StdioClientTransport; private starting?:Promise<Client>;
-  private generation=0; private directory?:string; private idle?:ReturnType<typeof setTimeout>;
+  private generation=0; private directory?:string; private idle?:ReturnType<typeof setTimeout>; private inflight=0;
   get revision(){return this.generation;}
   private async connect():Promise<Client> {
     if(this.client)return this.client;
@@ -38,19 +49,34 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
   }
   async call(name:string,args:Record<string,unknown>,signal?:AbortSignal){
     if(signal?.aborted)throw new Error('DESKTOP_STOPPED');
-    clearTimeout(this.idle);
+    clearTimeout(this.idle);this.inflight++;
     const abort=()=>this.stop();signal?.addEventListener('abort',abort,{once:true});
     try{
       const client=await this.connect();
       if(signal?.aborted)throw new Error('DESKTOP_STOPPED');
-      const result=await client.callTool({name,arguments:args},undefined,{signal,timeout:12000});
-      if(result.isError)throw new Error('DESKTOP_NATIVE_REFUSED: '+JSON.stringify(result.content));
+      // Only a transport failure or a timeout ends the driver. A refusal is an ordinary answer: tearing
+      // the connection down for one ("element not found") closed it under the brain's other steps,
+      // which then failed with "Connection closed" (logged live, 4 November 2026).
+      let result;
+      try{result=await client.callTool({name,arguments:args},undefined,{signal,timeout:12000});}
+      // A slow call (foreground input waiting on a file picker) times out on its own; the driver is still
+      // serving, so closing the client here turned that one timeout into "Connection closed" for every
+      // other call (live, 5 Nov 2026). Only a broken transport closes it.
+      catch(e){if(!/timed out|-32001/i.test(String((e as {code?:unknown})?.code)+' '+String((e as Error)?.message)))this.stop();throw e;}
+      if(result.isError)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText(result.content));
       const text=(result.content as any[])?.find(c=>c.type==='text')?.text;
       const value=result.structuredContent??(text?JSON.parse(text):{});
-      if((value as any).refusal||(value as any).error)throw new Error('DESKTOP_NATIVE_REFUSED: '+JSON.stringify(value));
+      // The driver returns a screenshot as an MCP image block beside its JSON, not as a field in it.
+      // Reading only the JSON dropped every screenshot (live, 4 November 2026: a granted Screen
+      // Recording still produced no image), so the block is attached under the field callers read.
+      const image=(result.content as any[])?.find(c=>c?.type==='image'&&typeof c.data==='string');
+      if(image&&value&&typeof value==='object'&&!(value as any).screenshot_png_b64)Object.assign(value,{screenshot_png_b64:image.data,screenshot_mime_type:image.mimeType??'image/png'});
+      if((value as any).refusal||(value as any).error)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText((value as any).refusal??(value as any).error??value));
       return value;
-    }catch(e){this.stop();throw e;}
-    finally{signal?.removeEventListener('abort',abort);this.idle=setTimeout(()=>this.stop(),60000);this.idle.unref();}
+    }
+    // One idle timer, started only when no call is running: overlapping calls each left a timer, and a
+    // stray one stopped the driver a minute later in the middle of a long form ("Connection closed", live 5 Nov 2026).
+    finally{signal?.removeEventListener('abort',abort);if(--this.inflight===0){clearTimeout(this.idle);this.idle=setTimeout(()=>this.stop(),60000);this.idle.unref();}}
   }
   stop(){
     this.generation++;clearTimeout(this.idle);this.host.stop?.();

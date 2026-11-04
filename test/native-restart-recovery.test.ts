@@ -55,12 +55,12 @@ test('notice and uncertain transition roll back together on a recovery error',()
  }finally{store.db.close();}
 });
 
-test('other dispatched messages do not get an opening recovery notice',()=>{
+test('a dispatched message cut by a restart is always told to the owner, with or without an opening notice',()=>{
  const {store,b}=fixture();try {
   store.enqueue('tg:other',b,'Other message','tg:owner:private');store.jobState('tg:other','dispatched');
   store.recover();
   assert.equal(store.job('tg:other')?.status,'uncertain');
-  assert.equal(store.db.prepare("SELECT count(*) AS n FROM outbox WHERE source='native-restart:tg:other:0'").get()!.n,0);
+  assert.equal(store.db.prepare("SELECT count(*) AS n FROM outbox WHERE source='native-restart:tg:other:0'").get()!.n,1);
  }finally{store.db.close();}
 });
 

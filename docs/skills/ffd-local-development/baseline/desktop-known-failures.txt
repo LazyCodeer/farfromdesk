@@ -1,0 +1,8 @@
+# Known-failing desktop tests. The repo's long-standing social_preview_test.dart pair.
+# Snapshot taken 2026-11-03 from build 2356.
+# These are FLAKY, not deterministic: on 3 November the backend run passed 13
+# of the 14 and the desktop run passed both of the 2. A baseline entry that
+# passes is reported as "baseline entries that passed this run", never as an error.
+# Only a failure NOT in this list is a new failure.
+social_preview_test.dart: offline preview opens on an empty week without a provider call
+social_preview_test.dart: preview tabs and week navigation do not create drafts

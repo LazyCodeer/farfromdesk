@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { stat,realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { nativeCommand } from './platform.js';
+import { codexProfileEnvironment } from './codex-profile.js';
 
 export async function requireCodexHistory(path:unknown) {
   if(typeof path!=='string'||!isAbsolute(path))throw new Error('Codex has not saved this conversation yet. Recover this exact setup before sending a task.');
@@ -46,7 +47,7 @@ export class CodexSession extends EventEmitter {
   constructor(binary:string,cwd:string,private approval:(method:string,params:any)=>Promise<any>) {
     super();
     const command=nativeCommand(binary,['app-server']);
-    this.process=spawn(command.binary,command.args,{cwd,stdio:'pipe',env:process.env,windowsHide:true});
+    this.process=spawn(command.binary,command.args,{cwd,stdio:'pipe',env:codexProfileEnvironment(),windowsHide:true});
     this.process.stderr.resume(); // Native diagnostics may contain private content; never echo them.
     const lines=createInterface({input:this.process.stdout});
     lines.on('line',line=>{

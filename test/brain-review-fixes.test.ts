@@ -15,7 +15,7 @@ async function setup() {
   const policy={...DEFAULT_BRAIN,taskContracts:false,enabled:true,learn:true};saveBrainConfig(store,secret,{policy});
   return {root,store,secret,policy,saveBrainConfig,MetaBrain,done:()=>{store.close();rmSync(root,{recursive:true,force:true});}};
 }
-const router=()=>({stopped:false,coordinator:undefined,native:{},approvals:{pending:new Map()}}) as any;
+const router=()=>({stopped:false,coordinator:undefined,guidedModes:{get:()=>undefined},native:{},approvals:{pending:new Map()}}) as any;
 
 test('switching learning off while Meta is thinking stops its memory writes',async()=>{
   const t=await setup();

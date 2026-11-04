@@ -14,8 +14,8 @@ function fixture(){
  const store=new Store(':memory:'),approvals=new Approvals(store),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
  const binding=store.register('codex-poll','codex','11111111-1111-4111-8111-111111111111','/synthetic','channel').binding;
  store.set('whatsapp-owner',owner);store.set('active',binding.id);
- const sends:any[]=[];let fail=false;
- const sock=new GuardedSocket({sendMessage:async(jid:string,content:any)=>{sends.push({jid,content});return {message:{conversation:content.text}};},relayMessage:async(jid:string,message:any)=>{sends.push({jid,message});if(fail)throw Error('synthetic uncertain send');},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
+ const sends:any[]=[];let fail=false,failPhoto=false;
+ const sock=new GuardedSocket({sendMessage:async(jid:string,content:any)=>{sends.push({jid,content});if(failPhoto&&content.image)throw Error('synthetic interrupted photo');return {message:{conversation:content.text}};},relayMessage:async(jid:string,message:any)=>{sends.push({jid,message});if(fail)throw Error('synthetic uncertain send');},end:()=>{}} as any,{owners:()=>[owner],ownedGroup:()=>false});
  const wa=new WhatsApp(store,router);wa.sock=sock;wa.status='connected';wa.selfJid=owner;wa.owners=[owner];
  const msg=(id:string,text:string,extra:any={})=>({key:{id,fromMe:true,remoteJid:owner},message:{conversation:text},...extra});
  const choices=async()=>{
@@ -32,7 +32,7 @@ function fixture(){
   const encPayload=Buffer.concat([cipher.update(bytes),cipher.final(),cipher.getAuthTag()]);
   return {...msg(id,''),message:{pollUpdateMessage:{pollCreationMessageKey:{id:poll.wa_id,remoteJid:owner,fromMe:true},vote:{encPayload,encIv:iv}}}};
  };
- return {store,router,wa,approvals,binding,sends,msg,choices,vote,fail:()=>{fail=true;},close:()=>{wa.close();approvals.cancel();store.close();}};
+ return {store,router,wa,approvals,binding,sends,msg,choices,vote,fail:()=>{fail=true;},failPhoto:()=>{failPhoto=true;},close:()=>{wa.close();approvals.cancel();store.close();}};
 }
 
 test('WhatsApp typed commands use the owner chat and reject forwards, quotes and other people',async()=>{
@@ -139,15 +139,15 @@ test('bare /claude switches straight to the default Claude coordinator with one 
   await f.wa.receiveMessage(f.msg('C1','/claude'));
   assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
   const bodies=()=>(f.store.db.prepare("SELECT body FROM outbox WHERE source LIKE 'command%' OR source LIKE 'owner-choice:%' ORDER BY rowid").all() as any[]).map(r=>r.body);
-  assert.equal(bodies().at(-1),'Now talking to atlas Super Ai. /back to leave.'); // no header or footer
+  assert.equal(bodies().at(-1),'Now talking to atlas Super Ai. /back to leave.\n\nMode: General'); // no header or footer
   assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM owner_target_options').get()!.n,0);assert.equal(f.store.jobs().length,0);
   await f.wa.receiveMessage(f.msg('C2','Check the build'));assert.equal(f.store.job('wa:C2')?.binding_id,c.id);
   // No Codex coordinator: one line pointing to the desktop app, and the Claude target stays.
   await f.wa.receiveMessage(f.msg('C3','/codex'));
   assert.equal(bodies().at(-1),'No Codex coordinator is connected. Connect one in the FarFromDesk desktop app, Coding platforms.');
-  // Other output keeps its usual presentation.
+  // Output without a session carries no provenance tail, and still never claims a reply stage.
   f.store.output(undefined,'Ordinary notice','plain-check');
-  assert.match((f.store.db.prepare("SELECT body FROM outbox WHERE source='plain-check:0'").get() as any).body,/\*Reply\*[\s\S]*— FarFromDesk$/);
+  assert.equal((f.store.db.prepare("SELECT body FROM outbox WHERE source='plain-check:0'").get() as any).body,'Ordinary notice');
   assert.equal(JSON.parse(f.store.get(`owner-target:${owner}`)!).id,c.id);
   // A paused coordinator fails closed instead of picking another Claude session.
   await f.wa.receiveMessage(f.msg('C4','/back'));f.store.enable(c.id,false);await f.wa.receiveMessage(f.msg('C5','/claude'));
@@ -227,5 +227,25 @@ test('a pick warms the chosen session exactly once, and a warm-up failure does n
    await f.wa.receiveMessage(f.msg('W4','/back'));f.store.enable(c.id,false);await f.wa.receiveMessage(f.msg('W5','/claude'));
    assert.equal(warmed.length,2);assert.equal(f.store.jobs().length,0);
   }finally{console.error=log;}
+ }finally{f.close();}
+});
+
+test('WhatsApp photo previews use inline images with captions in the owner chat',async()=>{
+ const f=fixture();try{
+  f.store.enqueue('wa:preview',f.binding,'Make a post',owner);
+  const sharp=(await import('sharp')).default;const bytes=await sharp({create:{width:1080,height:1350,channels:3,background:'#7744aa'}}).jpeg().toBuffer();
+  const {Artifacts}=await import('../src/artifacts.js');const a=new Artifacts(f.store),image=a.prepare(f.binding,'wa:preview','preview.jpg',bytes.toString('base64'));
+  a.reply(f.binding,'wa:preview',image.artifactId,'Instagram\n\nReady to review','photo');await f.wa.flush();
+  assert.equal(f.sends.length,1);assert.ok(Buffer.isBuffer(f.sends[0].content.image));assert.equal(f.sends[0].content.caption,'Instagram\n\nReady to review');assert.equal(f.sends[0].content.document,undefined);assert.equal(f.sends[0].jid,owner);
+ }finally{f.close();}
+});
+
+test('unconfirmed WhatsApp photo send is held as uncertain and not automatically replayed',async()=>{
+ const f=fixture();try{
+  f.store.enqueue('wa:preview',f.binding,'Make a post',owner);
+  const sharp=(await import('sharp')).default;const bytes=await sharp({create:{width:100,height:100,channels:3,background:'#7744aa'}}).jpeg().toBuffer();
+  const {Artifacts}=await import('../src/artifacts.js');const a=new Artifacts(f.store),image=a.prepare(f.binding,'wa:preview','preview.jpg',bytes.toString('base64'));
+  const row=a.reply(f.binding,'wa:preview',image.artifactId,'Post','photo') as any;f.failPhoto();await f.wa.flush();
+  assert.equal(f.store.db.prepare('SELECT status FROM outbox WHERE id=?').get(row.id)!.status,'uncertain');await f.wa.flush();assert.equal(f.sends.length,1);
  }finally{f.close();}
 });

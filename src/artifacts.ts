@@ -51,18 +51,20 @@ export class Artifacts {
     if(['replaced','reviewed','auto_closed','cancelled'].includes(job.status))throw new Error('This request was closed when its master was replaced.');
     return job;
   }
-  reply(b:Binding,requestId:string,artifactId:string,caption:string) {
+  reply(b:Binding,requestId:string,artifactId:string,caption:string,presentation:'document'|'photo'='document') {
     const job=this.request(b,requestId);
     if(typeof caption!=='string'||caption.length>1000)throw new Error('Document caption must be at most 1,000 characters.');
     const artifact=this.store.db.prepare('SELECT * FROM artifacts WHERE id=? AND binding_id=? AND request_id=?').get(artifactId,b.id,requestId) as any;
     if(!artifact||artifact.removed_at||artifact.owner&&artifact.owner!==this.store.ownerFor(artifact.destination)||artifact.native_id&&artifact.native_id!==b.native_id)throw new Error('Prepare this exact artifact locally for this session and request first.');
-    const source=`document:${b.id}:${requestId}:${artifactId}`;
+    if(!['document','photo'].includes(presentation))throw new Error('Invalid media presentation.');
+    if(presentation==='photo'&&(artifact.mime!=='image/jpeg'||artifact.storage_key||artifact.data.length>10_000_000))throw new Error('Photo preview requires an inline JPEG under 10 MB.');
+    const source=`${presentation}:${b.id}:${requestId}:${artifactId}`;
     const prior=this.store.db.prepare('SELECT id,body FROM outbox WHERE source=?').get(source) as any;
     if(prior){if(prior.body!==caption)throw new Error('This artifact was already queued with a different caption.');return this.status(b,prior.id);}
     const owner=this.store.ownerFor(job.destination),destination=artifact.destination??job.destination??owner;
     if(!owner||!destination)throw new Error('Connect the original messaging account first.');
     const id=randomUUID();
-    this.store.db.prepare('INSERT INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,artifact_id,request_id,reply_kind) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,b.id,caption,source,`3EB0${randomUUID().replaceAll('-','').toUpperCase()}`,Date.now(),destination,artifactId,requestId,'progress');
+    this.store.db.prepare('INSERT INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,artifact_id,request_id,reply_kind,media_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,b.id,caption,source,`3EB0${randomUUID().replaceAll('-','').toUpperCase()}`,Date.now(),destination,artifactId,requestId,'progress',presentation);
     this.store.event(requestId,'document_queued');
     // A file is a progress delivery. Only the worker's explicit final text closes work.
     return this.status(b,id);

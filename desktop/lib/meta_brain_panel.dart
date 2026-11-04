@@ -43,15 +43,15 @@ class MetaBrainPanel extends StatefulWidget {
   final Gateway gateway;
   final Map<String, dynamic> saved;
   final Future<void> Function() onSaved;
-  final VoidCallback? openItems;
-  final String? activityScope;
+
+  /// Providers the owner has set up, so switching Brain routing on allows what actually exists.
+  final List<String> platforms;
   const MetaBrainPanel({
     super.key,
     required this.gateway,
     required this.saved,
     required this.onSaved,
-    this.openItems,
-    this.activityScope,
+    this.platforms = const [],
   });
   @override
   State<MetaBrainPanel> createState() => _MetaBrainPanelState();
@@ -62,14 +62,8 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   late bool enabled, routing, summaries, management, learn, taskContracts;
   late String model, failure;
   late Set<String> providers;
-  bool saving = false, replacingKey = false;
-  String? message, taskMessage;
-  List<Map<String, dynamic>>? tasks;
-  List<Map<String, dynamic>> workItems = [];
-  List<Map<String, dynamic>> metaActivity = [];
-  bool activityLoading = false, activityBusy = false, activityError = false;
-  int activityGeneration = 0;
-  Timer? activityTimer;
+  bool saving = false, replacingKey = false, showRules = false;
+  String? message;
   @override
   void initState() {
     super.initState();
@@ -83,263 +77,13 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
     taskContracts = s['taskContracts'] != false;
-    activityLoading = widget.activityScope != null;
-    if (activityLoading) unawaited(loadActivity());
-    activityTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => loadActivity(),
-    );
-  }
-
-  @override
-  void didUpdateWidget(covariant MetaBrainPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.activityScope != widget.activityScope ||
-        oldWidget.gateway != widget.gateway) {
-      activityGeneration++;
-      metaActivity = [];
-      activityBusy = false;
-      activityError = false;
-      activityLoading = widget.activityScope != null;
-      if (activityLoading) unawaited(loadActivity());
-    }
   }
 
   @override
   void dispose() {
-    activityTimer?.cancel();
     keyInput.clear();
     keyInput.dispose();
     super.dispose();
-  }
-
-  Future<void> loadActivity() async {
-    final requestScope = widget.activityScope;
-    if (activityBusy || requestScope == null) return;
-    final generation = activityGeneration;
-    activityBusy = true;
-    try {
-      final data = await widget.gateway.get('/api/meta-timeline');
-      if (!mounted || generation != activityGeneration) return;
-      if (data['scope'] != requestScope) {
-        throw const FormatException('Activity scope changed');
-      }
-      final rows = data['events'];
-      if (rows is! List) throw const FormatException('Invalid activity');
-      final parsed = rows
-          .whereType<Map>()
-          .map((row) => Map<String, dynamic>.from(row))
-          .where((row) {
-            final duration = row['durationMs'];
-            final at = row['at'];
-            return {
-                  'sorted',
-                  'briefed',
-                  'scheduled',
-                  'heard',
-                  'contracted',
-                }.contains(row['stage']) &&
-                {'completed', 'failed'}.contains(row['status']) &&
-                duration is num &&
-                duration.isFinite &&
-                duration >= 0 &&
-                duration <= 3600000 &&
-                at is num &&
-                at.isFinite &&
-                at >= 0 &&
-                at <= 8640000000000000;
-          })
-          .take(30)
-          .toList();
-      if (mounted && generation == activityGeneration) {
-        setState(() {
-          metaActivity = parsed;
-          activityLoading = false;
-          activityError = false;
-        });
-      }
-    } catch (_) {
-      // Never show stale activity as belonging to the currently selected chat.
-      if (mounted && generation == activityGeneration) {
-        setState(() {
-          metaActivity = [];
-          activityLoading = false;
-          activityError = true;
-        });
-      }
-    } finally {
-      if (generation == activityGeneration) activityBusy = false;
-    }
-  }
-
-  Widget activityTab() {
-    final localizations = MaterialLocalizations.of(context);
-    const labels = {
-      'sorted': 'Message interpretation',
-      'briefed': 'Morning brief',
-      'scheduled': 'Reminder interpretation',
-      'heard': 'Voice transcription',
-      'contracted': 'Task contract',
-    };
-    return box(
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Meta activity',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      'Meta API calls in this chat, not task outcomes. No message text is shown.',
-                      style: TextStyle(fontSize: 12, color: muted),
-                    ),
-                  ],
-                ),
-              ),
-              TextButton(
-                onPressed: activityBusy || widget.activityScope == null
-                    ? null
-                    : loadActivity,
-                child: const Text('Refresh'),
-              ),
-            ],
-          ),
-          const Divider(color: line2),
-          if (activityLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Loading activity...',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else if (activityError)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Could not load Meta activity. Try refresh.',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else if (widget.activityScope == null)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Connect a chat to view Meta activity.',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else if (metaActivity.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'No Meta calls recorded in this chat yet.',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else
-            for (final event in metaActivity)
-              Builder(
-                builder: (context) {
-                  final name = labels[event['stage']]!;
-                  final at = DateTime.fromMillisecondsSinceEpoch(
-                    (event['at'] as num).toInt(),
-                  ).toLocal();
-                  final time = localizations.formatTimeOfDay(
-                    TimeOfDay.fromDateTime(at),
-                  );
-                  final day = DateUtils.isSameDay(at, DateTime.now())
-                      ? 'Today'
-                      : localizations.formatShortDate(at);
-                  final ms = (event['durationMs'] as num).clamp(0, 3600000);
-                  final duration = ms < 1000
-                      ? '${ms.toInt()} ms'
-                      : '${(ms / 1000).toStringAsFixed(1)} s';
-                  final succeeded = event['status'] == 'completed';
-                  final status = succeeded ? 'API responded' : 'Request failed';
-                  return Semantics(
-                    label: '$name, $day, $time, $duration, $status',
-                    excludeSemantics: true,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: accentWash,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Icon(
-                              event['stage'] == 'heard'
-                                  ? Icons.mic_none_rounded
-                                  : Icons.auto_awesome_outlined,
-                              color: accentSoft,
-                              size: 17,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  name,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  '$day, $time',
-                                  style: const TextStyle(
-                                    color: muted,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                duration,
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                status,
-                                style: TextStyle(
-                                  color: succeeded ? success : warning,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-        ],
-      ),
-    );
   }
 
   Future<void> save({bool remove = false}) async {
@@ -369,7 +113,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       if (mounted) {
         setState(() {
           replacingKey = false;
-          message = 'Saved. No API call was made.';
+          message = null;
         });
       }
     } catch (_) {
@@ -383,60 +127,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       if (mounted) {
         keyInput.clear();
         setState(() => saving = false);
-      }
-    }
-  }
-
-  Future<void> loadTasks() async {
-    try {
-      final data = await widget.gateway.get('/api/meta-brain/tasks?fresh=1');
-      if (mounted) {
-        setState(() {
-          workItems = (data['workItems'] as List? ?? [])
-              .map((t) => Map<String, dynamic>.from(t as Map))
-              .toList();
-          tasks = (data['tasks'] as List)
-              .map((t) => Map<String, dynamic>.from(t as Map))
-              .toList();
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => taskMessage = 'Could not load the task history.');
-      }
-    }
-  }
-
-  Future<void> verify(Map<String, dynamic> task) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Verify this task is complete?'),
-        content: Text(
-          'Confirm only after reviewing the work and its evidence. A proxy report alone is not owner verification.\n\n${task['original']}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('I verified it'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    try {
-      await widget.gateway.post('/api/meta-brain/verify', {
-        'requestId': task['id'],
-        'confirmed': true,
-      });
-      await loadTasks();
-    } catch (_) {
-      if (mounted) {
-        setState(() => message = 'Verification could not be saved.');
       }
     }
   }
@@ -529,56 +219,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           ],
         ),
       );
-
-  Widget calloutNote(IconData icon, String bold, String text) => Container(
-    margin: const EdgeInsets.only(top: 14),
-    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-    decoration: BoxDecoration(
-      color: canvas,
-      borderRadius: BorderRadius.circular(14),
-    ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 16, color: muted),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text.rich(
-            TextSpan(
-              children: [
-                if (bold.isNotEmpty)
-                  TextSpan(
-                    text: '$bold ',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                TextSpan(text: text),
-              ],
-            ),
-            style: const TextStyle(fontSize: 12.5, height: 1.5, color: muted),
-          ),
-        ),
-      ],
-    ),
-  );
-
-  Widget saveRow(String label) => Padding(
-    padding: const EdgeInsets.only(top: 16),
-    child: Wrap(
-      spacing: 12,
-      runSpacing: 8,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        FilledButton(
-          onPressed: saving ? null : () => save(),
-          child: Text(label),
-        ),
-        Text(
-          message ?? "Saved on this computer. Saving doesn't call Meta.",
-          style: const TextStyle(fontSize: 12, color: muted),
-        ),
-      ],
-    ),
-  );
 
   Widget toggle(
     String title,
@@ -732,7 +372,9 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                               enabled = v;
                               if (v) {
                                 routing = summaries = management = true;
-                                providers = {'codex', 'claude'};
+                                // Allow the platforms this Mac actually has a coordinator for.
+                                // Naming two of them here denied every platform added later.
+                                providers = {...providers, ...widget.platforms};
                               }
                             });
                             save();
@@ -805,6 +447,12 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     );
   }
 
+  List<String> get models => [
+    for (final m
+        in (widget.saved['models'] as List? ?? fallbackMetaBrainModels))
+      '$m',
+  ];
+
   Widget modelTab(bool configured) => box(
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -814,47 +462,75 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           'The brain sends each phone message to Meta to understand it, using your own key. Usage is billed to your Meta account. A new model applies to your next message.',
         ),
         const SizedBox(height: 8),
-        row(
-          'Model',
-          'Reads each phone message.',
-          DropdownButton<String>(
-            value: model,
-            underline: const SizedBox(),
-            items: [
-              for (final m
-                  in (widget.saved['models'] ?? fallbackMetaBrainModels))
-                DropdownMenuItem(value: m as String, child: Text('Meta · $m')),
-            ],
-            onChanged: saving ? null : (v) => setState(() => model = v!),
+        if (!configured || replacingKey)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Row(
+              children: [
+                Expanded(child: keyField()),
+                const SizedBox(width: 12),
+                FilledButton(
+                  key: const Key('save-meta-key'),
+                  onPressed: saving ? null : save,
+                  child: Text(saving ? 'Saving…' : 'Save'),
+                ),
+                if (replacingKey) ...[
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: saving
+                        ? null
+                        : () => setState(() => replacingKey = false),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ],
+            ),
+          )
+        else
+          row(
+            'Meta Model API key',
+            'Saved. Stored only on this computer.',
+            Wrap(
+              spacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton(
+                  onPressed: saving
+                      ? null
+                      : () => setState(() => replacingKey = true),
+                  child: const Text('Replace key'),
+                ),
+                TextButton(
+                  onPressed: saving ? null : () => save(remove: true),
+                  child: const Text('Remove key'),
+                ),
+              ],
+            ),
           ),
-        ),
-        row(
-          'Meta Model API key',
-          configured
-              ? 'Saved. Stored only on this computer.'
-              : 'Stored only on this computer.',
-          configured
-              ? Wrap(
-                  spacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    OutlinedButton(
-                      onPressed: saving
-                          ? null
-                          : () => setState(() => replacingKey = !replacingKey),
-                      child: Text(
-                        replacingKey ? 'Keep saved key' : 'Replace key',
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: saving ? null : () => save(remove: true),
-                      child: const Text('Remove key'),
-                    ),
-                  ],
-                )
-              : const SizedBox(),
-        ),
-        if (!configured || replacingKey) keyField(),
+        if (widget.saved['modelsError'] is String)
+          Text(
+            widget.saved['modelsError'] as String,
+            style: const TextStyle(fontSize: 12, color: muted),
+          ),
+        if (configured)
+          row(
+            'Model',
+            'Reads each phone message.',
+            DropdownButton<String>(
+              value: models.contains(model) ? model : models.first,
+              underline: const SizedBox(),
+              items: [
+                for (final m in models)
+                  DropdownMenuItem(value: m, child: Text('Meta · $m')),
+              ],
+              onChanged: saving
+                  ? null
+                  : (v) {
+                      setState(() => model = v!);
+                      save();
+                    },
+            ),
+          ),
         row(
           "If the brain can't answer",
           failure == 'legacy'
@@ -869,7 +545,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
             showSelectedIcon: false,
             onSelectionChanged: saving
                 ? null
-                : (v) => setState(() => failure = v.first),
+                : (v) {
+                    setState(() => failure = v.first);
+                    save();
+                  },
           ),
           tip:
               'Used when Meta is down, the key fails or the answer is unclear.',
@@ -878,177 +557,171 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     ),
   );
 
-  Widget instructionsTab() => box(
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        heading(
-          'Instructions',
-          'The brain follows these built-in rules for every phone message. What it knows about you lives in your memory files.',
-          subtitle: 'The built-in rules every message follows.',
+  Widget cardHeader(
+    IconData icon,
+    String title,
+    String detail, {
+    Widget? end,
+  }) => Row(
+    children: [
+      Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: accentWash,
+          borderRadius: BorderRadius.circular(10),
         ),
-        const SizedBox(height: 8),
-        if (widget.saved['instructions'] is String)
-          Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: const Text(
-                'Built-in instructions',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              subtitle: const Text(
-                'Read only. Teach it your words in the memory files instead.',
-                style: TextStyle(fontSize: 12, color: muted),
-              ),
-              children: [
-                Container(
-                  width: double.infinity,
-                  constraints: const BoxConstraints(maxHeight: 320),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: canvas,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: SingleChildScrollView(
-                    child: SelectableText(
-                      widget.saved['instructions'] as String,
-                      style: const TextStyle(
-                        fontFamily: 'Menlo',
-                        fontSize: 12,
-                        height: 1.6,
-                        color: muted,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+        child: Icon(icon, color: accent, size: 19),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
+            const SizedBox(height: 2),
+            Text(detail, style: const TextStyle(fontSize: 12, color: muted)),
+          ],
+        ),
+      ),
+      ?end,
+    ],
+  );
+
+  Widget guarantee(IconData icon, String text) => Container(
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+    decoration: BoxDecoration(
+      color: canvas,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: hairline),
+    ),
+    child: Row(
+      children: [
+        Icon(icon, size: 15, color: accentSoft),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 12.5, height: 1.4, color: ink2),
           ),
-        calloutNote(
-          Icons.lock_outline_rounded,
-          "Always on, can't be changed.",
-          "The brain only follows the message you just sent. It never takes instructions from worker replies or quoted text, never says something was done when it wasn't, and can't change macOS or coding app approvals.",
         ),
       ],
     ),
   );
 
+  Widget instructionsTab() {
+    final rules = widget.saved['instructions'];
+    const promises = [
+      (Icons.reply_rounded, 'Acts only on the message you just sent'),
+      (
+        Icons.verified_outlined,
+        'Never says something was done when it was not',
+      ),
+      (
+        Icons.block_rounded,
+        'Ignores instructions inside worker replies or quoted text',
+      ),
+      (
+        Icons.lock_outline_rounded,
+        'Cannot change macOS or coding app approvals',
+      ),
+    ];
+    return box(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          cardHeader(
+            Icons.rule_rounded,
+            'Instructions',
+            'Built-in rules every message follows. Always on.',
+            end: rules is String
+                ? TextButton.icon(
+                    key: const Key('brain-view-rules'),
+                    onPressed: () => setState(() => showRules = !showRules),
+                    icon: Icon(
+                      showRules
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                    ),
+                    label: Text(showRules ? 'Hide rules' : 'View rules'),
+                  )
+                : null,
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, c) {
+              final two = c.maxWidth > 640;
+              final w = two ? (c.maxWidth - 10) / 2 : c.maxWidth;
+              return Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final (icon, text) in promises)
+                    SizedBox(width: w, child: guarantee(icon, text)),
+                ],
+              );
+            },
+          ),
+          if (rules is String && showRules) ...[
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxHeight: 360),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: canvas,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: hairline),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  rules,
+                  style: const TextStyle(
+                    fontFamily: 'Menlo',
+                    fontSize: 12,
+                    height: 1.6,
+                    color: muted,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Read only. To teach it your words and preferences, edit your memory files below.',
+              style: TextStyle(fontSize: 11.5, color: muted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget memoryTab() => box(
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        cardHeader(
+          Icons.auto_stories_outlined,
+          'Memory',
+          'Notes every session reads to understand you and your work.',
+        ),
+        const SizedBox(height: 8),
         toggle(
           'Learn from your messages',
-          'When you share something new, it can save it to memory and notify you so you can reply "undo". Session replies, quoted text and files never change it.',
+          'When you share something new, it can save it to memory and tell you, so you can reply "undo". Session replies, quoted text and files never change it.',
           learn,
           (v) {
             setState(() => learn = v);
             save();
           },
         ),
-        const SizedBox(height: 12),
+        const Divider(color: hairline, height: 28),
         MemoryFiles(gateway: widget.gateway),
-        const SizedBox(height: 12),
-        row(
-          'Recent conversation',
-          'Your last 12 messages and the replies. Helps it understand "that one" or "1".',
-          const SizedBox(),
-        ),
-        row(
-          'Item codes and open items',
-          'Titles and numbers of your open items, and codes like P1 from the last list you saw.',
-          OutlinedButton(
-            onPressed: widget.openItems,
-            child: const Text('Open Items'),
-          ),
-        ),
-        row(
-          'Task history',
-          'What the brain understood from each message and what happened next.',
-          OutlinedButton(
-            onPressed: loadTasks,
-            child: const Text('View task history'),
-          ),
-        ),
-        if (taskMessage != null) Text(taskMessage!),
-        if (workItems.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          for (final item in workItems)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text('#${item['id']} ${item['title']}'),
-              subtitle: Text(
-                '${item['status']} • execution: ${item['executionState']} • ${item['session'] ?? 'no session yet'}',
-              ),
-            ),
-        ],
-        if (tasks != null) ...[
-          if (tasks!.isEmpty) const Text('No tasks yet.'),
-          for (final task in tasks!)
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: Text(
-                task['original'] as String,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                '${task['status']} • reply: ${task['responseState'] ?? 'unknown'} • permission: ${task['permission']}',
-              ),
-              children: [
-                ListTile(
-                  title: const Text('What you sent'),
-                  subtitle: SelectableText(task['original'] as String),
-                ),
-                ListTile(
-                  title: const Text('How the brain read it'),
-                  subtitle: SelectableText(
-                    task['normalized'] as String? ?? 'Not available',
-                  ),
-                ),
-                ListTile(
-                  title: const Text('Saved evidence'),
-                  subtitle: SelectableText(
-                    'Request: ${task['id']}\nProxy: ${task['coordinator_id'] ?? 'none'}\n${task['reason'] ?? ''}\n${task['evidence']}',
-                  ),
-                ),
-                if (task['nativeOutcome'] == 'done' &&
-                    task['verified_at'] == null)
-                  TextButton(
-                    onPressed: () => verify(task),
-                    child: const Text('Verify completed work'),
-                  ),
-              ],
-            ),
-        ],
       ],
-    ),
-  );
-
-  Widget section(
-    String title,
-    String subtitle,
-    IconData icon,
-    Widget child, {
-    bool open = false,
-  }) => Theme(
-    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-    child: ExpansionTile(
-      key: Key('brain-section-$title'),
-      initiallyExpanded: open,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
-      childrenPadding: EdgeInsets.zero,
-      leading: Icon(icon, color: accent, size: 20),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-      ),
-      subtitle: Text(
-        subtitle,
-        style: const TextStyle(fontSize: 12, color: muted),
-      ),
-      children: [child],
     ),
   );
 
@@ -1078,23 +751,17 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
               },
             ),
           ),
-          section(
-            'Instructions',
-            'The built-in rules every message follows',
-            Icons.notes_rounded,
-            instructionsTab(),
-          ),
-          saveRow('Save changes'),
+          instructionsTab(),
+          if (message != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                message!,
+                style: const TextStyle(fontSize: 12, color: muted),
+              ),
+            ),
         ],
-        KeyedSubtree(
-          key: ValueKey('meta-activity-${widget.activityScope}'),
-          child: activityTab(),
-        ),
         const SizedBox(height: 24),
-        pageHeading(
-          'Memory',
-          'Notes sessions can read to understand your preferences.',
-        ),
         memoryTab(),
       ],
     );

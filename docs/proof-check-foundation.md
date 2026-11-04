@@ -44,6 +44,36 @@ are not replayed automatically; an explicit new evaluation ID is required.
 
 ## Integration still required
 
+The `contractProofScope` adapter derives a limited scope from the
+bridge's recorded F3 approval, owner connection generation, owner-scoped item,
+session identity, and exactly one recorded dispatch for the current attempt.
+It revalidates the F3 contract on the same database connection. It supplies no
+evidence binding or target project revision, so the proof engine can only
+return unverified checks and cannot claim a correction. A recorded dispatch
+does not show that the provider completed work, and a session final remains
+an unverified claim. Missing approval-generation records fail closed; the
+plain-text approval path captures them only when the proof binding feature is
+available. Legacy approvals remain unsupported. The SQLite fence is installed
+at startup before new approvals; it records
+the approval epoch and invalidates it on binding, route or Brain policy changes,
+even if their prior values are restored or the process restarts. Legacy
+approvals are not backfilled. This database fence does not establish the
+history of files outside SQLite, including the Meta key, and is not sufficient
+authorization for independent evidence or a correction.
+
+An owner can send `/proof bind #ITEM CHECK_NUMBER OWNER/REPO` as a new
+typed message in their direct WhatsApp owner chat to record a public GitHub binding for
+one completed, approved contract scope. The contract criterion must already
+say `GitHub check NAME passed`. The saved binding is rechecked against the
+original scope and owner generation. It is not passed to `ProofChecks` and
+does not establish that a run or commit belongs to the task. Even after this
+approval, every check remains unverified and no correction may be dispatched.
+An item with multiple eligible approvals requires its exact request ID instead
+of an item number, so the bridge cannot silently choose a different task.
+In particular, the scope fence cannot detect external Meta key changes away
+and back. If initialization fails or the scope is unavailable, binding fails
+closed without affecting ordinary task routing.
+
 1. Map the approved, immutable F3 contract and check IDs to a verified task
    attempt and current target project revision. Do not infer the latter from a
    session reply or from FarFromDesk's own source commit.

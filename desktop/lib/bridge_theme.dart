@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
-// FarFromDesk Studio design (2026-10-28): near-black surfaces, one orange
-// accent, system typography. Cards are #0f0f0f with a 1px #1e1e1e inset line.
+// FarFromDesk Studio design (2026-11-02): the sidebar carries no fill of its own.
+// The owner's design references measure the sidebar and the content canvas at the
+// same #080808, separated by the hairline only, so sidebarColor tracks windowColor.
+// Cards are #0f0f0f with a 1px #1e1e1e inset line.
 const windowColor = Color(0xff080808),
-    sidebarColor = Color(0xff0b0b0b),
+    sidebarColor = Color(0xff080808),
     panelColor = Color(0xff0f0f0f),
     dialogColor = Color(0xff0f0f0f),
     fieldColor = Color(0xff0d0d0d),
@@ -215,12 +217,18 @@ ThemeData bridgeTheme() => ThemeData(
     linearTrackColor: line2,
   ),
   switchTheme: SwitchThemeData(
+    // Off is a real state the owner has to read, so it must not look asleep.
+    // Measured off the design reference: thumb #a0a0a0 on a #282828 track. The
+    // old #6b6b6b thumb on #1e1e1e was 52 steps too dark on the thumb, which
+    // made "off" read as disabled rather than as a switch that is simply off.
     thumbColor: WidgetStateProperty.resolveWith(
-      (s) => s.contains(WidgetState.selected) ? Colors.white : faint,
+      (s) => s.contains(WidgetState.selected)
+          ? Colors.white
+          : const Color(0xffa0a0a0),
     ),
     trackColor: WidgetStateProperty.resolveWith(
       (s) =>
-          s.contains(WidgetState.selected) ? accent : const Color(0xff1e1e1e),
+          s.contains(WidgetState.selected) ? accent : const Color(0xff282828),
     ),
     trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
   ),

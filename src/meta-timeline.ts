@@ -2,9 +2,9 @@ import { createHash,randomUUID } from 'node:crypto';
 import type { Store } from './store.js';
 
 // The timeline never stores prompts, responses, paths, errors, or account IDs.
-export type MetaStage='sorted'|'briefed'|'scheduled'|'heard'|'contracted';
+export type MetaStage='sorted'|'briefed'|'scheduled'|'heard'|'contracted'|'stuck';
 export type MetaObserver=<T>(work:()=>Promise<T>)=>Promise<T>;
-const stages=new Set<MetaStage>(['sorted','briefed','scheduled','heard','contracted']);
+const stages=new Set<MetaStage>(['sorted','briefed','scheduled','heard','contracted','stuck']);
 const revisions=new WeakMap<Store,{scope:string|undefined;token:string|null}>();
 
 function scope(store:Store,destination?:string|null,expectedOwner?:string):string|undefined {

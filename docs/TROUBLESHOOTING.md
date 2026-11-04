@@ -11,7 +11,7 @@
 | Request uncertain after restart | Inspect the native chat before retrying. Do not replay a request that may have already acted. |
 | Voice note fails | The first voice note downloads the 141 MB model. Check progress or retry in Settings → Access & availability → Voice notes. Once cached, transcription is offline. Check local speech readiness and supported audio limits. Confirm FFmpeg, whisper.cpp and the model exist; inspect the sanitized failure, not just transcription output. |
 | Document cannot send | Prepare the specific authorized artifact and use its returned artifact ID. Do not send an arbitrary local path. |
-| Mac stops responding when asleep | Keep Mac/network available. Idle-sleep prevention does not override every closed-lid/manual-sleep condition. |
+| Mac stops responding when asleep | Keep Mac/network available. Nothing wakes a sleeping Mac remotely, and `womp` is 0 on battery. With server mode on and the power cable connected a closed lid no longer sleeps; if the app stops, the helper holds sleep off for up to 2 hours, then restores normal sleep. |
 
 ## Collect useful evidence
 

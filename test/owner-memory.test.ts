@@ -23,7 +23,7 @@ test('memory starts with an index, about-me and migrated notes', () => {
   assert.match(memory.read('words.md')!,/ATC means the air-traffic repo/);
   assert.equal(memory.history().length,0);
   assert.equal(memory.introNeeded(),true);
-  assert.deepEqual(Object.keys(memory.always()),['MEMORY.md','about-me.md','collaboration.md']);
+  assert.deepEqual(Object.keys(memory.always()),['MEMORY.md','about-me.md','collaboration.md','preferences.md']);
   assert.match(memory.read('MEMORY.md')!,/\[Collaboration\]\(collaboration\.md\)/);
   assert.equal(memory.collaborates(),false);
 });
@@ -86,17 +86,19 @@ function brain(script:(tool:(i:any)=>string,input:any)=>Partial<Interpretation>)
 test('the first hi goes to the model for an intro, and what it saves is announced and undoable', async () => {
   const f=brain((tool,input)=>{
     if(input.original==='Sam')tool({command:'str_replace',path:'about-me.md',old_str:'- Call me:',new_str:'- Call me: Sam'});
+    // "undo" is the brain's decision now, not a pattern before it.
+    if(input.original==='undo')return {intent:'manage',operation:'undo_memory'};
     return {reply:input.intro?'Hi, I pass work to your sessions. What should I call you?':'Nice to meet you, Sam.'};
   });
   await f.say('hi');
   assert.equal(f.inputs[0].intro,'needed');
-  assert.deepEqual(Object.keys(f.inputs[0].memory),['MEMORY.md','about-me.md','collaboration.md']);
+  assert.deepEqual(Object.keys(f.inputs[0].memory),['MEMORY.md','about-me.md','collaboration.md','preferences.md']);
   await f.say('Sam');
   assert.match(f.router.brain.owner.read('about-me.md')!,/^- Call me: Sam$/m);
   assert.ok(f.out().some(b=>/Saved "Call me: Sam" in about-me\.md[\s\S]*undo/.test(b)));
   const calls=f.inputs.length;
   await f.say('hello');
-  assert.equal(f.inputs.length,calls,'greetings skip the model once the intro is answered');
+  assert.equal(f.inputs.length,calls+1,'greetings go to the model too; nothing is matched before it');
   await f.say('undo');
   assert.doesNotMatch(f.router.brain.owner.read('about-me.md')!,/Call me: Sam/);
   f.close();
@@ -119,5 +121,15 @@ test('the brain may pick an unnamed platform only by following collaboration.md'
   f.router.brain.owner.write('collaboration.md','# Collaboration\n- Planning and review: Codex\n','owner');
   await f.say('Plan the invoice export again');
   assert.equal(f.store.jobs().length,1);
+  f.close();
+});
+
+test('a platform the owner named in the message just before counts, so "yes" after "hey codex" is enough', async () => {
+  const f=brain(()=>({intent:'task',provider:'codex',normalized:'Say hi'}));
+  await f.say('hey codex, can you take something for me?');
+  const before=f.store.jobs().length;
+  await f.say('yes, say hi');
+  assert.doesNotMatch(f.out().at(-1)!,/name the coding platform/);
+  assert.equal(f.store.jobs().length,before+1);
   f.close();
 });

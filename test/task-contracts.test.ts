@@ -37,6 +37,17 @@ function fixture(answer:ContractDecision=proposal()){
   return {r,store,binding,secret,send,out,markSent,setDecision(fn:()=>Promise<ContractDecision>){decide=fn;},close(){approvals.cancel();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
+test('a pending coding contract still takes precedence over a Social request',async()=>{
+  const f=fixture();try{
+    assert.equal((await f.send('1','Add the dark theme')).status,'handled');
+    assert.equal((await f.send('2','/social')).status,'handled');
+    assert.match(f.out().at(-1).body,/finish or cancel/i);
+    assert.equal((await f.send('3','/social How LLMs work')).status,'handled');
+    assert.equal(f.store.jobs().length,0);
+    assert.match(f.out().at(-1).body,/finish or cancel|reply ok/i);
+  }finally{f.close();}
+});
+
 test('unclear task waits for typed owner approval and keeps immutable contract on its item',async()=>{
   const f=fixture();try{
     const original='Add dark theme. Do NOT publish.';

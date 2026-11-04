@@ -4,138 +4,115 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:farfromdesk/app.dart';
 import 'package:farfromdesk/preview.dart';
 
-class VoiceAttentionGateway extends PreviewGateway {
-  VoiceAttentionGateway({required this.supportsAttention})
-    : super(fixture: 'activity', screen: 'activity');
-  final bool supportsAttention;
-  List<Map> apiRows = [];
-  @override
-  Future<Map<String, dynamic>> get(String path) async {
-    if (path.startsWith('/api/inbox-thread?')) {
-      if (path.contains('bindingId=')) {
-        return {'messages': [], 'jobs': [], 'next': null};
-      }
-      return {'sessions': [], if (supportsAttention) 'attention': apiRows};
-    }
-    final data = await super.get(path);
-    data['pendingJobs'] = [];
-    data['jobs'] = [
-      {
-        'id': 'wa:reviewed',
-        'binding_id': 'sample-worker',
-        'status': 'reviewed',
-        'created_at': 100,
-        'preview': 'Reviewed voice',
-      },
-      {
-        'id': 'wa:completed',
-        'binding_id': 'sample-worker',
-        'status': 'completed',
-        'created_at': 200,
-        'preview': 'Completed voice',
-      },
-    ];
-    data['voiceRequests'] = [
-      {'id': 'wa:reviewed', 'status': 'failed', 'created_at': 100},
-      {'id': 'wa:completed', 'status': 'routing_blocked', 'created_at': 200},
-      {'id': 'wa:active', 'status': 'failed', 'created_at': 300},
-    ];
-    data['commandTurns'] = [
-      {
-        'id': 'command-failed',
-        'label': '/claude',
-        'status': 'blocked',
-        'summary': 'Not connected',
-        'created_at': 400,
-      },
-    ];
-    data['approvals'] = [];
-    data['unlinkedUpdates'] = [];
-    return data;
-  }
+int feedAt(int minutes) {
+  final now = DateTime.now();
+  return DateTime(now.year, now.month, now.day, 9, 41)
+      .add(Duration(minutes: minutes))
+      .millisecondsSinceEpoch;
 }
 
-class ReviewableVoiceGateway extends VoiceAttentionGateway {
-  ReviewableVoiceGateway() : super(supportsAttention: true) {
-    apiRows = [
-      {
-        'id': 'voice:wa:collision',
-        'requestId': 'wa:collision',
-        'bindingId': 'unassigned-voice',
-        'destination': 'chat-b',
-        'canReviewOrphan': 1,
-        'title': 'Voice note failed',
-        'text': 'Open the recorded timing and cause.',
-        'at': 300,
-      },
-      {
-        'id': 'voice:wa:other',
-        'requestId': 'wa:other',
-        'bindingId': 'unassigned-voice',
-        'destination': 'chat-c',
-        'canReviewOrphan': 1,
-        'title': 'Voice note failed',
-        'text': 'Another failure',
-        'at': 200,
-      },
-    ];
-  }
+/// One attention entry as the feed serves it.
+Map<String, dynamic> attentionCard(
+  String key, {
+  required String title,
+  required String text,
+  int minutes = 0,
+  String? requestId,
+  String? bindingId,
+  String? destination,
+  int? canReviewOrphan,
+  String? status,
+  bool? canClose,
+  bool needsReview = true,
+}) => {
+  'key': key,
+  'at': feedAt(minutes),
+  'source': 'attention',
+  'kind': 'attention',
+  'kindLabel': title,
+  'text': text,
+  'needsReview': needsReview,
+  // Null entries are simply absent fields as far as the pane is concerned.
+  'requestId': requestId,
+  'bindingId': bindingId,
+  'destination': destination,
+  'canReviewOrphan': canReviewOrphan,
+  'status': status,
+  'canClose': canClose,
+};
+
+/// Attention entries now arrive in the feed itself. This gateway serves them,
+/// records every review, and keeps a status-level voice failure that must NOT
+/// become a card: the feed is the only authority for what needs the owner.
+class AttentionGateway extends PreviewGateway {
+  AttentionGateway() : super(fixture: 'activity', screen: 'activity');
+  List<Map<String, dynamic>> rows = [];
+  final reviewPosts = <Map<String, dynamic>>[];
   final diagnosticCalls = <String>[];
-  final reviewCalls = <Map<String, dynamic>>[];
+
   @override
   Future<Map<String, dynamic>> get(String path) async {
+    if (path.startsWith('/api/inbox-feed')) {
+      final view = Uri.parse(path).queryParameters['view'] ?? 'all';
+      final shown = view == 'attention' || view == 'all' ? rows : <Map<String, dynamic>>[];
+      return {
+        'view': {
+          'id': view,
+          'kind': view == 'attention' ? 'attention' : 'all',
+          'name': view == 'attention' ? 'Needs you' : 'One conversation',
+          'count': shown.length,
+          'needsYou': rows.where((r) => r['needsReview'] == true).length,
+          'firstAt': shown.isEmpty ? null : shown.first['at'],
+        },
+        'views': [
+          {
+            'id': 'all',
+            'kind': 'all',
+            'name': 'One conversation',
+            'count': rows.length,
+            'needsYou': rows.where((r) => r['needsReview'] == true).length,
+            'latestAt': rows.isEmpty ? null : rows.last['at'],
+            'preview': 'Ask Codex to fix the pricing table...',
+          },
+          {
+            'id': 'attention',
+            'kind': 'attention',
+            'name': 'Needs you',
+            'count': rows.length,
+            'needsYou': rows.where((r) => r['needsReview'] == true).length,
+            'latestAt': null,
+            'preview': '',
+          },
+        ],
+        'messages': shown,
+        'next': null,
+        'stats': {
+          'total': rows.length,
+          'firstAt': rows.isEmpty ? null : rows.first['at'],
+          'lastAt': rows.isEmpty ? null : rows.last['at'],
+          'needsYou': rows.where((r) => r['needsReview'] == true).length,
+        },
+      };
+    }
     if (path.startsWith('/api/request-events')) {
       diagnosticCalls.add(path);
       return {
         'events': [
-          {'event': 'UNRELATED SECRET REQUEST'},
+          {'event': 'PRIVATE OTHER DESTINATION'},
         ],
-        'deliveries': [],
-      };
-    }
-    if (path.startsWith('/api/inbox-thread?')) {
-      if (path.contains('bindingId=')) {
-        return {
-          'messages': [
-            {
-              'key': '0:voice:wa:collision',
-              'requestId': 'wa:collision',
-              'kind': 'voice-failed',
-              'text': 'Correct voice error from chat B',
-              'at': 300,
-              'destination': 'chat-b',
-              'voice': 1,
-            },
-          ],
-          'jobs': [],
-          'next': null,
-        };
-      }
-      return {
-        'sessions': [
-          {
-            'id': 'unassigned-voice',
-            'name': 'Unassigned voice notes',
-            'latestAt': 300,
-            'preview': 'Voice note not routed',
-            'needsReview': apiRows.length,
-            'waiting': 0,
-            'answered': 0,
-            'closed': 0,
-          },
-        ],
-        'attention': apiRows,
+        'deliveries': <Map>[],
       };
     }
     final data = await super.get(path);
-    (data['jobs'] as List).add({
-      'id': 'wa:collision',
-      'binding_id': 'sample-worker',
-      'status': 'completed',
-      'destination': 'chat-a',
-      'created_at': 300,
-      'preview': 'UNRELATED SECRET REQUEST',
-    });
+    data['pendingJobs'] = [];
+    data['jobs'] = [];
+    data['approvals'] = [];
+    data['commandTurns'] = [];
+    data['unlinkedUpdates'] = [];
+    // An unresolved voice failure the old client would have turned into a row.
+    data['voiceRequests'] = [
+      {'id': 'wa:status-only', 'status': 'failed', 'created_at': feedAt(-30)},
+    ];
     return data;
   }
 
@@ -145,15 +122,20 @@ class ReviewableVoiceGateway extends VoiceAttentionGateway {
     Map<String, dynamic> data,
   ) async {
     if (path == '/api/voice-attention-review') {
-      reviewCalls.add(Map.of(data));
-      apiRows = apiRows
+      reviewPosts.add({'path': path, ...data});
+      rows = rows
           .where(
-            (row) =>
-                row['requestId'] != data['audioId'] ||
-                row['destination'] != data['destination'],
+            (r) =>
+                r['requestId'] != data['audioId'] ||
+                r['destination'] != data['destination'],
           )
           .toList();
-      return {'ok': true};
+      return {};
+    }
+    if (path == '/api/request-review') {
+      reviewPosts.add({'path': path, ...data});
+      rows = rows.where((r) => r['requestId'] != data['requestId']).toList();
+      return {};
     }
     return super.post(path, data);
   }
@@ -174,149 +156,176 @@ void main() {
   void size(WidgetTester tester) {
     tester.platformDispatcher.accessibilityFeaturesTestValue =
         const FakeAccessibilityFeatures(disableAnimations: true);
-    tester.view.physicalSize = const Size(1160, 900);
+    tester.view.physicalSize = const Size(1280, 1100);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
-  testWidgets('Attention shows only authoritative unresolved voice failures', (
-    tester,
-  ) async {
+  Future<void> openAttention(WidgetTester tester, AttentionGateway api) async {
     size(tester);
-    final api = VoiceAttentionGateway(supportsAttention: true);
-    api.apiRows = [
-      {
-        'id': 'voice:wa:active',
-        'requestId': 'wa:active',
-        'bindingId': 'unassigned-voice',
-        'title': 'Voice note failed',
-        'text': 'Unresolved',
-        'at': 300,
-      },
-      {
-        'id': 'delivery:1',
-        'requestId': 'wa:active',
-        'bindingId': 'sample-worker',
-        'title': 'Reply delivery needs attention',
-        'text': 'Delivery failed',
-        'at': 500,
-      },
-    ];
     await tester.pumpWidget(FarFromDeskApp(gateway: api));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
+    await tester.tap(find.byKey(const ValueKey('inbox-chip-attention')));
     await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:reviewed')),
-      findsNothing,
+  }
+
+  Future<void> review(WidgetTester tester, Finder card) async {
+    await tester.tap(
+      find.descendant(of: card, matching: find.text('Mark reviewed')),
     );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:completed')),
-      findsNothing,
-    );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:active')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-delivery:1')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-command:command-failed')),
-      findsOneWidget,
-    );
-    api.apiRows = [];
-    await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:active')),
-      findsNothing,
-    );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-command:command-failed')),
-      findsOneWidget,
-    );
-    expect(tester.takeException(), isNull);
-  });
-  testWidgets(
-    'Orphan review clears only its exact row and never fetches colliding request details',
-    (tester) async {
-      size(tester);
-      final api = ReviewableVoiceGateway();
-      await tester.pumpWidget(FarFromDeskApp(gateway: api));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
-      await tester.pumpAndSettle();
-      final row = find.byKey(
-        const ValueKey('inbox-attention-voice:wa:collision'),
-      );
-      await tester.tap(
-        find.descendant(of: row, matching: find.text('Voice note failed')),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('Correct voice error from chat B'), findsOneWidget);
-      expect(find.text('UNRELATED SECRET REQUEST'), findsNothing);
-      expect(api.diagnosticCalls, isEmpty);
-      final bubble = find.byKey(
-        const ValueKey('inbox-message-0:voice:wa:collision'),
-      );
-      expect(
-        find.descendant(of: bubble, matching: find.text('Details')),
-        findsNothing,
-      );
-      final review = find.descendant(
-        of: row,
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
         matching: find.text('Mark reviewed'),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets(
+    'Needs you shows the feed entries and reviews only the one that was asked',
+    (tester) async {
+      final api = AttentionGateway()
+        ..rows = [
+          attentionCard(
+            'attention:voice:collision',
+            title: 'Voice note failed',
+            text: 'Correct voice error from chat B',
+            minutes: 30,
+            requestId: 'wa:collision',
+            bindingId: 'unassigned-voice',
+            destination: 'chat-b',
+            canReviewOrphan: 1,
+          ),
+          attentionCard(
+            'attention:voice:other',
+            title: 'Voice note failed',
+            text: 'Another failure',
+            minutes: 20,
+            requestId: 'wa:other',
+            bindingId: 'unassigned-voice',
+            destination: 'chat-c',
+            canReviewOrphan: 1,
+          ),
+          attentionCard(
+            'attention:request:tg:old',
+            title: 'Needs review',
+            text: 'Check the original session.',
+            minutes: 10,
+            requestId: 'tg:old',
+            bindingId: 'sample-worker',
+            status: 'uncertain',
+            canClose: true,
+          ),
+        ];
+      await openAttention(tester, api);
+      final collision = find.byKey(
+        const ValueKey('inbox-message-attention:voice:collision'),
       );
-      await tester.tap(review);
-      await tester.pumpAndSettle();
-      expect(find.text('Mark this voice note reviewed?'), findsOneWidget);
-      await tester.tap(
-        find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.text('Mark reviewed'),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(api.reviewCalls, [
-        {'audioId': 'wa:collision', 'destination': 'chat-b', 'confirmed': true},
-      ]);
+      expect(collision, findsOneWidget);
       expect(
-        find.byKey(const ValueKey('inbox-attention-voice:wa:collision')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const ValueKey('inbox-attention-voice:wa:other')),
+        find.byKey(const ValueKey('inbox-message-attention:voice:other')),
         findsOneWidget,
       );
-      expect(api.diagnosticCalls, isEmpty);
+      expect(
+        find.byKey(const ValueKey('inbox-message-attention:request:tg:old')),
+        findsOneWidget,
+      );
+      // A status-level failure with no feed entry is not invented here.
+      expect(find.textContaining('status-only'), findsNothing);
+      expect(find.text('Correct voice error from chat B'), findsOneWidget);
+
+      await review(tester, collision);
+      expect(api.reviewPosts, [
+        {
+          'path': '/api/voice-attention-review',
+          'audioId': 'wa:collision',
+          'destination': 'chat-b',
+          'confirmed': true,
+        },
+      ]);
+      expect(collision, findsNothing);
+      expect(
+        find.byKey(const ValueKey('inbox-message-attention:voice:other')),
+        findsOneWidget,
+      );
+
+      await review(
+        tester,
+        find.byKey(const ValueKey('inbox-message-attention:request:tg:old')),
+      );
+      expect(api.reviewPosts.last, {
+        'path': '/api/request-review',
+        'requestId': 'tg:old',
+        'expectedStatus': 'uncertain',
+        'confirmed': true,
+      });
+      expect(
+        find.byKey(const ValueKey('inbox-message-attention:request:tg:old')),
+        findsNothing,
+      );
       expect(tester.takeException(), isNull);
     },
   );
-  testWidgets('Older backends still surface status voice failures', (
+
+  testWidgets(
+    'An orphan voice review never opens another chat diagnostics',
+    (tester) async {
+      final api = AttentionGateway()
+        ..rows = [
+          attentionCard(
+            'attention:voice:collision',
+            title: 'Voice note failed',
+            text: 'Correct voice error from chat B',
+            requestId: 'wa:collision',
+            bindingId: 'unassigned-voice',
+            destination: 'chat-b',
+            canReviewOrphan: 1,
+          ),
+        ];
+      await openAttention(tester, api);
+      final card = find.byKey(
+        const ValueKey('inbox-message-attention:voice:collision'),
+      );
+      // The card carries the destination-checked error, and nothing offers to
+      // read a request id that another chat may own.
+      expect(find.text('Correct voice error from chat B'), findsOneWidget);
+      expect(
+        find.descendant(of: card, matching: find.text('Timing and delivery')),
+        findsNothing,
+      );
+      await review(tester, card);
+      expect(api.diagnosticCalls, isEmpty);
+      expect(find.textContaining('PRIVATE OTHER DESTINATION'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('An entry with no identity renders without invented actions', (
     tester,
   ) async {
-    size(tester);
-    await tester.pumpWidget(
-      FarFromDeskApp(gateway: VoiceAttentionGateway(supportsAttention: false)),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('inbox-tab-Attention')));
-    await tester.pumpAndSettle();
+    final api = AttentionGateway()
+      ..rows = [
+        attentionCard(
+          'attention:plain',
+          title: 'Notice',
+          text: 'Something happened.',
+          needsReview: false,
+        ),
+      ];
+    await openAttention(tester, api);
+    final card = find.byKey(const ValueKey('inbox-message-attention:plain'));
+    expect(card, findsOneWidget);
     expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:reviewed')),
-      findsOneWidget,
+      find.descendant(of: card, matching: find.text('Mark reviewed')),
+      findsNothing,
     );
     expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:completed')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('inbox-attention-voice:wa:active')),
-      findsOneWidget,
+      find.descendant(of: card, matching: find.text('Timing and delivery')),
+      findsNothing,
     );
     expect(tester.takeException(), isNull);
   });

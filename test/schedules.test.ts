@@ -446,3 +446,81 @@ test('a stuck brief hook times out, cannot enqueue late, and does not starve oth
     release();await new Promise(resolve=>setImmediate(resolve));assert.equal(lateSend,false);
   }finally{f.close();}
 });
+
+// Live, 4 November 2026: "Remind me tomorrow 10am for meta hackathon submission" was refused with
+// "Please say remind me at TIME to". The owner's own wording, in any order, is a reminder.
+test('natural reminder wording is accepted with the owner text kept exactly', async () => {
+  const f = fixture(); try {
+    f.setDecision({ text: 'meta hackathon submission', date: '2026-10-30', time: '10:00' });
+    await f.send('1', 'Remind me tomorrow 10am for meta hackathon submission');
+    f.setDecision({ text: 'call mom', date: '2026-10-30', time: '17:00' });
+    await f.send('2', 'remind me to call mom at 5pm');
+    const rows = f.store.db.prepare('SELECT text,date,time FROM schedules ORDER BY created_at').all() as { text: string; date: string; time: string }[];
+    assert.deepEqual(rows.map(r => [r.text, r.date, r.time]), [['meta hackathon submission', '2026-10-30', '10:00'], ['call mom', '2026-10-30', '17:00']]);
+    f.setDecision({ text: 'buy 2 milk', time: '02:00' });
+    await assert.rejects(f.send('3', 'remind me to buy 2 milk'), /time/i, 'a bare number inside the reminder is not a time');
+  } finally { f.close(); }
+});
+
+// Live on build 2418: the model handed back the whole sentence as the reminder text.
+test('a model that echoes the whole sentence still gets the owner action', async () => {
+  const f = fixture(); try {
+    f.setDecision({ text: 'Remind me tomorrow 10am for meta hackathon submission', date: '2026-10-30', time: '10:00' });
+    await f.send('1', 'Remind me tomorrow 10am for meta hackathon submission');
+    assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as { text: string }).text, 'meta hackathon submission');
+  } finally { f.close(); }
+});
+
+// Live, 4 November 2026: "Add a reminder for tomorrow 10am for meta hackathon" was refused.
+test('asking to add or set a reminder works like remind me', async () => {
+  const f = fixture(); try {
+    f.setDecision({ text: 'meta hackathon', date: '2026-10-30', time: '10:00' });
+    await f.send('1', 'Add a reminder for tomorrow 10am for meta hackathon');
+    f.setDecision({ text: 'Add a reminder for tomorrow 10am for meta hackathon', date: '2026-10-30', time: '10:00' });
+    await f.send('2', 'Add a reminder for tomorrow 10am for meta hackathon');
+    assert.deepEqual((f.store.db.prepare('SELECT text FROM schedules ORDER BY created_at').all() as { text: string }[]).map(r => r.text), ['meta hackathon', 'meta hackathon']);
+  } finally { f.close(); }
+});
+
+// The brain decides that a message is a reminder and calls these tools; no pattern takes the
+// message first ("Add a reminder for tomorrow 10am for meta hackathon" was refused, 4 Nov 2026).
+test('brain reminder tools create, list, cancel, and fire like any reminder',async()=>{
+  const f=fixture();try{
+    const m={id:'wa:b1',text:'ping me tomorrow at 10 about the hackathon'} as any;
+    assert.match(f.schedules.brainCreate(f.router,m,{text:'the hackathon',at:'2026-10-30 10:00'}),/^Saved\. I will remind you 30 Oct 2026, 10:00 am: the hackathon\./);
+    assert.match(f.schedules.brainCreate(f.router,m,{text:'again',at:'2026-10-30 11:00'}),/already created/);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b2'} as any,{text:'x',at:'2026-10-28 10:00'}),/has passed/);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b3'} as any,{text:'x',at:'tomorrow'}),/YYYY-MM-DD/);
+    const listed=JSON.parse(f.schedules.brainList());
+    assert.equal(listed.length,1);assert.equal(listed[0].what,'the hackathon');
+    f.setNow(Date.parse('2026-10-30T04:31:00Z'));await f.schedules.tick(f.router);
+    assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE body LIKE '%Reminder: the hackathon%'").get()?.n,1);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b4'} as any,{text:'stand up',at:'2026-10-31 09:00',repeat:'weekdays'}),/weekdays/);
+    const id=JSON.parse(f.schedules.brainList())[0].id;
+    assert.equal(f.schedules.brainCancel(id),'Cancelled.');
+    assert.equal(f.schedules.brainList(),'No active reminders.');
+  }finally{f.close();}
+});
+
+// "at 6pm ask site to check PR 20" from the brain: the brain picks the session and the time,
+// this checks them, and with task reviews on nothing is saved until the owner approves a card.
+test('brain-scheduled session work is checked, held for review when reviews are on, and dispatched',async()=>{
+  const f=fixture();try{
+    const {binding}=f.store.register('site','codex','11111111-1111-4111-8111-111111111111','/tmp/example');f.store.set(`name:${binding.id}`,'Site Repo');
+    const m=(id:string)=>({id:`wa:${id}`,text:'at 6pm ask site to check PR 20'}) as any;
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s0'),{sessionId:'nope',text:'check PR 20',at:'2026-10-29 18:00'}),/No session has that id/);
+    // Reviews on: the card goes out and nothing is saved yet.
+    const c=f.router.contracts as any,real={enabled:c.enabled,preflight:c.preflight,approvedSchedule:c.approvedSchedule};
+    let reviewed:any;c.enabled=()=>true;c.preflight=async(_r:any,_m:any,_t:any,schedule:any)=>{reviewed=schedule;return {kind:'handled'};};
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s1'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/review card/);
+    assert.equal(reviewed.binding_id,binding.id);assert.equal(reviewed.text,'check PR 20');
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
+    Object.assign(c,real);
+    // Reviews off: saved straight away, and the tick sends it to that exact session.
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s2'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/^Saved\. 29 Oct 2026, 6:00 pm I will ask Site Repo to: check PR 20\./);
+    assert.match(f.schedules.brainList(),/"session":true/);
+    f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
+    const job=f.store.db.prepare('SELECT binding_id,body FROM inbox').get() as {binding_id:string;body:string};
+    assert.equal(job.binding_id,binding.id);assert.match(job.body,/check PR 20/);
+  }finally{f.close();}
+});

@@ -8,7 +8,9 @@ import type { Store } from './store.js';
 // the files the index lists are opened only when a message needs them. Sessions read; only owner words write.
 export const MEMORY_INDEX='MEMORY.md',ABOUT_ME='about-me.md',COLLABORATION='collaboration.md';
 // collaboration.md rides along because every new task is a routing decision.
-export const ALWAYS=[MEMORY_INDEX,ABOUT_ME,COLLABORATION];
+export const PREFERENCES='preferences.md';
+// preferences.md rides along so a choice the owner made once (Gmail lives in Comet) is never asked again.
+export const ALWAYS=[MEMORY_INDEX,ABOUT_ME,COLLABORATION,PREFERENCES];
 const MAX_FILE=8000,MAX_FILES=40;
 const NAME=/^(?:MEMORY\.md|[a-z0-9][a-z0-9-]{0,40}(?:\/[a-z0-9][a-z0-9-]{0,40})?\.md)$/;
 // A guard at the write boundary, not language understanding: obvious credentials never reach disk.

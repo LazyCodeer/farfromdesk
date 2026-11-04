@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initializeState,stateDir,baseUrl,claudeBin } from './config.js';
+import { initializeState,stateDir,baseUrl,claudeBin,port } from './config.js';
 import { readFileSync,writeFileSync,mkdirSync,existsSync,copyFileSync,readdirSync } from 'node:fs';
 import { join,dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -11,6 +11,8 @@ import { inspectLocalArtifact } from './large-file.js';
 import { uploadArtifact } from './artifact-upload.js';
 import { parseRespondArgs } from './reply-args.js';
 import { runFfd } from './ffd.js';
+import {setupAgentReach} from './agent-reach-setup.js';
+import { installAllProviderHooks } from './provider-hooks.js';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 const args=process.argv.slice(2);let command=args.shift();
@@ -29,7 +31,11 @@ const serviceFile=join(homedir(),'Library/LaunchAgents/com.sagar.whatsapp-sessio
 const target=`gui/${process.getuid?.()}/com.sagar.whatsapp-session-bridge`;
 function resolveBin(name:string){if(name.includes('/'))return name;return execFileSync('/usr/bin/which',[name],{encoding:'utf8'}).trim();}
 async function main() {
-  if(command==='status'){const d=await api('/api/status');delete d.whatsapp.qr;console.log(JSON.stringify(d,null,2));}
+  if(command==='setup-research') {
+    if(process.env.FFD_ISOLATED_LOCAL!=='1'||!process.env.WSB_STATE_DIR||args.length)throw Error('Research setup is available only for FarFromDesk Local with an explicit state directory, without arguments.');
+    console.log(await setupAgentReach(stateDir));
+  }
+  else if(command==='status'){const d=await api('/api/status');delete d.whatsapp.qr;console.log(JSON.stringify(d,null,2));}
   else if(command==='mac-status') {
     if(args.length)throw new Error('Use mac-status without arguments. It only checks permission and never prompts or controls an app.');
     console.log(JSON.stringify(await api('/api/mac-control',{action:'check'}),null,2));
@@ -111,20 +117,13 @@ async function main() {
   }
   else if(command==='install-hooks') {
     initializeState();
-    const q=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
-    for(const [provider,file] of [['codex',join(homedir(),'.codex/hooks.json')],['claude',join(homedir(),'.claude/settings.json')]]) {
-      const original=existsSync(file)?readFileSync(file,'utf8'):'{}';const config=JSON.parse(original);
-      config.hooks??={};let changed=false;
-      for(const event of ['Stop','PermissionRequest']) {
-        config.hooks[event]??=[];
-        const command=`${q(process.execPath)} ${q(join(root,'dist/cli.js'))} hook ${provider}`;
-        if(!config.hooks[event].some((group:any)=>group.hooks?.some((h:any)=>h.command===command))) {
-          config.hooks[event].push({hooks:[{type:'command',command,timeout:event==='PermissionRequest'?920:8}]});changed=true;
-        }
-      }
-      if(changed){writeFileSync(`${file}.whatsapp-bridge-backup-${Date.now()}`,original,{mode:0o600});writeFileSync(file,JSON.stringify(config,null,2)+'\n',{mode:0o600});}
-    }
-    console.log('Installed session-scoped Stop and PermissionRequest hooks. Existing hooks preserved. Native apps may require their normal hook trust/reload step.');
+    const takeOver=args.includes('--take-over');
+    const reports=installAllProviderHooks({node:process.execPath,cli:fileURLToPath(new URL('./cli.js',import.meta.url)),stateDir,port,takeOver});
+    // --json is how the running bridge collects this report without doing the read
+    // on its own thread, where a stalled disk would freeze the whole app.
+    if(args.includes('--json')){console.log(JSON.stringify(reports));return;}
+    for(const report of reports)console.log(`${report.provider}: ${report.state}${report.detail?` (${report.detail})`:''}${report.backup?` backup ${report.backup}`:''} ${report.file}`);
+    console.log(takeOver?'Installed session-scoped Stop and PermissionRequest hooks for this install, taking them over from any other FarFromDesk install.':'Installed session-scoped Stop and PermissionRequest hooks. A hook owned by another FarFromDesk install is reported, never replaced. Existing hooks preserved. Native apps may require their normal hook trust/reload step.');
   }
   else if(command==='command'){console.log(await api('/api/action',{command:args.join(' ')}));}
   else if(command==='master-setup'){const s=await api('/api/status'),b=s.bindings.find((b:any)=>b.alias===args[0]);if(!b)throw new Error('Master binding not found');console.log(await api('/api/master-setup',{bindingId:b.id}));}
@@ -140,6 +139,11 @@ async function main() {
     if(operation==='browser'||operation==='mac'||operation==='desktop') {
       const input=JSON.parse(readFileSync(0,'utf8'));
       const r=await fetch(baseUrl+(operation==='desktop'?'/api/master/desktop-control':operation==='mac'?'/api/master/mac-control':'/api/master/browser'),{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({...input,requestId:args[0]}),signal:AbortSignal.timeout(65000)});
+      const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));return;
+    }
+    if(operation==='reach') {
+      if(args.length!==1)throw new Error('Use master reach REQUEST-ID. The query comes only from the original owner message.');
+      const r=await fetch(baseUrl+'/api/master/reach',{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:JSON.stringify({requestId:args[0]}),signal:AbortSignal.timeout(25000)});
       const result=await r.json() as any;if(!r.ok)throw new Error(result.error);console.log(JSON.stringify(result,null,2));return;
     }
     if(['agents','define-agent','assign-agent'].includes(operation??'')) {

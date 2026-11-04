@@ -3,14 +3,16 @@ import { scopedBridgeCommand } from './reply-args.js';
 import { ensureFfd } from './ffd.js';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync,writeFileSync,unlinkSync,renameSync } from 'node:fs';
+import { existsSync,mkdirSync,readdirSync,readFileSync,writeFileSync,unlinkSync,renameSync,openSync,readSync,closeSync } from 'node:fs';
+import { zstdDecompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
+import { cursorOwnerHome } from './cursor-paths.js';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
 import { portableAgents } from './platform.js';
-import type { Store,Binding } from './store.js';
+import type { Store,Binding,Provider } from './store.js';
 import type { Approvals } from './approvals.js';
 import { turnEnvelope,roleConfig } from './roles.js';
 import { Attachments } from './attachments.js';
@@ -20,6 +22,12 @@ import { SessionActivation,DesktopReadinessError,openCodexDesktop } from './sess
 import { Connections, usableCLIConnection } from './connections.js';
 import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-session.js';
+import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
+import {codexProfileEnvironment,codexProfileHome} from './codex-profile.js';
+import {museDataHome} from './muse-paths.js';
+import {sessionSpecialty} from './session-specialty.js';
+import {dshSessionsDir} from './dsh-paths.js';
+import {cursorSessions} from './cursor-desktop.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
@@ -29,6 +37,20 @@ const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
 export function deliveryId(jobId:string) {
   const h=createHash('sha256').update(`whatsapp-session-bridge:${jobId}`).digest('hex');
   return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;
+}
+const SESSION_HEADER_BYTES=64*1024;
+/**
+ * The first record of a zstd session log. DSH writes each record as its own frame, so the header
+ * decodes from a bounded read; a frame that did not fit falls back to reading the whole file rather
+ * than dropping the session.
+ */
+export function decodeSessionHeader(file:string):string|undefined {
+  const handle=openSync(file,'r');
+  let head:Buffer;
+  try {const buffer=Buffer.alloc(SESSION_HEADER_BYTES);head=buffer.subarray(0,readSync(handle,buffer,0,buffer.length,0));}
+  finally {closeSync(handle);}
+  try {return zstdDecompressSync(head).toString('utf8').split('\n')[0]?.trim();}
+  catch {return zstdDecompressSync(readFileSync(file)).toString('utf8').split('\n')[0]?.trim();}
 }
 /** Keep runtime identities separate even when Desktop and CLI share a history UUID. */
 export function mergeClaudeSessions(history:Session[],desktopHistory:Session[],live:any[],desktopPids:Set<number>,inboxes:Set<number>) {
@@ -43,6 +65,17 @@ export function mergeClaudeSessions(history:Session[],desktopHistory:Session[],l
     if(other&&!other.live)all.set(otherKey,{...other,activation:undefined,available:false,status:`This session is running in ${mode==='desktop'?'Desktop':'CLI'}. Use that runtime or close it there before switching.`});
   }
   return all;
+}
+/**
+ * Claude Desktop runs under the owner's own home and Claude config. The Local backend's private
+ * HOME and CLAUDE_CONFIG_DIR made `claude agents` list none of the owner's open sessions, so every
+ * Desktop session looked like it had no inbox and a new coordinator never connected (live, 4 Nov).
+ * The app's own Claude CLI runs keep their private config; only Desktop listing and delivery use this.
+ */
+export function claudeOwnerEnvironment(env:NodeJS.ProcessEnv=process.env):NodeJS.ProcessEnv {
+  if(env.FFD_ISOLATED_LOCAL!=='1')return env;
+  const {CLAUDE_CONFIG_DIR:_private,...rest}=env;
+  return {...rest,HOME:cursorOwnerHome(env)};
 }
 function waitingForDesktopInbox(s:Session) {
   return s.activation==='desktop-open'||(s.provider==='claude'&&s.executionMode==='desktop'&&s.live===true&&s.available===false&&!!s.desktopId&&!!s.accountScope);
@@ -81,8 +114,8 @@ export class NativeAgents {
     try{await runtime.initialize();return await observeCodexRequest(runtime,b,job.id);}finally{clearTimeout(timer);runtime.close();}
   }
   private async desktopConfig() {this.writeTransportConfig(await claudeDiscoveryBinary(claudeBin));}
-  async catalog(provider:'codex'|'claude',cursor?:string,options:{fresh?:boolean}={}):Promise<{sessions:Session[];cursor:string|null}> {
-    if(this.deniedCatalogs.has(provider))throw new Error('File access was denied. Review FarFromDesk in System Settings → Privacy & Security → Files and Folders, then click Check apps.');
+  async catalog(provider:Provider,cursor?:string,options:{fresh?:boolean}={}):Promise<{sessions:Session[];cursor:string|null}> {
+    if(this.deniedCatalogs.has(provider))throw new Error('File access was denied. Review FarFromDesk in System Settings → Privacy & Security → Files and Folders, then click Detect apps.');
     const key=provider+':'+(cursor??''),now=Date.now();
     for(const [key,value] of this.catalogCache)if(value.expires<=now)this.catalogCache.delete(key);
     const cached=this.catalogCache.get(key);
@@ -109,17 +142,82 @@ export class NativeAgents {
     }
     return structuredClone(await task);
   }
-  protected async readCatalog(provider:'codex'|'claude',cursor?:string,fresh=false):Promise<{sessions:Session[];cursor:string|null}> {
+  /**
+   * Muse publishes every session it retained in a local index, the way Claude publishes
+   * ~/.claude/projects. Read it read-only: the CLI owns the file, its schema and its locks.
+   */
+  private async museCatalog():Promise<Session[]> {
+    const file=join(museDataHome(),'session-index.db');
+    if(!existsSync(file))return [];
+    let db:DatabaseSync;
+    try{db=new DatabaseSync(file,{readOnly:true});}catch{return [];}
+    try {
+      const rows=db.prepare(`SELECT session_id,workspace_root,model_id,COALESCE(session_name,title,first_user_prompt) AS name,updated_at_us,prompt_count
+        FROM sessions WHERE workspace_root IS NOT NULL AND COALESCE(msp_kind,'')!='subagent' ORDER BY updated_at_us DESC LIMIT 50`).all() as any[];
+      return rows.map((row:any)=>{
+        const name=String(row.name??'').replace(/\s+/g,' ').trim().slice(0,120)||String(row.session_id);
+        const model=typeof row.model_id==='string'&&row.model_id?row.model_id:'Muse';
+        return {id:String(row.session_id),provider:'muse' as const,cwd:String(row.workspace_root),name,
+          status:`Muse session · ${model}${row.prompt_count?` · ${row.prompt_count} turns`:''}`,model,executionMode:'cli' as const,available:true,
+          updatedAt:row.updated_at_us?Math.floor(Number(row.updated_at_us)/1000):undefined};
+      });
+    } finally {db.close();}
+  }
+  /**
+   * DeepSeek Harness keeps one transcript per session under a folder named for its working
+   * directory. The zstd file is multi-frame, and Node can read exactly the first frame, which is
+   * the session header and all a catalog needs. A subagent or forked transcript is not a session
+   * the owner can adopt, for the same reason the CLI refuses to adopt one.
+   */
+  private deepseekCatalog():Session[] {
+    const root=dshSessionsDir();
+    if(!existsSync(root))return [];
+    let projects;try{projects=readdirSync(root,{withFileTypes:true});}catch{return [];}
+    const sessions:Session[]=[];
+    for(const project of projects){
+      if(!project.isDirectory()||!project.name.startsWith('--')||!project.name.endsWith('--'))continue;
+      let entries;try{entries=readdirSync(join(root,project.name),{withFileTypes:true});}catch{continue;}
+      for(const entry of entries){
+        if(!entry.isDirectory())continue;
+        const directory=join(root,project.name,entry.name);
+        let files;try{files=readdirSync(directory);}catch{continue;}
+        const newest=files.filter(file=>/^session\.v\d+\.jsonl\.zstd$/.test(file))
+          .sort((a,b)=>Number(b.replace(/\D/g,''))-Number(a.replace(/\D/g,'')))[0];
+        if(!newest)continue;
+        let header:any;
+        try {
+          // The header is the whole first frame, so a bounded read decodes it. A busy install keeps
+          // multi-megabyte transcripts, and reading every one of them in full would stall discovery
+          // for work the catalog never uses. If the first frame did not fit, read the file properly
+          // rather than dropping a session.
+          const line=decodeSessionHeader(join(directory,newest));
+          if(!line?.startsWith('{'))continue;
+          header=JSON.parse(line);
+        } catch{continue;}
+        if(header?.type!=='session'||typeof header.id!=='string'||!header.id||typeof header.cwd!=='string'||!header.cwd)continue;
+        if(header.origin==='subagent'||header.parentSession)continue;
+        sessions.push({id:header.id,provider:'deepseek',cwd:header.cwd,name:header.id,
+          status:'DeepSeek Harness session · CLI',executionMode:'cli',available:true,updatedAt:activityTime(header.createdAt)});
+      }
+    }
+    return sessions.sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,50);
+  }
+  protected async readCatalog(provider:Provider,cursor?:string,fresh=false):Promise<{sessions:Session[];cursor:string|null}> {
+    if(provider==='muse')return {sessions:await this.museCatalog(),cursor:null};
+    if(provider==='deepseek')return {sessions:this.deepseekCatalog(),cursor:null};
+    if(provider==='cursor')return {sessions:cursorSessions(),cursor:null};
     if(provider==='claude') {
       const [history,desktopHistory,desktopPids,,cliConnection]=await Promise.all([
         claudeHistory(join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')),
-        claudeDesktopHistory(join(homedir(),'Library/Application Support/Claude/claude-code-sessions')),
+        // Claude Desktop keeps its sessions in the owner's real Library. The Local backend runs with a
+        // private HOME, which hid every Desktop session and left new coordinators "not confirmed" (live).
+        claudeDesktopHistory(join(cursorOwnerHome(),'Library/Application Support/Claude/claude-code-sessions')),
         claudeDesktopProcesses().catch(()=>new Set<number>()),
         this.desktopConfig(),
         this.connections.read('claude','cli',fresh)
       ]);
       let live:any[]=[],liveComplete=false;
-      try{const {stdout}=await exec(helper(),['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
+      try{const {stdout}=await exec(helper(),['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024,env:claudeOwnerEnvironment()});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
       catch{if(!history.length&&!desktopHistory.length)throw new Error('Claude discovery is unavailable. Check the native CLI.');}
       const inboxes=await hasClaudeInboxes(live.map(s=>s.pid));
       const all=mergeClaudeSessions(history,desktopHistory,live,desktopPids,inboxes);
@@ -134,7 +232,7 @@ export class NativeAgents {
       for(const [id,row] of all)all.set(id,{...row,liveDiscoveryComplete:liveComplete});
       return {sessions:[...all.values()].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)),cursor:null};
     }
-    const db=new DatabaseSync(join(process.env.CODEX_HOME??join(homedir(),'.codex'),'state_5.sqlite'),{readOnly:true});
+    const db=new DatabaseSync(join(codexProfileHome(),'state_5.sqlite'),{readOnly:true});
     try {
       const offset=Number(cursor??0);if(!Number.isInteger(offset)||offset<0)throw new Error('Invalid cursor');
       const rows=db.prepare('SELECT id,COALESCE(NULLIF(name,\'\'),title) AS name,cwd,updated_at,rollout_path FROM threads WHERE archived=0 AND agent_path IS NULL AND source NOT LIKE \'%subagent%\' ORDER BY updated_at DESC,id LIMIT 51 OFFSET ?').all(offset);
@@ -152,14 +250,14 @@ export class NativeAgents {
       })),cursor:rows.length>50?String(offset+50):null};
     } finally {db.close();}
   }
-  async validate(provider:'codex'|'claude',id:string,cwd:string) {
+  async validate(provider:Provider,id:string,cwd:string) {
     await this.validateSessions([{provider,id,cwd}]);
   }
-  async validateSessions(sessions:{provider:'codex'|'claude';id:string;cwd:string;executionMode?:'desktop'|'cli'}[]) {
+  async validateSessions(sessions:{provider:Provider;id:string;cwd:string;executionMode?:'desktop'|'cli'}[]) {
     const claude=sessions.filter(s=>s.provider==='claude');
     if(claude.length){const c=await this.catalog('claude',undefined,{fresh:true});for(const s of claude)if(!c.sessions.some((row:any)=>row.id===s.id&&sameProject(row.cwd,s.cwd)&&(!s.executionMode||row.executionMode===s.executionMode)))throw new Error('This exact Claude session could not be found in that project.');}
     const codex=sessions.filter(s=>s.provider==='codex');if(!codex.length)return;
-    const db=new DatabaseSync(join(process.env.CODEX_HOME??join(homedir(),'.codex'),'state_5.sqlite'),{readOnly:true});
+    const db=new DatabaseSync(join(codexProfileHome(),'state_5.sqlite'),{readOnly:true});
     try {for(const s of codex){
       const row=db.prepare('SELECT rollout_path FROM threads WHERE id=? AND cwd=? AND archived=0 AND agent_path IS NULL AND source NOT LIKE \'%subagent%\'').get(s.id,s.cwd);
       if(!row)throw new Error('No matching existing Codex chat in this project.');
@@ -189,6 +287,10 @@ export class NativeAgents {
     this.beforeRun?.(b);
     await verify(this.connections.assert(b));
     let route=this.connections.route(b);
+    // Muse has no app queue and no native chat hand-off: the bridge runs its CLI or nothing.
+    if(b.provider==='muse'&&route?.transport!=='managed-cli')throw new Error('Muse Code runs only on its managed CLI connection. Review it in Coding platforms before sending.');
+    if(b.provider==='deepseek'&&route?.transport!=='managed-cli')throw new Error('DeepSeek Harness runs only on its managed CLI connection. Review it in Coding platforms before sending.');
+    if(b.provider==='cursor'&&route?.transport!=='managed-cli')throw new Error('Cursor runs only on its managed channel connection. Review it in Coding platforms before sending.');
     const managedFlags=this.store.get(`managed-codex:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true'||this.store.get(`managed-worker:${b.id}`)==='true';
     if(!route) {
       if(guarded)throw new DispatchNotSubmittedError('The request was not sent because this session has no verified connection. Select its exact connection in the app first.');
@@ -240,7 +342,24 @@ export class NativeAgents {
     const attachments=this.store.job(jobId)?new Attachments(this.store).references(b,jobId,true):[];
     // CLI-reply sessions get the farfromdesk skill and its ffd launcher; a coordinator in its own folder also auto-loads the skill.
     const support=this.store.get(`master-support:${b.id}`),ownFolder=support?.startsWith(coordinatorHome+'/');
-    const reply=managed?{tool:'whatsapp_reply'}:ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
+    // A headless coordinator (Muse, DeepSeek) has no bridge tools, but it runs shell commands, and
+    // the bridge CLI authenticates from this binding's own credential file. Measured live on
+    // 4 November 2026: told only "coordination tools are not available", Muse searched the source,
+    // tried raw AppleScript and answered "your recent notes are out of reach".
+    // Muse's sandbox (network mode proxy-only) lets curl through its proxy but blocks node's fetch,
+    // which ignores proxy variables on this runtime, so the bridge CLI answered "fetch failed".
+    // curl reads the token from this binding's own credential file when it runs: the token is
+    // never in the prompt or the transcript.
+    const credential=join(stateDir,'bindings',`${b.alias}.json`).replaceAll("'","'\\''");
+    const curl=(path:string,secs=70)=>`curl -s --max-time ${secs} -X POST 'http://127.0.0.1:${new URL(baseUrl).port}${path}' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
+    const post=curl('/api/master/desktop-control');
+    // The same gap for Social: FFD social-save and friends do not exist in a headless session, so it
+    // reported that drafts could not be saved and no image preview followed (live, 5 Nov 2026).
+    const headlessSocial=(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor')&&sessionSpecialty(this.store,jobId)?.kind==='social'
+      ?{socialTools:`FFD is not installed here. In place of FFD social-creative, social-save, social-render and social-image, pipe JSON to these commands. Skill and schema: echo '{"requestId":"${jobId}"}' | ${curl('/api/session/social-creative')} . Save drafts: {"requestId":"${jobId}","eventId":"<new id of 8+ letters or digits>","drafts":[...]} | ${curl('/api/session/social-drafts')} . Render: {"requestId":"${jobId}","draftId":"<id>","revision":<n>,"plan":{...}} | ${curl('/api/session/social-render',180)} . Meta image: {"requestId":"${jobId}","draftId":"<id>"} | ${curl('/api/session/social-image',180)} .`}:{};
+    const headlessApps=(b.provider==='muse'||b.provider==='deepseek')&&roleConfig(this.store,b).kind==='master'
+      ?{macApps:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
+    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer',...headlessApps,...headlessSocial}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');
@@ -268,14 +387,22 @@ export class NativeAgents {
       this.beforeDispatch?.(b,jobId);
       // Longer than the helper's own 30-second wait on codex queue, so the helper records the outcome itself.
       handedOff=true;
-      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024});
+      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024,...(b.provider==='codex'?{env:codexProfileEnvironment()}:{env:claudeOwnerEnvironment()})});
       const r=JSON.parse(stdout);
       if(r.status!=='submitted'&&r.status!=='received')throw new Error(`Native delivery is ${r.status??'unconfirmed'}. Reference ${id}`);
       envelope.acknowledge();
       this.store.audit('native-submitted',b.id,id);
+      // "Accepted by the queue" is the only thing this hand-off proves. Record it, and keep the
+      // best-known app liveness beside it, so Activity can tell queued from running later.
+      this.store.event(jobId,'delivery_accepted',{transport:b.provider==='codex'?'codex-queue':'claude-socket',appRunning:this.store.get(`app-running:${b.provider}`)!=='false'});
       if(b.provider==='codex') {
         try{await this.wakeCodex(b.native_id);}
-        catch{throw new Error('Message is saved in the Codex queue, but Desktop could not be opened. Open this exact chat to continue; do not resend the message.');}
+        catch(e){
+          // Say which part failed. "Could not be opened" hid the case where Codex
+          // launched but never really started, which is indistinguishable from a
+          // silent success for the owner.
+          throw new Error(`Message is saved in the Codex queue, so do not resend it. Desktop did not open the chat: ${e instanceof Error?e.message:'unknown error'}`);
+        }
       }
     } catch(e:any) {
       if(e instanceof DispatchNotSubmittedError)throw e;
@@ -291,8 +418,12 @@ export class NativeAgents {
     }
   }
   async sendDesktopCreation(sessionId:string,file:string) {
+    return withProviderSetup(this.store,'desktop-submit',()=>this.sendDesktopCreationScoped(sessionId,file));
+  }
+  private async sendDesktopCreationScoped(sessionId:string,file:string) {
     await this.desktopConfig();
-    const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{timeout:30000,maxBuffer:1024*1024});
+    assertProviderSetup(this.store);
+    const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{env:claudeOwnerEnvironment(),timeout:30000,maxBuffer:1024*1024});
     const receipt=JSON.parse(stdout);
     if(receipt.status!=='submitted'&&receipt.status!=='received')throw new Error('Desktop creation submission could not be confirmed. Do not resubmit.');
   }
