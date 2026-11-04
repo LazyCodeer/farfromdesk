@@ -540,7 +540,10 @@ export class MetaBrain {
         const hay=`${t.title??''} ${t.url??''}`.toLowerCase();
         if(!want.every(word=>hay.includes(word)))continue;
         try{
-          const page=await control.run(`brain:${m.id}`,{action:'read_tab',tabRef:t.tabRef,...(screenshot?{screenshot:true}:{})});
+          const read=()=>control.run!(`brain:${m.id}`,{action:'read_tab',tabRef:t.tabRef,...(screenshot?{screenshot:true}:{})});
+          // A tab the loop opened a moment ago is still loading, and the driver drops that read
+          // (live, 4 November 2026: open_page then read_tab on Gmail). One retry after it settles.
+          const page=await read().catch(async e=>{if(!/lost the connection/.test(deviceRefusal(e)))throw e;await new Promise(r=>setTimeout(r,3000));return read();});
           const sent=screenshot&&this.keepShot(m,page);
           const {screenshot:_omit,...rest}=page??{};
           return JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})}).slice(0,14000);
