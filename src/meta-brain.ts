@@ -525,7 +525,7 @@ export class MetaBrain {
     const asked=this.wanted.delete(m.id);
     // Live on build 2421 the model wrote "screenshot follows" and no image existed. A screenshot
     // that was asked for and not taken is said plainly, with the permission that blocks it.
-    if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot. macOS has to allow Screen Recording for FarFromDesk Local (System Settings > Privacy & Security > Screen Recording). The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
+    if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot this time. If it keeps failing, check that Screen Recording is on for FarFromDesk Local in System Settings > Privacy & Security. The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
     for(const [i,png] of (list??[]).entries()){try{this.store.outputBrainPhoto(m.id,png,list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot');}catch{}}
   }
   private desktop(){return this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>};}

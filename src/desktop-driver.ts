@@ -58,6 +58,11 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
       if(result.isError)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText(result.content));
       const text=(result.content as any[])?.find(c=>c.type==='text')?.text;
       const value=result.structuredContent??(text?JSON.parse(text):{});
+      // The driver returns a screenshot as an MCP image block beside its JSON, not as a field in it.
+      // Reading only the JSON dropped every screenshot (live, 4 November 2026: a granted Screen
+      // Recording still produced no image), so the block is attached under the field callers read.
+      const image=(result.content as any[])?.find(c=>c?.type==='image'&&typeof c.data==='string');
+      if(image&&value&&typeof value==='object'&&!(value as any).screenshot_png_b64)Object.assign(value,{screenshot_png_b64:image.data,screenshot_mime_type:image.mimeType??'image/png'});
       if((value as any).refusal||(value as any).error)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText((value as any).refusal??(value as any).error??value));
       return value;
     }catch(e){this.stop();throw e;}
