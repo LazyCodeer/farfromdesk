@@ -342,3 +342,16 @@ test('specialist instruction file is immutable and corruption blocks delivery',a
   assert.throws(()=>turnEnvelope(f.s,f.b,f.s.job(id)!.body,id,{},[],f.root),/integrity/);
  }finally{f.close();}
 });
+
+test('a Social request typed in the app composer can save its drafts',async()=>{
+  const f=fixture('telegram','claude');try {
+    assert.equal((await f.send('1','/social')).status,'handled');
+    const id='app:'+randomUUID();
+    assert.equal(f.s.claimAppOrigin(id,f.owner,'telegram',f.s.get('incoming-owner-generation')??''),true);
+    const r=await f.s.destinationContext.run(f.owner,()=>f.r.receive({id,text:'Make a LinkedIn post about a new product',ownerCommand:true,ownerIntent:true,ownerChoice:true}));
+    assert.equal(r.status,'queued');f.s.jobState(id,'dispatched');new SocialAssistant(f.s.db,()=>undefined);
+    const saved=saveSessionSocialDrafts(f.s,f.b,id,'app-composer-save',[{platform:'LinkedIn',format:'Post',title:'Launch',caption:'A synthetic post'}]);
+    assert.equal(saved.draftIds.length,1);
+    assert.throws(()=>saveSessionSocialDrafts(f.s,f.b,'app:'+randomUUID(),'app-unclaimed',[{platform:'LinkedIn',format:'Post',title:'x',caption:'x'}]),/exact Social owner request/);
+  }finally{f.close();}
+});

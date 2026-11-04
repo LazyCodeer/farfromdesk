@@ -12,7 +12,7 @@ const text=(value:unknown,max:number,label:string)=>{
 
 /** Save one exact request's generated drafts. Does not post, upload or send. */
 export function saveSessionSocialDrafts(store:Store,binding:Binding,requestId:unknown,eventId:unknown,input:unknown) {
-  if(typeof requestId!=='string'||requestId.length>300||!(/^(?:wa:|tg:|local:social:)/.test(requestId))||requestId.startsWith('local:')&&!desktopSocialProof(store,requestId,binding))throw new Error('Use the exact Social owner request.');
+  if(typeof requestId!=='string'||requestId.length>300||!store.socialRequestId(requestId)||requestId.startsWith('local:')&&!desktopSocialProof(store,requestId,binding))throw new Error('Use the exact Social owner request.');
   if(typeof eventId!=='string'||!/^[a-zA-Z0-9_-]{8,100}$/.test(eventId))throw new Error('A stable draft event ID is required.');
   if(!Array.isArray(input)||input.length<1||input.length>12)throw new Error('Provide one to twelve generated drafts.');
   const drafts:SocialDraftInput[]=input.map((value:any)=>{

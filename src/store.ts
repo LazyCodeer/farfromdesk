@@ -168,6 +168,8 @@ export class Store {
    * satisfy the app branch, so an app id without a claim stays untrusted.
    */
   ownerInputId(id:string){return /^(wa|tg|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
+  /** An owner request the Social session tools may act for, including a claimed app composer turn. */
+  socialRequestId(id:string){return /^(?:wa:|tg:|local:social:)/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   recordIncomingInput(id:string){
     this.assertIncomingOwner();const owner=this.incomingOwnerContext.getStore();
     if(owner)this.db.prepare('INSERT OR IGNORE INTO incoming_owner_inputs VALUES(?,?,?,?,?)').run(id,owner.owner,owner.destination,owner.channel,owner.generation);

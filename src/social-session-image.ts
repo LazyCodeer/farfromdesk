@@ -8,7 +8,7 @@ import sharp from 'sharp';
 
 /** Render only a saved draft from this active, owner-authorized request. */
 export async function renderSessionSocialImage(store:Store,binding:Binding,social:SocialAssistant,key:()=>string|undefined,requestId:unknown,draftId:unknown,transport:MetaImageTransport=fetch){
-  if(typeof requestId!=='string'||!(/^(?:wa:|tg:|local:social:)/.test(requestId))||typeof draftId!=='string'||!/^[0-9a-f-]{36}$/i.test(draftId))throw Error('Use the current Social request and saved draft.');
+  if(typeof requestId!=='string'||!store.socialRequestId(requestId)||typeof draftId!=='string'||!/^[0-9a-f-]{36}$/i.test(draftId))throw Error('Use the current Social request and saved draft.');
   const current=()=>{
     const s=sessionSpecialty(store,requestId),job=store.job(requestId);
     return !!s&&s.kind==='social'&&s.bindingId===binding.id&&binding.enabled&&!!job&&['dispatched','submitted'].includes(job.status)&&store.controlChannel()===(s.destination.startsWith('tg:')?'telegram':'whatsapp')&&(!requestId.startsWith('local:')||!!desktopSocialProof(store,requestId,binding));

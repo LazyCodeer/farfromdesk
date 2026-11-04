@@ -6,7 +6,7 @@ import type {SocialAssistant} from './social-assistant.js';
 import {parseSocialPlan,renderSocialPlan} from './social-renderer.js';
 const busy=new WeakSet<Store>();
 export function assertCreativeRequest(store:Store,binding:Binding,id:unknown):asserts id is string {
-  if(typeof id!=='string'||id.length>300||!(/^(wa:|tg:|local:social:)/.test(id)))throw Error('Use the exact Social request.');
+  if(typeof id!=='string'||id.length>300||!store.socialRequestId(id))throw Error('Use the exact Social request.');
   const s=sessionSpecialty(store,id),job=store.job(id);
   if(!s||s.kind!=='social'||s.bindingId!==binding.id||!binding.enabled||!job||!['dispatched','submitted'].includes(job.status)||store.controlChannel()!==(s.destination.startsWith('tg:')?'telegram':'whatsapp')||id.startsWith('local:')&&!desktopSocialProof(store,id,binding))throw Error('The Social request or selected session is no longer active.');
 }
