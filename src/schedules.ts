@@ -325,7 +325,7 @@ export class Schedules {
     const binding=this.store.binding(input.sessionId);
     if(!binding)return 'No session has that id. Use an id from sessions. Nothing was scheduled.';
     const identity=bindingFingerprint(router,binding);
-    if(!sessionAvailable(router,{binding_id:binding.id,binding_identity:identity}))return `${binding.alias} is unavailable, or routing to it is off in Settings. Nothing was scheduled.`;
+    if(!sessionAvailable(router,{binding_id:binding.id,binding_identity:identity}))return `${this.store.get(`name:${binding.id}`)??binding.alias} is unavailable, or routing to it is off in Settings. Nothing was scheduled.`;
     const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
     if(this.store.db.prepare('SELECT 1 FROM schedules WHERE origin_id=?').get(m.id))return 'This message already scheduled work.';
     if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active schedules. Cancel one first.';
@@ -345,7 +345,9 @@ export class Schedules {
       this.store.db.exec('RELEASE brain_schedule');
     }catch(e){this.store.db.exec('ROLLBACK TO brain_schedule; RELEASE brain_schedule');throw e;}
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:t.zone,dateStyle:'medium',timeStyle:'short'}).format(t.next);
-    return `Saved. ${when}${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${binding.alias} to: ${text}.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
+    // The name the owner sees in the app, not the internal alias (live: "selected-master-04a13fbb").
+    const name=(this.store.get(`name:${binding.id}`)??binding.alias).replace(/\s+/g,' ').slice(0,60);
+    return `Saved. ${when}${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${name} to: ${text}.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
   }
   /**
    * The brain's reminder tools. The brain decides that a message is a reminder and works out
