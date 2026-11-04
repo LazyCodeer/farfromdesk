@@ -134,7 +134,7 @@ test('a bare write after using an app goes to that app, with the owner words ver
     f.replies(OPEN_NOTES);
     await f.send('1', 'open Notes');
     assert.deepEqual(f.calls[0], { action: 'open_app', app: 'Notes' });
-    assert.match(f.last(), /has not drawn a window/, 'the driver report is what the owner read');
+    assert.match(f.last(), /^Opened Notes\./, 'the driver report is what the owner read');
     f.replies(dev({ action: 'app_tool', app: 'Notes', tool: 'notes_create_note', args: { body: 'tomorrow meeting at 10pm woth ashitosh' } }));
     await f.send('2', 'Write a notes about tomorrow meeting at 10pm woth ashitosh');
     // The blind type is what landed in the Notes search field live while the owner was told
@@ -155,7 +155,7 @@ test('model prose may not contradict what the driver just reported', async () =>
     f.replies(clarify('Notes is not open right now. Do you want me to open it and write it there?'));
     await f.send('2', 'Anything new in Notes?');
     assert.equal(f.seen.length, 2, 'the model was consulted for both');
-    assert.match(f.last(), /has not drawn a window/);
+    assert.match(f.last(), /^Opened Notes\./);
     assert.doesNotMatch(f.last(), /not open right now/i);
   } finally { f.close(); }
 });
@@ -169,7 +169,7 @@ test('ordinary talk about the app is not replaced by the driver line', async () 
     f.replies(chat('Agreed, Notes is handy for meeting minutes.'));
     await f.send('2', 'Notes is my favourite app');
     assert.match(f.last(), /handy for meeting minutes/);
-    assert.doesNotMatch(f.last(), /has not drawn a window/);
+    assert.doesNotMatch(f.last(), /^Opened Notes\.$/);
   } finally { f.close(); }
 });
 

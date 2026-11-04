@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdirSync,mkdtempSync,realpathSync,rmSync,writeFileSync} from 'node:fs';
+import {chmodSync,mkdirSync,mkdtempSync,realpathSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -11,6 +11,7 @@ import {
   readBounded,
   readCursorTranscript,
   runCursorTurn,
+  findCursorCli,
 } from '../src/cursor-desktop.js';
 import {cursorConversationDb,cursorProjectSlug} from '../src/cursor-paths.js';
 
@@ -147,4 +148,26 @@ test('runCursorTurn refuses an unfinished turn instead of reporting a silent ans
     runCursorTurn({prompt:'never finishes',env,timeoutMs:80,pollMs:10,open:async()=>{}}),
     /did not finish this turn in time/,
   );
+});
+test('runCursorTurn reports a prompt Cursor never took within the pickup window, not after the full timeout',async()=>{
+  const base=fixture('cursor-desktop-pickup-'),env={CURSOR_DATA_DIR:base} as NodeJS.ProcessEnv;
+  const started=Date.now();
+  await assert.rejects(
+    runCursorTurn({prompt:'nobody takes this',env,timeoutMs:5000,pickupMs:60,pollMs:10,open:async()=>{}}),
+    /did not take the message/,
+  );
+  assert.ok(Date.now()-started<2000);
+});
+
+test('runCursorTurn runs a signed-in cursor-agent by command and returns its answer and chat id',async()=>{
+  const base=fixture('cursor-desktop-cli-');
+  const bin=join(base,'cursor-agent');
+  writeFileSync(bin,`#!${process.execPath}\nconst a=process.argv.slice(2);if(a[0]==='status'){console.log('Logged in as owner');process.exit(0);}\nconsole.log(JSON.stringify({type:'result',is_error:false,result:'Hi from the CLI: '+a.at(-1),session_id:'cli-chat-1'}));\n`);
+  chmodSync(bin,0o755);
+  const env={CURSOR_DATA_DIR:base,CURSOR_AGENT_BIN:bin} as NodeJS.ProcessEnv;
+  const cli=findCursorCli(env);
+  assert.equal(cli,bin);
+  const result=await runCursorTurn({prompt:'say hi',env,cli,cwd:base,open:async()=>{throw new Error('the app must not be used');}});
+  assert.equal(result.text,'Hi from the CLI: say hi');
+  assert.equal(result.sessionId,'cli-chat-1');
 });

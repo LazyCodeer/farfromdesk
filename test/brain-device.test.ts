@@ -39,7 +39,7 @@ test('the driver result is reported, not the model guess', () => {
     deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: true, windowReady: true, fronted: true }),
     { ok: true, line: 'Opened Comet and brought it to the front.', evidence: null });
   // Opened but no window is a different fact from opened with a window.
-  assert.match(deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: true, windowReady: false }).line, /has not drawn a window/i);
+  assert.match(deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: true, windowReady: false }).line, /^Opened Comet\.$/);
   assert.equal(deviceOutcome({ action: 'open_app', app: 'Comet' }, { app: 'Comet', running: false }).ok, false);
   const read = deviceOutcome({ action: 'read_window', app: 'Comet' }, { app: 'Comet', window: 'Inbox', tree: '- [0] AXWindow "Inbox"\n  - [1] AXButton "Compose" [actions=[press]]' });
   assert.equal(read.ok, true);

@@ -1,9 +1,9 @@
 import {existsSync,readdirSync,readFileSync,statSync} from 'node:fs';
 import {join} from 'node:path';
-import {spawn} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import type {Session} from './session-catalog.js';
-import {cursorConversationDb,cursorProjectsDir,cursorProjectPath} from './cursor-paths.js';
+import {cursorConversationDb,cursorOwnerHome,cursorProjectsDir,cursorProjectPath} from './cursor-paths.js';
 
 /**
  * Cursor's agent runs inside the app, and the app is reachable from outside through exactly one
@@ -38,6 +38,12 @@ export type CursorTurnOptions={
   pollMs?:number;
   env?:NodeJS.ProcessEnv;
   open?:(url:string)=>Promise<void>;
+  /** A signed-in `cursor-agent`, from findCursorCli. When set the turn runs by command: no window, no focus. */
+  cli?:string;
+  /** The folder the command-line agent works in. */
+  cwd?:string;
+  /** How long Cursor may take to show it took the prompt before the run is reported as not picked up. */
+  pickupMs?:number;
 };
 export type CursorTurnResult={text:string;sessionId:string|null};
 
@@ -184,6 +190,44 @@ function openUrl(url:string):Promise<void> {
 
 function sleep(ms:number):Promise<void>{return new Promise((resolve)=>setTimeout(resolve,ms));}
 
+/** The app's prefill needs Cursor running, so a closed Cursor is opened first instead of the prompt being lost. */
+async function openInCursor(url:string):Promise<void> {
+  const running=()=>{try{execFileSync('/usr/bin/pgrep',['-xq','Cursor']);return true;}catch{return false;}};
+  if(process.platform==='darwin'&&!process.env.NODE_TEST_CONTEXT&&!running()){
+    await new Promise<void>(resolve=>spawn('/usr/bin/open',['-a','Cursor'],{stdio:'ignore'}).on('close',()=>resolve()).on('error',()=>resolve()));
+    for(let i=0;i<30&&!running();i++)await sleep(500);
+    await sleep(5000); // its window restores a few seconds after the process starts
+  }
+  await openUrl(url);
+}
+
+/** Cursor's own command-line agent, when it is installed and signed in in the owner's home. */
+export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefined {
+  const home=cursorOwnerHome(env),bin=env.CURSOR_AGENT_BIN?.trim()||join(home,'.local','bin','cursor-agent');
+  if(process.env.NODE_TEST_CONTEXT&&!env.CURSOR_AGENT_BIN||!existsSync(bin))return;
+  try{
+    const out=execFileSync(bin,['status'],{env:{...env,HOME:home},timeout:15000,encoding:'utf8'});
+    return /not logged in/i.test(out)?undefined:bin;
+  }catch{return;}
+}
+
+/** One headless turn: `cursor-agent -p` prints a JSON result with the answer and its chat id. */
+function runCursorCli(bin:string,prompt:string,cwd:string|undefined,timeoutMs:number,env:NodeJS.ProcessEnv):Promise<CursorTurnResult> {
+  return new Promise((resolve,reject)=>{
+    const child=spawn(bin,['-p','--output-format','json','--trust',...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
+    let out='',err='';
+    const timer=setTimeout(()=>{child.kill();reject(new Error('Cursor did not finish this turn in time.'));},timeoutMs);
+    child.stdout.on('data',d=>{out+=d;});child.stderr.on('data',d=>{err+=d;});
+    child.on('error',e=>{clearTimeout(timer);reject(new Error(`Cursor could not start: ${e.message}`));});
+    child.on('close',code=>{
+      clearTimeout(timer);
+      let r:any;try{r=JSON.parse(out.trim().split('\n').at(-1)??'');}catch{}
+      if(code!==0||!r||r.is_error||typeof r.result!=='string')return reject(new Error(`Cursor failed: ${(r?.result??err??out).toString().trim().slice(0,300)||`exit ${code}`}`));
+      resolve({text:r.result.trim(),sessionId:r.session_id??r.chatId??null});
+    });
+  });
+}
+
 /**
  * Hand one prompt to Cursor as a prefill of an open window and wait for the turn it starts to finish,
  * returning the answer text and the chat id Cursor wrote it to. This is a hand-off, not autonomous
@@ -196,7 +240,10 @@ export async function runCursorTurn(options:CursorTurnOptions):Promise<CursorTur
   const env=options.env??process.env;
   const timeoutMs=options.timeoutMs??10*60*1000;
   const pollMs=options.pollMs??750;
-  const open=options.open??openUrl;
+  if(options.cli)return runCursorCli(options.cli,prompt,options.cwd,timeoutMs,env);
+  const open=options.open??openInCursor;
+  const pickupMs=options.pickupMs??60_000;
+  let picked=false;
   // Cursor normalises whitespace before storing the message, so the same normalisation has to be
   // applied to the prompt when matching it back - otherwise every multi-line prompt misses.
   const needle=prompt.replace(/\s+/g,' ').trim();
@@ -204,12 +251,16 @@ export async function runCursorTurn(options:CursorTurnOptions):Promise<CursorTur
   for(const entry of cursorTranscriptFiles(env))seen.set(entry.file,entry.updatedAt);
   const deadline=Date.now()+timeoutMs;
   await open(cursorPromptUrl(prompt,{workspace:options.workspace,mode:options.mode}));
+  const started=Date.now();
   while(Date.now()<deadline){
     await sleep(pollMs);
+    // A prompt Cursor never took will not finish either: say so in a minute, not after the whole timeout.
+    if(!picked&&pickupMs<timeoutMs&&Date.now()-started>pickupMs)throw new Error('Cursor did not take the message. Bring a Cursor chat window up on the Mac and send it again.');
     for(const entry of cursorTranscriptFiles(env)){
       // Cursor either appends to the chat that had focus or opens a new one, so both are candidates.
       if((seen.get(entry.file)??-1)>=entry.updatedAt)continue;
       const transcript=readCursorTranscript(entry.file);
+      if(!picked&&transcript.messages.some(message=>message.role==='user'&&message.text.includes(needle)))picked=true;
       if(!transcript.complete)continue;
       // The newest user message carrying our prompt is the one this delivery started.
       let index=-1;

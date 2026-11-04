@@ -15,7 +15,7 @@ import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, rea
 import { dshHome } from './dsh-paths.js';
 import { stateDir, currentStateDir, baseUrl } from './config.js';
 import { openDirectMac } from './direct-mac.js';
-import { runCursorTurn } from './cursor-desktop.js';
+import { runCursorTurn, findCursorCli } from './cursor-desktop.js';
 
 export const TELEGRAM_COMMANDS=[
   {command:'claude',description:'Talk to your Claude coordinator'},
@@ -278,11 +278,11 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
  * Cursor window is silently ignored. The returned chat id is display-only.
  */
 async function cursorCommand(r:Router,m:Incoming,arg:string) {
-  if(!arg)return `${cursorOpen()?'Cursor is open on your Mac.':'Cursor is not open on your Mac. Open it before sending a task, or the run will time out.'} Each message starts a new Cursor chat; it cannot continue an earlier one.`;
+  if(!arg)return findCursorCli()?'Cursor is ready. It runs by command on your Mac, no window needed.':`Cursor is ready.${cursorOpen()?'':' It is closed now; I open it when you send something.'} Each message starts a new Cursor chat. To run it without the app window, sign in its command-line agent once: run cursor-agent login in Terminal.`;
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,'🖱️ Cursor is working.','cursor-progress:'+m.id,destination,{kind:'system',origin:'system',plain:true});
   const mac=openDirectMac(r.store,stateDir,new URL(baseUrl).port,`cursor:${m.id}`);
-  let result;try{result=await runCursorTurn({prompt:`${arg}\n\n[FarFromDesk] ${mac.note}`,timeoutMs:10*60*1000});}finally{mac.close();}
+  let result;try{result=await runCursorTurn({prompt:`${arg}\n\n[FarFromDesk] ${mac.note}`,timeoutMs:10*60*1000,cli:findCursorCli(),cwd:museWorkspace(r)});}finally{mac.close();}
   return result.text.slice(0,20000);
 }
 function name(r:Router,b:Binding){return (r.store.get(`name:${b.id}`)??b.alias).replace(/[\r\n*_`]/g,' ').slice(0,80);}

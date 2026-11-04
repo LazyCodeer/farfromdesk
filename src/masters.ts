@@ -38,7 +38,7 @@ import { runDshQueued, DEFAULT_DSH_LABEL } from './dsh-sessions.js';
 import { claimMessages, settleMessages, messagePrompt } from './dsh-inbox.js';
 import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
 import { dshHome } from './dsh-paths.js';
-import { runCursorTurn } from './cursor-desktop.js';
+import { runCursorTurn, findCursorCli } from './cursor-desktop.js';
 import { cursorAppBinary } from './cursor-paths.js';
 
 const exec=promisify(execFile);
@@ -648,7 +648,7 @@ export class Masters {
       // window we measured, and the prompt is then never submitted.
       const key=`cursor-chat:${b.id}`;
       handedOff=true;
-      const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs}));
+      const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs,cli:findCursorCli(),cwd:b.cwd}));
       if(result.sessionId)this.store.set(key,result.sessionId);
       if(this.store.job(jobId)?.status==='replaced')return;
       if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);

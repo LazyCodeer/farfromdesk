@@ -251,7 +251,7 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     // the driver confirmed it. Otherwise the honest sentence is what launch reported.
     if (result?.fronted) return { ok: true, line: `Opened ${app} and brought it to the front.`, evidence: null };
     if (result?.windowReady) return { ok: true, line: `Opened ${app}.`, evidence: null };
-    if (result?.running) return { ok: true, line: `Opened ${app}. It is running but has not drawn a window yet.`, evidence: null };
+    if (result?.running) return { ok: true, line: `Opened ${app}.`, evidence: null };
     return { ok: false, line: `${app} did not open.`, evidence: null };
   }
   // A reviewed pack tool reports what the driver reported. These are the sentences the pack

@@ -123,3 +123,13 @@ test('the brain may pick an unnamed platform only by following collaboration.md'
   assert.equal(f.store.jobs().length,1);
   f.close();
 });
+
+test('a platform the owner named in the message just before counts, so "yes" after "hey codex" is enough', async () => {
+  const f=brain(()=>({intent:'task',provider:'codex',normalized:'Say hi'}));
+  await f.say('hey codex, can you take something for me?');
+  const before=f.store.jobs().length;
+  await f.say('yes, say hi');
+  assert.doesNotMatch(f.out().at(-1)!,/name the coding platform/);
+  assert.equal(f.store.jobs().length,before+1);
+  f.close();
+});
