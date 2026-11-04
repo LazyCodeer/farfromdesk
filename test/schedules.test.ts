@@ -446,3 +446,18 @@ test('a stuck brief hook times out, cannot enqueue late, and does not starve oth
     release();await new Promise(resolve=>setImmediate(resolve));assert.equal(lateSend,false);
   }finally{f.close();}
 });
+
+// Live, 4 November 2026: "Remind me tomorrow 10am for meta hackathon submission" was refused with
+// "Please say remind me at TIME to". The owner's own wording, in any order, is a reminder.
+test('natural reminder wording is accepted with the owner text kept exactly', async () => {
+  const f = fixture(); try {
+    f.setDecision({ text: 'meta hackathon submission', date: '2026-10-30', time: '10:00' });
+    await f.send('1', 'Remind me tomorrow 10am for meta hackathon submission');
+    f.setDecision({ text: 'call mom', date: '2026-10-30', time: '17:00' });
+    await f.send('2', 'remind me to call mom at 5pm');
+    const rows = f.store.db.prepare('SELECT text,date,time FROM schedules ORDER BY created_at').all() as { text: string; date: string; time: string }[];
+    assert.deepEqual(rows.map(r => [r.text, r.date, r.time]), [['meta hackathon submission', '2026-10-30', '10:00'], ['call mom', '2026-10-30', '17:00']]);
+    f.setDecision({ text: 'buy 2 milk', time: '02:00' });
+    await assert.rejects(f.send('3', 'remind me to buy 2 milk'), /time/i, 'a bare number inside the reminder is not a time');
+  } finally { f.close(); }
+});

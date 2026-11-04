@@ -32,9 +32,27 @@ const cancelCommand=(s:string)=>/^(?:please\s+)?cancel\s+(?:(?:reminder|schedule
 const readOnlyPrStatus=(s:string)=>/^(?:please\s+)?check\s+(?:whether|if)\s+(?:pr|pull request)\s+#?\d{1,9}\s+is\s+green\s+and\s+tell\s+me[.!?]*$/i.test(s.trim());
 const cleanAction=(s:string)=>normalized(s).replace(/[.!?]+$/,'');
 function reminderDirective(original:string,body:string):{directive:string;action:string}|undefined {
-  const match=/\bremind\s+me\b[\s\S]*?\bto\s+/i.exec(original);
-  if(!match||cleanAction(original.slice(match.index+match[0].length))!==cleanAction(body))return;
-  return {directive:original.slice(0,match.index+match[0].length),action:original.slice(match.index+match[0].length).trim()};
+  // The reminder text is the owner's own words wherever they put it: "remind me tomorrow 10am for
+  // the submission", "remind me to call mom at 5pm", "remind me about X at 9 am". Only
+  // "remind me at TIME to ACTION" used to pass (live, 4 November 2026). The timing is read from
+  // the rest of the sentence, so a number inside the reminder is never taken as the time.
+  const remind=/\bremind\s+me\b/i.exec(original);
+  const want=body.trim().replace(/[.!?]+$/,'').replace(/^(?:to|for|about|that|of)\s+/i,'');
+  if(!remind||!want)return;
+  const at=original.toLowerCase().indexOf(want.toLowerCase(),remind.index+remind[0].length);
+  if(at<0)return;
+  const action=original.slice(at,at+want.length).trim();
+  if(cleanAction(action)!==cleanAction(want))return;
+  const directive=(original.slice(0,at).replace(/\b(?:to|for|about|that|of)\s*$/i,'')+' '+original.slice(at+want.length)).replace(/\s+/g,' ').trim();
+  // Everything left must be timing or filler. A content word left over means the model dropped
+  // part of the owner's request ("check whether it is safe to" + "deploy production"), so refuse.
+  const leftover=directive.toLowerCase()
+    .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?(?![\w:])/g,' ')
+    .replace(/\b[a-z_]+\/[a-z_]+(?:\/[a-z_]+)?\b/g,' ')
+    .replace(/\b(?:please|remind|me|at|on|by|in|the|a|an|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekday|weekdays|o'?clock|hey|atlas|can|could|you|pls|do|not|don|t|never|stop)\b/g,' ')
+    .replace(/[^a-z]+/g,' ').trim();
+  if(leftover)return;
+  return {directive,action};
 }
 function briefDirective(original:string):string|undefined {
   if(/\b(?:remind\s+me|do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original))return;
@@ -56,7 +74,9 @@ function explicitSessionDispatch(original:string,target:string,body:string):{dir
 /** Independently derive supported timing from the owner's words; never trust model guesses. */
 function checkedTiming(original:string,decision:{time:string;date:string;repeat:Recurrence;action:string},now:number,zone:string) {
   if(/\b(?:do\s+not|don['’]?t|never|stop)\s+(?:remind|schedule|send|ask|tell)\b|\b(?:not|never)\s+(?:every|daily|weekdays)\b/i.test(original))throw new Error('I did not schedule that. Please state the reminder and time without negation.');
-  const matches=[...original.matchAll(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!\w)/gi)];
+  // "at 10am", "10am", "10:30 pm" and "at 18:00" are all one time. A bare number needs "at", so
+  // "remind me to buy 2 milk" is never read as 2 o'clock.
+  const matches=[...original.matchAll(/(\bat\s+)?\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?![\w:])/gi)].filter(m=>m[1]||m[3]||m[4]).map(m=>[m[0],m[2],m[3],m[4]] as unknown as RegExpMatchArray);
   if(matches.length!==1)throw new Error('Please specify one time, for example at 6 PM or at 18:00.');
   const match=matches[0],hour=Number(match[1]),minute=Number(match[2]??'0');let ampm=(match[3]??'').toLowerCase().replace(/\./g,'');
   if(!ampm&&decision.action==='brief'&&hour===9&&/\b(?:every|each)\s+weekday\b/i.test(original))ampm='am';
@@ -150,7 +170,7 @@ export class Schedules {
       if(!this.store.incomingOwnerCurrent())return true;
       // A short response to a validation error must not be delivered as a session task.
       if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));
-      throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Please resend the complete reminder. Nothing was scheduled.`);
+      throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Nothing was scheduled.`);
     }
   }
   private async handleOnce(router:Router,m:Incoming,ownerIntent:boolean,contractApproved:boolean):Promise<boolean> {
@@ -241,7 +261,9 @@ export class Schedules {
       if(schedule)router.contracts.saveSchedule(schedule,null,router.contracts.enabled()?'pass':'disabled',next);
       this.store.set(clarifyKey(destination),'null');
       const when=new Intl.DateTimeFormat('en-IN',{timeZone:decision.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
-      this.answer(m,`Reminder set for ${when} (${decision.zone}${repeat==='once'?'':`, ${repeat}`})${binding?` for ${binding.alias}`:''}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString()}.`:''}`);
+      // A confirmation reads back what and when, so the owner can catch a wrong guess at a glance.
+      const what=action==='brief'?'send your brief':action==='session'?`ask ${binding?.alias??'the session'} to: ${body}`:body;
+      this.answer(m,`Done. I will remind you ${when}${repeat==='once'?'':` (${repeat})`}${decision.zone==='Asia/Kolkata'?'':` ${decision.zone}`}: ${what}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`);
       this.store.db.exec('RELEASE schedule_create');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_create; RELEASE schedule_create');throw e;}
     return true;
