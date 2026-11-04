@@ -231,7 +231,7 @@ test('notes_recent is bounded and says so, and stops on a character budget rathe
   // A listing stays a summary: each note is shown by its start, not by its whole text, and the
   // budget still guards the total. Measured live 2026-11-04: full bodies made the reply one
   // note's text wall instead of a summary of the notes.
-  assert.match(script, /length of tx\) is greater than 90/);
+  assert.match(script, /length of tx\) is greater than 40/);
   assert.match(script, /set ln to ln & " — " & tx/);
 });
 

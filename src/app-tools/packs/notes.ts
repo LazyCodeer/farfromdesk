@@ -44,7 +44,7 @@ const MAX_LIMIT = 20;
 /** Characters of note text one `notes_recent` answer may carry, in total. */
 const BODY_BUDGET = 60000;
 /** Characters of each note shown in a listing, so a listing stays a summary. */
-const EXCERPT = 90;
+const EXCERPT = 40;
 const DEFAULT_READ = 4000;
 const MAX_READ = 40000;
 /** Characters of the changed text quoted back as proof of a write. */

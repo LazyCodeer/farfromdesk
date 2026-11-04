@@ -469,7 +469,11 @@ export class MetaBrain {
     this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});
     this.store.set(`brain-device-last:${this.store.destination()}`,JSON.stringify({app:plan.app??null,line:outcome.line,ok:outcome.ok,at:Date.now()}));
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
-    this.store.outputBrain(m.id,[outcome.line,...(outcome.evidence?[outcome.evidence]:[])].join('\n\n').slice(0,900));
+    // A device answer is the tool's own words, and a listing of the owner's notes needs more
+    // room than a sentence: measured live on 4 November 2026, a 900-character cap cut a
+    // "summarise all my notes" answer to the first seven notes and hid the rest. 1800 still
+    // fits one chat message and covers a twenty-note listing.
+    this.store.outputBrain(m.id,[outcome.line,...(outcome.evidence?[outcome.evidence]:[])].join('\n\n').slice(0,1800));
     return true;
   }
   async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
