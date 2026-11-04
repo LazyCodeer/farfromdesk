@@ -79,7 +79,7 @@ test('a bounded read keeps whole JSON lines and never throws on a missing file',
 });
 
 test('the catalog reads chat titles from the search DB and recovers the project folder',()=>{
-  const base=fixture('cursor-desktop-catalog-'),env={CURSOR_DATA_DIR:base} as NodeJS.ProcessEnv;
+  const base=fixture('cursor-desktop-catalog-'),env={CURSOR_DATA_DIR:base,CURSOR_SUPPORT_DIR:join(base,'support')} as NodeJS.ProcessEnv;
   const workspace=join(base,'workspace-demo');
   mkdirSync(workspace,{recursive:true});
   const slug=cursorProjectSlug(workspace);

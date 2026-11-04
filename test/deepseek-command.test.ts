@@ -120,7 +120,7 @@ test('a message sent to another session is carried into that session next turn, 
     const carried=promptFile(dir);
     assert.match(carried,/Message from the owner \(deepseek-[a-z0-9-]+\):/);
     assert.match(carried,/Please check the build 2399\./);
-    assert.match(carried,/Look at the queue$/,'the task follows the message');
+    assert.match(carried,/Please check the build 2399\.[\s\S]*Look at the queue\n\n\[FarFromDesk\]/,'the task follows the message');
     await f.wa.receiveMessage(f.msg('S4','/deepseek inbox'));
     assert.match(f.replies().at(-1)!,/received · deepseek-/,'a finished turn settles the message as received');
     await f.wa.receiveMessage(f.msg('S5','/deepseek Second task.'));

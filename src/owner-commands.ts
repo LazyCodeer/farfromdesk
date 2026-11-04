@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -40,7 +41,12 @@ export function telegramCommand(text:string,username:string):string|null {
   if(m[2]&&m[2].toLowerCase()!==username.toLowerCase())return null;
   return `/${m[1].toLowerCase()}${text.slice(m[0].length)}`;
 }
-type Target={kind:'session';id:string;identity:string}|{kind:'brain'};
+type Tool='muse'|'deepseek'|'cursor';
+type Target={kind:'session';id:string;identity:string}|{kind:'brain'}|{kind:'tool';tool:Tool};
+const TOOL_NAMES:Record<Tool,string>={muse:'Muse',deepseek:'DeepSeek',cursor:'Cursor'};
+const runTool=(r:Router,m:Incoming,tool:Tool,arg:string)=>tool==='muse'?museCommand(r,m,arg):tool==='deepseek'?deepseekCommand(r,m,arg):cursorCommand(r,m,arg);
+/** Cursor's own app process, so a bare /cursor can say whether a run could start right now. */
+function cursorOpen(){try{execFileSync('/usr/bin/pgrep',['-xq','Cursor']);return true;}catch{return false;}}
 type Choice={provider:string;targets:Extract<Target,{kind:'session'}>[];expires:number;requestId:string;names:string[]};
 const routeKey=(r:Router)=>`owner-target:${r.store.destination()}`;
 const choiceKey=(r:Router)=>`owner-target-choice:${r.store.destination()}`;
@@ -129,7 +135,7 @@ const DEEPSEEK_SUBCOMMANDS=new Set(['status','list','use','new','reset','stop','
 
 async function museCommand(r:Router,m:Incoming,arg:string) {
   const cwd=museWorkspace(r),key=`muse-session:${cwd}`,label=basename(cwd)||cwd;
-  if(!arg)return `Muse Code is ready in ${label}. Send /muse followed by the task. It continues the same Muse session in this folder; /muse reset starts a new one.`;
+  if(!arg)return `Muse Code is ready in ${label}. It continues the same Muse session in this folder; /muse reset starts a new one.`;
   if(arg.toLowerCase()==='reset'){r.store.set(key,'');return 'The next /muse starts a fresh Muse session in this folder.';}
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,`🧠 Muse is working in ${label}.`,`muse-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
@@ -272,7 +278,7 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
  * Cursor window is silently ignored. The returned chat id is display-only.
  */
 async function cursorCommand(r:Router,m:Incoming,arg:string) {
-  if(!arg)return 'Cursor is ready. Send /cursor followed by the task. Cursor must be open on the Mac, and each run starts a new Cursor chat; it cannot continue an earlier one.';
+  if(!arg)return `${cursorOpen()?'Cursor is open on your Mac.':'Cursor is not open on your Mac. Open it before sending a task, or the run will time out.'} Each message starts a new Cursor chat; it cannot continue an earlier one.`;
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,'🖱️ Cursor is working.','cursor-progress:'+m.id,destination,{kind:'system',origin:'system',plain:true});
   const mac=openDirectMac(r.store,stateDir,new URL(baseUrl).port,`cursor:${m.id}`);
@@ -290,6 +296,7 @@ export function currentTarget(r:Router) {
     return brainPolicy(r.store).enabled?'Normal routing (Meta brain)':`Normal routing${proxy?` (${name(r,proxy)})`:''}`;
   }
   if(t.kind==='brain')return 'Meta brain (no fallback)';
+  if(t.kind==='tool')return TOOL_NAMES[t.tool];
   const b=r.store.binding(t.id);return b?`${name(r,b)} (${b.provider})`:'Unavailable session';
 }
 export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined> {
@@ -304,9 +311,12 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   }
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
   if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.${r.store.controlChannel()==='whatsapp'?'\n\nTo bind an approved GitHub check, use /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.':''}`;
-  if(cmd==='muse')return museCommand(r,m,arg);
-  if(cmd==='deepseek')return deepseekCommand(r,m,arg);
-  if(cmd==='cursor')return cursorCommand(r,m,arg);
+  if(cmd==='muse'||cmd==='deepseek'||cmd==='cursor'){
+    if(arg)return runTool(r,m,cmd,arg);
+    // A bare command selects the tool, like /claude selects a session: plain messages go there until /back.
+    const ready=await runTool(r,m,cmd,'');clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'tool',tool:cmd}));
+    return `${ready}\n\nYour next messages go to ${TOOL_NAMES[cmd]} until you send /back.`;
+  }
   if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Settings > Remote control in FarFromDesk.':'Screen viewing is unavailable in this build. Open Settings > Remote control in FarFromDesk on your Mac.';
@@ -394,6 +404,9 @@ export async function routeOwnerTarget(r:Router,m:Incoming):Promise<boolean> {
   const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;if(!target)return false;
   if(target.kind==='brain'){
     brain(r);if(!await r.brain.handle(r,m,true))throw Error('Meta brain is unavailable. Nothing was sent to another session.');
+  }else if(target.kind==='tool'){
+    const reply=await runTool(r,m,target.tool,m.text.trim());
+    r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});
   }else r.queue(m.id,session(r,target),m.text);
   return true;
 }
@@ -403,7 +416,7 @@ export function clearOwnerTarget(r:Router){clear(r);}
 export function specialtyTarget(r:Router,m:Incoming):Binding {
   if(!authenticatedOwner(r,m)||m.quotedId||(m.source==='voice'?m.ownerIntent!==true:m.ownerCommand!==true))throw Error('Send this request as a new message in your own chat.');
   const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
-  if(target?.kind==='brain')throw Error('Choose a Codex or Claude session before starting this task.');
+  if(target?.kind==='brain'||target?.kind==='tool')throw Error('Choose a Codex or Claude session before starting this task.');
   if(target?.kind==='session')return session(r,target);
   const directKey=`direct:${r.store.destination()??'owner'}`,raw=r.store.get(directKey);
   if(raw){
@@ -426,7 +439,7 @@ export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
   if(!authenticatedOwner(r,m)||m.quotedId)return;
   const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
   if(target){
-    if(target.kind==='brain')throw Error('Meta brain mode accepts text and voice. Choose /claude or /codex for a file, or quote the intended session reply.');
+    if(target.kind!=='session')throw Error(`${target.kind==='brain'?'Meta brain':TOOL_NAMES[target.tool]} mode accepts text${target.kind==='brain'?' and voice':''}. Choose /claude or /codex for a file, or quote the intended session reply.`);
     return session(r,target);
   }
   // /talk selects an exact direct session even when it is not in the selected

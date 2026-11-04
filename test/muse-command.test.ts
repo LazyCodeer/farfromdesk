@@ -68,3 +68,20 @@ test('/muse with a task runs Muse in the chosen folder and keeps its session id'
     rmSync(dir,{recursive:true,force:true});
   }
 });
+test('bare /muse keeps the chat with Muse: a plain message runs Muse until /back',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'muse-cmd-'));
+  const previous=process.env.MUSE_BIN;
+  process.env.MUSE_BIN=fakeMuse(dir,'Muse answered the plain message.');
+  const f=fixture(dir);try{
+    await f.wa.receiveMessage(f.msg('M3','/muse'));
+    assert.match(f.replies().at(-1)!,/Your next messages go to Muse until you send \/back\./);
+    await f.wa.receiveMessage(f.msg('M4','are you muse?'));
+    assert.match(f.replies().at(-1)!,/Muse answered the plain message\./);
+    await f.wa.receiveMessage(f.msg('M5','/back'));
+    assert.match(f.replies().at(-1)!,/Back to normal routing/);
+  }finally{
+    f.close();
+    if(previous===undefined)delete process.env.MUSE_BIN;else process.env.MUSE_BIN=previous;
+    rmSync(dir,{recursive:true,force:true});
+  }
+});

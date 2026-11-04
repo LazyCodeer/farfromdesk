@@ -544,6 +544,8 @@ export class MetaBrain {
     return `No open tab matches "${match}". Use list_tabs to see them.`;
   }
   private shots=new Map<string,Buffer[]>();
+  /** Requests whose screenshots also go out as files: Telegram recompresses photos, never documents. */
+  private original=new Set<string>();
   private wanted=new Set<string>();
   private keepShot(m:Incoming,result:any){
     this.wanted.add(m.id);
@@ -572,12 +574,16 @@ export class MetaBrain {
     const files=this.files.get(m.id);this.files.delete(m.id);
     for(const f of files??[]){try{this.store.outputBrainFile(m.id,f.bytes,f.name,f.name);}catch{}}
     const list=this.shots.get(m.id);this.shots.delete(m.id);
-    const asked=this.wanted.delete(m.id);
+    const asked=this.wanted.delete(m.id),original=this.original.delete(m.id);
     // Live on build 2421 the model wrote "screenshot follows" and no image existed. A screenshot
     // that was asked for and not taken is said plainly, with the permission that blocks it.
     if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot this time. If it keeps failing, check that Screen Recording is on for FarFromDesk Local in System Settings > Privacy & Security. The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
     // Trimmed off the reply path; the photo rows follow the reply in order.
-    void (async()=>{for(const [i,png] of (list??[]).entries()){try{this.store.outputBrainPhoto(m.id,await this.trimShot(png),list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot');}catch{}}})();
+    void (async()=>{for(const [i,png] of (list??[]).entries()){try{
+      const shot=await this.trimShot(png),label=list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot';
+      this.store.outputBrainPhoto(m.id,shot,label);
+      if(original)this.store.outputBrainFile(m.id,shot,`screenshot-${i+1}.png`,`${label}, full quality`);
+    }catch{}}})();
   }
   private desktop(){return this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>};}
   /** read_tab: the tab whose title or URL matches, read in place (the prior tab is restored). */
@@ -705,8 +711,8 @@ export class MetaBrain {
         // model can say why and what to switch on, instead of the loop failing.
         run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
-        readTab:(match,shot)=>{this.armed.delete(m.id);this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
-        readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
+        readTab:(match,shot)=>{this.armed.delete(m.id);if(shot==='file')this.original.add(m.id);this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,!!shot);},
+        readWindow:(app,shot)=>{if(shot==='file')this.original.add(m.id);this.ack(m,app);return this.readWindowFor(m,app,!!shot);},
         findApp:async query=>{const control=this.desktop();if(!control.run)return 'Not available in this build.';try{const apps=(await control.run(`brain:${m.id}`,{action:'list_apps',query:query.slice(0,80)}))?.apps??[];return apps.length?JSON.stringify(apps.slice(0,10).map((a:any)=>({name:String(a.name).replace(/[\u200e\u200f]/g,''),running:a.running===true}))):`${query} is not installed on this Mac. Use its web version in the owner's browser if it has one.`;}catch(e){return `Refused: ${deviceRefusal(e)}`;}},
         writeFile:(name,content)=>{this.ack(m,'Finder');return Promise.resolve(this.writeFileFor(name,content));},
         openFile:(path,app)=>{this.ack(m,app??'Finder');return this.openFileFor(path,app);},
