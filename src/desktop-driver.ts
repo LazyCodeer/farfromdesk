@@ -54,7 +54,12 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
     try{
       const client=await this.connect();
       if(signal?.aborted)throw new Error('DESKTOP_STOPPED');
-      const result=await client.callTool({name,arguments:args},undefined,{signal,timeout:12000});
+      // Only a transport failure or a timeout ends the driver. A refusal is an ordinary answer: tearing
+      // the connection down for one ("element not found") closed it under the brain's other steps,
+      // which then failed with "Connection closed" (logged live, 4 November 2026).
+      let result;
+      try{result=await client.callTool({name,arguments:args},undefined,{signal,timeout:12000});}
+      catch(e){this.stop();throw e;}
       if(result.isError)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText(result.content));
       const text=(result.content as any[])?.find(c=>c.type==='text')?.text;
       const value=result.structuredContent??(text?JSON.parse(text):{});
@@ -65,7 +70,7 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
       if(image&&value&&typeof value==='object'&&!(value as any).screenshot_png_b64)Object.assign(value,{screenshot_png_b64:image.data,screenshot_mime_type:image.mimeType??'image/png'});
       if((value as any).refusal||(value as any).error)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText((value as any).refusal??(value as any).error??value));
       return value;
-    }catch(e){this.stop();throw e;}
+    }
     finally{signal?.removeEventListener('abort',abort);this.idle=setTimeout(()=>this.stop(),60000);this.idle.unref();}
   }
   stop(){
