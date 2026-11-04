@@ -327,7 +327,13 @@ export class NativeAgents {
     const attachments=this.store.job(jobId)?new Attachments(this.store).references(b,jobId,true):[];
     // CLI-reply sessions get the farfromdesk skill and its ffd launcher; a coordinator in its own folder also auto-loads the skill.
     const support=this.store.get(`master-support:${b.id}`),ownFolder=support?.startsWith(coordinatorHome+'/');
-    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer'}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
+    // A headless coordinator (Muse, DeepSeek) has no bridge tools, but it runs shell commands, and
+    // the bridge CLI authenticates from this binding's own credential file. Measured live on
+    // 4 November 2026: told only "coordination tools are not available", Muse searched the source,
+    // tried raw AppleScript and answered "your recent notes are out of reach".
+    const headlessApps=(b.provider==='muse'||b.provider==='deepseek')&&roleConfig(this.store,b).kind==='master'
+      ?{macApps:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"action":"app_tools","text":"<the owner words>"}' | ${bridge} ffd ${b.alias} desktop ${jobId} , then pipe {"action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same command. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
+    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer',...headlessApps}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');

@@ -510,7 +510,7 @@ export class Masters {
     // owner chose a real project and kept trust on. The private coordinator folder has none to load.
     if(provider==='muse')this.store.set(`muse-trust:${b.id}`,this.operation()?.trustWorkspace===true?'true':'false');
     // Muse runs headless with no bridge tools, so its finished answer is the reply the bridge delivers.
-    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run.':'Use the session_bridge MCP tools for coordination and replies.';
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run, except the Mac app command each request envelope gives under macApps.':'Use the session_bridge MCP tools for coordination and replies.';
     // Support files are written once and may be auto-loaded beside the provider instructions,
     // so they point to the versioned role instead of carrying a copy that would go stale.
     // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
