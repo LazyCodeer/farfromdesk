@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { stateDir } from './config.js';
 import { execFile } from 'node:child_process';
@@ -546,6 +547,19 @@ export class MetaBrain {
     const list=this.shots.get(m.id)??[];if(list.length<3)list.push(Buffer.from(b64,'base64'));this.shots.set(m.id,list);return true;
   }
   /** Sends the screenshots taken for this request, after its text answer. */
+  /**
+   * A window capture includes the frame's undrawn strip as transparent pixels, which Telegram
+   * shows as a white band (live: 182 of 1,366 columns on Comet). Crop to the drawn area.
+   */
+  private async trimShot(png:Buffer):Promise<Buffer>{
+    try{
+      const {data,info}=await sharp(png).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+      const {width:w,height:h,channels:c}=info;let left=w,right=-1,top=h,bottom=-1;
+      for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(data[(y*w+x)*c+c-1]>8){if(x<left)left=x;if(x>right)right=x;if(y<top)top=y;if(y>bottom)bottom=y;}
+      if(right<0)return png;
+      return await sharp(png).extract({left,top,width:right-left+1,height:bottom-top+1}).flatten({background:'#ffffff'}).png().toBuffer();
+    }catch{return png;}
+  }
   private sendShots(m:Incoming){
     // ponytail: cleared only on the chat path; a stray entry per non-chat request is a few bytes.
     this.focused.delete(m.id);
@@ -556,7 +570,8 @@ export class MetaBrain {
     // Live on build 2421 the model wrote "screenshot follows" and no image existed. A screenshot
     // that was asked for and not taken is said plainly, with the permission that blocks it.
     if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot this time. If it keeps failing, check that Screen Recording is on for FarFromDesk Local in System Settings > Privacy & Security. The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
-    for(const [i,png] of (list??[]).entries()){try{this.store.outputBrainPhoto(m.id,png,list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot');}catch{}}
+    // Trimmed off the reply path; the photo rows follow the reply in order.
+    void (async()=>{for(const [i,png] of (list??[]).entries()){try{this.store.outputBrainPhoto(m.id,await this.trimShot(png),list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot');}catch{}}})();
   }
   private desktop(){return this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>};}
   /** read_tab: the tab whose title or URL matches, read in place (the prior tab is restored). */

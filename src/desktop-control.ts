@@ -249,12 +249,15 @@ export class DesktopControl {
         // The driver refuses long keystroke runs, so a sheet's rows go in pieces of at most 100
         // characters, split after each row, in order. The first refusal stops it, with its reason.
         const pieces=plan.text!.split(/(?<=\n)/).flatMap(line=>line.match(/[\s\S]{1,100}/g)??[]);
+        // Which row the typing reached, so a retry continues after it instead of starting over
+        // (live: a second run retyped the header and the first rows below the first attempt).
+        const reached=(i:number)=>{const done=pieces.slice(0,i).join('').split('\n').filter(Boolean);return done.length?` The last complete row typed was: "${done.at(-1)!.replace(/\t/g,' | ').slice(0,160)}". Continue after it; do not retype rows.`:' Nothing was typed.';};
         for(const [i,piece] of pieces.entries()){
           if(controller.signal.aborted)break;
           let typed:any;
           try{typed=await this.driver.call('type_text',{pid:target.pid,window_id:target.window_id,text:piece,delivery_mode:'foreground'},controller.signal);}
-          catch(e){return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String((e as Error)?.message??e).slice(0,200)}`,changes:null};}
-          if(typed?.ok===false||typed?.error)return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String(typed?.error??typed?.message??'refused').slice(0,200)}`,changes:null};
+          catch(e){return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String((e as Error)?.message??e).slice(0,200)}.${reached(i)}`,changes:null};}
+          if(typed?.ok===false||typed?.error)return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String(typed?.error??typed?.message??'refused').slice(0,200)}.${reached(i)}`,changes:null};
         }
         return {action:plan.action,ok:true,observation:null,changes:`Typed ${plan.text!.length} characters.`};
       }
