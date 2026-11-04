@@ -594,6 +594,16 @@ test('Brain rejects a routing result if executor changes during interpretation',
   assert.match(f.router.brain.get('wa:changed')?.reason??'',/Executor or task mode changed/);
  }finally{f.close();}
 });
+test('Brain keeps routing when another Social turn refreshes the mode during interpretation',async()=>{
+ const f=fixture();try{
+  await f.router.receive({id:'wa:mode',text:'/social',ownerIntent:true,ownerCommand:true});
+  await f.router.receive({id:'wa:brain',text:'/brain',ownerIntent:true,ownerCommand:true});
+  const m={id:'wa:refreshed',text:'Create a post about cart recovery',ownerIntent:true,ownerCommand:true};
+  f.respond(async()=>{const mode=f.router.guidedModes.get(f.router,m as any)!;mode.expires+=60_000;return decision();});
+  await f.router.receive(m);
+  assert.ok(f.store.job('wa:refreshed'),f.router.brain.get('wa:refreshed')?.reason??'');
+ }finally{f.close();}
+});
 for(const provider of ['claude','codex'] as const)test(`selecting ${provider} preserves Social mode and Meta image source`,async()=>{
  const f=fixture();try{
   f.store.set('social-image-provider','meta');

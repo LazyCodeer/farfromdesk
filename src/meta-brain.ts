@@ -677,7 +677,9 @@ export class MetaBrain {
     prepareSpecialties(this.store);
     const mode=router.guidedModes.get(router,m);
     if(mode?.kind==='social')mode.imageProvider=requestedSocialImageProvider(m.text)??mode.imageProvider??'local';
-    const routingSnapshot=()=>JSON.stringify([specialtyEpoch(this.store),router.guidedModes.get(router,m)]);
+    // Only what decides the target counts: another Social turn finishing refreshes the mode's expiry
+    // and busy flag, which aborted every brain turn in flight (live, 5 Nov 2026).
+    const routingSnapshot=()=>{const g=router.guidedModes.get(router,m);return JSON.stringify([specialtyEpoch(this.store),g?.kind,g?.socialTarget]);};
     const routingAtStart=routingSnapshot();
     if(mode)this.store.set(`brain-mode:${m.id}`,router.guidedModes.summary(router,m));
     const routingChanged=()=>{if(routingSnapshot()===routingAtStart)return false;this.stop(m.id,'Executor or task mode changed while Brain was routing. Nothing was sent; send a new message.');return true;};
