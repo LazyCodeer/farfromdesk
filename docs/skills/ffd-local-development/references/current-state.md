@@ -4,8 +4,8 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2394** (`local-local-forget-todo-2394`, installed 2026-11-04 03:58, health 401
-after 27s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
+app is **2398** (`local-local-dsh-profile-mirror-2398`, installed 2026-11-04 06:24, health 401
+after 22s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
 "don't let me forget to ...".
@@ -1812,6 +1812,38 @@ whatever provider or API the run uses. What was measured and what now exists:
   says when the message joined a queue. The coordinator path (`src/masters.ts`) uses the same
   settings, patch and queue. `GET|POST /api/deepseek` (admin token) reads and writes provider,
   model, reasoning effort, key variable and key, and returns `hasStoredKey` rather than the value.
+- **The owner's own profile is the source of truth, and the CLI cannot read it.** The desktop app
+  runs the `desktop` profile with `provider: azure-deepseek`, `model: DeepSeek-V4.1-Flash`,
+  `reasoningEffort: medium`, and a `llm-pi-ai` provider block (`apiKeyEnv: AZURE_DEEPSEEK_API_KEY`,
+  `api: openai-completions`, `baseURL: https://spliceai.services.ai.azure.com/openai/v1`, model list
+  with `DeepSeek-V4.1-Flash` and its capabilities). A headless run starts from the shipped `headless`
+  profile, which has `llm-pi-ai` present but **unconfigured**, so the route is unknown there: measured
+  `pi-ai provider "azure-deepseek" has no configured model "DeepSeek-V4.1-Flash"`, then
+  `UNKNOWN_MODEL`, then `UNSUPPORTED_REASONING_EFFORT` when the effort is declared for a model that
+  does not list it. `src/dsh-provider.ts` now reads
+  `<DSH_HOME>/profiles/desktop/cordis.patch.yml`, mirrors the owner's `llm-pi-ai` entry **verbatim**
+  (no field is lost), and completes the model list with the run's own model when the profile lists
+  only a dated id. `dshSettings(get, profile)` adopts the profile's route/model/key variable when the
+  app settings are empty, and an effort is passed only when the mirrored provider declares
+  `reasoningEfforts` (otherwise it is dropped and reported in the patch notes).
+- **The key a child can read.** The desktop app resolves its key through its own credential service,
+  which a child process cannot open; `~/.dsh/.credentials.yaml`'s `refs:` map is the part a child can
+  read, and that is where a key set in the app settings lands (`refs: AZURE_DEEPSEEK_API_KEY: …`, 84
+  characters). `credentialRef(dshHome, keyEnv)` reads it and `keyEnvironment` tries, in order, the
+  app's stored key, the inherited environment, then the DSH store; `dshStatus().keySource` reports
+  which one answered (`settings` | `environment` | `credentials` | `none`) and the hint never prints
+  the key.
+- Live on **2398** (installed 2026-11-04 06:24): `GET /api/deepseek` and `/deepseek status` report
+  "DeepSeek runs azure-deepseek with DeepSeek-V4.1-Flash in this folder."; `/deepseek Reply with
+  exactly: AZURE-OK` → `AZURE-OK`; `/deepseek Remember the number 4711. Reply with exactly: STORED` →
+  `STORED`, then `/deepseek What number did I ask you to remember?` → `4711` (the same session
+  continued), then `/deepseek new` → "The next /deepseek starts a fresh DeepSeek session in this
+  folder.", then the same question → `UNKNOWN`. Creation, continuation and reset are proven against
+  the owner's real Azure route with no key handling.
+- Module-level proof before the build: `npx tsx` over `readProfile` + `composePatch` +
+  `keyEnvironment` + `runDsh` against the real `~/.dsh` printed
+  `settings: azure-deepseek / DeepSeek-V4.1-Flash | keyEnv AZURE_DEEPSEEK_API_KEY | source credentials`
+  and answered `AZURE-E2E-OK`.
 - Live on **2397** (installed 2026-11-04 06:12): `GET /api/deepseek` answers `{configured:false, route:'deepseek-official', model:'deepseek-flash', keyEnv:'DEEPSEEK_API_KEY', hint:'DeepSeek needs an API key …'}`; `/deepseek status` prints that hint; and `/deepseek Reply with exactly: DSH-OK` now reports the same hint instead of the old "DeepSeek Harness is not installed" — the CLI is found, the patch is accepted, the run reaches the provider, and only the key is missing.
 - Not built yet: labelled/multiple sessions in one folder (the session key is still
   `deepseek-session:<cwd>`), a settings UI in the app, and a live end-to-end run with a real key.
