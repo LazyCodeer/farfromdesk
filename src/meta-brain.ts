@@ -375,21 +375,9 @@ export class MetaBrain {
    * into an owner-facing contract review. Cheap by construction: the shape test runs first,
    * so only device-shaped messages ever touch the driver, and its target list is cached.
    */
-  async claimsDevice(router:Router,text:string):Promise<boolean>{
-    if(!brainPolicy(this.store).enabled||!brainSelected(router))return false;
-    // Two shapes must be claimed before any plan exists, or the contract flow takes them:
-    // an inventory request ("show me opened apps") and a follow-up about the app just used
-    // ("now write the notes"). Both reached the coding classifier on 2026-11-03 and came
-    // back as "I could not update the contract".
-    if(appInventoryRequest(text))return true;
-    if(notesAuthoringRequest(text)&&this.lastDeviceApp())return true;
-    // A question about app content ("check my mails") is the brain's to answer with a reviewed
-    // tool. It is not device-shaped, so the contract classifier took it and the owner read "Meta
-    // could not check the task" (live, 4 November 2026).
-    if(overviewTool(text)||selectTools(text).length||/\btabs?\b/i.test(text)&&!TAB_COMMAND.test(text))return true;
-    if(!deviceVerbLike(text))return false;
-    try{return detectDevicePlan(text,await deviceTargets(this.deviceControl()))!==null;}catch{return false;}
-  }
+  /** With the brain selected it decides when coding work needs a review, so the router runs none first. */
+  decidesContracts(router:Router):boolean{return brainPolicy(this.store).enabled&&brainSelected(router)&&this.secret.present();}
+  private pendingContract(router:Router):boolean{const owner=this.store.ownerFor(this.store.destination());return !!owner&&!!router.contracts?.hasPendingOwner(owner,this.store.destination()??'');}
   /**
    * The brain asked a question and the owner's next message is the answer.
    *
@@ -647,7 +635,7 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
         // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
         // model can say why and what to switch on, instead of the loop failing.
         run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
@@ -691,6 +679,14 @@ export class MetaBrain {
       const withNote=taken&&!/screenshot follows/i.test(reply)?`${reply}\nScreenshot follows.`:reply;
       this.store.outputBrain(m.id,withNote||'Send a task, or ask where are we.');this.sendShots(m);return true;}
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);
+    // The brain decided this is coding work (or the answer to a pending review), so the task
+    // review runs now, on its decision. The router no longer guesses with a pattern first.
+    if(decision.intent==='task'&&this.decidesContracts(router)&&router.contracts?.shouldHandle(router,m)&&!router.contracts.approved(m.id)){
+      const contract=await router.contracts.preflight(router,m);
+      if(contract.kind==='handled'){this.store.db.prepare("UPDATE brain_tasks SET state='managed',permission='allowed' WHERE id=? AND state='interpreting'").run(m.id);return true;}
+      // Approved: the original request runs again as approved work, under this message id.
+      if(contract.kind==='replay'){this.store.db.prepare('DELETE FROM brain_tasks WHERE id=?').run(m.id);await router.replayApproved(contract.incoming);return true;}
+    }
     if(decision.intent==='manage') {
       if(!policy.allowManagement){this.stop(m.id,'Task and session management is disabled in Meta Settings.');return true;}
       this.store.db.exec('SAVEPOINT brain_manage');

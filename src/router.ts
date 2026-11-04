@@ -161,6 +161,8 @@ export class Router {
       return result;
     }finally{if(!evidenceFinalized)try{this.stuckDetection?.finishInput(m.id,false);}catch{}this.receiving.delete(m.id);}
   }
+  /** The brain approved a pending task review; the original request runs as approved work. */
+  replayApproved(m:Incoming){return this.receiveOnce(m,true);}
   private async receiveOnce(m:Incoming,contractApproved=false):Promise<RouteResult> {
     if(this.stopped||!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
     if(this.store.seen(m.id))return {status:'ignored',requestId:m.id};
@@ -447,7 +449,7 @@ export class Router {
       const guidedBeforeContract=this.guidedModes.get(this,m);
       // Guided requests perform their own contract review before session dispatch.
       // An already-pending contract always has precedence over a guided turn.
-      if(!contractApproved&&!this.brain.awaitingAnswer(this.store.destination()??'')&&this.contracts.shouldHandle(this,m)&&!(guidedBeforeContract&&!pendingContract&&!text.startsWith('/'))&&!(await this.brain.claimsDevice(this,m.text))){
+      if(!contractApproved&&!this.brain.decidesContracts(this)&&this.contracts.shouldHandle(this,m)&&!(guidedBeforeContract&&!pendingContract&&!text.startsWith('/'))){
         // F3 may consume an unquoted owner turn without queueing a job. Record
         // which currently delivered choices might have been answered before
         // yielding to the contract classifier; no answer text is retained.

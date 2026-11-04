@@ -134,7 +134,7 @@ test('a pending contract in one chat does not swallow another chat turn', async 
   const f = fixture(); try {
     // "Make the dark theme change" is unclear coding work, so chat A gets a review card.
     f.decisions(proposal('Which dark theme, and where should it apply?'));
-    f.replies(chat('Notes and Calendar are the apps you have open.'));
+    f.replies({ intent: 'task', provider: 'unspecified', normalized: 'Make the dark theme change', taskIds: [] } as any, chat('Notes and Calendar are the apps you have open.'));
     await f.send(DEST_A, 'a1', 'Make the dark theme change');
     assert.equal(f.rows('task_contracts').filter((c: any) => c.state === 'pending').length, 1);
     assert.equal(String(f.rows('task_contracts')[0].destination), DEST_A);

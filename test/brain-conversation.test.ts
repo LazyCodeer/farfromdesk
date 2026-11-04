@@ -88,6 +88,8 @@ function fixture() {
 
 // The model decides every device step now; these are the decisions it returns.
 const dev = (device: any): Interpretation => ({ intent: 'device', provider: 'unspecified', normalized: 'x', taskIds: [], device } as any);
+// Coding work: the brain says task, and then the review card runs on its decision.
+const TASK = (normalized: string): Interpretation => ({ intent: 'task', provider: 'unspecified', normalized, taskIds: [] } as any);
 const OPEN_NOTES = dev({ action: 'open_app', app: 'Notes' });
 
 test('an app inventory is not swallowed by a pending coding contract', async () => {
@@ -95,7 +97,7 @@ test('an app inventory is not swallowed by a pending coding contract', async () 
   // the correction again." twice, because the pending contract claimed every turn.
   const f = fixture(); try {
     f.decisions(proposal('Which item should be opened, and what does "open" mean for it?'));
-    f.replies(chat('Notes and Comet are open.'));
+    f.replies(TASK('Make the dark theme change'), chat('Notes and Comet are open.'));
     assert.equal((await f.send('1', 'Make the dark theme change')).status, 'handled');
     f.markSent();
     assert.equal(f.rows('task_contracts').filter(c => c.state === 'pending').length, 1);
@@ -178,6 +180,7 @@ test('a bare coding request is not stolen by the last app used', async () => {
     f.replies(OPEN_NOTES);
     await f.send('1', 'open Notes');
     f.decisions(proposal('What should the failing test cover?'));
+    f.replies(TASK('write the failing test'));
     await f.send('2', 'write the failing test');
     assert.equal(f.calls.length, 1, 'nothing was typed into Notes');
     assert.equal(f.rows('task_contracts').length, 1, 'it kept its contract review');
@@ -189,6 +192,7 @@ test('a command for another subsystem is not an answer to a pending contract', a
   // is never a correction to a coding task, even when the pending row has gone stale.
   const f = fixture(); try {
     f.decisions(proposal('Which item should be opened, and what does "open" mean for it?'));
+    f.replies(TASK('Make the dark theme change'));
     assert.equal((await f.send('1', 'Make the dark theme change')).status, 'handled');
     f.markSent();
     assert.equal(f.rows('task_contracts').filter(c => c.state === 'pending').length, 1);
@@ -241,4 +245,23 @@ test('the prompt tells the model how to use the offered tools and the clock', ()
   assert.match(BRAIN_PROMPT, /app_tool: tool \(a name from appTools\)/);
   assert.match(BRAIN_PROMPT, /Never use a tool name that is not in appTools/);
   assert.match(BRAIN_PROMPT, /now: the current local date and time/);
+});
+
+test('the brain decides an ok approves the pending review, and the approved task is sent', async () => {
+  // No pattern decides that "ok" answers the card: the brain says task, the review approves,
+  // and the original request runs as approved work under the ok message.
+  const f = fixture(); try {
+    f.decisions(proposal(''));
+    f.replies(TASK('Make the dark theme change'));
+    await f.send('1', 'Make the dark theme change');
+    f.markSent();
+    assert.equal(f.rows('task_contracts').filter(c => c.state === 'pending').length, 1);
+    f.replies(TASK('ok'), { ...TASK('Make the dark theme change'), provider: 'codex' } as Interpretation);
+    await f.send('2', 'ok');
+    assert.equal(f.rows('task_contracts').filter(c => c.state === 'approved').length, 1);
+    // The approved request came back to the brain as the original words, and no second card was made.
+    assert.equal((f.seen.at(-1) as any).original, 'Make the dark theme change');
+    assert.equal(f.rows('task_contracts').length, 1);
+    assert.equal(f.rows('outbox').filter((o: any) => /Please review this task/.test(o.body)).length, 1);
+  } finally { f.close(); }
 });
