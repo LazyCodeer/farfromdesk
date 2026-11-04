@@ -242,7 +242,8 @@ export async function runCursorTurn(options:CursorTurnOptions):Promise<CursorTur
   const pollMs=options.pollMs??750;
   if(options.cli)return runCursorCli(options.cli,prompt,options.cwd,timeoutMs,env);
   const open=options.open??openInCursor;
-  const pickupMs=options.pickupMs??60_000;
+  // Cursor writes the transcript only when the turn ends (live: a one-line answer landed at 60 s), so this is generous.
+  const pickupMs=options.pickupMs??180_000;
   let picked=false;
   // Cursor normalises whitespace before storing the message, so the same normalisation has to be
   // applied to the prompt when matching it back - otherwise every multi-line prompt misses.
@@ -254,7 +255,7 @@ export async function runCursorTurn(options:CursorTurnOptions):Promise<CursorTur
   const started=Date.now();
   while(Date.now()<deadline){
     await sleep(pollMs);
-    // A prompt Cursor never took will not finish either: say so in a minute, not after the whole timeout.
+    // A prompt Cursor never took will not finish either: say so in minutes, not after the whole timeout.
     if(!picked&&pickupMs<timeoutMs&&Date.now()-started>pickupMs)throw new Error('Cursor did not take the message. Bring a Cursor chat window up on the Mac and send it again.');
     for(const entry of cursorTranscriptFiles(env)){
       // Cursor either appends to the chat that had focus or opens a new one, so both are candidates.
