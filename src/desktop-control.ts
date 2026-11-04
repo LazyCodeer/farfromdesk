@@ -45,7 +45,7 @@ type Input=z.infer<typeof desktopInput>;
  * The owner brain's smaller vocabulary: one action, addressed by name. The caller
  * validates and bounds it; this layer only gates and delivers.
  */
-export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_key';app?:string;window?:string;role?:string;name?:string;text?:string;key?:string};
+export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_key';app?:string;window?:string;role?:string;name?:string;text?:string;key?:string;modifiers?:string[]};
 /** LaunchServices activation, injectable so a test never opens a real app. */
 type Activator=(app:string,bundleId:string|undefined)=>Promise<unknown>;
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
@@ -244,6 +244,13 @@ export class DesktopControl {
       // Keystrokes into whatever has focus: a spreadsheet cell or a web editor publishes no named
       // field, so a named type step was refused on Google Sheets (live, 4 November 2026). This is
       // foreground typing, like the owner's own keyboard, so the app is brought forward first.
+      // A shortcut (cmd+shift+g in a file picker) goes in the foreground: background key events never reach
+      // a native panel's key equivalents.
+      if(plan.action==='press_key'&&plan.modifiers?.length){
+        const r=await this.driver.call('hotkey',{pid:target.pid,window_id:target.window_id,keys:[...plan.modifiers,plan.key!],delivery_mode:'foreground'},controller.signal);
+        const ok=r?.ok!==false&&!r?.error;
+        return {action:plan.action,ok,observation:ok?null:String(r?.error??r?.message??'refused').slice(0,200),changes:ok?`Pressed ${[...plan.modifiers,plan.key].join('+')}. Not confirmed: read the window to see what it did.`:null};
+      }
       if(plan.action==='type'&&!plan.name&&!plan.role){
         await this.frontApp(plan.app!,target.pid,target.bundle_id,controller.signal);
         // The driver refuses long keystroke runs, so a sheet's rows go in pieces of at most 100

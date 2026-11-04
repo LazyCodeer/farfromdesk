@@ -23,7 +23,8 @@ export const DevicePlan = z.object({
   role: z.string().max(40).optional(),
   name: z.string().max(160).optional(),
   text: z.string().max(4000).refine(v => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v), 'Control characters are not supported').optional(),
-  key: z.enum(['return', 'tab', 'escape', 'up', 'down', 'left', 'right']).optional(),
+  key: z.enum(['return', 'tab', 'escape', 'up', 'down', 'left', 'right', 'space', 'delete', 'a', 'c', 'g', 'v', 'x', 'z']).optional(),
+  modifiers: z.array(z.enum(['cmd', 'shift', 'option', 'ctrl'])).max(3).optional(),
 }).strict();
 export type DevicePlan = z.infer<typeof DevicePlan>;
 
@@ -298,7 +299,7 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     // refusal the helper chose.
     return { ok: false, line: refusalLine(plan, raw), evidence: null, code: plainCause(raw) === NO_CAUSE ? 'driver_unavailable' : 'driver_refused', detail: String(raw).replace(/\s+/g, ' ').slice(0, 300) || undefined };
   }
-  const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
+  const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${[...(plan.modifiers ?? []), plan.key].join('+')}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };
 }
 
@@ -345,7 +346,7 @@ export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, sc
       return { ok: false, line: deviceRefusal(error), evidence: null, code: deviceFailureCode(error) };
     }
   }
-  const assist: AssistPlan = { action: plan.action, ...(plan.app ? { app: plan.app } : {}), ...(plan.window ? { window: plan.window } : {}), ...(plan.role ? { role: plan.role } : {}), ...(plan.name ? { name: plan.name } : {}), ...(plan.text ? { text: plan.text } : {}), ...(plan.key ? { key: plan.key } : {}) };
+  const assist: AssistPlan = { action: plan.action, ...(plan.app ? { app: plan.app } : {}), ...(plan.window ? { window: plan.window } : {}), ...(plan.role ? { role: plan.role } : {}), ...(plan.name ? { name: plan.name } : {}), ...(plan.text ? { text: plan.text } : {}), ...(plan.key ? { key: plan.key } : {}), ...(plan.modifiers?.length ? { modifiers: plan.modifiers } : {}) };
   try {
     const result = await control.assist(scope, assist, authorize);
     return deviceOutcome(plan, result);
