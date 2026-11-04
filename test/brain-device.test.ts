@@ -9,7 +9,8 @@ test('a plan accepts only the documented fields', () => {
   assert.equal(DevicePlan.parse({ action: 'open_app', app: 'Comet' }).app, 'Comet');
   assert.throws(() => DevicePlan.parse({ action: 'open_app', app: 'Comet', shell: 'rm -rf /' }), /Unrecognized key|unrecognized/i);
   assert.throws(() => DevicePlan.parse({ action: 'nope' }));
-  assert.throws(() => DevicePlan.parse({ action: 'type', text: 'a'.repeat(1201) }));
+  assert.throws(() => DevicePlan.parse({ action: 'type', text: 'a'.repeat(4001) }));
+  assert.doesNotThrow(() => DevicePlan.parse({ action: 'type', text: 'a'.repeat(1500) }), 'eleven sheet rows fit in one step');
   // Control characters would let one field carry a second command to the driver.
   assert.throws(() => DevicePlan.parse({ action: 'type', text: 'echo\x1b[2J' }));
   assert.throws(() => DevicePlan.parse({ action: 'press_key', key: 'cmd+q' }));
