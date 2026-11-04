@@ -4,7 +4,7 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2401** (`local-local-deepseek-ui-2401-2401`, installed 2026-11-04 08:17, health 401
+app is **2402** (`local-local-sessions-coordinator-2402`, installed 2026-11-04 10:42, health 401
 after 16s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
@@ -1868,7 +1868,7 @@ whatever provider or API the run uses. What was measured and what now exists:
   in the GUI cannot be injected into (the `desktop` profile is reserved and its transport is an
   authenticated loopback RPC), so GUI sessions still take pasted prompts.
 
-### The DeepSeek page, and what is in each workspace (4 November 2026, build 2401)
+### The DeepSeek sessions, and what is in each workspace (4 November 2026, build 2402)
 
 - **A session lives in a folder, so the app view is a workspace first.** `GET /api/deepseek` answers
   with `folders` (every folder that has a conversation) and
@@ -1881,11 +1881,17 @@ whatever provider or API the run uses. What was measured and what now exists:
   `deepseek-session:<folder>:<label>`, splitting from the **right** so `C:\repo:default` still works.
   A folder an action names is added to the set *before* the action runs, otherwise the first
   `new` in a fresh folder would resolve to the previously selected one (this was a real test failure).
-- **Where it is drawn**: `desktop/lib/deepseek_panel.dart`, a Settings tab whose record lives in
-  `settingsSections()` (`desktop/lib/screens.dart`: a `_SettingsSection` tuple with `cards:
-  [DeepSeekPanel(gateway: api)]`; the nav row is `settingsNavItem` and the pane is `settingsPane()` in
-  `desktop/lib/studio_panes.dart`, which is `part of 'app.dart'`). Panels are separate files imported
-  by `app.dart`; new settings sections only need the list entry. The page shows the provider line
+- **Where it is drawn**: `desktop/lib/deepseek_panel.dart`, opened from the **coordinators** card on
+  the Overview pane (`screens.dart` `coordinatorSummary()` → the `Sessions` button →
+  `openDeepSeekSessions()`, a `Dialog` with a 960x780 `ConstrainedBox`). It was briefly a Settings
+  tab; that was wrong — a session surface is not something the owner configures, so it moved next to
+  the coordinators that run it. (If it ever needs a key override, *that* small part is a setting.)
+  The card's action row is a `Wrap` (text at a fixed 300px, buttons wrapping under it), because the
+  old `Row` overflowed by 111px on a narrow card — `test/coordinator_setup_page_test.dart` asserts no
+  `RenderFlex` overflow, which is how it was caught. Panels are separate files imported by `app.dart`
+  (`screens.dart` and `studio_panes.dart` are `part of 'app.dart'`, so one import is enough).
+  `test/coordinator_sessions_test.dart` pins the placement: Settings must not offer DeepSeek Harness,
+  and the coordinator card's `Sessions` opens a `DeepSeekPanel`. The page shows the provider line
   (`Runs azure-deepseek with DeepSeek-V4.1-Flash`), the workspace chips, each session with
   `running now` / `N waiting` / `N undelivered` / `idle`, `Use`/`Stop`, `New session`, and the active
   label's messages with the plain sentence that a message stays "prepared" until a turn carries it.
@@ -1901,7 +1907,7 @@ whatever provider or API the run uses. What was measured and what now exists:
   The `deepseekCatalog()` rows (`src/native.ts:160`, read from `~/.dsh/sessions/…jsonl.zstd`) appear
   only in the coordinator setup picker, and the platform tile's session count comes from coordinator
   bindings — which is why the labelled conversations needed their own view.
-- **Live, on 2401**: the page was open on Settings → DeepSeek Harness while the owner's own chat lane
+- **Live, on 2401** (when it was still a Settings tab): the page was open on Settings → DeepSeek Harness while the owner's own chat lane
   ran `/deepseek use default`; within one poll the active marker moved from `research` to `default`
   (`Active session: default`, the `Use` button now on `research`), and the store key agrees. So the
   page is not a snapshot: it shows the same sessions the chat writes. Verified visually, not inferred
