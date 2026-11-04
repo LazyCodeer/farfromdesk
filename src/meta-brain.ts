@@ -507,7 +507,7 @@ export class MetaBrain {
         // A browser that is not running is simply left out; one that is running but could not be
         // read is named with the reason, so the owner is not shown Safari alone with no word on why.
         const said=String((e as Error)?.message??e);
-        if(!/NOT_RUNNING|DESKTOP_SELECT_SUPPORTED_BROWSER|ONLY_ONE|no running/i.test(said))unread.push(`${browser}: ${deviceRefusal(e)}`);
+        if(!/^DESKTOP_BROWSER_NOT_RUNNING/.test(said))unread.push(`${browser}: ${deviceRefusal(e)} (${said.split(':')[0].slice(0,60)})`);
       }
     }
     let safari='';

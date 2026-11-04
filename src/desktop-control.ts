@@ -514,7 +514,11 @@ export class DesktopControl {
       if(q.action==='list_tabs'){
         const bundle=q.browser?(desktopBrowsers[q.browser]??q.browser):undefined;
         if(!bundle||!Object.values(desktopBrowsers).includes(bundle))throw new Error('DESKTOP_SELECT_SUPPORTED_BROWSER: Choose comet, chrome, edge or brave explicitly.');
-        const app=appRecord(only((await apps()).filter(a=>a.bundle_id===bundle&&a.running),'DESKTOP_BROWSER_NOT_RUNNING'));
+        // A browser can report more than one running entry (helpers, a second profile). Exactly-one
+        // made a running Comet read as not running, so its tabs went missing from the owner's answer.
+        const running=(await apps()).filter(a=>a.bundle_id===bundle&&a.running);
+        if(!running.length)throw new Error('DESKTOP_BROWSER_NOT_RUNNING');
+        const app=appRecord(running.find(a=>a.active)??running[0]);
         const inventory=await browse({operation:'list_tabs',bundle});
         return {browser:bundle,windows:inventory.windows.map((w:any)=>({windowRef:this.save({scope,expires:this.now()+300000,app,browserWindow:w}),activeTabId:w.active_tab_id,tabs:w.tabs.map((t:any)=>({tabRef:this.save({scope,expires:this.now()+300000,app,browserWindow:w,tab:t}),title:t.title,url:t.url,active:t.tab_id===w.active_tab_id}))})),contentRead:false};
       }
