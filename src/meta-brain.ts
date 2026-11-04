@@ -511,13 +511,21 @@ export class MetaBrain {
   }
   /** Screenshots taken for a request, sent after its answer. */
   private shots=new Map<string,Buffer[]>();
+  private wanted=new Set<string>();
   private keepShot(m:Incoming,result:any){
-    const b64=result?.screenshot?.pngBase64;if(typeof b64!=='string'||!b64)return false;
+    this.wanted.add(m.id);
+    const b64=result?.screenshot?.pngBase64;
+    this.store.event(m.id,'device_action',{action:'read_window',outcome:typeof b64==='string'&&b64?'done':'blocked'});
+    if(typeof b64!=='string'||!b64)return false;
     const list=this.shots.get(m.id)??[];if(list.length<3)list.push(Buffer.from(b64,'base64'));this.shots.set(m.id,list);return true;
   }
   /** Sends the screenshots taken for this request, after its text answer. */
   private sendShots(m:Incoming){
     const list=this.shots.get(m.id);this.shots.delete(m.id);
+    const asked=this.wanted.delete(m.id);
+    // Live on build 2421 the model wrote "screenshot follows" and no image existed. A screenshot
+    // that was asked for and not taken is said plainly, with the permission that blocks it.
+    if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot. macOS has to allow Screen Recording for FarFromDesk Local (System Settings > Privacy & Security > Screen Recording). The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
     for(const [i,png] of (list??[]).entries()){try{this.store.outputBrainPhoto(m.id,png,list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot');}catch{}}
   }
   private desktop(){return this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>};}
