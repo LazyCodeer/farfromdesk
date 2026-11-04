@@ -1,3 +1,4 @@
+import {existsSync} from 'node:fs';
 import {homedir,userInfo} from 'node:os';
 import {join} from 'node:path';
 
@@ -16,5 +17,29 @@ export function dshOwnerHome(env:NodeJS.ProcessEnv=process.env):string {
 export const dshHome=(env:NodeJS.ProcessEnv=process.env):string=>env.DSH_HOME?.trim()||join(dshOwnerHome(env),'.dsh');
 export const dshSessionsDir=(env:NodeJS.ProcessEnv=process.env):string=>join(dshHome(env),'sessions');
 export const dshCredentialsPath=(env:NodeJS.ProcessEnv=process.env):string=>join(dshHome(env),'.credentials.yaml');
-/** The launcher that boots a profile. DSH_BIN exists for tests and unusual installs. */
-export const dshBinary=(env:NodeJS.ProcessEnv=process.env):string=>env.DSH_BIN?.trim()||env.WSB_DSH_BIN?.trim()||'dsh';
+/**
+ * The launcher that boots a profile. DSH_BIN exists for tests and unusual installs.
+ *
+ * Relying on PATH alone was a real bug: the packaged Local backend is started by the desktop app
+ * with `PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`, and the DeepSeek installer puts its
+ * `dsh` symlink in `/usr/local/bin`. The spawn then failed with ENOENT and the owner was told
+ * "DeepSeek Harness is not installed" on a machine where it was installed and signed in. Known
+ * absolute locations are tried before the bare name, and `exists` is injectable so a test can say
+ * what is installed. A broken symlink counts as missing, which is the honest answer.
+ */
+export const dshBinary=(env:NodeJS.ProcessEnv=process.env,exists:(path:string)=>boolean=existsSync):string=>{
+  const configured=env.DSH_BIN?.trim()||env.WSB_DSH_BIN?.trim();
+  if(configured)return configured;
+  const home=dshOwnerHome(env);
+  const names=process.platform==='win32'?['dsh.exe','dsh.cmd','dsh']:['dsh'];
+  const roots=[
+    join(home,'.local','bin'),
+    join(home,'.bun','bin'),
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+    '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin',
+    join(home,'Applications','DeepSeek Harness.app','Contents','Resources','runtime','cli','bin'),
+  ];
+  for(const root of roots)for(const name of names){const candidate=join(root,name);if(exists(candidate))return candidate;}
+  return 'dsh';
+};

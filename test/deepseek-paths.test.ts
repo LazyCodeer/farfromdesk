@@ -14,7 +14,7 @@ test('an isolated Local backend resolves DeepSeek under the owner home',()=>{
   assert.equal(dshHome(env),join(owner,'.dsh'));
   assert.equal(dshCredentialsPath(env),join(owner,'.dsh','.credentials.yaml'));
   assert.equal(dshSessionsDir(env),join(owner,'.dsh','sessions'));
-  assert.equal(dshBinary(env),'dsh');
+  assert.equal(dshBinary(env,()=>false),'dsh');
 });
 
 test('an explicit DSH_HOME wins over the owner home',()=>{
@@ -30,4 +30,19 @@ test('an explicit DSH_BIN wins, and a normal shell keeps its own home',()=>{
   assert.equal(dshHome(env),join('/tmp/plain','.dsh'));
   assert.equal(dshCredentialsPath(env),join('/tmp/plain','.dsh','.credentials.yaml'));
   assert.equal(dshSessionsDir(env),join('/tmp/plain','.dsh','sessions'));
+});
+
+// Regression: the packaged Local backend is started by the desktop app with
+// `PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`, and the DeepSeek installer's `dsh` symlink
+// lives in `/usr/local/bin`. Resolving from PATH alone made `/deepseek` answer "DeepSeek Harness is
+// not installed" on a machine where it was installed and signed in.
+test('a packaged backend finds dsh outside its own PATH',()=>{
+  const env={FFD_ISOLATED_LOCAL:'1',HOME:'/tmp/ffd-private-home',PATH:'/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'} as NodeJS.ProcessEnv;
+  assert.equal(dshBinary(env,candidate=>candidate==='/usr/local/bin/dsh'),'/usr/local/bin/dsh');
+  assert.equal(
+    dshBinary(env,candidate=>candidate===join(userInfo().homedir,'.local','bin','dsh')),
+    join(userInfo().homedir,'.local','bin','dsh'),
+  );
+  // Nothing installed anywhere: the bare name is the last resort, and the spawn will say so.
+  assert.equal(dshBinary(env,()=>false),'dsh');
 });
