@@ -296,7 +296,7 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     // A failure reported as a result still gets a code that says what kind it was: machine
     // output from the helper means the helper could not complete it, anything else is a
     // refusal the helper chose.
-    return { ok: false, line: refusalLine(plan, raw), evidence: null, code: plainCause(raw) === NO_CAUSE ? 'driver_unavailable' : 'driver_refused' };
+    return { ok: false, line: refusalLine(plan, raw), evidence: null, code: plainCause(raw) === NO_CAUSE ? 'driver_unavailable' : 'driver_refused', detail: String(raw).replace(/\s+/g, ' ').slice(0, 300) || undefined };
   }
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${plan.key}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };

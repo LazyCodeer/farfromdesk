@@ -246,8 +246,17 @@ export class DesktopControl {
       // foreground typing, like the owner's own keyboard, so the app is brought forward first.
       if(plan.action==='type'&&!plan.name&&!plan.role){
         await this.frontApp(plan.app!,target.pid,target.bundle_id,controller.signal);
-        const typed=await this.driver.call('type_text',{pid:target.pid,window_id:target.window_id,text:plan.text!,delivery_mode:'foreground'},controller.signal);
-        return {action:plan.action,ok:typed?.ok!==false&&!typed?.error,observation:typed?.error??null,changes:null};
+        // The driver refuses long keystroke runs, so a sheet's rows go in pieces of at most 100
+        // characters, split after each row, in order. The first refusal stops it, with its reason.
+        const pieces=plan.text!.split(/(?<=\n)/).flatMap(line=>line.match(/[\s\S]{1,100}/g)??[]);
+        for(const [i,piece] of pieces.entries()){
+          if(controller.signal.aborted)break;
+          let typed:any;
+          try{typed=await this.driver.call('type_text',{pid:target.pid,window_id:target.window_id,text:piece,delivery_mode:'foreground'},controller.signal);}
+          catch(e){return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String((e as Error)?.message??e).slice(0,200)}`,changes:null};}
+          if(typed?.ok===false||typed?.error)return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String(typed?.error??typed?.message??'refused').slice(0,200)}`,changes:null};
+        }
+        return {action:plan.action,ok:true,observation:null,changes:`Typed ${plan.text!.length} characters.`};
       }
       const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
