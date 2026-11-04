@@ -18,6 +18,10 @@ test('the owner stores a DeepSeek provider and key without the key ever coming b
   await new Promise<void>(r => probe.close(() => r()));
   process.env.WSB_STATE_DIR = temp;
   process.env.WSB_PORT = String(port);
+  // The app reads the owner's own DSH profile and credential store, which is the point of the
+  // feature, so a test about defaults has to point DSH_HOME at an empty home of its own.
+  const savedDshHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = join(temp, 'dsh');
   const [{ Store }, { Router }, { Approvals }, { serve }] = await Promise.all([
     import('../src/store.js'),
     import('../src/router.js'),
@@ -62,6 +66,7 @@ test('the owner stores a DeepSeek provider and key without the key ever coming b
     assert.equal(cleared.configured, false, 'an inherited variable is not claimed as a stored one');
     assert.equal(store.get('deepseek-api-key'), '');
   } finally {
+    if (savedDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDshHome;
     await new Promise<void>(r => server.close(() => r()));
     rmSync(temp, { recursive: true, force: true });
   }

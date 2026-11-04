@@ -34,7 +34,8 @@ import { openCodexDesktop } from './session-activation.js';
 import { museBinary, runMuse } from './muse-session.js';
 import { dshBinary } from './dsh-session.js';
 import { runDshQueued } from './dsh-sessions.js';
-import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch } from './dsh-provider.js';
+import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
+import { dshHome } from './dsh-paths.js';
 import { runCursorTurn } from './cursor-desktop.js';
 import { cursorAppBinary } from './cursor-paths.js';
 
@@ -588,11 +589,12 @@ export class Masters {
       handedOff=true;
       // A headless run needs a key, and the app cannot borrow the desktop session's credential.
       // Say what to fix instead of spawning a turn that fails on an error the owner cannot act on.
-      const settings=dshSettings(name=>this.store.get(name)??undefined),status=dshStatus(settings);
+      const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
+      const settings=dshSettings(name=>this.store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
       // One conversation per folder, so a second request waits for the first instead of adopting a
       // session that is still being written.
-      const {env}=keyEnvironment(settings);
-      const {result:queued,queued:waiting}=runDshQueued(b.cwd,{prompt:message,cwd:b.cwd,sessionId:stored,patchPath:writePatch(stateDir,settings),env,timeoutMs:deepseekTurnTimeoutMs});
+      const {env}=keyEnvironment(settings,process.env,keyOf);
+      const {result:queued,queued:waiting}=runDshQueued(b.cwd,{prompt:message,cwd:b.cwd,sessionId:stored,patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:deepseekTurnTimeoutMs});
       if(waiting&&this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,'DeepSeek is still on the previous task in this folder. This one is queued behind it.','progress',jobId,`native-progress:${jobId}`);
       let result;
       try {

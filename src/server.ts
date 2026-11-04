@@ -8,7 +8,8 @@ import {sessionResearchRead,sessionResearchRefine,sessionResearchRequest} from '
 import {sessionSpecialty} from './session-specialty.js';
 import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
-import { dshSettings, dshStatus } from './dsh-provider.js';
+import { dshSettings, dshStatus, readProfile, credentialRef } from './dsh-provider.js';
+import { dshHome } from './dsh-paths.js';
 import { SocialAssistant } from './social-assistant.js';
 import { saveSessionSocialDrafts } from './social-session-drafts.js';
 import { renderSessionSocialImage } from './social-session-image.js';
@@ -576,7 +577,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           if(d.clearKey===true)store.set('deepseek-api-key','');
           else if(key!==undefined&&key)store.set('deepseek-api-key',key);
         }
-        const settings=dshSettings(name=>store.get(name)??undefined),status=dshStatus(settings);
+        const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
+        const settings=dshSettings(name=>store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
         json(res,200,{...status,reasoningEffort:settings.reasoningEffort??'',hasStoredKey:!!settings.key,workspace:store.get('deepseek-workspace')??''});return;
       }
       if(path==='/api/destination'&&req.method==='POST') {

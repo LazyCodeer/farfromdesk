@@ -9,7 +9,8 @@ import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 import { errorCode } from './request-events.js';
 import { runMuse } from './muse-session.js';
 import { runDshQueued, dshCancel, dshQueueState } from './dsh-sessions.js';
-import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch } from './dsh-provider.js';
+import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
+import { dshHome } from './dsh-paths.js';
 import { stateDir } from './config.js';
 import { runCursorTurn } from './cursor-desktop.js';
 
@@ -136,7 +137,10 @@ function deepseekWorkspace(r:Router) {
 /** One prompt, one finished run. A run that did not finish is reported, never passed off as an answer. */
 async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   const cwd=deepseekWorkspace(r),key=`deepseek-session:${cwd}`,label=basename(cwd)||cwd;
-  const settings=dshSettings(name=>r.store.get(name)??undefined),status=dshStatus(settings);
+  // The desktop app's own settings are the source of truth for provider and model, and the store's
+  // `refs` map is where a key set in the app settings lands for a child process.
+  const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
+  const settings=dshSettings(name=>r.store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
   const sub=arg.trim().toLowerCase(),queue=dshQueueState(cwd);
   const busy=queue.busy?` A turn is still running in ${label}${queue.waiting?` with ${queue.waiting} queued`:''}; your message joins the queue.`:'';
   if(!arg||sub==='status')
@@ -145,8 +149,8 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   if(sub==='stop')return dshCancel(cwd)?`Stopped the DeepSeek turn in ${label}.`:`Nothing is running in ${label}.`;
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,`🤖 DeepSeek is working in ${label}.${queue.busy?' Queued behind the previous task.':''}`,`deepseek-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
-  const {env}=keyEnvironment(settings);
-  const {result}=runDshQueued(cwd,{prompt:arg,cwd,sessionId:r.store.get(key)||null,patchPath:writePatch(stateDir,settings),env,timeoutMs:20*60*1000});
+  const {env}=keyEnvironment(settings,process.env,keyOf);
+  const {result}=runDshQueued(cwd,{prompt:arg,cwd,sessionId:r.store.get(key)||null,patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:20*60*1000});
   let finished;
   try {
     finished=await result;
