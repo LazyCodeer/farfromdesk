@@ -220,7 +220,12 @@ export class DesktopControl {
         const launched=await this.driver.call('launch_app',found?.bundle_id?{bundle_id:found.bundle_id}:{name:plan.app!},controller.signal);
         const app=launched?.name??plan.app;
         const fronted=await this.frontApp(app,launched?.pid??found?.pid,found?.bundle_id??launched?.bundle_id,controller.signal);
-        return {action:plan.action,app,running:launched?.launch_state?.process_running===true,windowReady:launched?.launch_state?.window_ready===true,stoleFocus:fronted||launched?.self_activation_suppressed===false,fronted};
+        // A running app with no window (WhatsApp after its window was closed) draws one a few
+        // seconds after it is brought forward. Wait for it, so the next read finds a window
+        // instead of the owner reading "has not drawn a window yet" (live, 4 November 2026).
+        let windowReady=launched?.launch_state?.window_ready===true;
+        for(let i=0;!windowReady&&i<10&&!controller.signal.aborted;i++){await new Promise(r=>setTimeout(r,500));try{windowReady=!!(await this.resolve(app))?.window_id;}catch{}}
+        return {action:plan.action,app,running:launched?.launch_state?.process_running===true,windowReady,stoleFocus:fronted||launched?.self_activation_suppressed===false,fronted};
       }
       if(plan.action==='read_window'){
         const target=await this.resolve(plan.app,plan.window);

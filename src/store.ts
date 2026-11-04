@@ -444,6 +444,25 @@ export class Store {
    * a brain answer has no job, so the image is written beside the database with its hash, and the
    * sender sends it only if the bytes still match. The caption goes through the same owner checks.
    */
+  /**
+   * A file from the Mac the owner asked for, sent to their own chat. A copy is taken now, so the
+   * file sent is exactly the one checked here even if the original changes before delivery.
+   */
+  outputBrainFile(requestId:string,bytes:Buffer,filename:string,caption:string) {
+    const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
+    if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    if(!bytes.length||bytes.length>50_000_000)return false;
+    const sha=createHash('sha256').update(bytes).digest('hex'),source=`brain-file:${requestId}:${sha.slice(0,16)}`;
+    mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
+    const path=join(this.mediaDir,`${sha}.bin`);writeFileSync(path,bytes,{mode:0o600});
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||filename,source,task.destination);
+    if(!queued)return false;
+    const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
+    if(!row)return false;
+    this.db.prepare("UPDATE outbox SET media_kind='brain-file' WHERE id=?").run(row.id);
+    this.set(`brain-file:${row.id}`,JSON.stringify({path,sha,filename:filename.replace(/[\\/\u0000-\u001f]/g,'_').slice(0,200)}));
+    return true;
+  }
   outputBrainPhoto(requestId:string,png:Buffer,caption:string) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
     if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');

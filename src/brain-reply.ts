@@ -101,7 +101,8 @@ function unenvelope(text: string): string {
 
 export function ownerReply(text: string): string {
   if (!text) return text;
-  const cleaned = mapProse(unenvelope(String(text)), part => part
+  // Invisible direction marks some app names carry ("\u200eWhatsApp", live 4 Nov 2026).
+  const cleaned = mapProse(unenvelope(String(text).replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')), part => part
     .replace(CONTROL, ' ')
     .replace(/[ \t]+/g, ' ')
     .replace(DASH_BULLET, '- ')

@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { userInfo } from 'node:os';
+import { basename, join, sep } from 'node:path';
 import {researchSpecialty} from './research-agent.js';
 import {jobsSpecialty} from './jobs-agent.js';
 import {captureGuidedResearchRequest} from './agent-reach-request.js';
@@ -461,6 +464,25 @@ export class MetaBrain {
     try{this.store.output(undefined,`🧠 Checking ${what}…`,`brain-ack:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}
   }
   /** Screenshots taken for a request, sent after its answer. */
+  private files=new Map<string,{bytes:Buffer;name:string}[]>();
+  /**
+   * send_file: a file from the owner's own folders to their own chat, after the reply. Only
+   * Downloads, Desktop, Documents, Pictures, Movies and Music; never hidden folders or Library,
+   * never a link that leads outside them, at most 50 MB ("Send me 3.jpg from downloads", live).
+   */
+  private sendFileFor(m:Incoming,raw:string):string{
+    const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
+    const asked=raw.trim().replace(/^~(?=\/|$)/,home);
+    const path=asked.startsWith('/')?asked:join(home,'Downloads',asked);
+    let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}. Use the Finder tools to find its exact path.`;}
+    const root=roots.find(r=>real.startsWith(r+sep));
+    if(!root||real.slice(root.length).split(sep).some(part=>part.startsWith('.')))return 'I can send files only from Downloads, Desktop, Documents, Pictures, Movies or Music, and never hidden ones.';
+    const st=lstatSync(real);if(!st.isFile())return `${basename(real)} is a folder, not a file.`;
+    if(st.size>50_000_000)return `${basename(real)} is over 50 MB, which is more than the chat accepts.`;
+    const list=this.files.get(m.id)??[];if(list.length>=5)return 'At most five files per message.';
+    list.push({bytes:readFileSync(real),name:basename(real)});this.files.set(m.id,list);
+    return JSON.stringify({queued:basename(real),bytes:st.size,note:'It is sent to the owner right after your reply. Say it follows.'});
+  }
   private shots=new Map<string,Buffer[]>();
   private wanted=new Set<string>();
   private keepShot(m:Incoming,result:any){
@@ -472,6 +494,8 @@ export class MetaBrain {
   }
   /** Sends the screenshots taken for this request, after its text answer. */
   private sendShots(m:Incoming){
+    const files=this.files.get(m.id);this.files.delete(m.id);
+    for(const f of files??[]){try{this.store.outputBrainFile(m.id,f.bytes,f.name,f.name);}catch{}}
     const list=this.shots.get(m.id);this.shots.delete(m.id);
     const asked=this.wanted.delete(m.id);
     // Live on build 2421 the model wrote "screenshot follows" and no image existed. A screenshot
@@ -607,6 +631,7 @@ export class MetaBrain {
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
+        sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
         // Opening inside the loop, so "open whatsapp" can go on to read what is new there.
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:(url,browser)=>{this.ack(m,browser);return this.openPageFor(m,url,browser);},

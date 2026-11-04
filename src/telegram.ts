@@ -299,6 +299,15 @@ export class Telegram {
           const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set('photo',new Blob([new Uint8Array(bytes)],{type:'image/png'}),'screenshot.png');form.set('caption',row.body);body=form;method='sendPhoto';
         }catch{/* text only */}
       }
+      if(row.media_kind==='brain-file'){
+        // A file the owner asked for from the Mac: sent only if the queued copy is unchanged.
+        try{
+          const saved=JSON.parse(this.store.get(`brain-file:${row.id}`)??'null') as {path:string;sha:string;filename:string}|null;
+          const bytes=saved?readFileSync(saved.path):undefined;
+          if(!saved||!bytes||createHash('sha256').update(bytes).digest('hex')!==saved.sha||bytes.length>TELEGRAM_DOCUMENT_BYTES||row.body.length>1024)throw new Error();
+          const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set('document',new Blob([new Uint8Array(bytes)]),saved.filename);form.set('caption',row.body);body=form;method='sendDocument';
+        }catch{this.store.db.prepare("UPDATE outbox SET status='failed',error='The file changed or is over 50 MB, so it was not sent.' WHERE id=?").run(row.id);return;}
+      }
       if(row.artifact_id){
         try {
           const a=this.store.db.prepare('SELECT * FROM artifacts WHERE id=?').get(row.artifact_id) as any,b=this.store.binding(row.binding_id),job=this.store.job(a?.request_id??'');
