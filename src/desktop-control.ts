@@ -520,7 +520,9 @@ export class DesktopControl {
       only(((await call('list_windows',{pid:r.app.pid})).windows as any[]).filter(w=>w.window_id===r.window.window_id),'DESKTOP_WINDOW_STALE');
       return {pid:r.app.pid,window_id:r.window.window_id};
     };
-    const read=async(r:Ref,withScreenshot=false)=>call('get_window_state',{...await target(r),tree_format:'elements',include_screenshot:withScreenshot,max_elements:5000,timeout_ms:8000});
+    const read=async(r:Ref,withScreenshot=false)=>call('get_window_state',{...await target(r),tree_format:'elements',include_screenshot:withScreenshot,...(withScreenshot?{max_image_dimension:1600}:{}),max_elements:5000,timeout_ms:8000});
+    // 1600 px on the long edge, explicitly: the session ceiling sometimes came back at 150 px, a
+    // thumbnail the owner could not read (live, 4 November 2026).
     const browserTarget=async(r:Ref)=>{
       await fresh(r);if(!r.browserWindow)throw new Error('DESKTOP_BROWSER_WINDOW_REQUIRED');
       const all=await browse({operation:'list_tabs',bundle:r.app.bundle});
