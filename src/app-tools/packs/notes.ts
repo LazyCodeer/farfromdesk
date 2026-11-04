@@ -256,7 +256,7 @@ const notesRecent: AppTool = {
         `\t\t\tset AppleScript's text item delimiters to od\n` +
         `\t\t\tif (length of tx) is greater than ${EXCERPT} then set tx to (text 1 thru ${EXCERPT} of tx) & "…"\n` +
         `\t\t\tif (length of tx) is 0 then set tx to "(empty note)"\n` +
-        `\t\t\tset ln to ln & " — " & tx\n` +
+        `\t\t\tset ln to ln & ": " & tx\n` +
         `\t\t\tset used to used + (length of ln)\n` +
         `\t\t\tset end of out to ln\n` +
         `\t\tend repeat\n` +
