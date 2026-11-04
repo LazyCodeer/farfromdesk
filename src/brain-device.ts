@@ -273,11 +273,14 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     // made. Measured live, dropping it is what turned "summarise all my notes" into
     // "Done in Notes." with nothing behind it. A read keeps its app name in front of the
     // answer; a write already names what it did.
+    // The content goes into evidence only: the reply is line and evidence joined by a blank
+    // line (src/meta-brain.ts), so putting it in both printed every listing twice — the
+    // duplication the owner's own chat showed after the first fix.
     const output = String(result?.output ?? '').trim();
     const reads = toolByName(tool)?.writes === false;
     if (output) {
-      const line = reads ? `Here is what is in ${app}:\n${output.slice(0, 1500)}` : output.slice(0, 1500);
-      return { ok: true, line, evidence: output.slice(0, 4000) };
+      if (reads) return { ok: true, line: `Here is what is in ${app}:`, evidence: output.slice(0, 4000) };
+      return { ok: true, line: output.slice(0, 1500), evidence: null };
     }
     return { ok: true, line: reads ? `${app} has nothing to show for that.` : `Done in ${app}.`, evidence: null };
   }

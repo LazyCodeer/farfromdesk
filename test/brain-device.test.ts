@@ -59,8 +59,16 @@ test('a pack tool answers with its own content, not a bare done', () => {
   const recent = deviceOutcome(
     { action: 'app_tool', app: 'Notes', tool: 'notes_recent' },
     { ok: true, app: 'Notes', output: 'Showing 2 note(s), newest first: ### Roof (folder: Notes)' });
-  assert.equal(recent.line, 'Here is what is in Notes:\nShowing 2 note(s), newest first: ### Roof (folder: Notes)');
-  assert.match(recent.evidence!, /Roof/);
+  assert.equal(recent.line, 'Here is what is in Notes:');
+  assert.match(recent.evidence!, /Showing 2 note\(s\)/);
+  // Content lives in exactly one place: the reply is line and evidence joined, so a read
+  // that repeated itself in both was printed twice in the owner's chat.
+  assert.doesNotMatch(recent.line, /Roof/);
+  const written = deviceOutcome(
+    { action: 'app_tool', app: 'Notes', tool: 'notes_append' },
+    { ok: true, app: 'Notes', output: 'Added to Roof: it now has 40 characters.' });
+  assert.equal(written.line, 'Added to Roof: it now has 40 characters.');
+  assert.equal(written.evidence, null);
   // A tool that returns nothing still gets an honest sentence rather than an empty reply.
   assert.equal(deviceOutcome({ action: 'app_tool', app: 'Notes', tool: 'notes_recent' }, { ok: true, app: 'Notes', output: '   ' }).line, 'Notes has nothing to show for that.');
   // Where a mapping names what happened in the owner's own terms, it still wins.
