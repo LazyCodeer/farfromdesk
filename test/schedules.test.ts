@@ -481,3 +481,23 @@ test('asking to add or set a reminder works like remind me', async () => {
     assert.deepEqual((f.store.db.prepare('SELECT text FROM schedules ORDER BY created_at').all() as { text: string }[]).map(r => r.text), ['meta hackathon', 'meta hackathon']);
   } finally { f.close(); }
 });
+
+// The brain decides that a message is a reminder and calls these tools; no pattern takes the
+// message first ("Add a reminder for tomorrow 10am for meta hackathon" was refused, 4 Nov 2026).
+test('brain reminder tools create, list, cancel, and fire like any reminder',async()=>{
+  const f=fixture();try{
+    const m={id:'wa:b1',text:'ping me tomorrow at 10 about the hackathon'} as any;
+    assert.match(f.schedules.brainCreate(f.router,m,{text:'the hackathon',at:'2026-10-30 10:00'}),/^Saved\. I will remind you 30 Oct 2026, 10:00 am: the hackathon\./);
+    assert.match(f.schedules.brainCreate(f.router,m,{text:'again',at:'2026-10-30 11:00'}),/already created/);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b2'} as any,{text:'x',at:'2026-10-28 10:00'}),/has passed/);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b3'} as any,{text:'x',at:'tomorrow'}),/YYYY-MM-DD/);
+    const listed=JSON.parse(f.schedules.brainList());
+    assert.equal(listed.length,1);assert.equal(listed[0].what,'the hackathon');
+    f.setNow(Date.parse('2026-10-30T04:31:00Z'));await f.schedules.tick(f.router);
+    assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE body LIKE '%Reminder: the hackathon%'").get()?.n,1);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b4'} as any,{text:'stand up',at:'2026-10-31 09:00',repeat:'weekdays'}),/weekdays/);
+    const id=JSON.parse(f.schedules.brainList())[0].id;
+    assert.equal(f.schedules.brainCancel(id),'Cancelled.');
+    assert.equal(f.schedules.brainList(),'No active reminders.');
+  }finally{f.close();}
+});
