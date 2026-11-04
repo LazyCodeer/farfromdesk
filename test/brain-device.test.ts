@@ -431,3 +431,12 @@ test('a reading app tool answers with what it read', () => {
   assert.equal(deviceOutcome({ action: 'app_tool', app: 'Mail', tool: 'mail_recent' } as DevicePlan, { ok: true, output: '' }).line, 'Mail has nothing to show for that.');
   assert.equal(deviceOutcome({ action: 'app_tool', app: 'Notes', tool: 'notes_delete' } as DevicePlan, { ok: true }).line, 'Done in Notes.');
 });
+
+// Live, 4 November 2026: "what is playing" and "any new messages" failed as invalid_response.
+test('a model decision with number or null tool arguments still parses', async () => {
+  const { tolerant, Interpretation } = await import('../src/meta-model.js');
+  const raw = { intent: 'device', provider: 'unspecified', taskIds: [], device: { action: 'app_tool', tool: 'messages_recent', app: 'Messages', args: { limit: 5, query: null } } };
+  const parsed = Interpretation.parse(tolerant(raw, 'any new messages'));
+  assert.deepEqual(parsed.device?.args, { limit: '5' });
+  assert.equal(parsed.normalized, 'any new messages');
+});

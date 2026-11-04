@@ -41,6 +41,7 @@ const SPELLINGS: Record<string, string> = {
   remiders: 'reminders', reminers: 'reminders', remainders: 'reminders', remindrs: 'reminders', todos: 'reminders', todo: 'reminders',
   chek: 'check', chk: 'check', cehck: 'check', chck: 'check', whats: 'what', wat: 'what',
   msgs: 'messages', imessage: 'messages', imessages: 'messages', texts: 'messages',
+  playing: 'music', song: 'music', songs: 'music',
   sumarise: 'summarise', summarize: 'summarise', sumarize: 'summarise', summery: 'summary',
 };
 const APP_NAMES = ['notes', 'calendar', 'reminders', 'mail', 'finder', 'safari', 'music', 'messages'];

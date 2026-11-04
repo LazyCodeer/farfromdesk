@@ -118,6 +118,7 @@ export class MetaModel {
       return new Response(Buffer.concat(chunks),{status:response.status,headers:response.headers});
     };
     const guarded:typeof fetch=(url,init)=>observe?observe(()=>request(url,init)):request(url,init);
+    let field:string|undefined;
     try {
       const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
       const ask=()=>generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400
@@ -131,14 +132,38 @@ export class MetaModel {
       // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
       if(!result.steps.some(s=>s.toolCalls.length)){authorize?.();result=await ask();}
       const call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
-      if(!call)throw new Error('Meta interpretation was incomplete.');
-      return Interpretation.parse(call!.input);
+      if(!call){field='no_decision';throw new Error('Meta interpretation was incomplete.');}
+      const parsed=Interpretation.safeParse(tolerant(call.input,input.original));
+      if(!parsed.success){const path=parsed.error.issues[0]?.path.map(String)??[];field=path[0]==='device'?(path[1]==='args'?'device.args':'device'):['normalized','intent','provider','reply'].includes(path[0]??'')?path[0]!:'other';throw parsed.error;}
+      return parsed.data;
     } catch(e) {
       if(signal.aborted)throw new Error('Meta interpretation timed out.');
       // Fetch exceptions and validation errors may contain credentials or raw model text, so only a code leaves here.
-      const failure=new Error('Meta interpretation unavailable. Check configuration or try a new message.') as Error&{code:string};
+      const failure=new Error('Meta interpretation unavailable. Check configuration or try a new message.') as Error&{code:string;field?:string};
+      failure.field=field;
       failure.code=status===401||status===403?'authentication_required':status>=500?'provider_unavailable':status>=400?'provider_rejected':status===200?'invalid_response':'provider_unavailable';
       throw failure;
     }
   }
+}
+
+/**
+ * What models really send, made to fit the decision schema before it is checked.
+ *
+ * Measured live on 4 November 2026: "what is playing" and "any new messages" failed as
+ * invalid_response while every other request passed. App tool arguments are strings by contract,
+ * and a model that writes `limit: 5` or `null` has still made a clear decision. A missing
+ * normalized text is the owner's own message. Nothing else is rewritten.
+ */
+export function tolerant(raw:unknown,original:string):unknown{
+  if(!raw||typeof raw!=='object')return raw;
+  const out={...(raw as Record<string,unknown>)};
+  if(typeof out.normalized!=='string'||!out.normalized.trim())out.normalized=original.slice(0,32000)||'(empty)';
+  const device=out.device as Record<string,unknown>|undefined;
+  if(device&&typeof device==='object'&&device.args&&typeof device.args==='object'){
+    const args:Record<string,string>={};
+    for(const [k,v] of Object.entries(device.args as Record<string,unknown>))if(v!==null&&v!==undefined&&typeof v!=='object')args[k]=String(v);
+    out.device={...device,args};
+  }
+  return out;
 }

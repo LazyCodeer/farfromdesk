@@ -539,7 +539,7 @@ export class MetaBrain {
     }catch(e) {
       if(revoked()||routingChanged())return true;
       const raw=(e as {code?:unknown})?.code,code=typeof raw==='string'?raw:errorCode(e);
-      this.store.event(m.id,'brain_interpretation_failed',{code,durationMs:Date.now()-interpretationStarted});
+      this.store.event(m.id,'brain_interpretation_failed',{code,field:(e as {field?:unknown})?.field,durationMs:Date.now()-interpretationStarted});
       if(this.get(m.id)?.state!=='interpreting')return true;
       // Policy changes during an HTTP call revoke its result; never silently resume under old consent.
       if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
