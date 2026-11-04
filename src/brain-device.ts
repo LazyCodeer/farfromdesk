@@ -268,14 +268,18 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
       const output = String(result?.output ?? '').trim().slice(0, 1500);
       return { ok: true, line: output ? `Here is ${app}:` : `${app} has nothing on that day.`, evidence: output || null };
     }
-    // Every other reading tool answers with what it read. Measured 4 November 2026: notes_recent,
-    // mail_recent and reminders_open all fell through to "Done in Notes." with the content
-    // dropped, so a read the owner asked for came back as an empty acknowledgement.
-    if (toolByName(tool)?.writes === false) {
-      const output = String(result?.output ?? '').trim().slice(0, 3000);
-      return { ok: true, line: output ? `Here is what is in ${app}:` : `${app} has nothing to show for that.`, evidence: output || null };
+    // Every other reviewed tool answers with the sentence its own script produced, and that
+    // sentence is where the content is: the note's text, the file it found, the draft it
+    // made. Measured live, dropping it is what turned "summarise all my notes" into
+    // "Done in Notes." with nothing behind it. A read keeps its app name in front of the
+    // answer; a write already names what it did.
+    const output = String(result?.output ?? '').trim();
+    const reads = toolByName(tool)?.writes === false;
+    if (output) {
+      const line = reads ? `Here is what is in ${app}:\n${output.slice(0, 1500)}` : output.slice(0, 1500);
+      return { ok: true, line, evidence: output.slice(0, 4000) };
     }
-    return { ok: true, line: `Done in ${app}.`, evidence: null };
+    return { ok: true, line: reads ? `${app} has nothing to show for that.` : `Done in ${app}.`, evidence: null };
   }
   if (plan.action === 'read_window') {
     if (!result?.tree) return { ok: false, line: `I could not read ${app}.`, evidence: null };

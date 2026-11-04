@@ -53,6 +53,20 @@ test('the driver result is reported, not the model guess', () => {
   assert.equal(deviceOutcome({ action: 'click', app: 'Comet' }, { ok: false, observation: 'run_steps: step 1 of 1 failed; 0 step(s) ran before it, 0 not run 1.' }).line, 'I could not do that in Comet: the action did not complete.');
 });
 
+test('a pack tool answers with its own content, not a bare done', () => {
+  // The live failure: "give me a summary of all my notes" ran a Notes read and answered
+  // "Done in Notes." with the tool's own sentence thrown away.
+  const recent = deviceOutcome(
+    { action: 'app_tool', app: 'Notes', tool: 'notes_recent' },
+    { ok: true, app: 'Notes', output: 'Showing 2 note(s), newest first: ### Roof (folder: Notes)' });
+  assert.equal(recent.line, 'Here is what is in Notes:\nShowing 2 note(s), newest first: ### Roof (folder: Notes)');
+  assert.match(recent.evidence!, /Roof/);
+  // A tool that returns nothing still gets an honest sentence rather than an empty reply.
+  assert.equal(deviceOutcome({ action: 'app_tool', app: 'Notes', tool: 'notes_recent' }, { ok: true, app: 'Notes', output: '   ' }).line, 'Notes has nothing to show for that.');
+  // Where a mapping names what happened in the owner's own terms, it still wins.
+  assert.equal(deviceOutcome({ action: 'app_tool', app: 'Notes', tool: 'notes_create_note' }, { ok: true, app: 'Notes', output: 'Wrote the note X in Notes.' }).line, 'Wrote the note in Notes.');
+});
+
 test('a refusal names the grant the owner has to change', () => {
   assert.match(deviceRefusal(new Error('ACCESSIBILITY_PERMISSION_REQUIRED: Allow FarFromDesk')), /Accessibility is not granted/);
   assert.match(deviceRefusal(new Error('MAC_CONTROL_DISABLED: nope')), /switched off in Settings/);
