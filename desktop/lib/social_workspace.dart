@@ -835,7 +835,7 @@ class _SocialWorkspaceState extends State<SocialWorkspace> {
                   const SizedBox(height: 11),
                   Stack(
                     children: [
-                      draftArtwork(item, height: 320),
+                      draftArtwork(item, height: 256),
                       if (selected && widget.slideCount > 1) ...[
                         Positioned(
                           left: 10,
@@ -876,24 +876,38 @@ class _SocialWorkspaceState extends State<SocialWorkspace> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  if (selected)
-                    SelectableText(
-                      '${widget.selectedDraft?['caption'] ?? ''}',
-                      style: const TextStyle(
-                        color: ink2,
-                        fontSize: 12,
-                        height: 1.4,
-                      ),
-                    )
-                  else
-                    Text(
-                      '${item is Map ? item['caption'] ?? '' : ''}',
-                      style: const TextStyle(
-                        color: ink2,
-                        fontSize: 12,
-                        height: 1.4,
+                  // Every card is the same height; a long caption scrolls inside its own area.
+                  SizedBox(
+                    height: 150,
+                    child: SingleChildScrollView(
+                      primary: false,
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: Builder(
+                          builder: (_) {
+                            if (selected) {
+                              return SelectableText(
+                                '${widget.selectedDraft?['caption'] ?? ''}',
+                                style: const TextStyle(
+                                  color: ink2,
+                                  fontSize: 12,
+                                  height: 1.4,
+                                ),
+                              );
+                            }
+                            return Text(
+                              '${item is Map ? item['caption'] ?? '' : ''}',
+                              style: const TextStyle(
+                                color: ink2,
+                                fontSize: 12,
+                                height: 1.4,
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     ),
+                  ),
                 ],
               ),
             ),
