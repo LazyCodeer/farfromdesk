@@ -82,6 +82,8 @@ export type DeviceOutcome = {
    * reason and the log's reason are two different strings.
    */
   code?: string;
+  /** The driver's own reason, only for the model's loop, never the owner or the log. */
+  detail?: string;
 };
 
 /** Classify a driver failure for the event log. Codes only, never the message. */
@@ -354,7 +356,9 @@ export async function runDevicePlan(control: DeviceControl, plan: DevicePlan, sc
     // A native refusal is the driver declining a named target, so the owner's own words give
     // the most useful sentence. A grant failure still names the switch to flip instead.
     const line = message.startsWith('DESKTOP_NATIVE_REFUSED') ? refusalLine(plan, message.slice('DESKTOP_NATIVE_REFUSED:'.length)) : deviceRefusal(error);
-    return { ok: false, line, evidence: null, code: deviceFailureCode(error) };
+    // The driver's own reason, for the model inside its loop only (never the owner's message or
+    // the event log): "lost the connection" hid a schema refusal from the model on a web sheet.
+    return { ok: false, line, evidence: null, code: deviceFailureCode(error), detail: message.replace(/\s+/g, ' ').slice(0, 300) };
   }
 }
 /**
