@@ -43,7 +43,6 @@ class MetaBrainPanel extends StatefulWidget {
   final Gateway gateway;
   final Map<String, dynamic> saved;
   final Future<void> Function() onSaved;
-  final String? activityScope;
 
   /// Providers the owner has set up, so switching Brain routing on allows what actually exists.
   final List<String> platforms;
@@ -52,7 +51,6 @@ class MetaBrainPanel extends StatefulWidget {
     required this.gateway,
     required this.saved,
     required this.onSaved,
-    this.activityScope,
     this.platforms = const [],
   });
   @override
@@ -65,13 +63,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   late String model, failure;
   late Set<String> providers;
   bool saving = false, replacingKey = false;
-  String? message, taskMessage;
-  List<Map<String, dynamic>>? tasks;
-  List<Map<String, dynamic>> workItems = [];
-  List<Map<String, dynamic>> metaActivity = [];
-  bool activityLoading = false, activityBusy = false, activityError = false;
-  int activityGeneration = 0;
-  Timer? activityTimer;
+  String? message;
   @override
   void initState() {
     super.initState();
@@ -85,265 +77,13 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
     taskContracts = s['taskContracts'] != false;
-    activityLoading = widget.activityScope != null;
-    if (activityLoading) unawaited(loadActivity());
-    activityTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => loadActivity(),
-    );
-  }
-
-  @override
-  void didUpdateWidget(covariant MetaBrainPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.activityScope != widget.activityScope ||
-        oldWidget.gateway != widget.gateway) {
-      activityGeneration++;
-      metaActivity = [];
-      activityBusy = false;
-      activityError = false;
-      activityLoading = widget.activityScope != null;
-      if (activityLoading) unawaited(loadActivity());
-    }
   }
 
   @override
   void dispose() {
-    activityTimer?.cancel();
     keyInput.clear();
     keyInput.dispose();
     super.dispose();
-  }
-
-  Future<void> loadActivity() async {
-    final requestScope = widget.activityScope;
-    if (activityBusy || requestScope == null) return;
-    final generation = activityGeneration;
-    activityBusy = true;
-    try {
-      final data = await widget.gateway.get('/api/meta-timeline');
-      if (!mounted || generation != activityGeneration) return;
-      if (data['scope'] != requestScope) {
-        throw const FormatException('Activity scope changed');
-      }
-      final rows = data['events'];
-      if (rows is! List) throw const FormatException('Invalid activity');
-      final parsed = rows
-          .whereType<Map>()
-          .map((row) => Map<String, dynamic>.from(row))
-          .where((row) {
-            final duration = row['durationMs'];
-            final at = row['at'];
-            return {
-                  'sorted',
-                  'briefed',
-                  'scheduled',
-                  'heard',
-                  'contracted',
-                  'stuck',
-                }.contains(row['stage']) &&
-                {'completed', 'failed'}.contains(row['status']) &&
-                duration is num &&
-                duration.isFinite &&
-                duration >= 0 &&
-                duration <= 3600000 &&
-                at is num &&
-                at.isFinite &&
-                at >= 0 &&
-                at <= 8640000000000000;
-          })
-          .take(30)
-          .toList();
-      if (mounted && generation == activityGeneration) {
-        setState(() {
-          metaActivity = parsed;
-          activityLoading = false;
-          activityError = false;
-        });
-      }
-    } catch (_) {
-      // Never show stale activity as belonging to the currently selected chat.
-      if (mounted && generation == activityGeneration) {
-        setState(() {
-          metaActivity = [];
-          activityLoading = false;
-          activityError = true;
-        });
-      }
-    } finally {
-      if (generation == activityGeneration) activityBusy = false;
-    }
-  }
-
-  Widget activityTab() {
-    final localizations = MaterialLocalizations.of(context);
-    const labels = {
-      'sorted': 'Message interpretation',
-      'briefed': 'Morning brief',
-      'scheduled': 'Reminder interpretation',
-      'heard': 'Voice transcription',
-      'contracted': 'Task contract',
-      'stuck': 'Stuck notice',
-    };
-    return box(
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Meta activity',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      'Meta API calls in this chat, not task outcomes. No message text is shown.',
-                      style: TextStyle(fontSize: 12, color: muted),
-                    ),
-                  ],
-                ),
-              ),
-              TextButton(
-                onPressed: activityBusy || widget.activityScope == null
-                    ? null
-                    : loadActivity,
-                child: const Text('Refresh'),
-              ),
-            ],
-          ),
-          const Divider(color: line2),
-          if (activityLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Loading activity...',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else if (activityError)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Could not load Meta activity. Try refresh.',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else if (widget.activityScope == null)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Connect a chat to view Meta activity.',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else if (metaActivity.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'No Meta calls recorded in this chat yet.',
-                style: TextStyle(color: muted),
-              ),
-            )
-          else
-            for (final event in metaActivity)
-              Builder(
-                builder: (context) {
-                  final name = labels[event['stage']]!;
-                  final at = DateTime.fromMillisecondsSinceEpoch(
-                    (event['at'] as num).toInt(),
-                  ).toLocal();
-                  final time = localizations.formatTimeOfDay(
-                    TimeOfDay.fromDateTime(at),
-                  );
-                  final day = DateUtils.isSameDay(at, DateTime.now())
-                      ? 'Today'
-                      : localizations.formatShortDate(at);
-                  final ms = (event['durationMs'] as num).clamp(0, 3600000);
-                  final duration = ms < 1000
-                      ? '${ms.toInt()} ms'
-                      : '${(ms / 1000).toStringAsFixed(1)} s';
-                  final succeeded = event['status'] == 'completed';
-                  final status = succeeded ? 'API responded' : 'Request failed';
-                  return Semantics(
-                    label: '$name, $day, $time, $duration, $status',
-                    excludeSemantics: true,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: accentWash,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Icon(
-                              event['stage'] == 'heard'
-                                  ? Icons.mic_none_rounded
-                                  : Icons.auto_awesome_outlined,
-                              color: accentSoft,
-                              size: 17,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  name,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  '$day, $time',
-                                  style: const TextStyle(
-                                    color: muted,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                duration,
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                status,
-                                style: TextStyle(
-                                  color: succeeded ? success : warning,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-        ],
-      ),
-    );
   }
 
   Future<void> save({bool remove = false}) async {
@@ -387,60 +127,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       if (mounted) {
         keyInput.clear();
         setState(() => saving = false);
-      }
-    }
-  }
-
-  Future<void> loadTasks() async {
-    try {
-      final data = await widget.gateway.get('/api/meta-brain/tasks?fresh=1');
-      if (mounted) {
-        setState(() {
-          workItems = (data['workItems'] as List? ?? [])
-              .map((t) => Map<String, dynamic>.from(t as Map))
-              .toList();
-          tasks = (data['tasks'] as List)
-              .map((t) => Map<String, dynamic>.from(t as Map))
-              .toList();
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => taskMessage = 'Could not load the task history.');
-      }
-    }
-  }
-
-  Future<void> verify(Map<String, dynamic> task) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Verify this task is complete?'),
-        content: Text(
-          'Confirm only after reviewing the work and its evidence. A proxy report alone is not owner verification.\n\n${task['original']}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('I verified it'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    try {
-      await widget.gateway.post('/api/meta-brain/verify', {
-        'requestId': task['id'],
-        'confirmed': true,
-      });
-      await loadTasks();
-    } catch (_) {
-      if (mounted) {
-        setState(() => message = 'Verification could not be saved.');
       }
     }
   }
@@ -812,7 +498,8 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   }
 
   List<String> get models => [
-    for (final m in (widget.saved['models'] as List? ?? fallbackMetaBrainModels))
+    for (final m
+        in (widget.saved['models'] as List? ?? fallbackMetaBrainModels))
       '$m',
   ];
 
@@ -988,76 +675,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
         ),
         const SizedBox(height: 12),
         MemoryFiles(gateway: widget.gateway),
-        const SizedBox(height: 12),
-        row(
-          'Recent conversation',
-          'Your last 12 messages and the replies. Helps it understand "that one" or "1".',
-          const SizedBox(),
-        ),
-        row(
-          'Item codes and open items',
-          'Titles and numbers of your open items, and codes like P1 from the last list you saw.',
-          const SizedBox(),
-        ),
-        row(
-          'Task history',
-          'What the brain understood from each message and what happened next.',
-          OutlinedButton(
-            onPressed: loadTasks,
-            child: const Text('View task history'),
-          ),
-        ),
-        if (taskMessage != null) Text(taskMessage!),
-        if (workItems.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          for (final item in workItems)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text('#${item['id']} ${item['title']}'),
-              subtitle: Text(
-                '${item['status']} • execution: ${item['executionState']} • ${item['session'] ?? 'no session yet'}',
-              ),
-            ),
-        ],
-        if (tasks != null) ...[
-          if (tasks!.isEmpty) const Text('No tasks yet.'),
-          for (final task in tasks!)
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: Text(
-                task['original'] as String,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                '${task['status']} • reply: ${task['responseState'] ?? 'unknown'} • permission: ${task['permission']}',
-              ),
-              children: [
-                ListTile(
-                  title: const Text('What you sent'),
-                  subtitle: SelectableText(task['original'] as String),
-                ),
-                ListTile(
-                  title: const Text('How the brain read it'),
-                  subtitle: SelectableText(
-                    task['normalized'] as String? ?? 'Not available',
-                  ),
-                ),
-                ListTile(
-                  title: const Text('Saved evidence'),
-                  subtitle: SelectableText(
-                    'Request: ${task['id']}\nProxy: ${task['coordinator_id'] ?? 'none'}\n${task['reason'] ?? ''}\n${task['evidence']}',
-                  ),
-                ),
-                if (task['nativeOutcome'] == 'done' &&
-                    task['verified_at'] == null)
-                  TextButton(
-                    onPressed: () => verify(task),
-                    child: const Text('Verify completed work'),
-                  ),
-              ],
-            ),
-        ],
       ],
     ),
   );
@@ -1122,10 +739,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           ),
           saveRow('Save changes'),
         ],
-        KeyedSubtree(
-          key: ValueKey('meta-activity-${widget.activityScope}'),
-          child: activityTab(),
-        ),
         const SizedBox(height: 24),
         pageHeading(
           'Memory',

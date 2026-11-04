@@ -4903,7 +4903,6 @@ extension _Brain on _DeskState {
     key: ValueKey('brain-${status['metaBrain']?['configured']}'),
     gateway: api,
     saved: Map<String, dynamic>.from(status['metaBrain'] ?? {}),
-    activityScope: status['metaTimelineScope'] as String?,
     platforms: ((status['apps'] as List?) ?? const [])
         .where((a) => a is Map && a['enabled'] == true)
         .map((a) => '${(a as Map)['provider']}')

@@ -114,6 +114,7 @@ class _DeskState extends State<Desk> {
   // /api/inbox-feed. Nothing here is derived from the status poll.
   String? inboxError, inboxRequestSelected;
   String inboxViewId = 'all', inboxQuery = '';
+  List<Map> metaEvents = [];
   List<Map> inboxViews = [], inboxFilters = [];
   Map<String, dynamic> inboxView = {}, inboxStats = {};
   List<Map> inboxMessages = [];

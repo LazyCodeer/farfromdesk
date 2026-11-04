@@ -310,6 +310,7 @@ extension _Panes on _DeskState {
               );
               return order != 0 ? order : '${a['key']}'.compareTo('${b['key']}');
             });
+      unawaited(loadMetaEvents());
       changeView(() {
         if (data['views'] is List) inboxViews = List<Map>.from(data['views']);
         // The chip row reads its counts from `filters`, which reports every
@@ -1015,8 +1016,69 @@ extension _Panes on _DeskState {
     );
   }
 
+  /// Meta calls made for the owner's chat: fixed labels and timings only, never message text.
+  Future<void> loadMetaEvents() async {
+    try {
+      final data = await api.get('/api/meta-timeline');
+      final rows = data['events'];
+      if (rows is! List) return;
+      changeView(
+        () => metaEvents = [
+          for (final r in rows.whereType<Map>())
+            if (inboxNumber(r['at']) != null &&
+                _metaLabels.containsKey(r['stage']))
+              {...r, 'meta': true},
+        ],
+      );
+    } catch (_) {
+      // Activity is extra detail; the thread still shows without it.
+    }
+  }
+
+  Widget inboxMetaEvent(Map e) {
+    final ms = (inboxNumber(e['durationMs']) ?? 0).clamp(0, 3600000);
+    final took = ms < 1000
+        ? '${ms.toInt()} ms'
+        : '${(ms / 1000).toStringAsFixed(1)} s';
+    final failed = e['status'] == 'failed';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              e['stage'] == 'heard'
+                  ? Icons.mic_none_rounded
+                  : Icons.auto_awesome_outlined,
+              size: 13,
+              color: failed ? warning : accent,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Meta · ${_metaLabels[e['stage']]} · $took${failed ? ' · failed' : ''}',
+              style: TextStyle(fontSize: 11, color: failed ? warning : muted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget inboxTimeline({required double maxBubble}) {
-    final entries = inboxMessages;
+    final first = inboxMessages.isEmpty
+        ? null
+        : inboxNumber(inboxMessages.first['at']);
+    final kind = '${inboxView['kind'] ?? inboxViewId}';
+    final entries = [
+      ...inboxMessages,
+      if (first != null && (kind == 'all' || kind == 'brain'))
+        for (final e in metaEvents)
+          if (inboxNumber(e['at'])! >= first) e,
+    ]..sort(
+        (a, b) =>
+            (inboxNumber(a['at']) ?? 0).compareTo(inboxNumber(b['at']) ?? 0),
+      );
     final children = <Widget>[
       if (inboxNext != null)
         Center(
@@ -1041,7 +1103,11 @@ extension _Panes on _DeskState {
           day = label;
         }
       }
-      children.add(inboxMessage(m, maxWidth: maxBubble));
+      children.add(
+        m['meta'] == true
+            ? inboxMetaEvent(m)
+            : inboxMessage(m, maxWidth: maxBubble),
+      );
     }
     final approvals = List<Map>.from(status['approvals'] ?? []).where(
       (a) => a['alias'] == sessionBinding(inboxViewId)?['alias'],
@@ -2290,3 +2356,12 @@ extension _Panes on _DeskState {
     );
   }
 }
+
+const _metaLabels = {
+  'sorted': 'Read your message',
+  'briefed': 'Morning brief',
+  'scheduled': 'Reminder',
+  'heard': 'Voice transcription',
+  'contracted': 'Task contract',
+  'stuck': 'Stuck notice',
+};
