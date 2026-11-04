@@ -670,7 +670,12 @@ export class MetaBrain {
     // Room for an answer built from tool results (a tab list was cut mid-word at 400).
     const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,2500);
     if(decision.intent==='clarify') {this.stop(m.id,said||'Please clarify the task and which coding platform you want. Nothing has been dispatched.','clarification');return true;}
-    if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,said||'Send a task, or ask where are we.');this.sendShots(m);return true;}
+    if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);// The screenshot is the fact. Live on build 2423 the image was taken and sent while the
+      // reply, echoing earlier failures in the conversation, said it could not be taken.
+      const taken=!!this.shots.get(m.id)?.length;
+      const reply=taken?(said.split('\n').map(line=>line.replace(/[^.!?\n]*\b(could not|couldn't|unable to|can't|cannot)\b[^.!?\n]*screenshot[^.!?\n]*[.!?]?\s*/gi,'')).filter((line,i,all)=>line.trim()||i<all.length-1).join('\n').trim()||'Here it is.'):said;
+      const withNote=taken&&!/screenshot follows/i.test(reply)?`${reply}\nScreenshot follows.`:reply;
+      this.store.outputBrain(m.id,withNote||'Send a task, or ask where are we.');this.sendShots(m);return true;}
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);
     if(decision.intent==='manage') {
       if(!policy.allowManagement){this.stop(m.id,'Task and session management is disabled in Meta Settings.');return true;}
