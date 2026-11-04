@@ -162,7 +162,7 @@ test('runCursorTurn reports a prompt Cursor never took within the pickup window,
 test('runCursorTurn runs a signed-in cursor-agent by command and returns its answer and chat id',async()=>{
   const base=fixture('cursor-desktop-cli-');
   const bin=join(base,'cursor-agent');
-  writeFileSync(bin,`#!${process.execPath}\nconst a=process.argv.slice(2);if(a[0]==='status'){console.log('Logged in as owner');process.exit(0);}\nfor(const e of [{type:'assistant',message:{content:[{type:'text',text:'Checking first.'}]}},{type:'tool_call',subtype:'completed'},{type:'assistant',message:{content:[{type:'text',text:'Hi from the CLI: '+a.at(-1)}]}},{type:'result',is_error:false,result:'Checking first.Hi from the CLI: '+a.at(-1),session_id:'cli-chat-1'}])console.log(JSON.stringify(e));\n`);
+  writeFileSync(bin,`#!${process.execPath}\nconst a=process.argv.slice(2);if(a[0]!=='status'&&!a.includes('--force'))process.exit(3);if(a[0]==='status'){console.log('Logged in as owner');process.exit(0);}\nfor(const e of [{type:'assistant',message:{content:[{type:'text',text:'Checking first.'}]}},{type:'tool_call',subtype:'completed'},{type:'assistant',message:{content:[{type:'text',text:'Hi from the CLI: '+a.at(-1)}]}},{type:'result',is_error:false,result:'Checking first.Hi from the CLI: '+a.at(-1),session_id:'cli-chat-1'}])console.log(JSON.stringify(e));\n`);
   chmodSync(bin,0o755);
   const env={CURSOR_DATA_DIR:base,CURSOR_AGENT_BIN:bin} as NodeJS.ProcessEnv;
   const cli=findCursorCli(env);

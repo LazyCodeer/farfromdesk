@@ -214,11 +214,13 @@ export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefine
 /**
  * One headless turn. The stream lists each message Cursor wrote; its final `result` glues them all
  * together, so a working note ran straight into the answer (live: "...exact ping string.PONG").
- * The answer is what Cursor wrote after its last tool call.
+ * The answer is what Cursor wrote after its last tool call. `--force` lets it run shell commands
+ * (the owner chose this on 5 Nov 2026): without it every command is refused, including the curl that
+ * reaches the owner's Mac apps.
  */
 function runCursorCli(bin:string,prompt:string,cwd:string|undefined,timeoutMs:number,env:NodeJS.ProcessEnv):Promise<CursorTurnResult> {
   return new Promise((resolve,reject)=>{
-    const child=spawn(bin,['-p','--output-format','stream-json','--trust',...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
+    const child=spawn(bin,['-p','--output-format','stream-json','--trust','--force',...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
     let out='',err='';
     const timer=setTimeout(()=>{child.kill();reject(new Error('Cursor did not finish this turn in time.'));},timeoutMs);
     child.stdout.on('data',d=>{out+=d;});child.stderr.on('data',d=>{err+=d;});
