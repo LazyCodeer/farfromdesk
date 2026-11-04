@@ -4,8 +4,8 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2401** (`local-local-deepseek-ui-2401`, installed 2026-11-04 08:20, health 401
-after 20s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
+app is **2401** (`local-local-deepseek-ui-2401-2401`, installed 2026-11-04 08:17, health 401
+after 16s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
 "don't let me forget to ...".
@@ -1901,6 +1901,12 @@ whatever provider or API the run uses. What was measured and what now exists:
   The `deepseekCatalog()` rows (`src/native.ts:160`, read from `~/.dsh/sessions/…jsonl.zstd`) appear
   only in the coordinator setup picker, and the platform tile's session count comes from coordinator
   bindings — which is why the labelled conversations needed their own view.
+- **Live, on 2401**: the page was open on Settings → DeepSeek Harness while the owner's own chat lane
+  ran `/deepseek use default`; within one poll the active marker moved from `research` to `default`
+  (`Active session: default`, the `Use` button now on `research`), and the store key agrees. So the
+  page is not a snapshot: it shows the same sessions the chat writes. Verified visually, not inferred
+  from the widget tree; a synthetic click on `Use` was *not* what proved it — the panel's own actions
+  are pinned by `desktop/test/deepseek_panel_test.dart` instead.
 - **Still true**: a session the owner started in the desktop app itself cannot be injected into (the
   `desktop` profile is reserved; its transport is an authenticated loopback RPC), so those take
   pasted prompts. The page cannot *create* a session the GUI will adopt, only the headless ones the
