@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
 import { join, basename, dirname, resolve, sep } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import { cursorOwnerHome } from './cursor-paths.js';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
 import { stateDir,currentStateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
@@ -54,10 +55,10 @@ const museTurnTimeoutMs=20*60*1000;
 const deepseekTurnTimeoutMs=20*60*1000;
 const cursorTurnTimeoutMs=10*60*1000;
 const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
-export function codexDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
+export function codexDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
 }
-export function claudeDesktopInstalled(home=homedir(),exists:(path:string)=>boolean=existsSync) {
+export function claudeDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Claude.app')));
 }
 export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
@@ -301,7 +302,7 @@ export class Masters {
   setupError(error:unknown) {
     const message=error instanceof Error?error.message:String(error);
     if(/^Codex (has not saved|conversation history)/.test(message))return message;
-    if(/^(Desktop (creation|start|setup|project)|Claude Desktop could not|The selected Claude Desktop|No owner-connected|Connected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
+    if(/^(Desktop (creation|start|setup|project|session ID|child)|Claude Desktop could not|The selected Claude Desktop|No owner-connected|Connected Claude Desktop|No desktop)/.test(message))return message.slice(0,400);
     if(/^(CLI account|CLI signed out|Connection changed|Review this existing|Custom provider|Configured|Session connection)/.test(message))return message.slice(0,400);
     if(/Claude authentication expired|OAuth|Failed to authenticate/i.test(message))return 'Claude authentication expired. Sign in to the selected Claude app or CLI, then recover this exact setup.';
     if(/workspace not trusted|Claude needs you to trust/i.test(message))return 'Claude needs you to trust this master folder. Open Claude setup, accept its workspace trust prompt, then return here and retry this setup.';

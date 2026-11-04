@@ -632,6 +632,9 @@ export class MetaBrain {
         readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
         sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
+        // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
+        // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
+        act:async plan=>{this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}`;},
         // Opening inside the loop, so "open whatsapp" can go on to read what is new there.
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:(url,browser)=>{this.ack(m,browser);return this.openPageFor(m,url,browser);},

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync,mkdirSync,readdirSync,readFileSync,writeFileSync,unlinkSync,renameSync,openSync,readSync,closeSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
+import { cursorOwnerHome } from './cursor-paths.js';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -196,7 +197,9 @@ export class NativeAgents {
     if(provider==='claude') {
       const [history,desktopHistory,desktopPids,,cliConnection]=await Promise.all([
         claudeHistory(join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')),
-        claudeDesktopHistory(join(homedir(),'Library/Application Support/Claude/claude-code-sessions')),
+        // Claude Desktop keeps its sessions in the owner's real Library. The Local backend runs with a
+        // private HOME, which hid every Desktop session and left new coordinators "not confirmed" (live).
+        claudeDesktopHistory(join(cursorOwnerHome(),'Library/Application Support/Claude/claude-code-sessions')),
         claudeDesktopProcesses().catch(()=>new Set<number>()),
         this.desktopConfig(),
         this.connections.read('claude','cli',fresh)
