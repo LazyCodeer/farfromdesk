@@ -501,3 +501,26 @@ test('brain reminder tools create, list, cancel, and fire like any reminder',asy
     assert.equal(f.schedules.brainList(),'No active reminders.');
   }finally{f.close();}
 });
+
+// "at 6pm ask site to check PR 20" from the brain: the brain picks the session and the time,
+// this checks them, and with task reviews on nothing is saved until the owner approves a card.
+test('brain-scheduled session work is checked, held for review when reviews are on, and dispatched',async()=>{
+  const f=fixture();try{
+    const {binding}=f.store.register('site','codex','11111111-1111-4111-8111-111111111111','/tmp/example');
+    const m=(id:string)=>({id:`wa:${id}`,text:'at 6pm ask site to check PR 20'}) as any;
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s0'),{sessionId:'nope',text:'check PR 20',at:'2026-10-29 18:00'}),/No session has that id/);
+    // Reviews on: the card goes out and nothing is saved yet.
+    const c=f.router.contracts as any,real={enabled:c.enabled,preflight:c.preflight,approvedSchedule:c.approvedSchedule};
+    let reviewed:any;c.enabled=()=>true;c.preflight=async(_r:any,_m:any,_t:any,schedule:any)=>{reviewed=schedule;return {kind:'handled'};};
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s1'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/review card/);
+    assert.equal(reviewed.binding_id,binding.id);assert.equal(reviewed.text,'check PR 20');
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
+    Object.assign(c,real);
+    // Reviews off: saved straight away, and the tick sends it to that exact session.
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s2'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/^Saved\. 29 Oct 2026, 6:00 pm I will ask site to: check PR 20\./);
+    assert.match(f.schedules.brainList(),/"session":true/);
+    f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
+    const job=f.store.db.prepare('SELECT binding_id,body FROM inbox').get() as {binding_id:string;body:string};
+    assert.equal(job.binding_id,binding.id);assert.match(job.body,/check PR 20/);
+  }finally{f.close();}
+});
