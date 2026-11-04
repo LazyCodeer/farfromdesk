@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { userInfo } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import {researchSpecialty} from './research-agent.js';
@@ -483,6 +485,35 @@ export class MetaBrain {
     list.push({bytes:readFileSync(real),name:basename(real)});this.files.set(m.id,list);
     return JSON.stringify({queued:basename(real),bytes:st.size,note:'It is sent to the owner right after your reply. Say it follows.'});
   }
+  /** The owner's folders the brain may put or open files in: never hidden ones, never Library. */
+  private ownerPath(raw:string,base:'Downloads'|'Documents'='Downloads'):string|undefined{
+    const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
+    const asked=raw.trim().replace(/^~(?=\/|$)/,home),path=asked.startsWith('/')?asked:/^(Downloads|Desktop|Documents|Pictures|Movies|Music)\//.test(asked)?join(home,asked):join(home,base,asked);
+    const root=roots.find(r=>path.startsWith(r+sep));
+    if(!root||path.slice(root.length).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
+    return path;
+  }
+  /**
+   * write_file: a new file the owner asked for (a sheet as CSV, notes, a list) in Downloads or
+   * Documents. Never overwrites: an existing name gets a number. Text formats only, at most 2 MB.
+   */
+  private writeFileFor(name:string,content:string):string{
+    if(!/\.(csv|tsv|txt|md|json|html)$/i.test(name))return 'Use a .csv, .tsv, .txt, .md, .json or .html name.';
+    if(Buffer.byteLength(content)>2_000_000)return 'That is more than 2 MB of text.';
+    const path=this.ownerPath(name);if(!path)return 'Files go in Downloads or Documents, never hidden folders.';
+    const parent=realpathSync(join(path,'..'));if(!this.ownerPath(join(parent,'x.txt')))return 'That folder is outside Downloads or Documents.';
+    let final=path;for(let i=2;existsSync(final)&&i<100;i++)final=path.replace(/(\.[^.]+)$/,` ${i}$1`);
+    writeFileSync(final,content,{flag:'wx',mode:0o644});
+    return JSON.stringify({written:final,bytes:Buffer.byteLength(content)});
+  }
+  /** open_file: open a file from the owner's folders, in a named app if given (Numbers for a CSV). */
+  private async openFileFor(raw:string,app?:string):Promise<string>{
+    const path=this.ownerPath(raw);if(!path)return 'I can open files only from Downloads, Desktop, Documents, Pictures, Movies or Music.';
+    let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}.`;}
+    if(!this.ownerPath(real))return 'That file is outside your folders.';
+    try{await promisify(execFile)('/usr/bin/open',[...(app?['-a',app]:[]),real],{timeout:15000});return `Opened ${basename(real)}${app?` in ${app}`:''}. Read the window to check it.`;}
+    catch{return app?`${app} could not open ${basename(real)}. Is ${app} installed?`:`${basename(real)} could not be opened.`;}
+  }
   private shots=new Map<string,Buffer[]>();
   private wanted=new Set<string>();
   private keepShot(m:Incoming,result:any){
@@ -631,6 +662,9 @@ export class MetaBrain {
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
+        findApp:async query=>{const control=this.desktop();if(!control.run)return 'Not available in this build.';try{const apps=(await control.run(`brain:${m.id}`,{action:'list_apps',query:query.slice(0,80)}))?.apps??[];return apps.length?JSON.stringify(apps.slice(0,10).map((a:any)=>({name:String(a.name).replace(/[\u200e\u200f]/g,''),running:a.running===true}))):`${query} is not installed on this Mac. Use its web version in the owner's browser if it has one.`;}catch(e){return `Refused: ${deviceRefusal(e)}`;}},
+        writeFile:(name,content)=>{this.ack(m,'Finder');return Promise.resolve(this.writeFileFor(name,content));},
+        openFile:(path,app)=>{this.ack(m,app??'Finder');return this.openFileFor(path,app);},
         sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
