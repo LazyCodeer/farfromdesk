@@ -36,13 +36,13 @@ function reminderDirective(original:string,body:string):{directive:string;action
   // the submission", "remind me to call mom at 5pm", "remind me about X at 9 am". Only
   // "remind me at TIME to ACTION" used to pass (live, 4 November 2026). The timing is read from
   // the rest of the sentence, so a number inside the reminder is never taken as the time.
-  const remind=/\bremind\s+me\b/i.exec(original);
+  const remind=REMIND.exec(original);
   if(!remind)return;
   // A model often hands back the whole sentence as the reminder text. Then the action is worked
   // out from the owner's words alone: trim timing and filler from both ends of what follows
   // "remind me", and accept it only if the model's text contains that same action.
   let want=body.trim().replace(/[.!?]+$/,'').replace(/^(?:to|for|about|that|of)\s+/i,'');
-  if(/\bremind\s+me\b/i.test(want)){
+  if(REMIND.test(want)){
     const own=ownAction(original.slice(remind.index+remind[0].length));
     if(!own||!cleanAction(want).includes(cleanAction(own)))return;
     want=own;
@@ -58,11 +58,13 @@ function reminderDirective(original:string,body:string):{directive:string;action
   const leftover=directive.toLowerCase()
     .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?(?![\w:])/g,' ')
     .replace(/\b[a-z_]+\/[a-z_]+(?:\/[a-z_]+)?\b/g,' ')
-    .replace(/\b(?:please|remind|me|at|on|by|in|the|a|an|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekday|weekdays|o'?clock|hey|atlas|can|could|you|pls|do|not|don|t|never|stop)\b/g,' ')
+    .replace(/\b(?:please|remind|me|at|on|by|in|the|a|an|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekday|weekdays|o'?clock|hey|atlas|can|could|you|pls|do|not|don|t|never|stop|add|set|create|make|put|schedule|reminder|new)\b/g,' ')
     .replace(/[^a-z]+/g,' ').trim();
   if(leftover)return;
   return {directive,action};
 }
+/** "remind me", or asking for a reminder: "add a reminder", "set me a reminder" (live, 4 November 2026). */
+const REMIND=/\bremind\s+me\b|\b(?:add|set|create|make|put|schedule)\s+(?:me\s+)?(?:a\s+|an\s+)?reminder\b/i;
 const TIMING_WORD=/^(?:please|at|on|by|in|the|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekdays?|o'?clock|\d{4}-\d{2}-\d{2}|\d{1,2}(?::\d{2})?(?:a\.?m\.?|p\.?m\.?)?|a\.?m\.?|p\.?m\.?)[,.]?$/i;
 /** What follows "remind me", with timing and filler words trimmed from both ends. */
 function ownAction(rest:string):string{

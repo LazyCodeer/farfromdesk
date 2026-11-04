@@ -470,3 +470,14 @@ test('a model that echoes the whole sentence still gets the owner action', async
     assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as { text: string }).text, 'meta hackathon submission');
   } finally { f.close(); }
 });
+
+// Live, 4 November 2026: "Add a reminder for tomorrow 10am for meta hackathon" was refused.
+test('asking to add or set a reminder works like remind me', async () => {
+  const f = fixture(); try {
+    f.setDecision({ text: 'meta hackathon', date: '2026-10-30', time: '10:00' });
+    await f.send('1', 'Add a reminder for tomorrow 10am for meta hackathon');
+    f.setDecision({ text: 'Add a reminder for tomorrow 10am for meta hackathon', date: '2026-10-30', time: '10:00' });
+    await f.send('2', 'Add a reminder for tomorrow 10am for meta hackathon');
+    assert.deepEqual((f.store.db.prepare('SELECT text FROM schedules ORDER BY created_at').all() as { text: string }[]).map(r => r.text), ['meta hackathon', 'meta hackathon']);
+  } finally { f.close(); }
+});

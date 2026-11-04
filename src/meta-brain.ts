@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {researchSpecialty} from './research-agent.js';
 import {jobsSpecialty} from './jobs-agent.js';
 import {captureGuidedResearchRequest} from './agent-reach-request.js';
@@ -548,6 +549,25 @@ export class MetaBrain {
     }
     return `No open tab matches "${match}". Use list_tabs to see them.`;
   }
+  /**
+   * open_page: a new tab in the chosen browser, through the gated desktop route. Live on build
+   * 2424, "Open gmail in comet" only opened Comet, because the brain could open apps but not pages.
+   */
+  private async openPageFor(m:Incoming,url:string,browser='comet'):Promise<string>{
+    const control=this.desktop();if(!control.run)return 'Opening pages is not available in this build.';
+    const name=browser.toLowerCase().trim();
+    try{
+      const listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser:name});
+      const win=listed?.windows?.[0];
+      if(!win)return `${browser} has no window open. Open ${browser} first, then ask again.`;
+      const done=await control.run(`brain:${m.id}`,{action:'new_tab',windowRef:win.windowRef,url,actionId:randomUUID()});
+      return JSON.stringify({opened:url,browser:name,result:done?.ok??true});
+    }catch(e){
+      const said=String((e as Error)?.message??e);
+      if(/^DESKTOP_BROWSER_NOT_RUNNING/.test(said))return `${browser} is not running. Ask the owner whether to open it.`;
+      return `Refused: ${deviceRefusal(e)}`;
+    }
+  }
   /** read_window: the front window of a running app, with an optional screenshot. */
   private async readWindowFor(m:Incoming,app:string,screenshot:boolean):Promise<string>{
     const control=this.desktop();if(!control.run)return 'Reading windows is not available in this build.';
@@ -642,6 +662,7 @@ export class MetaBrain {
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
+        openPage:(url,browser)=>{this.ack(m,browser??'Comet');return this.openPageFor(m,url,browser);},
       }:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
