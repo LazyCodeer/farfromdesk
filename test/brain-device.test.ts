@@ -457,3 +457,10 @@ test('a device decision with empty or unknown fields still parses, and a chat dr
   const chat = Interpretation.parse(tolerant({ intent: 'chat', normalized: 'x', provider: 'unspecified', taskIds: [], reply: 'ok', device: { action: '' } }, 'x'));
   assert.equal(chat.device, undefined);
 });
+
+// Live: "what tabs are open" was skipped as a tab command because it contains "open".
+test('a question about open tabs is not a tab command', async () => {
+  const { TAB_COMMAND } = await import('../src/meta-brain.js');
+  for (const q of ['what tabs are open', 'how many tabs do I have open', 'which tabs are open in comet']) assert.equal(TAB_COMMAND.test(q), false, q);
+  for (const q of ['open a new tab', 'close that tab', 'switch to the gmail tab']) assert.equal(TAB_COMMAND.test(q), true, q);
+});

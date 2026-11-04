@@ -384,7 +384,7 @@ export class MetaBrain {
     // A question about app content ("check my mails") is the brain's to answer with a reviewed
     // tool. It is not device-shaped, so the contract classifier took it and the owner read "Meta
     // could not check the task" (live, 4 November 2026).
-    if(overviewTool(text)||selectTools(text).length||/\btabs?\b/i.test(text)&&!/\b(close|new|go to|navigate|switch)\b/i.test(text))return true;
+    if(overviewTool(text)||selectTools(text).length||/\btabs?\b/i.test(text)&&!TAB_COMMAND.test(text))return true;
     if(!deviceVerbLike(text))return false;
     try{return detectDevicePlan(text,await deviceTargets(this.deviceControl()))!==null;}catch{return false;}
   }
@@ -569,7 +569,7 @@ export class MetaBrain {
       // answer it from window chrome or not at all (owner chat, 4 November 2026).
       // "what tabs are open" / "how many tabs": a count and a summary across browsers, not the text
       // of whichever tab is in front (live, 4 November 2026: Comet's page text came back).
-      if(/\btabs?\b/i.test(m.text)&&!/\b(close|open|new|go to|navigate|switch)\b/i.test(m.text)&&await this.answerTabs(router,m,policy))return true;
+      if(/\btabs?\b/i.test(m.text)&&!TAB_COMMAND.test(m.text)&&await this.answerTabs(router,m,policy))return true;
       const overview=overviewTool(m.text);
       if(overview)return await this.executeDevice(router,m,{action:'app_tool',tool:overview.name,app:overview.app,args:{}},policy);
       // "now write the notes" names no app, so no pattern can match it. The app the owner
@@ -732,6 +732,9 @@ export class MetaBrain {
     }catch{this.store.db.exec('ROLLBACK TO brain_dispatch; RELEASE brain_dispatch');this.stop(id,'Dispatch could not be queued. Check the saved request before sending a new message.');return false;}
   }
 }
+
+/** A tab command (open a new tab, close it, go to a page), not a question about the tabs that are open. */
+export const TAB_COMMAND=/\b(close|open (?:a |the )?(?:new )?tabs?|new tab|go to|navigate|switch to)\b/i;
 
 /** How a reviewed tool's raw result becomes the owner's reply. Facts only come from the result. */
 export const DEVICE_ANSWER_PROMPT=`You are Atlas, the owner's companion on their Mac, replying in a phone chat. You get the owner's request and the raw result a reviewed tool read from one of their apps (or their browser tabs). Write the reply.
