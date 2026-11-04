@@ -4,7 +4,7 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2398** (`local-local-dsh-profile-mirror-2398`, installed 2026-11-04 06:24, health 401
+app is **2399** (`local-local-deepseek-labels-2399`, installed 2026-11-04 06:47, health 401
 after 22s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
@@ -1845,5 +1845,25 @@ whatever provider or API the run uses. What was measured and what now exists:
   `settings: azure-deepseek / DeepSeek-V4.1-Flash | keyEnv AZURE_DEEPSEEK_API_KEY | source credentials`
   and answered `AZURE-E2E-OK`.
 - Live on **2397** (installed 2026-11-04 06:12): `GET /api/deepseek` answers `{configured:false, route:'deepseek-official', model:'deepseek-flash', keyEnv:'DEEPSEEK_API_KEY', hint:'DeepSeek needs an API key …'}`; `/deepseek status` prints that hint; and `/deepseek Reply with exactly: DSH-OK` now reports the same hint instead of the old "DeepSeek Harness is not installed" — the CLI is found, the patch is accepted, the run reaches the provider, and only the key is missing.
-- Not built yet: labelled/multiple sessions in one folder (the session key is still
-  `deepseek-session:<cwd>`), a settings UI in the app, and a live end-to-end run with a real key.
+### Labelled sessions and messages between them (4 November 2026, build 2399)
+
+- **A folder used to be the whole identity of a conversation**, so one workspace could hold exactly
+  one DeepSeek session. A label is now the identity: `deepseek-session:<folder>:<label>`, its own
+  queue (`dshQueueKey(folder,label)`, so two labels in one folder really do run at once), and
+  `/deepseek list | use <label> | new [label] | stop [label]`. The old key
+  `deepseek-session:<folder>` is still read as the `default` conversation, never written.
+- **A headless run is not a daemon**, so a message between sessions is a durable record on disk that
+  the receiving session's next turn carries (`src/dsh-inbox.ts`, `<state>/deepseek-inbox/<folder
+  slug>/<label>/<id>.json`). States are `prepared` → `dispatching` → `received` | `unknown`: the
+  record is written before anything runs, claimed as `dispatching` **before** the prompt is built,
+  and settled after. A crash cannot lose it, a failure cannot silently re-deliver it, and
+  `/deepseek send <label> <message>` says "that is a local write, not delivery" rather than implying
+  the far side read it.
+- The rule the states encode is the same one `desktop-sync` learned: a successful local write is
+  `submitted`, not `received`; only a finished turn that carried the message settles it as received,
+  and an uncertain one is reported (`unknown`) and never retried automatically.
+- Tests: `test/dsh-inbox.test.ts` (6) and the label cases in `test/dsh-sessions.test.ts` and
+  `test/deepseek-command.test.ts`; together with the provider/session files, 49 DeepSeek tests pass.
+- Still not built: a settings UI in the app for provider/model/key, and a session the owner started
+  in the GUI cannot be injected into (the `desktop` profile is reserved and its transport is an
+  authenticated loopback RPC), so GUI sessions still take pasted prompts.
