@@ -514,6 +514,27 @@ export class MetaBrain {
     try{await promisify(execFile)('/usr/bin/open',[...(app?['-a',app]:[]),real],{timeout:15000});return `Opened ${basename(real)}${app?` in ${app}`:''}. Read the window to check it.`;}
     catch{return app?`${app} could not open ${basename(real)}. Is ${app} installed?`:`${basename(real)} could not be opened.`;}
   }
+  /**
+   * The browser tab this request chose to work in. read_tab switches back to whichever tab was
+   * active, so typing after a read went into the owner's own tab, not the sheet (live, 4 November
+   * 2026: keystrokes meant for a Google Sheet reached a store page). Browser input is refused until
+   * focus_tab or open_page has picked the tab in this same request.
+   */
+  private focused=new Map<string,string>();
+  private async focusTabFor(m:Incoming,match:string):Promise<string>{
+    const control=this.desktop();if(!control.run)return 'Not available in this build.';
+    const want=match.toLowerCase().split(/\s+/).filter(Boolean);
+    for(const browser of ['comet','chrome','edge','brave']){
+      let listed:any;try{listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});}catch{continue;}
+      for(const w of listed?.windows??[])for(const t of w.tabs??[]){
+        if(!want.every(word=>`${t.title??''} ${t.url??''}`.toLowerCase().includes(word)))continue;
+        try{await control.run(`brain:${m.id}`,{action:'focus_tab',tabRef:t.tabRef,actionId:randomUUID()});}catch(e){return `Refused: ${deviceRefusal(e)}`;}
+        this.focused.set(m.id,browser);
+        return JSON.stringify({focused:t.title,url:t.url,browser,next:'This tab now has focus. Click into it and type; read_tab keeps it in front.'});
+      }
+    }
+    return `No open tab matches "${match}". Use list_tabs to see them.`;
+  }
   private shots=new Map<string,Buffer[]>();
   private wanted=new Set<string>();
   private keepShot(m:Incoming,result:any){
@@ -525,6 +546,8 @@ export class MetaBrain {
   }
   /** Sends the screenshots taken for this request, after its text answer. */
   private sendShots(m:Incoming){
+    // ponytail: cleared only on the chat path; a stray entry per non-chat request is a few bytes.
+    this.focused.delete(m.id);
     const files=this.files.get(m.id);this.files.delete(m.id);
     for(const f of files??[]){try{this.store.outputBrainFile(m.id,f.bytes,f.name,f.name);}catch{}}
     const list=this.shots.get(m.id);this.shots.delete(m.id);
@@ -668,10 +691,13 @@ export class MetaBrain {
         sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
-        act:async plan=>{this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});if(!outcome.ok&&outcome.detail)console.error(`[brain act] ${plan.action} in ${plan.app} refused: ${outcome.detail}`);return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}${outcome.detail?` (driver: ${outcome.detail})`:''}`;},
+        act:async plan=>{
+          if(/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app)&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
+          this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});if(!outcome.ok&&outcome.detail)console.error(`[brain act] ${plan.action} in ${plan.app} refused: ${outcome.detail}`);return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}${outcome.detail?` (driver: ${outcome.detail})`:''}`;},
         // Opening inside the loop, so "open whatsapp" can go on to read what is new there.
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
-        openPage:(url,browser)=>{this.ack(m,browser);return this.openPageFor(m,url,browser);},
+        openPage:async(url,browser)=>{this.ack(m,browser);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
+        focusTab:match=>{this.ack(m,`the ${match} tab`);return this.focusTabFor(m,match);},
         reminders:{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},
       }:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
