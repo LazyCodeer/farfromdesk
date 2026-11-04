@@ -314,6 +314,8 @@ export function deviceRefusal(error: unknown): string {
   if (message.startsWith('APP_TOOL_UNKNOWN')) return 'I do not have a reviewed tool for that app action yet, so I did nothing.';
   if (message.startsWith('APP_TOOL_ARGUMENT_MISSING')) return `I need one more detail before I can do that: ${message.slice('APP_TOOL_ARGUMENT_MISSING: '.length)}`;
   if (message.startsWith('APP_TOOL_ARGUMENT_INVALID')) return `I could not use those details, so I did nothing: ${message.slice('APP_TOOL_ARGUMENT_INVALID: '.length)}`;
+  // The browser bridge's own wording names no setting; the owner needs the place to switch it on.
+  if (message.startsWith('AUTOMATION_PERMISSION_REQUIRED: Review macOS Automation settings')) return 'macOS has not allowed FarFromDesk Local to read this browser. Open System Settings > Privacy & Security > Automation, turn on the browser under FarFromDesk Local, then ask me again.';
   if (message.startsWith('AUTOMATION_PERMISSION_REQUIRED')) return message.slice('AUTOMATION_PERMISSION_REQUIRED: '.length) || 'macOS needs your permission before I can control that app.';
   if (message.startsWith('APP_TOOL_HELPER_MISSING')) return message.slice('APP_TOOL_HELPER_MISSING: '.length);
   if (message.startsWith('APP_TOOL_REFUSED')) return message.slice('APP_TOOL_REFUSED: '.length);

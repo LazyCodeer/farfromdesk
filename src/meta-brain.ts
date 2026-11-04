@@ -517,7 +517,10 @@ export class MetaBrain {
     if(!browsers.length&&!safari&&!unread.length){this.store.outputBrain(m.id,'I could not see any open browser tabs. Is a browser running?');return true;}
     const evidence=JSON.stringify({browsers,...(safari?{safari}:{}),...(unread.length?{couldNotRead:unread}:{})}).slice(0,14000);
     const count=browsers.reduce((n,b)=>n+b.windows.reduce((k,w)=>k+w.tabs.length,0),0);
-    this.store.outputBrain(m.id,await this.explain(m,policy,{action:'list_tabs'},{ok:true,line:`${count} tab(s) open across ${browsers.map(b=>b.browser).join(', ')||'Safari'}.`,evidence}));
+    // The reason a browser could not be read is said in the app's own words, never left to the
+    // model: live, it answered "Comet could not be read" and dropped why.
+    const answer=await this.explain(m,policy,{action:'list_tabs'},{ok:true,line:`${count} tab(s) open across ${browsers.map(b=>b.browser).join(', ')||'Safari'}.`,evidence});
+    this.store.outputBrain(m.id,unread.length?`${answer}\n\nNot read: ${unread.map(u=>u.replace(/ \([A-Z_]+\)$/,'')).join(' ')}`.slice(0,3000):answer);
     return true;
   }
   async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
