@@ -159,11 +159,18 @@ export function tolerant(raw:unknown,original:string):unknown{
   if(!raw||typeof raw!=='object')return raw;
   const out={...(raw as Record<string,unknown>)};
   if(typeof out.normalized!=='string'||!out.normalized.trim())out.normalized=original.slice(0,32000)||'(empty)';
-  const device=out.device as Record<string,unknown>|undefined;
-  if(device&&typeof device==='object'&&device.args&&typeof device.args==='object'){
+  const device=out.device as Record<string,unknown>|undefined|null;
+  // Measured live after the field log landed: every remaining invalid_response was the device
+  // object. Models fill the fields they do not use with "" or null ("key": "" fails the key list,
+  // "app": "" fails its minimum), and add a device object to a chat answer.
+  if(out.intent!=='device'||!device||typeof device!=='object'){delete out.device;return out;}
+  const known=['action','tool','args','app','window','role','name','text','key'],kept:Record<string,unknown>={};
+  for(const [k,v] of Object.entries(device))if(known.includes(k)&&v!==null&&v!==undefined&&v!=='')kept[k]=v;
+  if(kept.args&&typeof kept.args==='object'){
     const args:Record<string,string>={};
-    for(const [k,v] of Object.entries(device.args as Record<string,unknown>))if(v!==null&&v!==undefined&&typeof v!=='object')args[k]=String(v);
-    out.device={...device,args};
+    for(const [k,v] of Object.entries(kept.args as Record<string,unknown>))if(v!==null&&v!==undefined&&typeof v!=='object')args[k]=String(v);
+    kept.args=args;
   }
+  out.device=kept;
   return out;
 }

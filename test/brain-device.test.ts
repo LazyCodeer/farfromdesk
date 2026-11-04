@@ -448,3 +448,12 @@ test('a model decision with number or null tool arguments still parses', async (
   assert.deepEqual(parsed.device?.args, { limit: '5' });
   assert.equal(parsed.normalized, 'any new messages');
 });
+
+// Live: every remaining invalid_response was the device object, with "" or null in unused fields.
+test('a device decision with empty or unknown fields still parses, and a chat drops its device', async () => {
+  const { tolerant, Interpretation } = await import('../src/meta-model.js');
+  const device = Interpretation.parse(tolerant({ intent: 'device', normalized: 'x', provider: 'unspecified', taskIds: [], device: { action: 'app_tool', tool: 'calendar_list_events', app: 'Calendar', key: '', window: null, reason: 'owner asked', args: { days: 1 } } }, 'x'));
+  assert.deepEqual(device.device, { action: 'app_tool', tool: 'calendar_list_events', app: 'Calendar', args: { days: '1' } });
+  const chat = Interpretation.parse(tolerant({ intent: 'chat', normalized: 'x', provider: 'unspecified', taskIds: [], reply: 'ok', device: { action: '' } }, 'x'));
+  assert.equal(chat.device, undefined);
+});

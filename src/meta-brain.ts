@@ -75,7 +75,7 @@ export class MetaBrain {
   readonly owner:OwnerMemory;
   private refreshTurn=0;private watchTurn=new Map<string|null,number>();
   private device?:DeviceControl;
-  constructor(private store:Store,readonly secret=new MetaSecret(),private model:Pick<MetaModel,'interpret'>=new MetaModel(),private injectedDevice?:DeviceControl) {
+  constructor(private store:Store,readonly secret=new MetaSecret(),private model:Pick<MetaModel,'interpret'>&Partial<Pick<MetaModel,'compose'>>=new MetaModel(),private injectedDevice?:DeviceControl) {
     store.db.exec(`CREATE TABLE IF NOT EXISTS brain_tasks(id TEXT PRIMARY KEY,original TEXT NOT NULL,normalized TEXT,source TEXT NOT NULL,destination TEXT,coordinator_id TEXT,state TEXT NOT NULL,permission TEXT NOT NULL,reason TEXT,verified_at INTEGER,created_at INTEGER NOT NULL);`);
     this.memory=new BrainMemory(store);
     this.owner=new OwnerMemory(store,secret.root,brainPolicy(store).notes);
@@ -384,7 +384,7 @@ export class MetaBrain {
     // A question about app content ("check my mails") is the brain's to answer with a reviewed
     // tool. It is not device-shaped, so the contract classifier took it and the owner read "Meta
     // could not check the task" (live, 4 November 2026).
-    if(overviewTool(text)||selectTools(text).length)return true;
+    if(overviewTool(text)||selectTools(text).length||/\btabs?\b/i.test(text)&&!/\b(close|new|go to|navigate|switch)\b/i.test(text))return true;
     if(!deviceVerbLike(text))return false;
     try{return detectDevicePlan(text,await deviceTargets(this.deviceControl()))!==null;}catch{return false;}
   }
@@ -473,7 +473,46 @@ export class MetaBrain {
     // room than a sentence: measured live on 4 November 2026, a 900-character cap cut a
     // "summarise all my notes" answer to the first seven notes and hid the rest. 1800 still
     // fits one chat message and covers a twenty-note listing.
-    this.store.outputBrain(m.id,[outcome.line,...(outcome.evidence?[outcome.evidence]:[])].join('\n\n').slice(0,1800));
+    this.store.outputBrain(m.id,await this.explain(m,policy,{app:plan.app,tool:plan.tool,action:plan.action},outcome));
+    return true;
+  }
+  /**
+   * The owner's answer, written from what the tool read.
+   *
+   * Measured live on 4 November 2026: the raw tool output was pasted into the chat, twice, as one
+   * run-on block of folder names and timestamps, with a private-key note's title in it. A
+   * companion reads the result and explains it. The model only words what the tool returned; when
+   * it is unavailable the result is still shown, once, and tidied.
+   */
+  private async explain(m:Incoming,policy:BrainPolicy,what:Record<string,unknown>,outcome:{ok:boolean;line:string;evidence:string|null}):Promise<string>{
+    const evidence=outcome.evidence?.trim()??'';
+    const plain=(!evidence||evidence.startsWith(outcome.line.trim().slice(0,120))||outcome.line.trim().startsWith(evidence.slice(0,120))?evidence||outcome.line:`${outcome.line}\n\n${evidence}`).slice(0,1800);
+    if(!outcome.ok||!evidence)return plain;
+    const key=this.secret.read();if(!key)return plain;
+    try{
+      if(!this.model.compose)return plain;const written=(await this.model.compose(key,policy,DEVICE_ANSWER_PROMPT,{request:m.text,...what,now:localStamp(),result:evidence.slice(0,14000)},20000)).trim();
+      return written?written.slice(0,3000):plain;
+    }catch{return plain;}
+  }
+  /** "what tabs are open": every supported browser that is running, plus Safari, as one answer. */
+  private async answerTabs(router:Router,m:Incoming,policy:BrainPolicy):Promise<boolean>{
+    const control=this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>;view?:()=>{enabled:boolean}};
+    if(!control.run||control.view?.().enabled===false)return false;
+    const browsers:{browser:string;windows:{tabs:{title:string;url:string;active:boolean}[]}[]}[]=[];
+    for(const browser of ['comet','chrome','edge','brave']){
+      try{
+        const listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});
+        browsers.push({browser,windows:(listed?.windows??[]).map((w:any)=>({tabs:(w.tabs??[]).map((t:any)=>({title:String(t.title??'').slice(0,160),url:String(t.url??'').slice(0,200),active:t.tabId!==undefined&&t.tabId===w.activeTabId||t.active===true}))}))});
+      }catch{/* not running or not supported: left out */}
+    }
+    let safari='';
+    try{safari=String((await control.packTool?.(`brain:${m.id}`,'safari_tabs',{}))?.output??'');}catch{}
+    if(router.stopped||this.get(m.id)?.state!=='interpreting')return true;
+    this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
+    if(!browsers.length&&!safari){this.store.outputBrain(m.id,'I could not see any open browser tabs. Is a browser running?');return true;}
+    const evidence=JSON.stringify({browsers,...(safari?{safari}:{})}).slice(0,14000);
+    const count=browsers.reduce((n,b)=>n+b.windows.reduce((k,w)=>k+w.tabs.length,0),0);
+    this.store.outputBrain(m.id,await this.explain(m,policy,{action:'list_tabs'},{ok:true,line:`${count} tab(s) open across ${browsers.map(b=>b.browser).join(', ')||'Safari'}.`,evidence}));
     return true;
   }
   async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
@@ -523,6 +562,9 @@ export class MetaBrain {
       if(direct)return await this.executeDevice(router,m,direct,policy);
       // "check my notes" or "chek my calender" is a read with one answer; the model used to
       // answer it from window chrome or not at all (owner chat, 4 November 2026).
+      // "what tabs are open" / "how many tabs": a count and a summary across browsers, not the text
+      // of whichever tab is in front (live, 4 November 2026: Comet's page text came back).
+      if(/\btabs?\b/i.test(m.text)&&!/\b(close|open|new|go to|navigate|switch)\b/i.test(m.text)&&await this.answerTabs(router,m,policy))return true;
       const overview=overviewTool(m.text);
       if(overview)return await this.executeDevice(router,m,{action:'app_tool',tool:overview.name,app:overview.app,args:{}},policy);
       // "now write the notes" names no app, so no pattern can match it. The app the owner
@@ -685,3 +727,13 @@ export class MetaBrain {
     }catch{this.store.db.exec('ROLLBACK TO brain_dispatch; RELEASE brain_dispatch');this.stop(id,'Dispatch could not be queued. Check the saved request before sending a new message.');return false;}
   }
 }
+
+/** How a reviewed tool's raw result becomes the owner's reply. Facts only come from the result. */
+export const DEVICE_ANSWER_PROMPT=`You are Atlas, the owner's companion on their Mac, replying in a phone chat. You get the owner's request and the raw result a reviewed tool read from one of their apps (or their browser tabs). Write the reply.
+- First line: the direct answer, with counts (for example "You have 7 notes; the newest is from today." or "12 tabs open in Comet across 2 windows.").
+- Then at most 8 short lines starting with "- ", the items that matter, newest or most relevant first. Summarise each in a few words; never paste long text. Collapse repeats ("5 near-identical test notes named x").
+- Dates short and human: "today 11:25", "yesterday", "Wed 2 Sep".
+- Use only what is in the result. Never invent an item, a time or a count. If the result is empty, say so in one line.
+- Never reveal secrets: for anything that looks like a password, key, token, private key or credential, say only that such an item exists, never its content or full title.
+- Plain text for WhatsApp or Telegram: no headings, no tables, no em or en dashes, at most one emoji.
+- If something more can be done ("ask me to read one in full"), end with one short line saying so.`;
