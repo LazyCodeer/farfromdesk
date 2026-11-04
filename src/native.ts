@@ -65,6 +65,17 @@ export function mergeClaudeSessions(history:Session[],desktopHistory:Session[],l
   }
   return all;
 }
+/**
+ * Claude Desktop runs under the owner's own home and Claude config. The Local backend's private
+ * HOME and CLAUDE_CONFIG_DIR made `claude agents` list none of the owner's open sessions, so every
+ * Desktop session looked like it had no inbox and a new coordinator never connected (live, 4 Nov).
+ * The app's own Claude CLI runs keep their private config; only Desktop listing and delivery use this.
+ */
+export function claudeOwnerEnvironment(env:NodeJS.ProcessEnv=process.env):NodeJS.ProcessEnv {
+  if(env.FFD_ISOLATED_LOCAL!=='1')return env;
+  const {CLAUDE_CONFIG_DIR:_private,...rest}=env;
+  return {...rest,HOME:cursorOwnerHome(env)};
+}
 function waitingForDesktopInbox(s:Session) {
   return s.activation==='desktop-open'||(s.provider==='claude'&&s.executionMode==='desktop'&&s.live===true&&s.available===false&&!!s.desktopId&&!!s.accountScope);
 }
@@ -205,7 +216,7 @@ export class NativeAgents {
         this.connections.read('claude','cli',fresh)
       ]);
       let live:any[]=[],liveComplete=false;
-      try{const {stdout}=await exec(helper(),['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
+      try{const {stdout}=await exec(helper(),['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024,env:claudeOwnerEnvironment()});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
       catch{if(!history.length&&!desktopHistory.length)throw new Error('Claude discovery is unavailable. Check the native CLI.');}
       const inboxes=await hasClaudeInboxes(live.map(s=>s.pid));
       const all=mergeClaudeSessions(history,desktopHistory,live,desktopPids,inboxes);
@@ -370,7 +381,7 @@ export class NativeAgents {
       this.beforeDispatch?.(b,jobId);
       // Longer than the helper's own 30-second wait on codex queue, so the helper records the outcome itself.
       handedOff=true;
-      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024,...(b.provider==='codex'?{env:codexProfileEnvironment()}:{})});
+      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024,...(b.provider==='codex'?{env:codexProfileEnvironment()}:{env:claudeOwnerEnvironment()})});
       const r=JSON.parse(stdout);
       if(r.status!=='submitted'&&r.status!=='received')throw new Error(`Native delivery is ${r.status??'unconfirmed'}. Reference ${id}`);
       envelope.acknowledge();
@@ -406,7 +417,7 @@ export class NativeAgents {
   private async sendDesktopCreationScoped(sessionId:string,file:string) {
     await this.desktopConfig();
     assertProviderSetup(this.store);
-    const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{timeout:30000,maxBuffer:1024*1024});
+    const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{env:claudeOwnerEnvironment(),timeout:30000,maxBuffer:1024*1024});
     const receipt=JSON.parse(stdout);
     if(receipt.status!=='submitted'&&receipt.status!=='received')throw new Error('Desktop creation submission could not be confirmed. Do not resubmit.');
   }
