@@ -523,6 +523,12 @@ export class MetaBrain {
    * focus_tab or open_page has picked the tab in this same request.
    */
   private focused=new Map<string,string>();
+  /**
+   * Whether this request clicked into the page since its last tab switch or read. Keystrokes sent
+   * without that reached nothing: a new sheet stayed empty while both typing steps said done and
+   * the owner was told all 11 rows were in (live, 4 November 2026).
+   */
+  private armed=new Set<string>();
   private async focusTabFor(m:Incoming,match:string):Promise<string>{
     const control=this.desktop();if(!control.run)return 'Not available in this build.';
     const want=match.toLowerCase().split(/\s+/).filter(Boolean);
@@ -562,7 +568,7 @@ export class MetaBrain {
   }
   private sendShots(m:Incoming){
     // ponytail: cleared only on the chat path; a stray entry per non-chat request is a few bytes.
-    this.focused.delete(m.id);
+    this.focused.delete(m.id);this.armed.delete(m.id);
     const files=this.files.get(m.id);this.files.delete(m.id);
     for(const f of files??[]){try{this.store.outputBrainFile(m.id,f.bytes,f.name,f.name);}catch{}}
     const list=this.shots.get(m.id);this.shots.delete(m.id);
@@ -699,7 +705,7 @@ export class MetaBrain {
         // model can say why and what to switch on, instead of the loop failing.
         run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
-        readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
+        readTab:(match,shot)=>{this.armed.delete(m.id);this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
         findApp:async query=>{const control=this.desktop();if(!control.run)return 'Not available in this build.';try{const apps=(await control.run(`brain:${m.id}`,{action:'list_apps',query:query.slice(0,80)}))?.apps??[];return apps.length?JSON.stringify(apps.slice(0,10).map((a:any)=>({name:String(a.name).replace(/[\u200e\u200f]/g,''),running:a.running===true}))):`${query} is not installed on this Mac. Use its web version in the owner's browser if it has one.`;}catch(e){return `Refused: ${deviceRefusal(e)}`;}},
         writeFile:(name,content)=>{this.ack(m,'Finder');return Promise.resolve(this.writeFileFor(name,content));},
@@ -708,12 +714,14 @@ export class MetaBrain {
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
-          if(/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app)&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
-          this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});if(!outcome.ok&&outcome.detail)try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} ${plan.action} in ${plan.app} refused: ${outcome.detail}\n`,{mode:0o600});}catch{}return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}${outcome.detail?` (driver: ${outcome.detail})`:''}`;},
+          const browser=/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app);
+          if(browser&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
+          if(browser&&plan.action==='type'&&!plan.name&&!plan.role&&!this.armed.has(m.id))return 'Refused: click where the text should go first (in a sheet: click the Name box, type the cell such as A1, press return), after the last tab switch or read. Keystrokes sent without that land nowhere.';
+          this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});if(browser&&plan.action==='click'&&outcome.ok)this.armed.add(m.id);if(!outcome.ok&&outcome.detail)try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} ${plan.action} in ${plan.app} refused: ${outcome.detail}\n`,{mode:0o600});}catch{}return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}${outcome.detail?` (driver: ${outcome.detail})`:''}`;},
         // Opening inside the loop, so "open whatsapp" can go on to read what is new there.
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
-        openPage:async(url,browser)=>{this.ack(m,browser);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
-        focusTab:match=>{this.ack(m,`the ${match} tab`);return this.focusTabFor(m,match);},
+        openPage:async(url,browser)=>{this.ack(m,browser);this.armed.delete(m.id);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
+        focusTab:match=>{this.ack(m,`the ${match} tab`);this.armed.delete(m.id);return this.focusTabFor(m,match);},
         reminders:{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},
       }:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});

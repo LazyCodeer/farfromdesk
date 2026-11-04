@@ -259,12 +259,16 @@ export class DesktopControl {
           catch(e){return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String((e as Error)?.message??e).slice(0,200)}.${reached(i)}`,changes:null};}
           if(typed?.ok===false||typed?.error)return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String(typed?.error??typed?.message??'refused').slice(0,200)}.${reached(i)}`,changes:null};
         }
-        return {action:plan.action,ok:true,observation:null,changes:`Typed ${plan.text!.length} characters.`};
+        return {action:plan.action,ok:true,observation:null,changes:`Sent ${plan.text!.length} characters as keystrokes. Not confirmed: read the cell or field back before saying it is in.`};
       }
       const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};
-      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
+      // Web content in a browser drops background clicks and keys (driver docs), so a browser
+      // gets them in the foreground, like the owner's own mouse and keyboard.
+      const web=Object.values(knownBrowsers).includes(target.bundle_id);
+      if(web)await this.frontApp(plan.app!,target.pid,target.bundle_id,controller.signal);
+      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:web?'foreground':'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
       // On success the evidence is counts, never the diff. The diff quotes the focused
       // element, and on a mail page that reached the owner's chat as a sender address and a
       // subject line. The observation's own summary is driver bookkeeping
