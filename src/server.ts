@@ -25,6 +25,7 @@ import {screenLockGate,sessionProbePath} from './session-lock.js';
 import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
+import { directMacAllowed } from './direct-mac.js';
 import { MacControl } from './mac-control.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
@@ -149,6 +150,20 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       const isAdmin=equal(token,adminToken);
       const scopedId=req.headers['x-binding-id'];
       const binding=typeof scopedId==='string'?store.authBinding(scopedId,token):undefined;
+      // A direct /muse, /deepseek or /cursor run carries a one-run pass instead of a session token.
+      if(path==='/api/direct/desktop-control'&&req.method==='POST'){
+        const runId=req.headers['x-direct-run'];
+        if(!directMacAllowed(store,runId,token)){json(res,401,{error:'This run has no Mac pass, or it ended.'});return;}
+        const {requestId:_ignored,...input}=await body(req);
+        if(input.action==='stop'){macAccessEpoch++;macControl.stop();json(res,200,{stopped:true});return;}
+        if(router.stopped)throw new Error('Background operation is paused.');
+        const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');
+        const result=await desktopControl.run(`direct:${String(runId)}`,input,()=>{if(router.stopped)throw new Error('Background operation is paused.');});
+        store.audit('desktop-control-action','direct-run',String(input.action));
+        // No screenshot bytes back to a CLI transcript; the brain is the path that sends images.
+        if(result?.screenshot?.pngBase64){const {pngBase64:_bytes,...evidence}=result.screenshot as {pngBase64:string};json(res,200,{...result,screenshot:{...evidence,delivery:'not sent'}});return;}
+        json(res,200,result);return;
+      }
       if(!isAdmin&&!binding){json(res,401,{error:'Use FarFromDesk or provide a valid session token.'});return;}
       if(path==='/api/local-email') {
         if(!isAdmin||req.headers.origin||process.env.FFD_ISOLATED_LOCAL!=='1'){json(res,403,{error:'Email requires the Local desktop.'});return;}

@@ -12,7 +12,8 @@ import { runDshQueued, dshCancel, dshQueueState, dshSessionKey, dshLegacySession
 import { sendMessage, claimMessages, settleMessages, pendingMessages, listMessages, messagePrompt } from './dsh-inbox.js';
 import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
 import { dshHome } from './dsh-paths.js';
-import { stateDir, currentStateDir } from './config.js';
+import { stateDir, currentStateDir, baseUrl } from './config.js';
+import { openDirectMac } from './direct-mac.js';
 import { runCursorTurn } from './cursor-desktop.js';
 
 export const TELEGRAM_COMMANDS=[
@@ -132,7 +133,9 @@ async function museCommand(r:Router,m:Incoming,arg:string) {
   if(arg.toLowerCase()==='reset'){r.store.set(key,'');return 'The next /muse starts a fresh Muse session in this folder.';}
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,`🧠 Muse is working in ${label}.`,`muse-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
-  const result=await runMuse({prompt:arg,cwd,sessionId:r.store.get(key)||null,timeoutMs:20*60*1000});
+  // The owner's Mac apps for this one run, and the network Muse needs to reach the local bridge.
+  const mac=openDirectMac(r.store,stateDir,new URL(baseUrl).port,`muse:${m.id}`);
+  let result;try{result=await runMuse({prompt:`${arg}\n\n[FarFromDesk] ${mac.note}`,cwd,sessionId:r.store.get(key)||null,timeoutMs:20*60*1000,network:true});}finally{mac.close();}
   if(result.sessionId)r.store.set(key,result.sessionId);
   return result.text.slice(0,20000);
 }
@@ -237,11 +240,13 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,`🤖 DeepSeek is working in ${workspace}${label===DEFAULT_DSH_LABEL?'':` (${label})`}.${claimed.length?` Carrying ${claimed.length} queued message${claimed.length>1?'s':''}.`:''}${queue().busy?' Queued behind the previous task.':''}`,`deepseek-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
   const {env}=keyEnvironment(settings,process.env,keyOf);
-  const {result}=runDshQueued(cwd,{prompt:`${messagePrompt(claimed)}${arg}`,cwd,sessionId:dshSessionId(r,cwd,label),patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:20*60*1000},undefined,label);
+  const mac=openDirectMac(r.store,stateDir,new URL(baseUrl).port,`deepseek:${m.id}`);
+  const {result}=runDshQueued(cwd,{prompt:`${messagePrompt(claimed)}${arg}\n\n[FarFromDesk] ${mac.note}`,cwd,sessionId:dshSessionId(r,cwd,label),patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:20*60*1000},undefined,label);
   let finished;
   try {
     finished=await result;
   } catch(error) {
+    mac.close();
     const message=(error as Error)?.message??String(error);
     if(claimed.length)settleMessages(currentStateDir(),cwd,label,claimed.map(entry=>entry.id),'unknown',message.slice(0,200));
     // The run is attempted even without a configured key, because the CLI may resolve its own
@@ -251,6 +256,7 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
     if(!hint)throw error;
     return `${hint}${carried}`;
   }
+  mac.close();
   if(finished.sessionId)r.store.set(dshSessionKey(cwd,label),finished.sessionId);
   if(claimed.length)settleMessages(currentStateDir(),cwd,label,claimed.map(entry=>entry.id),'received');
   return finished.text.slice(0,20000);
@@ -269,7 +275,8 @@ async function cursorCommand(r:Router,m:Incoming,arg:string) {
   if(!arg)return 'Cursor is ready. Send /cursor followed by the task. Cursor must be open on the Mac, and each run starts a new Cursor chat; it cannot continue an earlier one.';
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,'🖱️ Cursor is working.','cursor-progress:'+m.id,destination,{kind:'system',origin:'system',plain:true});
-  const result=await runCursorTurn({prompt:arg,timeoutMs:10*60*1000});
+  const mac=openDirectMac(r.store,stateDir,new URL(baseUrl).port,`cursor:${m.id}`);
+  let result;try{result=await runCursorTurn({prompt:`${arg}\n\n[FarFromDesk] ${mac.note}`,timeoutMs:10*60*1000});}finally{mac.close();}
   return result.text.slice(0,20000);
 }
 function name(r:Router,b:Binding){return (r.store.get(`name:${b.id}`)??b.alias).replace(/[\r\n*_`]/g,' ').slice(0,80);}
