@@ -1792,7 +1792,12 @@ whatever provider or API the run uses. What was measured and what now exists:
 - **A launcher patch sets the provider per run.** `dsh --profile headless --patch <file>` composes an
   `agent-default-model` overlay; the composed headless profile otherwise pins
   `provider: deepseek-official`, `model: deepseek-flash`. A patch replaces the whole config of the
-  entry it names, so every needed field is written into it.
+  entry it names, so every needed field is written into it. **Order matters, and getting it wrong is
+  silent in the source and loud in the app**: `dsh --profile headless --json --patch X -` answers
+  `unknown option '--patch'` because everything after `--json` belongs to the headless app, so the
+  patch goes *before* the app's own flags (`--profile headless --patch X --json … -`). Build 2396
+  shipped the wrong order and the live `/deepseek` run answered "DeepSeek Harness exited with code 1:
+  unknown option '--patch'"; build 2397 fixed it and the same turn then reported the credential hint.
 - `src/dsh-provider.ts` turns the owner's settings into the environment and that patch, for any
   route: `ROUTE_KEY_ENV` names the key variable for DeepSeek, OpenAI, Anthropic, Azure, Gemini,
   OpenRouter, Groq, xAI and Mistral, and a route it does not know still works when the owner names
@@ -1807,5 +1812,6 @@ whatever provider or API the run uses. What was measured and what now exists:
   says when the message joined a queue. The coordinator path (`src/masters.ts`) uses the same
   settings, patch and queue. `GET|POST /api/deepseek` (admin token) reads and writes provider,
   model, reasoning effort, key variable and key, and returns `hasStoredKey` rather than the value.
+- Live on **2397** (installed 2026-11-04 06:12): `GET /api/deepseek` answers `{configured:false, route:'deepseek-official', model:'deepseek-flash', keyEnv:'DEEPSEEK_API_KEY', hint:'DeepSeek needs an API key …'}`; `/deepseek status` prints that hint; and `/deepseek Reply with exactly: DSH-OK` now reports the same hint instead of the old "DeepSeek Harness is not installed" — the CLI is found, the patch is accepted, the run reaches the provider, and only the key is missing.
 - Not built yet: labelled/multiple sessions in one folder (the session key is still
   `deepseek-session:<cwd>`), a settings UI in the app, and a live end-to-end run with a real key.
