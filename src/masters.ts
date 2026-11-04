@@ -79,8 +79,9 @@ export function isScratchFolder(path:string) {
     .some(root=>path===root||path.startsWith(root+sep));
 }
 export function isCoordinatorFolder(path:string) {
-  const marker=join('.farfromdesk','coordinators');
-  return path.includes(sep+marker+sep)||path.endsWith(sep+marker);
+  const marker=join('.farfromdesk','coordinators'),own=join(coordinatorHome,'coordinators');
+  // The Local app keeps its coordinators under its own projects folder, not ~/.farfromdesk.
+  return path.includes(sep+marker+sep)||path.endsWith(sep+marker)||path===own||path.startsWith(own+sep);
 }
 /** A folder the owner picked in the system dialog: an existing real folder, never app scaffolding. */
 export function pickedWorkspace(path:string) {
@@ -107,7 +108,8 @@ export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:a
       // the backend runs with an isolated one, so folders made earlier sit under the owner's.
       if(isCoordinatorFolder(cwd)||isScratchFolder(cwd))continue;
       const accountScope=s.accountScope??null;
-      const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,accountScope])).digest('hex');
+      // One row per folder for a new Desktop chat: it opens in whichever Claude account is signed in.
+      const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,provider==='claude'&&mode==='desktop'?null:accountScope])).digest('hex');
       // A new Claude Desktop coordinator opens its own chat in the folder, so any folder Claude has
       // worked in is a valid place; only a launcher needs an open chat with a reachable inbox.
       const available=true,launcher=provider==='claude'&&mode==='desktop'&&s.available===true;
