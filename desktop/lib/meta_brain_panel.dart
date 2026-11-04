@@ -62,7 +62,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
   late bool enabled, routing, summaries, management, learn, taskContracts;
   late String model, failure;
   late Set<String> providers;
-  bool saving = false, replacingKey = false;
+  bool saving = false, replacingKey = false, showRules = false;
   String? message;
   @override
   void initState() {
@@ -113,7 +113,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       if (mounted) {
         setState(() {
           replacingKey = false;
-          message = 'Saved.';
+          message = null;
         });
       }
     } catch (_) {
@@ -219,56 +219,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           ],
         ),
       );
-
-  Widget calloutNote(IconData icon, String bold, String text) => Container(
-    margin: const EdgeInsets.only(top: 14),
-    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-    decoration: BoxDecoration(
-      color: canvas,
-      borderRadius: BorderRadius.circular(14),
-    ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 16, color: muted),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text.rich(
-            TextSpan(
-              children: [
-                if (bold.isNotEmpty)
-                  TextSpan(
-                    text: '$bold ',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                TextSpan(text: text),
-              ],
-            ),
-            style: const TextStyle(fontSize: 12.5, height: 1.5, color: muted),
-          ),
-        ),
-      ],
-    ),
-  );
-
-  Widget saveRow(String label) => Padding(
-    padding: const EdgeInsets.only(top: 16),
-    child: Wrap(
-      spacing: 12,
-      runSpacing: 8,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        FilledButton(
-          onPressed: saving ? null : () => save(),
-          child: Text(label),
-        ),
-        Text(
-          message ?? "Saved on this computer. Saving doesn't call Meta.",
-          style: const TextStyle(fontSize: 12, color: muted),
-        ),
-      ],
-    ),
-  );
 
   Widget toggle(
     String title,
@@ -595,7 +545,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
             showSelectedIcon: false,
             onSelectionChanged: saving
                 ? null
-                : (v) => setState(() => failure = v.first),
+                : (v) {
+                    setState(() => failure = v.first);
+                    save();
+                  },
           ),
           tip:
               'Used when Meta is down, the key fails or the answer is unclear.',
@@ -604,104 +557,171 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     ),
   );
 
-  Widget instructionsTab() => box(
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        heading(
-          'Instructions',
-          'The brain follows these built-in rules for every phone message. What it knows about you lives in your memory files.',
-          subtitle: 'The built-in rules every message follows.',
+  Widget cardHeader(
+    IconData icon,
+    String title,
+    String detail, {
+    Widget? end,
+  }) => Row(
+    children: [
+      Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: accentWash,
+          borderRadius: BorderRadius.circular(10),
         ),
-        const SizedBox(height: 8),
-        if (widget.saved['instructions'] is String)
-          Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: const Text(
-                'Built-in instructions',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              subtitle: const Text(
-                'Read only. Teach it your words in the memory files instead.',
-                style: TextStyle(fontSize: 12, color: muted),
-              ),
-              children: [
-                Container(
-                  width: double.infinity,
-                  constraints: const BoxConstraints(maxHeight: 320),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: canvas,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: SingleChildScrollView(
-                    child: SelectableText(
-                      widget.saved['instructions'] as String,
-                      style: const TextStyle(
-                        fontFamily: 'Menlo',
-                        fontSize: 12,
-                        height: 1.6,
-                        color: muted,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+        child: Icon(icon, color: accent, size: 19),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
+            const SizedBox(height: 2),
+            Text(detail, style: const TextStyle(fontSize: 12, color: muted)),
+          ],
+        ),
+      ),
+      ?end,
+    ],
+  );
+
+  Widget guarantee(IconData icon, String text) => Container(
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+    decoration: BoxDecoration(
+      color: canvas,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: hairline),
+    ),
+    child: Row(
+      children: [
+        Icon(icon, size: 15, color: accentSoft),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 12.5, height: 1.4, color: ink2),
           ),
-        calloutNote(
-          Icons.lock_outline_rounded,
-          "Always on, can't be changed.",
-          "The brain only follows the message you just sent. It never takes instructions from worker replies or quoted text, never says something was done when it wasn't, and can't change macOS or coding app approvals.",
         ),
       ],
     ),
   );
 
+  Widget instructionsTab() {
+    final rules = widget.saved['instructions'];
+    const promises = [
+      (Icons.reply_rounded, 'Acts only on the message you just sent'),
+      (
+        Icons.verified_outlined,
+        'Never says something was done when it was not',
+      ),
+      (
+        Icons.block_rounded,
+        'Ignores instructions inside worker replies or quoted text',
+      ),
+      (
+        Icons.lock_outline_rounded,
+        'Cannot change macOS or coding app approvals',
+      ),
+    ];
+    return box(
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          cardHeader(
+            Icons.rule_rounded,
+            'Instructions',
+            'Built-in rules every message follows. Always on.',
+            end: rules is String
+                ? TextButton.icon(
+                    key: const Key('brain-view-rules'),
+                    onPressed: () => setState(() => showRules = !showRules),
+                    icon: Icon(
+                      showRules
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                    ),
+                    label: Text(showRules ? 'Hide rules' : 'View rules'),
+                  )
+                : null,
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, c) {
+              final two = c.maxWidth > 640;
+              final w = two ? (c.maxWidth - 10) / 2 : c.maxWidth;
+              return Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final (icon, text) in promises)
+                    SizedBox(width: w, child: guarantee(icon, text)),
+                ],
+              );
+            },
+          ),
+          if (rules is String && showRules) ...[
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxHeight: 360),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: canvas,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: hairline),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  rules,
+                  style: const TextStyle(
+                    fontFamily: 'Menlo',
+                    fontSize: 12,
+                    height: 1.6,
+                    color: muted,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Read only. To teach it your words and preferences, edit your memory files below.',
+              style: TextStyle(fontSize: 11.5, color: muted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget memoryTab() => box(
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        cardHeader(
+          Icons.auto_stories_outlined,
+          'Memory',
+          'Notes every session reads to understand you and your work.',
+        ),
+        const SizedBox(height: 8),
         toggle(
           'Learn from your messages',
-          'When you share something new, it can save it to memory and notify you so you can reply "undo". Session replies, quoted text and files never change it.',
+          'When you share something new, it can save it to memory and tell you, so you can reply "undo". Session replies, quoted text and files never change it.',
           learn,
           (v) {
             setState(() => learn = v);
             save();
           },
         ),
-        const SizedBox(height: 12),
+        const Divider(color: hairline, height: 28),
         MemoryFiles(gateway: widget.gateway),
       ],
-    ),
-  );
-
-  Widget section(
-    String title,
-    String subtitle,
-    IconData icon,
-    Widget child, {
-    bool open = false,
-  }) => Theme(
-    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-    child: ExpansionTile(
-      key: Key('brain-section-$title'),
-      initiallyExpanded: open,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
-      childrenPadding: EdgeInsets.zero,
-      leading: Icon(icon, color: accent, size: 20),
-      title: Text(
-        title,
-        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-      ),
-      subtitle: Text(
-        subtitle,
-        style: const TextStyle(fontSize: 12, color: muted),
-      ),
-      children: [child],
     ),
   );
 
@@ -731,19 +751,17 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
               },
             ),
           ),
-          section(
-            'Instructions',
-            'The built-in rules every message follows',
-            Icons.notes_rounded,
-            instructionsTab(),
-          ),
-          saveRow('Save changes'),
+          instructionsTab(),
+          if (message != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                message!,
+                style: const TextStyle(fontSize: 12, color: muted),
+              ),
+            ),
         ],
         const SizedBox(height: 24),
-        pageHeading(
-          'Memory',
-          'Notes sessions can read to understand your preferences.',
-        ),
         memoryTab(),
       ],
     );
