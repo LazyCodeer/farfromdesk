@@ -247,7 +247,7 @@ export class DesktopControl {
       // A shortcut (cmd+shift+g in a file picker) goes in the foreground: background key events never reach
       // a native panel's key equivalents.
       if(plan.action==='press_key'&&plan.modifiers?.length){
-        const r=await this.driver.call('hotkey',{pid:target.pid,window_id:target.window_id,keys:[...plan.modifiers,plan.key!],delivery_mode:'foreground'},controller.signal);
+        const r=await this.inFront('hotkey',{pid:target.pid,window_id:target.window_id,keys:[...plan.modifiers,plan.key!],delivery_mode:'foreground'},controller.signal);
         const ok=r?.ok!==false&&!r?.error;
         return {action:plan.action,ok,observation:ok?null:String(r?.error??r?.message??'refused').slice(0,200),changes:ok?`Pressed ${[...plan.modifiers,plan.key].join('+')}. Not confirmed: read the window to see what it did.`:null};
       }
@@ -262,7 +262,7 @@ export class DesktopControl {
         for(const [i,piece] of pieces.entries()){
           if(controller.signal.aborted)break;
           let typed:any;
-          try{typed=await this.driver.call('type_text',{pid:target.pid,window_id:target.window_id,text:piece,delivery_mode:'foreground'},controller.signal);}
+          try{typed=await this.inFront('type_text',{pid:target.pid,window_id:target.window_id,text:piece,delivery_mode:'foreground'},controller.signal);}
           catch(e){return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String((e as Error)?.message??e).slice(0,200)}.${reached(i)}`,changes:null};}
           if(typed?.ok===false||typed?.error)return {action:plan.action,ok:false,observation:`Typing stopped after ${i} of ${pieces.length} pieces: ${String(typed?.error??typed?.message??'refused').slice(0,200)}.${reached(i)}`,changes:null};
         }
@@ -283,7 +283,7 @@ export class DesktopControl {
       // A system file picker never takes background keys ("Background input refused", live 5 Nov 2026).
       // Only a key press retries in front, like the owner's own keyboard; a refused click is still reported.
       if(plan.action==='press_key'&&result?.ok!==true&&/Background input refused/i.test(JSON.stringify(result?.observation??result??''))){
-        const r=await this.driver.call('press_key',{pid:target.pid,window_id:target.window_id,key:plan.key!,delivery_mode:'foreground'},controller.signal);
+        const r=await this.inFront('press_key',{pid:target.pid,window_id:target.window_id,key:plan.key!,delivery_mode:'foreground'},controller.signal);
         const ok=r?.ok!==false&&!r?.error;
         return {action:plan.action,ok,observation:ok?null:String(r?.error??r?.message??'refused').slice(0,200),changes:ok?`Pressed ${plan.key} in front. Not confirmed: read the window to see what it did.`:null};
       }
@@ -294,6 +294,16 @@ export class DesktopControl {
       // and reads like a diff line in a chat message.
       return {action:plan.action,ok,observation:ok?null:result?.observation?.summary??result?.observation?.message??null,changes:ok&&total?'The window changed.':null};
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
+  }
+  /** Foreground input. When another window of the same app holds focus (an open file picker), the
+   * driver names it, and the input goes there, since that is where the owner's keyboard would land. */
+  private async inFront(tool:string,args:Record<string,unknown>,signal:AbortSignal):Promise<any>{
+    try{return await this.driver.call(tool,args,signal);}
+    catch(e){
+      const held=/window_id (\d+) "[^"]*" of the same app holds focus/.exec(String((e as Error)?.message));
+      if(!held||Number(held[1])===args.window_id)throw e;
+      return this.driver.call(tool,{...args,window_id:Number(held[1])},signal);
+    }
   }
   /**
    * Run one reviewed app-pack tool, so the exact sequence is written down once instead of

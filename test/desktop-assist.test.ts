@@ -215,3 +215,11 @@ test('a key press the driver refuses by throwing also retries in front', async (
   assert.equal(h.of('press_key')[0].args.delivery_mode, 'foreground');
   assert.equal(r.ok, true);
 });
+
+test('foreground input goes to the window the driver says holds focus, such as an open file picker', async () => {
+  let first = true;
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: () => { throw new Error('DESKTOP_NATIVE_REFUSED: Background input refused'); }, press_key: (args: any) => { if (first) { first = false; throw new Error('press_key delivery failed: exact target window did not become focused for foreground HID delivery: window_id 26620 "" of the same app holds focus'); } return { ok: true, w: args.window_id }; } });
+  const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'return' });
+  assert.equal(h.of('press_key').at(-1).args.window_id, 26620);
+  assert.equal(r.ok, true);
+});
