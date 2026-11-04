@@ -4,8 +4,8 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2399** (`local-local-deepseek-labels-2399`, installed 2026-11-04 06:47, health 401
-after 22s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
+app is **2401** (`local-local-deepseek-ui-2401`, installed 2026-11-04 08:20, health 401
+after 20s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
 "don't let me forget to ...".
@@ -1867,3 +1867,41 @@ whatever provider or API the run uses. What was measured and what now exists:
 - Still not built: a settings UI in the app for provider/model/key, and a session the owner started
   in the GUI cannot be injected into (the `desktop` profile is reserved and its transport is an
   authenticated loopback RPC), so GUI sessions still take pasted prompts.
+
+### The DeepSeek page, and what is in each workspace (4 November 2026, build 2401)
+
+- **A session lives in a folder, so the app view is a workspace first.** `GET /api/deepseek` answers
+  with `folders` (every folder that has a conversation) and
+  `workspaces: [{folder, activeLabel, sessions, inboxLabel, inbox}]`, plus the selected workspace's
+  own view at the top level. `POST {action:'workspace', folder}` picks one (the folder must exist),
+  and `new`, `use`, `stop` and `send` all accept the `folder` they belong to. The chat commands and
+  this route read the same keys and the same inbox records, so they cannot disagree.
+- **How a folder is discovered**: `src/store.ts` gained `keys(prefix)`; `dshWorkspaces(keys)` in
+  `src/dsh-sessions.ts` treats the `deepseek-labels:<folder>` keys as authoritative and falls back to
+  `deepseek-session:<folder>:<label>`, splitting from the **right** so `C:\repo:default` still works.
+  A folder an action names is added to the set *before* the action runs, otherwise the first
+  `new` in a fresh folder would resolve to the previously selected one (this was a real test failure).
+- **Where it is drawn**: `desktop/lib/deepseek_panel.dart`, a Settings tab whose record lives in
+  `settingsSections()` (`desktop/lib/screens.dart`: a `_SettingsSection` tuple with `cards:
+  [DeepSeekPanel(gateway: api)]`; the nav row is `settingsNavItem` and the pane is `settingsPane()` in
+  `desktop/lib/studio_panes.dart`, which is `part of 'app.dart'`). Panels are separate files imported
+  by `app.dart`; new settings sections only need the list entry. The page shows the provider line
+  (`Runs azure-deepseek with DeepSeek-V4.1-Flash`), the workspace chips, each session with
+  `running now` / `N waiting` / `N undelivered` / `idle`, `Use`/`Stop`, `New session`, and the active
+  label's messages with the plain sentence that a message stays "prepared" until a turn carries it.
+- The page polls every 5 seconds (stopped while an action is in flight), because a session another
+  chat starts has to appear without leaving the page. It takes its two calls (`get`/`post`) rather
+  than the whole `Gateway`, so `desktop/test/deepseek_panel_test.dart` (5 widget tests) proves the
+  rendered actions: `Use` posts `{action:'use',label}`, `Leave it` posts the message, an unnamed new
+  session is refused locally, and a refused action is shown as "That did not happen" rather than
+  looking like it worked.
+- **Detach/reattach does not apply here.** `detached` is a Claude-desktop *lineage* flag
+  (`src/session-catalog.ts:7`, `src/native.ts:58`, `src/desktop-start.ts`'s `mcp__ccd_session_mgmt__detach_session`),
+  with no reattach verb. A headless `dsh` run has no parent session; continuing *is* `--session-id`.
+  The `deepseekCatalog()` rows (`src/native.ts:160`, read from `~/.dsh/sessions/…jsonl.zstd`) appear
+  only in the coordinator setup picker, and the platform tile's session count comes from coordinator
+  bindings — which is why the labelled conversations needed their own view.
+- **Still true**: a session the owner started in the desktop app itself cannot be injected into (the
+  `desktop` profile is reserved; its transport is an authenticated loopback RPC), so those take
+  pasted prompts. The page cannot *create* a session the GUI will adopt, only the headless ones the
+  chat lane runs.
