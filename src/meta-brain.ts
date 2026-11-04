@@ -501,7 +501,7 @@ export class MetaBrain {
           // 4 November 2026). A cut is said out loud so the model never presents part as all.
           const out=JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})});
           this.store.event(m.id,'device_action',{action:'read_tab',chars:out.length});
-          return out.length>30000?out.slice(0,30000)+' [cut here: the page has more than this]':out;
+          return out.length>64000?out.slice(0,64000)+' [cut here: the page has more than this]':out;
         }catch(e){return `Refused: ${deviceRefusal(e)}`;}
       }
     }
@@ -607,6 +607,8 @@ export class MetaBrain {
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
+        // Opening inside the loop, so "open whatsapp" can go on to read what is new there.
+        openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:(url,browser)=>{this.ack(m,browser);return this.openPageFor(m,url,browser);},
         reminders:{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},
       }:undefined));

@@ -242,7 +242,8 @@ export function refusalLine(plan: DevicePlan, message: unknown): string {
 
 /** One factual sentence. The composer may rephrase it; it may not contradict it. */
 export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
-  const app = String(result?.app ?? plan.app ?? 'the app');
+  // Some bundles carry an invisible direction mark in their name ("\u200eWhatsApp", live 4 Nov 2026).
+  const app = String(result?.app ?? plan.app ?? 'the app').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim();
   if (plan.action === 'open_app') {
     // The owner asked for an opened app to come forward, so that is the fact to report when
     // the driver confirmed it. Otherwise the honest sentence is what launch reported.

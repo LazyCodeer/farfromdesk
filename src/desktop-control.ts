@@ -640,5 +640,6 @@ export function desktopPage(state:any,title:string){
     const value=e.role==='AXHeading'?e.label:e.value||e.label;
     if(inside&&typeof value==='string'&&value.trim()&&text.at(-1)!==value)text.push(value);
   }
-  const joined=text.join('\n');return {text:joined.slice(0,24000),truncated:state.truncated===true||joined.length>24000};
+  // 60,000 characters: a Gmail inbox filled the old 24,000 before today's mail ended (live, 4 Nov 2026).
+  const joined=text.join('\n');return {text:joined.slice(0,60000),truncated:state.truncated===true||joined.length>60000};
 }
