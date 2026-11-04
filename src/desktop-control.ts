@@ -105,7 +105,7 @@ type Ref={scope:string;expires:number;app:App;window?:any;tab?:any;browserWindow
 const fields:Record<Input['action'],string[]>={
   status:[],stop:[],check_permissions:[],list_apps:['query'],list_browsers:[],open_app:['appRef','actionId'],list_tabs:['browser'],
   new_tab:['windowRef','url','actionId'],focus_tab:['tabRef','actionId'],navigate_tab:['tabRef','url','actionId'],close_tab:['tabRef','actionId'],
-  list_windows:['appRef'],read_window:['windowRef','screenshot'],read_tab:['tabRef'],chat_controls:['windowRef','screenshot'],
+  list_windows:['appRef'],read_window:['windowRef','screenshot'],read_tab:['tabRef','screenshot'],chat_controls:['windowRef','screenshot'],
   // Each of these addresses a point, so it needs a window to be a point in, and a
   // reserved action ID because a delivered click cannot be taken back.
   click:['windowRef','snapshotId','controlId','actionId','x','y','modifier','button','deliveryMode'],
@@ -543,13 +543,14 @@ export class DesktopControl {
         const native=only(windows.filter((n:any)=>['x','y','width','height'].every(k=>Math.abs(n.bounds[k]-w.bounds[k])<=2)),'DESKTOP_WINDOW_AMBIGUOUS');
         await browse({operation:'focus_tab',...t});
         try{
-          const state=await read({...r,window:native});
+          const state=await read({...r,window:native},q.screenshot===true);
           const page=desktopPage(state,r.tab.title);
           const after=await browse({operation:'list_tabs',bundle:r.app.bundle});
           const current=only((after.windows as any[]).filter(w=>w.window_id===t.window_id),'DESKTOP_BROWSER_WINDOW_STALE');
           const currentTab=only((current.tabs as any[]).filter(t=>t.tab_id===r.tab.tab_id),'DESKTOP_TAB_STALE');
           if(current.active_tab_id!==r.tab.tab_id||currentTab.url!==r.tab.url||currentTab.title!==r.tab.title)throw new Error('DESKTOP_PAGE_CHANGED_DURING_READ');
-          return {tabRef:q.tabRef,title:r.tab.title,...page,untrustedAppEvidence:true};
+          // The page as the owner sees it, when asked: the text says what is there, the image lets them check it.
+          return {tabRef:q.tabRef,title:r.tab.title,url:r.tab.url,...page,untrustedAppEvidence:true,...(q.screenshot===true&&state.screenshot_png_b64?{screenshot:{pngBase64:state.screenshot_png_b64,mimeType:state.screenshot_mime_type??'image/png',width:state.screenshot_width,height:state.screenshot_height}}:{})};
         }finally{
           if(!abort.signal.aborted)await browse({operation:'focus_tab',bundle:r.app.bundle,window_id:w.window_id,tab_id:w.active_tab_id});
         }

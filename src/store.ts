@@ -7,7 +7,9 @@ import { formatWhatsAppMessage, sessionMeta } from './coordinator-experience.js'
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { safeEventDetails, errorCode, type ReplyContext, type RequestOutcome, type VoiceStageEvent } from './request-events.js';
 
 const buildSource=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8')).sourceCommit??null;}catch{return null;}})();
@@ -23,7 +25,10 @@ export class Store {
   db: DatabaseSync;
   destinationContext=new AsyncLocalStorage<string>();
   incomingOwnerContext=new AsyncLocalStorage<IncomingOwner>();
+  /** Screenshots the brain sends, kept beside the database and read back only by the sender. */
+  readonly mediaDir: string;
   constructor(file: string) {
+    this.mediaDir = file === ':memory:' ? join(tmpdir(), `ffd-brain-media-${process.pid}`) : join(dirname(file), 'brain-media');
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY, alias TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, native_id TEXT NOT NULL, cwd TEXT NOT NULL, mode TEXT NOT NULL, token_hash TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, UNIQUE(provider,native_id));
@@ -434,6 +439,26 @@ export class Store {
     } catch (e) { this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output'); throw e; }
   }
   /** Internal brain replies have an owner ledger row, not a fabricated agent job. */
+  /**
+   * A screenshot the owner asked for, as a photo in their chat. Artifacts belong to a session job;
+   * a brain answer has no job, so the image is written beside the database with its hash, and the
+   * sender sends it only if the bytes still match. The caption goes through the same owner checks.
+   */
+  outputBrainPhoto(requestId:string,png:Buffer,caption:string) {
+    const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
+    if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    if(!png.length||png.length>10_000_000)return false;
+    const sha=createHash('sha256').update(png).digest('hex'),source=`brain-photo:${requestId}:${sha.slice(0,16)}`;
+    mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
+    const path=join(this.mediaDir,`${sha}.png`);writeFileSync(path,png,{mode:0o600});
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||'Screenshot',source,task.destination);
+    if(!queued)return false;
+    const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
+    if(!row)return false;
+    this.db.prepare("UPDATE outbox SET media_kind='brain-photo' WHERE id=?").run(row.id);
+    this.set(`brain-photo:${row.id}`,JSON.stringify({path,sha}));
+    return true;
+  }
   outputBrain(requestId:string,text:string,source=`brain:${requestId}`) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
     if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');

@@ -226,7 +226,12 @@ export class Telegram {
         void this.processMedia(m,incoming,file,destination,controller.signal).catch(()=>{}).finally(()=>this.media.delete(controller));return;
       }
       if(!text){this.store.output(undefined,'Send text, a voice note, an image or a document to control your sessions.',`telegram-unsupported:${id}`,destination);this.store.remember(id);return;}
-      await this.router.receive(incoming);
+      // The typing indicator from the moment the message arrives, until the router is done with it,
+      // so the owner sees at once that the request was picked up. Telegram clears it after 5 s, so
+      // it is renewed; failures are ignored because it is only a hint.
+      const typing=()=>this.call('sendChatAction',{chat_id:Number(this.store.get('telegram-user-id')),action:'typing'},this.controller?.signal).catch(()=>{});
+      void typing();const renew=setInterval(()=>void typing(),4500);
+      try{await this.router.receive(incoming);}finally{clearInterval(renew);}
     }));
   }
   private async download(file:any,filename:string,signal:AbortSignal):Promise<DownloadedMedia> {
@@ -284,6 +289,16 @@ export class Telegram {
       if(socialPreviewDeliveryState(this.store,row.id)!=='ready')return;
       let body:Record<string,unknown>|FormData={chat_id:Number(this.store.get('telegram-user-id')),text:telegramHTML(row.body),parse_mode:'HTML',link_preview_options:{is_disabled:true}},method='sendMessage';
       const markup=optionsMarkup(this.store,row.id);if(markup)(body as Record<string,unknown>).reply_markup=markup;
+      if(row.media_kind==='brain-photo'){
+        // A screenshot the brain was asked for: sent only if the file is still exactly what was
+        // queued for this row, otherwise the caption goes alone.
+        try{
+          const saved=JSON.parse(this.store.get(`brain-photo:${row.id}`)??'null') as {path:string;sha:string}|null;
+          const bytes=saved?readFileSync(saved.path):undefined;
+          if(!saved||!bytes||createHash('sha256').update(bytes).digest('hex')!==saved.sha||bytes.length>10_000_000||row.body.length>1024)throw new Error();
+          const form=new FormData();form.set('chat_id',String(this.store.get('telegram-user-id')));form.set('photo',new Blob([new Uint8Array(bytes)],{type:'image/png'}),'screenshot.png');form.set('caption',row.body);body=form;method='sendPhoto';
+        }catch{/* text only */}
+      }
       if(row.artifact_id){
         try {
           const a=this.store.db.prepare('SELECT * FROM artifacts WHERE id=?').get(row.artifact_id) as any,b=this.store.binding(row.binding_id),job=this.store.job(a?.request_id??'');

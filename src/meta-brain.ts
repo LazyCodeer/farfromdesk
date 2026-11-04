@@ -500,6 +500,62 @@ export class MetaBrain {
     }catch{return plain;}
   }
   /** "what tabs are open": every supported browser that is running, plus Safari, as one answer. */
+  /**
+   * The first sign of life for a request that needs the Mac: sent once, when the first tool starts,
+   * so the owner knows the brain has it and what it is doing before the answer is ready.
+   */
+  private acked=new Set<string>();
+  private ack(m:Incoming,what:string){
+    if(this.acked.has(m.id))return;this.acked.add(m.id);if(this.acked.size>500)this.acked.clear();
+    try{this.store.output(undefined,`🧠 Checking ${what}…`,`brain-ack:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}
+  }
+  /** Screenshots taken for a request, sent after its answer. */
+  private shots=new Map<string,Buffer[]>();
+  private keepShot(m:Incoming,result:any){
+    const b64=result?.screenshot?.pngBase64;if(typeof b64!=='string'||!b64)return false;
+    const list=this.shots.get(m.id)??[];if(list.length<3)list.push(Buffer.from(b64,'base64'));this.shots.set(m.id,list);return true;
+  }
+  /** Sends the screenshots taken for this request, after its text answer. */
+  private sendShots(m:Incoming){
+    const list=this.shots.get(m.id);this.shots.delete(m.id);
+    for(const [i,png] of (list??[]).entries()){try{this.store.outputBrainPhoto(m.id,png,list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot');}catch{}}
+  }
+  private desktop(){return this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>};}
+  /** read_tab: the tab whose title or URL matches, read in place (the prior tab is restored). */
+  private async readTabFor(m:Incoming,match:string,screenshot:boolean):Promise<string>{
+    const control=this.desktop();if(!control.run)return 'Reading tabs is not available in this build.';
+    const want=match.toLowerCase().split(/\s+/).filter(Boolean);
+    for(const browser of ['comet','chrome','edge','brave']){
+      let listed:any;try{listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});}catch{continue;}
+      for(const w of listed?.windows??[])for(const t of w.tabs??[]){
+        const hay=`${t.title??''} ${t.url??''}`.toLowerCase();
+        if(!want.every(word=>hay.includes(word)))continue;
+        try{
+          const page=await control.run(`brain:${m.id}`,{action:'read_tab',tabRef:t.tabRef,...(screenshot?{screenshot:true}:{})});
+          const sent=screenshot&&this.keepShot(m,page);
+          const {screenshot:_omit,...rest}=page??{};
+          return JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})}).slice(0,14000);
+        }catch(e){return `Refused: ${deviceRefusal(e)}`;}
+      }
+    }
+    return `No open tab matches "${match}". Use list_tabs to see them.`;
+  }
+  /** read_window: the front window of a running app, with an optional screenshot. */
+  private async readWindowFor(m:Incoming,app:string,screenshot:boolean):Promise<string>{
+    const control=this.desktop();if(!control.run)return 'Reading windows is not available in this build.';
+    try{
+      const apps=(await control.run(`brain:${m.id}`,{action:'list_apps',query:app.slice(0,160)}))?.apps??[];
+      const target=apps.find((a:any)=>a.running&&a.active)??apps.find((a:any)=>a.running);
+      if(!target)return `${app} is not running. Ask the owner whether to open it.`;
+      const windows=(await control.run(`brain:${m.id}`,{action:'list_windows',appRef:target.appRef}))?.windows??[];
+      const win=windows.find((w:any)=>w.onScreen)??windows[0];
+      if(!win)return `${target.name} is running but has no window open.`;
+      const state=await control.run(`brain:${m.id}`,{action:'read_window',windowRef:win.windowRef,...(screenshot?{screenshot:true}:{})});
+      const sent=screenshot&&this.keepShot(m,state);
+      const controls=(state?.controls??[]).slice(0,250).map((c:any)=>[c.role,c.label,c.value].filter(Boolean).join(': ')).filter(Boolean);
+      return JSON.stringify({app:target.name,window:win.title,controls,...(state?.elementsEmpty?{note:'This window publishes no readable text (a canvas app); rely on the screenshot.'}:{}),...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})}).slice(0,14000);
+    }catch(e){return `Refused: ${deviceRefusal(e)}`;}
+  }
   /** The open tabs, as data for the model's list_tabs tool. */
   private async tabsData(m:Incoming):Promise<string>{
     const control=this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>;view?:()=>{enabled:boolean}};
@@ -574,8 +630,10 @@ export class MetaBrain {
       decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
         // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
         // model can say why and what to switch on, instead of the loop failing.
-        run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
-        tabs:()=>this.tabsData(m),
+        run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
+        tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
+        readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
+        readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
       }:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
@@ -601,9 +659,10 @@ export class MetaBrain {
     // Model wording is only allowed for questions and small talk; claims always come from saved data.
     // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
     // once. A second copy would silently stop applying when that one changes.
-    const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,400);
+    // Room for an answer built from tool results (a tab list was cut mid-word at 400).
+    const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,2500);
     if(decision.intent==='clarify') {this.stop(m.id,said||'Please clarify the task and which coding platform you want. Nothing has been dispatched.','clarification');return true;}
-    if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,said||'Send a task, or ask where are we.');return true;}
+    if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,said||'Send a task, or ask where are we.');this.sendShots(m);return true;}
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);
     if(decision.intent==='manage') {
       if(!policy.allowManagement){this.stop(m.id,'Task and session management is disabled in Meta Settings.');return true;}
