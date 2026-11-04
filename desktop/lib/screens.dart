@@ -2724,6 +2724,49 @@ extension _BridgeScreens on _DeskState {
     ),
   );
 
+  /// The DeepSeek conversations a coordinator runs, in the folder each one belongs to. This is a
+  /// session surface, not a setting, so it lives where the coordinators are — not in Settings.
+  Future<void> openDeepSeekSessions() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => Dialog(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 960, maxHeight: 780),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(26, 22, 26, 22),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'DeepSeek sessions',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Close',
+                    ),
+                  ],
+                ),
+                gap(10),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: DeepSeekPanel(gateway: api),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget coordinatorSummary() {
     final entries = coordinatorEntries;
     final background = preferences['backgroundEnabled'] == true;
@@ -2831,14 +2874,19 @@ extension _BridgeScreens on _DeskState {
           ]),
         ...setupOperation(),
         gap(14),
-        Row(
+        Wrap(
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 10,
           children: [
-            Expanded(
+            SizedBox(
+              width: 300,
               child: small(
                 'Name a coding platform in your chat, or the default answers general requests.',
               ),
             ),
-            const SizedBox(width: 12),
+            button('Sessions', openDeepSeekSessions, compact: true),
             button('Manage coordinators', openManage, primary: true),
           ],
         ),
@@ -4405,15 +4453,6 @@ extension _BridgeScreens on _DeskState {
         cards: thisMacCards(serverMode),
       ),
     ];
-    sections.add((
-      id: 'deepseek',
-      title: 'DeepSeek Harness',
-      subtitle: 'The sessions you talk to with /deepseek, workspace by workspace.',
-      icon: Icons.forum_outlined,
-      badge: null,
-      status: null,
-      cards: [DeepSeekPanel(gateway: api)],
-    ));
     if (remoteSupported || status['macControl']?['supported'] == true) {
       sections.add((
         id: 'remote',
