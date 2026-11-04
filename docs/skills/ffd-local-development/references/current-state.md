@@ -4,10 +4,11 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2404** (`local-local-app-tool-battery-2404`, installed 2026-11-04 11:37, health 401
-after 16s). 2404 is the first build whose app tools were run against the real Mac: the eight
-packs answer for Notes, Mail, Finder, Safari, Music and Messages, and Calendar and Reminders
-refuse in words until the owner gives the one-time Calendar/Reminders grant. 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
+app is **2412** (`local-local-notes-colon3-2412`, installed 2026-11-04 12:56, health 401
+after 16s). 2412 answers the owner's original "summarise all my notes" with the real note
+list: the eight packs answer for Notes (full CRUD), Mail, Finder, Safari, Music and Messages,
+and Calendar and Reminders still refuse in words, because the bundled EventKit helper has no
+grant while plain AppleScript reads both apps' real data today (see the last section). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
 "don't let me forget to ...".
@@ -1979,3 +1980,59 @@ seventh constructor argument (`private exec: Executor = execute`), because app t
 through the driver's `run_steps` and the fan-out test has to hold an action open somewhere that is
 still shipped code; and a `read_window` whose target has no window is refused
 (`DESKTOP_APP_NOT_RUNNING`) instead of asking the driver for a `window_id: null` read.
+
+### The live sweep, the three fixes it forced, and the Calendar route (4 November 2026, build 2412)
+
+Run because the owner said "go ahead and test everything". The headline is that the ask he
+originally saw fail now works, and that three defects only a real run could find had to be
+fixed to get there.
+
+**The acceptance test.** `summarise all my notes` through the brain answered `Done in Notes.`
+on 2404, with the note list thrown away. Cause: `src/brain-device.ts` `deviceOutcome` phrased
+four tools (`notes_create_note`, `calendar_create_event`, `notes_find`, `calendar_list_events`)
+and fell through to `Done in {app}.` for the other twenty-eight. The reply the owner receives
+is `line` and `evidence` joined by a blank line (`src/meta-brain.ts`, cap raised 900 -> 1800 in
+`cc96bc5`), so the content must live in exactly one of them: measured live, the first fix put it
+in both and the listing printed twice in the owner's own chat. Final shape (`24a05b7`): a read
+gets `Here is what is in {app}:` as `line` and the content as `evidence`; a write gets the
+script's own sentence as `line` and no `evidence`. `src/brain-reply.ts` rewrites an inline em
+dash to a comma (`INLINE_DASH`), which flattened the note listing's ` — ` separator, so that
+separator is now `: ` (`3e54d13`, build 2412). On 2412 the ask answers with `Here is what is in
+Notes:` and all seven real notes as `name (folder: Notes, modified: <date>): <first characters>`.
+
+**What each pack did, live.** Notes: create -> append -> update -> read -> delete, each with a
+real sentence, nothing left behind (a deleted note goes to Recently Deleted, which `delete`
+cannot purge — `Access not allowed. (-10003)`). Finder: real items in `home` and `documents`,
+honest empty for a name that is not there. Mail: `mail_draft` creates a real draft and does not
+send; `mail_recent`/`mail_find` answer `I could not find a mailbox called Sent in Mail.` and
+that is true, because `get name of every mailbox` returns only `SendLater, Drafts` on this Mac.
+Safari: opened `https://example.com`, read the real page (`Example Domain has 915 characters:`
+plus its multilingual text), then the tab was closed — `safari_read_tab`'s `limit` is
+**characters**, not tabs (`src/app-tools/packs/safari.ts:157`). Messages: `count of chats` is 0, so its empty answers are correct and it remains unproven with data. Music was
+not played to (that would make sound on the owner's Mac unasked).
+
+**Calendar and Reminders: AppleScript works today, the helper does not.** Measured from this
+shell with plain `osascript`: `tell application "Calendar" to get name of every calendar` ->
+`Calendar, Scheduled Reminders, Birthdays, India Holidays, Siri Suggestions`, and a
+`whose start date >= today` loop returns real events; `tell application "Reminders" to get name
+of every list` -> `Reminders`. The four calendar/reminders tools refuse instead
+(`macOS has not given this helper access to your Calendar/Reminders. Open System Settings > ...`),
+with no prompt shown, because the bundled `native/eventkit-helper` is ad-hoc signed: every
+build changes its cdhash, so a grant cannot survive a rebuild. Two ways out, and the choice is
+the owner's: switch those two packs to AppleScript (works now; the first write raises the
+one-time Automation Allow), or keep EventKit and sign with the Apple Developer identity present
+on this machine (`Apple Development: sagar.kumar.iitbombay@gmail.com (P4X9842Y28)`).
+
+**Housekeeping that mattered.** The build volume reached 100% and a ship failed mid-copy with
+`cp: ... fcopyfile failed: No space left on device` / `ffd: copying the Flutter app into the
+stage failed` (the exit code read 0 only because the command was piped to `tail`). Forty-one
+superseded build folders from 1-2 November and earlier were deleted, freeing 50 GB; `release-*`,
+`social-*`, `windows-updater`, `phone-control-claude` and `local-app-20261027` were kept, as was
+everything from 3 November onward. The owner's Notes also held 20 live notes, 18 of them test
+debris from live runs (`x`, `first`, `agent one note`, `owner@s.whatsapp.net note`,
+`120363000000000000@g.us note`, `tomorrow meeting at 10pm`, three times each) plus two of mine;
+22 were deleted and sit in Recently Deleted, leaving his seven real notes.
+
+**Still untested on purpose.** Calendar/Reminders writes, Mail with a real message (this account
+has none), Messages with a real chat, Music with audio playing, and the Calendar/Reminders reads
+until the route above is chosen.
