@@ -223,3 +223,10 @@ test('foreground input goes to the window the driver says holds focus, such as a
   assert.equal(h.of('press_key').at(-1).args.window_id, 26620);
   assert.equal(r.ok, true);
 });
+
+test('typing into a field whose label shares its name retries as the text field', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: (args: any) => { if (!args.steps[0].type_text.role) throw new Error('DESKTOP_NATIVE_REFUSED: type_text ERROR (find): 2 elements match element "Phone"'); return { ok: true }; } });
+  const r: any = await h.c.assist('brain:t', { action: 'type', app: 'Comet', name: 'Phone', text: '9000000000' });
+  assert.equal(h.of('run_steps').at(-1).args.steps[0].type_text.role, 'textfield');
+  assert.equal(r.ok, true);
+});
