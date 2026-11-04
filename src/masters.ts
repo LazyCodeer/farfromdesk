@@ -32,7 +32,9 @@ import { WorkspaceScanner,type ResolvedWorkspaces } from './workspace-scanner.js
 import { scopedBridgeCommand } from './reply-args.js';
 import { openCodexDesktop } from './session-activation.js';
 import { museBinary, runMuse } from './muse-session.js';
-import { dshBinary, runDsh } from './dsh-session.js';
+import { dshBinary } from './dsh-session.js';
+import { runDshQueued } from './dsh-sessions.js';
+import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch } from './dsh-provider.js';
 import { runCursorTurn } from './cursor-desktop.js';
 import { cursorAppBinary } from './cursor-paths.js';
 
@@ -584,7 +586,25 @@ export class Masters {
       // continues the same conversation. This profile reports no usage, so none is emitted.
       const key=`deepseek-session:${b.id}`,stored=this.store.get(key)||null;
       handedOff=true;
-      const result=await verify(runDsh({prompt:message,cwd:b.cwd,sessionId:stored,timeoutMs:deepseekTurnTimeoutMs}));
+      // A headless run needs a key, and the app cannot borrow the desktop session's credential.
+      // Say what to fix instead of spawning a turn that fails on an error the owner cannot act on.
+      const settings=dshSettings(name=>this.store.get(name)??undefined),status=dshStatus(settings);
+      // One conversation per folder, so a second request waits for the first instead of adopting a
+      // session that is still being written.
+      const {env}=keyEnvironment(settings);
+      const {result:queued,queued:waiting}=runDshQueued(b.cwd,{prompt:message,cwd:b.cwd,sessionId:stored,patchPath:writePatch(stateDir,settings),env,timeoutMs:deepseekTurnTimeoutMs});
+      if(waiting&&this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,'DeepSeek is still on the previous task in this folder. This one is queued behind it.','progress',jobId,`native-progress:${jobId}`);
+      let result;
+      try {
+        result=await verify(queued);
+      } catch(error) {
+        // The run is attempted even without a configured key, because the CLI may resolve its own
+        // credential. Only a credential failure is replaced by the next step the owner can take.
+        const hint=credentialHint((error as Error)?.message??String(error),status);
+        if(!hint)throw error;
+        if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,hint,'final',jobId,`native-final:${jobId}`);
+        return;
+      }
       if(result.sessionId)this.store.set(key,result.sessionId);
       if(this.store.job(jobId)?.status==='replaced')return;
       if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);

@@ -1741,3 +1741,71 @@ sentence "tomorrow meeting at 10pm woth ashitosh", so a calendar request for a m
 Ashitosh also matches the Notes tool. The calendar tool ranks first and no golden or paraphrase
 row is wrong-first from it, and the list is a shortlist for the model rather than a decision, so
 this is a ranking wart and not the failure it would be if the list were sent as the answer.
+
+## Where the app tools stand, and the parallel-session handover (4 November 2026)
+
+The owner asked the companion **"Give me summary of all the notes"** and it answered by dumping the
+accessibility labels of the visible Notes window ("On My Mac", "Tags", "Today", a couple of note
+titles). Nothing on that path reads note content: `read_window` returns the accessibility tree of the
+visible window sliced to 6000 characters, there is no summarisation step, and the only content tool
+(`notes_find`, AppleScript) compiles and is unit-tested but has **never been run live** — it needs a
+one-time macOS Automation allow-click. Ten builds (2386–2395) added reviewed tools, a retrieval gate
+and a fan-out test suite; none of them changed that user-visible outcome. That is the honest state.
+
+The direction the owner set: treat every app as an API with full CRUD — find, create, read all,
+update, delete — for the daily apps, and build it in **parallel sessions, one app each**.
+
+- Plan and shared contract: `docs/app-tool-apis.md`.
+- Paste-ready prompts: `docs/session-prompts/1-notes.md`, `2-reminders.md`, `3-calendar.md`
+  (also copied to `/tmp/ffd-prompts/`).
+- Session rule: each session creates **only new files** — `src/app-tools/packs/<app>.ts` and
+  `test/app-tools/<app>.test.ts` — must not edit existing files, must not build or commit, and must
+  not redefine the existing names (`notes_create_note`, `notes_find`, `reminders_add`,
+  `reminders_list`, `calendar_create_event`, `calendar_list_events`). A separate integrator session
+  moves the app's existing tools into its file, registers the pack, extends the golden sets, runs
+  `npm run evals`, builds and live-verifies.
+- Test contract every session must satisfy: pack invariants (unique names, ≥3-sentence descriptions
+  with "Use this when" and an explicit negative, described args, ≥2 owner-voice examples, ≥4
+  keywords, correct `writes`, `notFor` phrases of ≥2 words), retrieval positives for the owner's
+  phrasings and negatives for coding phrasings, argument refusals as readable sentences, an
+  `osacompile` compile test per AppleScript tool, and a read-back proof for every write.
+- Honesty ladder: T0 compiles, T1 refuses bad args, T2 retrieval, T3 exact script/step assertions,
+  T4 live run with the TCC click, T5 read-back proof. Calendar, Reminders and the Notes body tools
+  are at T3 or below; nothing may be called working until T4 and T5 happened.
+- Verified session mechanism: `dsh --profile headless --json -` with the prompt on stdin creates a
+  real DeepSeek Harness session (its `session` event carries `sessionId`) and can be resumed with
+  `--session-id`. It currently fails at startup with
+  `dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"` because
+  the launching environment has no `DEEPSEEK_API_KEY`; the desktop app resolves credentials through
+  its own service, which a bare CLI run does not inherit. Export the key in the launching environment
+  (or launch from a shell that has it) to start the sessions.
+
+## DeepSeek sessions: any provider, one conversation per folder (4 November 2026)
+
+The objective the owner set: start new DeepSeek sessions and collaborate *while* one is running,
+whatever provider or API the run uses. What was measured and what now exists:
+
+- **The child environment is the whole credential mechanism.** `DEEPSEEK_API_KEY=<key> dsh --profile
+  headless --json -` moves past `MISSING_CREDENTIAL` and reports the provider's own
+  `AUTH: Authentication Fails ... status 401`, so the key must reach the spawned process; the
+  desktop app's credential service is not inherited.
+- **A launcher patch sets the provider per run.** `dsh --profile headless --patch <file>` composes an
+  `agent-default-model` overlay; the composed headless profile otherwise pins
+  `provider: deepseek-official`, `model: deepseek-flash`. A patch replaces the whole config of the
+  entry it names, so every needed field is written into it.
+- `src/dsh-provider.ts` turns the owner's settings into the environment and that patch, for any
+  route: `ROUTE_KEY_ENV` names the key variable for DeepSeek, OpenAI, Anthropic, Azure, Gemini,
+  OpenRouter, Groq, xAI and Mistral, and a route it does not know still works when the owner names
+  the variable. A stored key beats an inherited one; `dshStatus()` reports `configured`,
+  `keySource` and one actionable sentence, and never the key. `credentialHint()` replaces only a
+  real credential failure with that sentence, so every other error stays as the CLI said it.
+- `src/dsh-sessions.ts` is the collaboration surface: one queue per folder, because one folder is one
+  DeepSeek conversation (`--session-id` adoption is scoped to its working directory). A turn that
+  arrives while another runs is queued in order and told so, a failed turn does not poison the
+  queue, and `dshCancel` stops the running one.
+- `/deepseek` now has `status`, `new`/`reset` (fresh session), `stop`, and a task; the progress line
+  says when the message joined a queue. The coordinator path (`src/masters.ts`) uses the same
+  settings, patch and queue. `GET|POST /api/deepseek` (admin token) reads and writes provider,
+  model, reasoning effort, key variable and key, and returns `hasStoredKey` rather than the value.
+- Not built yet: labelled/multiple sessions in one folder (the session key is still
+  `deepseek-session:<cwd>`), a settings UI in the app, and a live end-to-end run with a real key.

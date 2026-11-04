@@ -25,6 +25,8 @@ export type DshRunOptions={
   prompt:string;
   cwd:string;
   sessionId?:string|null;
+  /** A `--patch` overlay applied after every bundle layer, so a run can name its provider/model. */
+  patchPath?:string|null;
   timeoutMs?:number;
   binary?:string;
   env?:NodeJS.ProcessEnv;
@@ -41,6 +43,9 @@ export function dshBinary():string{return dshBinaryPath();}
 export function dshArgs(options:DshRunOptions):string[] {
   const args=['--profile','headless','--json'];
   if(options.sessionId)args.push('--session-id',options.sessionId);
+  // `--patch` belongs to the launcher, so it goes before the app's own arguments. A patch replaces
+  // the config of the entry it names; it never edits what the owner installed.
+  if(options.patchPath)args.push('--patch',options.patchPath);
   // A lone `-` is the documented stdin marker. Sending the task on stdin keeps a long prompt out
   // of the argument vector and out of any shell quoting.
   args.push('-');

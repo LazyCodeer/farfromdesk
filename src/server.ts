@@ -8,6 +8,7 @@ import {sessionResearchRead,sessionResearchRefine,sessionResearchRequest} from '
 import {sessionSpecialty} from './session-specialty.js';
 import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
+import { dshSettings, dshStatus } from './dsh-provider.js';
 import { SocialAssistant } from './social-assistant.js';
 import { saveSessionSocialDrafts } from './social-session-drafts.js';
 import { renderSessionSocialImage } from './social-session-image.js';
@@ -549,6 +550,34 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         if(d.serverMode===true&&!d.backgroundEnabled)throw new Error('Allow background operation before enabling server mode.');
         if(d.removeServerHelper===true)await services.power.removeServerHelper();
         await services.power.update(d.backgroundEnabled,d.keepAwake,d.serverMode);json(res,200,services.power.view());return;
+      }
+      if(path==='/api/deepseek'&&(req.method==='GET'||req.method==='POST')) {
+        // The app cannot borrow the desktop session's DeepSeek credential, so the owner stores one
+        // here (or exports the variable before launching). The key is never returned, only whether
+        // one is held, and the provider/model become a per-run `--patch` rather than an edit to the
+        // profile the owner installed.
+        if(req.method==='POST') {
+          const d=await body(req);
+          const line=(value:unknown,label:string,max=120)=>{
+            if(value===undefined)return undefined;
+            if(typeof value!=='string'||value.length>max)throw new Error(`${label} has to be text.`);
+            return value.trim();
+          };
+          const provider=line(d.provider,'The provider route');
+          const model=line(d.model,'The model');
+          const effort=line(d.reasoningEffort,'The reasoning effort',40);
+          const keyEnv=line(d.keyEnv,'The key variable',80);
+          const key=line(d.apiKey,'The API key',4000);
+          if(keyEnv!==undefined&&keyEnv&&!/^[A-Z][A-Z0-9_]*$/.test(keyEnv))throw new Error('The key variable has to look like AN_ENVIRONMENT_VARIABLE.');
+          if(provider!==undefined)store.set('deepseek-provider',provider);
+          if(model!==undefined)store.set('deepseek-model',model);
+          if(effort!==undefined)store.set('deepseek-reasoning-effort',effort);
+          if(keyEnv!==undefined)store.set('deepseek-key-env',keyEnv);
+          if(d.clearKey===true)store.set('deepseek-api-key','');
+          else if(key!==undefined&&key)store.set('deepseek-api-key',key);
+        }
+        const settings=dshSettings(name=>store.get(name)??undefined),status=dshStatus(settings);
+        json(res,200,{...status,reasoningEffort:settings.reasoningEffort??'',hasStoredKey:!!settings.key,workspace:store.get('deepseek-workspace')??''});return;
       }
       if(path==='/api/destination'&&req.method==='POST') {
         const d=await body(req);if(d.jid!==undefined&&(typeof d.jid!=='string'||d.jid.length>100))throw new Error('Invalid group');

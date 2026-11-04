@@ -8,7 +8,9 @@ import { brainPolicy } from './meta-brain-config.js';
 import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 import { errorCode } from './request-events.js';
 import { runMuse } from './muse-session.js';
-import { runDsh } from './dsh-session.js';
+import { runDshQueued, dshCancel, dshQueueState } from './dsh-sessions.js';
+import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch } from './dsh-provider.js';
+import { stateDir } from './config.js';
 import { runCursorTurn } from './cursor-desktop.js';
 
 export const TELEGRAM_COMMANDS=[
@@ -134,13 +136,29 @@ function deepseekWorkspace(r:Router) {
 /** One prompt, one finished run. A run that did not finish is reported, never passed off as an answer. */
 async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   const cwd=deepseekWorkspace(r),key=`deepseek-session:${cwd}`,label=basename(cwd)||cwd;
-  if(!arg)return `DeepSeek Harness is ready in ${label}. Send /deepseek followed by the task. It continues the same DeepSeek session in this folder; /deepseek reset starts a new one.`;
-  if(arg.toLowerCase()==='reset'){r.store.set(key,'');return 'The next /deepseek starts a fresh DeepSeek session in this folder.';}
+  const settings=dshSettings(name=>r.store.get(name)??undefined),status=dshStatus(settings);
+  const sub=arg.trim().toLowerCase(),queue=dshQueueState(cwd);
+  const busy=queue.busy?` A turn is still running in ${label}${queue.waiting?` with ${queue.waiting} queued`:''}; your message joins the queue.`:'';
+  if(!arg||sub==='status')
+    return `DeepSeek Harness is ready in ${label}. ${status.hint}${busy} Send /deepseek followed by the task. It continues the same DeepSeek session in this folder; /deepseek new starts a fresh one, /deepseek stop cancels the turn that is running.`;
+  if(sub==='new'||sub==='reset'){r.store.set(key,'');return 'The next /deepseek starts a fresh DeepSeek session in this folder.';}
+  if(sub==='stop')return dshCancel(cwd)?`Stopped the DeepSeek turn in ${label}.`:`Nothing is running in ${label}.`;
   const destination=r.store.destination();
-  if(destination)r.store.output(undefined,`🤖 DeepSeek is working in ${label}.`,`deepseek-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
-  const result=await runDsh({prompt:arg,cwd,sessionId:r.store.get(key)||null,timeoutMs:20*60*1000});
-  if(result.sessionId)r.store.set(key,result.sessionId);
-  return result.text.slice(0,20000);
+  if(destination)r.store.output(undefined,`🤖 DeepSeek is working in ${label}.${queue.busy?' Queued behind the previous task.':''}`,`deepseek-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
+  const {env}=keyEnvironment(settings);
+  const {result}=runDshQueued(cwd,{prompt:arg,cwd,sessionId:r.store.get(key)||null,patchPath:writePatch(stateDir,settings),env,timeoutMs:20*60*1000});
+  let finished;
+  try {
+    finished=await result;
+  } catch(error) {
+    // The run is attempted even without a configured key, because the CLI may resolve its own
+    // credential. Only a credential failure is replaced by the next step the owner can take.
+    const hint=credentialHint((error as Error)?.message??String(error),status);
+    if(!hint)throw error;
+    return hint;
+  }
+  if(finished.sessionId)r.store.set(key,finished.sessionId);
+  return finished.text.slice(0,20000);
 }
 /**
  * One prompt, one finished turn, one brand-new Cursor chat. The deeplink only prefills the Composer
