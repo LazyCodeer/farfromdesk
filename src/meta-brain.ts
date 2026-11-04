@@ -6,8 +6,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { userInfo } from 'node:os';
 import { basename, join, sep } from 'node:path';
-import {researchSpecialty} from './research-agent.js';
-import {jobsSpecialty} from './jobs-agent.js';
 import {captureGuidedResearchRequest} from './agent-reach-request.js';
 import {bindSessionSpecialty,prepareSpecialties,specialtyEpoch,markPendingSpecialty} from './session-specialty.js';
 import {socialSpecialty} from './social-agent.js';
@@ -874,7 +872,7 @@ export class MetaBrain {
       const mode=incoming?router.guidedModes.get(router,incoming):undefined;
       if(mode&&incoming)captureGuidedResearchRequest(this.store,router,incoming,mode.kind);
       const provider=mode?.kind==='social'?(requestedSocialImageProvider(text)??mode.imageProvider??'local'):undefined;
-      const instructions=mode?(mode.kind==='social'?socialSpecialty(provider):mode.kind==='research'?researchSpecialty():jobsSpecialty()):undefined;
+      const instructions=mode?socialSpecialty(provider):undefined;
       if(mode&&instructions)markPendingSpecialty(this.store,id,target,mode.kind,instructions,text,provider);
       this.store.set(`brain-routed:${id}`,'true');
       router.queue(id,target,text);

@@ -4,7 +4,7 @@ import {hash} from './store.js';
 import {specialtyEpoch,specialtyIdentity} from './session-specialty.js';
 import type {Binding} from './store.js';
 
-export type GuidedKind = 'research' | 'jobs' | 'social';
+export type GuidedKind = 'social';
 type Session = { imageProvider?:'local'|'meta'; kind:GuidedKind; expires:number; busy:boolean; socialTarget?:{bindingId:string; identity:string; epoch:string} };
 const socialKey=(key:string)=>`guided-social:${hash(key)}`;
 /** Ephemeral mode selection is scoped to the paired owner and connection generation. */
