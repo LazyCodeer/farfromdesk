@@ -13,7 +13,7 @@ import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInve
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
-import { overviewTool, shortlistTools } from './app-tools/retrieve.js';
+import { overviewTool, selectTools, shortlistTools } from './app-tools/retrieve.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
@@ -381,6 +381,10 @@ export class MetaBrain {
     // back as "I could not update the contract".
     if(appInventoryRequest(text))return true;
     if(notesAuthoringRequest(text)&&this.lastDeviceApp())return true;
+    // A question about app content ("check my mails") is the brain's to answer with a reviewed
+    // tool. It is not device-shaped, so the contract classifier took it and the owner read "Meta
+    // could not check the task" (live, 4 November 2026).
+    if(overviewTool(text)||selectTools(text).length)return true;
     if(!deviceVerbLike(text))return false;
     try{return detectDevicePlan(text,await deviceTargets(this.deviceControl()))!==null;}catch{return false;}
   }

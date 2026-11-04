@@ -322,7 +322,8 @@ export class DesktopControl {
           // A helper reports a refusal as `Error: <sentence>` on stderr. The prefix is the
           // helper's convention, not something the owner should read, so it comes off here; what
           // is left is already a sentence written for them.
-          const stderr=String((e as {stderr?:string}).stderr??'').replace(/^\s*Error:\s*/,'').replace(/\s+/g,' ').trim();
+          const said=String((e as {stderr?:string}).stderr??'');
+          const stderr=said.replace(/^\s*Error:\s*/,'').replace(/\s+/g,' ').trim();
           const text=stderr||String((e as Error).message??'');
           // A helper that is not in this build is not a failed action, it is a tool this build
           // does not have yet. It gets its own sentinel so the sentence survives: APP_TOOL_FAILED
@@ -333,6 +334,11 @@ export class DesktopControl {
           // EventKit helper says the same thing in words, because TCC denies access to a process
           // with no usage description instantly and silently, with no dialog to accept.
           if(/-1743|not authori[sz]ed|not permitted|errAEEventNotPermitted|permission denied|access was denied/i.test(text))throw new Error('AUTOMATION_PERMISSION_REQUIRED: macOS is waiting for your permission to control '+tool.app+'. Open System Settings > Privacy & Security, allow FarFromDesk Local to reach '+tool.app+', then ask me again. Nothing was changed.');
+          // Any other `Error:` sentence from a bundled helper is already written for the owner.
+          // Measured live: the EventKit helper said "macOS has not given this helper access to
+          // your Calendar. Open System Settings > ..." and the owner read "the action did not
+          // complete", because the cause matcher did not know that wording.
+          if(plan.kind==='cli'&&/^\s*Error:\s*\S/.test(said))throw new Error('APP_TOOL_REFUSED: '+stderr.slice(0,400));
           throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+text.replace(/\s+/g,' ').slice(0,300));
         }
       }

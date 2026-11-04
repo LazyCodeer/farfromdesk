@@ -313,6 +313,7 @@ export function deviceRefusal(error: unknown): string {
   if (message.startsWith('APP_TOOL_ARGUMENT_INVALID')) return `I could not use those details, so I did nothing: ${message.slice('APP_TOOL_ARGUMENT_INVALID: '.length)}`;
   if (message.startsWith('AUTOMATION_PERMISSION_REQUIRED')) return message.slice('AUTOMATION_PERMISSION_REQUIRED: '.length) || 'macOS needs your permission before I can control that app.';
   if (message.startsWith('APP_TOOL_HELPER_MISSING')) return message.slice('APP_TOOL_HELPER_MISSING: '.length);
+  if (message.startsWith('APP_TOOL_REFUSED')) return message.slice('APP_TOOL_REFUSED: '.length);
   if (message.startsWith('APP_TOOL_FAILED')) return `I could not do that: ${plainCause(message.slice('APP_TOOL_FAILED:'.length))}.`;
   if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app has no open window right now, so there is nothing to act on yet.';
   if (message.startsWith('DESKTOP_MACOS_ONLY')) return 'I can only control apps on macOS.';

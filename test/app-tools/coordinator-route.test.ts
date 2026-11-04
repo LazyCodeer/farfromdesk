@@ -47,3 +47,16 @@ test('a writing tool needs a fresh action ID and is never replayed', async () =>
   await assert.rejects(control.run('b:r3', { action: 'app_tool', tool: 'shell_exec', args: {} }), /APP_TOOL_UNKNOWN/);
   assert.throws(() => desktopInput.parse({ action: 'app_tool', tool: 'notes_recent', args: { n: 5 } }), 'arguments are strings only');
 });
+
+// Live, 4 November 2026: the EventKit helper said exactly what to do, and the owner read
+// "the action did not complete" instead.
+test('a helper refusal reaches the owner in its own words', async () => {
+  const { deviceRefusal } = await import('../../src/brain-device.js');
+  const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
+  const driver = { call: async (name: string) => (name === 'check_permissions' ? { accessibility: true, screen_recording: true } : {}) };
+  const sentence = 'macOS has not given this helper access to your Calendar. Open System Settings > Privacy & Security > Calendars and turn it on, then try again.';
+  const exec = async () => { throw Object.assign(new Error('Command failed'), { code: 1, stderr: `Error: ${sentence}\n` }); };
+  const control = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, (async () => {}) as any, exec as any);
+  const error = await control.run('b:r4', { action: 'app_tool', tool: 'calendar_list_events', args: { days: '1' } }).catch(e => e);
+  assert.equal(deviceRefusal(error), sentence);
+});
