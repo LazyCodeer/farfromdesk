@@ -11,9 +11,21 @@ import 'gateway.dart';
 /// a conversation, then the labelled sessions inside the one you picked, each with its own queue and
 /// its own undelivered messages. Everything here reads the same route the chat commands write
 /// (`/api/deepseek`), so the panel and `/deepseek` cannot disagree.
+typedef DeepSeekGet = Future<Map<String, dynamic>> Function(String path);
+typedef DeepSeekPost =
+    Future<Map<String, dynamic>> Function(String path, Map<String, dynamic> data);
+
 class DeepSeekPanel extends StatefulWidget {
-  final Gateway gateway;
-  const DeepSeekPanel({super.key, required this.gateway});
+  final DeepSeekGet get;
+  final DeepSeekPost post;
+
+  /// Two calls are all this page makes, so a test can hand it a fake without
+  /// implementing the whole Gateway.
+  DeepSeekPanel({super.key, required Gateway gateway})
+    : get = gateway.get,
+      post = gateway.post;
+
+  const DeepSeekPanel.calls({super.key, required this.get, required this.post});
 
   @override
   State<DeepSeekPanel> createState() => _DeepSeekPanelState();
@@ -27,14 +39,21 @@ class _DeepSeekPanelState extends State<DeepSeekPanel> {
   String? message;
   bool busy = false;
 
+  Timer? ticker;
+
   @override
   void initState() {
     super.initState();
     unawaited(load());
+    // A session another chat starts has to appear here without leaving the page.
+    ticker = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!busy) unawaited(load());
+    });
   }
 
   @override
   void dispose() {
+    ticker?.cancel();
     nameInput.dispose();
     noteInput.dispose();
     super.dispose();
@@ -42,7 +61,7 @@ class _DeepSeekPanelState extends State<DeepSeekPanel> {
 
   Future<void> load() async {
     try {
-      final data = await widget.gateway.get('/api/deepseek');
+      final data = await widget.get('/api/deepseek');
       if (!mounted) return;
       setState(() {
         view = data;
@@ -60,7 +79,7 @@ class _DeepSeekPanelState extends State<DeepSeekPanel> {
       message = null;
     });
     try {
-      final data = await widget.gateway.post('/api/deepseek', body);
+      final data = await widget.post('/api/deepseek', body);
       if (!mounted) return;
       setState(() {
         view = data;
