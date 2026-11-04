@@ -4405,6 +4405,15 @@ extension _BridgeScreens on _DeskState {
         cards: thisMacCards(serverMode),
       ),
     ];
+    sections.add((
+      id: 'deepseek',
+      title: 'DeepSeek Harness',
+      subtitle: 'The sessions you talk to with /deepseek, workspace by workspace.',
+      icon: Icons.forum_outlined,
+      badge: null,
+      status: null,
+      cards: [DeepSeekPanel(gateway: api)],
+    ));
     if (remoteSupported || status['macControl']?['supported'] == true) {
       sections.add((
         id: 'remote',

@@ -10,6 +10,7 @@ import 'native_gateway.dart';
 import 'local_email_screen.dart';
 import 'remote_desktop.dart';
 import 'meta_brain_panel.dart';
+import 'deepseek_panel.dart';
 import 'updates.dart';
 import 'connection_status.dart';
 import 'ffd_select.dart';
