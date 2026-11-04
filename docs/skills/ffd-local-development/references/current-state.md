@@ -4,8 +4,10 @@
 the numbered sections after it supersede it one build at a time. As of 3 November
 the current source is `/private/tmp/ffd-pr` (a real checkout on branch
 `codex/local-desktop-work`, shared with other sessions), and the installed Local
-app is **2402** (`local-local-sessions-coordinator-2402`, installed 2026-11-04 10:42, health 401
-after 16s). 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
+app is **2404** (`local-local-app-tool-battery-2404`, installed 2026-11-04 11:37, health 401
+after 16s). 2404 is the first build whose app tools were run against the real Mac: the eight
+packs answer for Notes, Mail, Finder, Safari, Music and Messages, and Calendar and Reminders
+refuse in words until the owner gives the one-time Calendar/Reminders grant. 2394 carries the read-only `notes_find` tool, the read/write split, the embedding
 doc-vector cache (28 lines on a cold turn, 1 after), the plan-argument guard, locale-proof
 calendar dates, tool vocabulary with no person's name in it, and the task capture that accepts
 "don't let me forget to ...".
@@ -1917,3 +1919,63 @@ whatever provider or API the run uses. What was measured and what now exists:
   `desktop` profile is reserved; its transport is an authenticated loopback RPC), so those take
   pasted prompts. The page cannot *create* a session the GUI will adopt, only the headless ones the
   chat lane runs.
+
+### The per-app tool battery, and what it found (4 November 2026, build 2404)
+
+A tool is not known to work because its unit tests pass. `node /tmp/ffd-battery.mjs` imports the
+installed `dist/desktop-control.js` (or the source with `FFD_SOURCE=1`, which pairs the source
+`DesktopControl` with the **installed** driver, because the repo's own `native/cua-driver` has no
+Accessibility grant), builds `new DesktopControl(prefs, undefined, undefined, 'darwin')` with
+`prefs.get('mac-control-enabled') === 'true'`, and calls `packTool` per case. Phase `R` is
+read-only, phase `W` writes and cleans up after itself.
+
+Four defects only the real run could show, all fixed in `34a9aa3`:
+
+- **A local named like an app dictionary term is an app term.** Inside `tell application "Notes"`,
+  `set dates to {}` compiles as Notes' own `date` class and dies with `Can't set every date to {}`
+  (-10006); `set lines to {}` does the same in Messages, and `target` in Finder. A `local dates,
+  headers, refs` declaration does not help (`Expected variable name or property but found plural
+  class name`, -2741); the fix is renaming the locals (`ntDates`, `ntHeaders`, `ntRefs`, `msLines`,
+  `fdTarget`, …). The same trap was found again in `notes_delete`, where `size` is a Notes class.
+- **Finder reads one `modification date` per item**, so a 409-item Downloads folder passed the 20s
+  osascript timeout; `SCAN_CAP` is 60 with the measurement beside it.
+- **`notes_create_note` was a keystroke batch** (escape, click "New Note", type_text), which is
+  exactly what typed into the open note when the search field was not there. It is one AppleScript
+  now, and the suite pins that a note is never written through keystrokes.
+- **Writing a note's body makes its `name` read back as the whole flattened text**, so the note the
+  tool had just reported could not be found again (one leaked note proved it). `notes_append` and
+  `notes_update` read the name before the write and set it back after. `every note` also includes
+  the **Recently Deleted** folder, so a summary showed the owner's trash: notes whose folder cannot
+  be read, or reads `Recently Deleted`, are left out, and a name that only exists in the trash is
+  refused rather than resolved.
+
+Measured on build 2404 (`node /tmp/ffd-battery.mjs all`, 19 of 23 calls answered):
+
+| Tools | Result |
+|---|---|
+| `notes_recent`, `notes_find`, `notes_read` | real note titles, folders and text; search 199ms (was a 20s timeout over 300 notes) |
+| `notes_create_note` → `notes_append` → `notes_update` → `notes_read` → `notes_delete` | each answers with its own sentence, ends `Deleted the note FFD battery … (36 characters).`, nothing left behind |
+| `mail_recent`, `mail_find`, `mail_draft` | read the mailbox; the draft lands in Mail's Drafts and is not sent ("was not at the front of the drafts mailbox when I looked" is the honest wording when Mail lags) |
+| `finder_recent`, `finder_find`, `safari_tabs`, `safari_read_tab`, `music_current`, `music_library`, `messages_recent`, `messages_find` | answered with real content or an honest empty answer |
+| `calendar_*`, `reminders_*` | **refused in words**: `macOS has not given this helper access to your Calendar/Reminders. Open System Settings > Privacy & Security > … and turn it on, then try again.` |
+
+Ladder rungs, stated plainly: **Notes is T5** for create/append/update/read/delete (a write is
+read back and its length is reported). **Mail, Finder, Safari, Music and Messages are T4** for the
+read tools, and `mail_draft` is T4 for the write. **Calendar and Reminders are T3**: the helper
+compiles, its argv is asserted, and the tools refuse correctly — no call has ever returned real
+calendar or reminder data on this Mac.
+
+What only the owner can unblock: the one-time Calendar/Reminders grant. Running the helper from a
+shell is denied silently (TCC attributes the request to the responsible process and never prompts a
+background binary), so the grant has to come from a foreground context, and because the shipped
+helper is **ad-hoc signed** the grant is keyed to a cdhash that changes every build. A Developer ID
+signature on `Contents/Resources/backend/native/eventkit-helper` is what makes it survive;
+`sign_grant_holders` in `docs/skills/ffd-local-development/scripts/ffd` already signs it when an
+identity is configured. Recovery after a wrong grant is
+`tccutil reset Calendar com.codecylabs.farfromdesk.localtest.eventkit`.
+
+Two seams came out of this round: `DesktopControl` takes its process executor as an injectable
+seventh constructor argument (`private exec: Executor = execute`), because app tools no longer go
+through the driver's `run_steps` and the fan-out test has to hold an action open somewhere that is
+still shipped code; and a `read_window` whose target has no window is refused
+(`DESKTOP_APP_NOT_RUNNING`) instead of asking the driver for a `window_id: null` read.
