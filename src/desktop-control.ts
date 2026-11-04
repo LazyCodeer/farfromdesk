@@ -46,7 +46,8 @@ export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_ke
 type Activator=(app:string,bundleId:string|undefined)=>Promise<unknown>;
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
 export type BrowserCall=(q:Record<string,unknown>,signal?:AbortSignal)=>Promise<any>;
-const execute=promisify(execFile);
+type Executor=(file:string,args:string[],options:{timeout?:number;signal?:AbortSignal;maxBuffer?:number})=>Promise<{stdout:string;stderr:string}>;
+const execute:Executor=promisify(execFile) as unknown as Executor;
 /**
  * Accessibility plumbing out, content in.
  *
@@ -141,7 +142,7 @@ export class DesktopControl {
   private capability:{ok:boolean;detail:string|null;checkedAt:number}|null=null;
   private capabilityPending?:Promise<{ok:boolean;detail:string|null}>;
   private targetCache?:{value:{name:string;bundleId:string;windows:string[]}[];checkedAt:number};
-  constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now,private activate:Activator=(app,bundleId)=>execute('/usr/bin/open',bundleId?['-b',bundleId]:['-a',app],{timeout:5000})){}
+  constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now,private activate:Activator=(app,bundleId)=>execute('/usr/bin/open',bundleId?['-b',bundleId]:['-a',app],{timeout:5000}),private exec:Executor=execute){}
   view(){return {supported:this.platform==='darwin',enabled:this.prefs.get('mac-control-enabled')==='true',driverVersion:'0.38.0',browserAdapters:Object.keys(desktopBrowsers),actions:desktopActions,permission:this.permission,capability:this.capability};}
   /**
    * Read-only driver permission probe.
@@ -216,7 +217,10 @@ export class DesktopControl {
       }
       if(plan.action==='read_window'){
         const target=await this.resolve(plan.app,plan.window);
-        if(!target)throw new Error('DESKTOP_APP_NOT_RUNNING: '+plan.app+' has no open window to read.');
+        // A target without a window_id is an app that is running with nothing open, which is not
+        // something to read: asking the driver with a null window returned an empty tree instead
+        // of the sentence the owner should get (measured 2026-11-04).
+        if(!target?.window_id)throw new Error('DESKTOP_APP_NOT_RUNNING: '+plan.app+' has no open window to read.');
         const state=await this.driver.call('get_window_state',{pid:target.pid,window_id:target.window_id,tree_format:'markdown',max_elements:250},controller.signal);
         return {action:plan.action,app:plan.app,window:state?.window_title??null,tree:stripAxMetadata(String(state?.tree_markdown??'')).slice(0,6000),elements:state?.element_count??0,complete:state?.elements_complete===true};
       }
@@ -280,16 +284,16 @@ export class DesktopControl {
       }
       if(plan.kind==='osascript'||plan.kind==='cli'){
         try{
-          let run;
-          if(plan.kind==='osascript')run=await execute('/usr/bin/osascript',['-e',plan.script],{timeout:20000,signal:controller.signal,maxBuffer:1024*1024});
+          let done;
+          if(plan.kind==='osascript')done=await this.exec('/usr/bin/osascript',['-e',plan.script],{timeout:20000,signal:controller.signal,maxBuffer:1024*1024});
           else{
             // A bundled, code-signed helper from backend/native. The binary is a bare file name,
             // never a path and never a shell string, so a plan cannot reach anywhere else.
             if(!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(plan.binary))throw new Error('the helper name "'+plan.binary+'" is not a plain file name');
             const binary=fileURLToPath(new URL('../native/'+plan.binary,import.meta.url));
-            run=await execute(binary,plan.args,{timeout:plan.timeoutMs??20000,signal:controller.signal,maxBuffer:4*1024*1024});
+            done=await this.exec(binary,plan.args,{timeout:plan.timeoutMs??20000,signal:controller.signal,maxBuffer:4*1024*1024});
           }
-          const raw=String(run.stdout??'').trim();
+          const raw=String(done.stdout??'').trim();
           // A helper answers in JSON, and its plan carries the parser, so the model is given lines
           // it can read instead of a data structure it would have to decode. The parser never
           // throws: a reply it cannot read becomes a sentence, which is what the owner should

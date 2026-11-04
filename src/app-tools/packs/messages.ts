@@ -124,7 +124,7 @@ const messagesRecent: AppTool = {
         `set q to ${asStr(who)}\n` +
         `set cap to ${limit}\n` +
         `set permNote to ${asStr(PERMISSION_NOTE)}\n` +
-        `set lines to {}\n` +
+        `set msLines to {}\n` +
         `set matches to 0\n` +
         `set refused to ""\n` +
         `tell application "Messages"\n` +
@@ -170,7 +170,7 @@ const messagesRecent: AppTool = {
         `\t\t\t\t\t\t\ttry\n` +
         `\t\t\t\t\t\t\t\tset sd to sender of m as string\n` +
         `\t\t\t\t\t\t\tend try\n` +
-        `\t\t\t\t\t\t\tif tx is not "" then set end of lines to (sd & ": " & tx)\n` +
+        `\t\t\t\t\t\t\tif tx is not "" then set end of msLines to (sd & ": " & tx)\n` +
         `\t\t\t\t\t\tend repeat\n` +
         `\t\t\t\t\tend if\n` +
         `\t\t\t\ton error errMsg number errNum\n` +
@@ -184,11 +184,11 @@ const messagesRecent: AppTool = {
         `end tell\n` +
         `if matches is 0 then return "No Messages conversation matching " & q & " was found."\n` +
         `if refused is not "" then return permNote & " (" & refused & ")"\n` +
-        `if (count of lines) is 0 then return "The conversation matching " & q & " had no readable messages."\n` +
+        `if (count of msLines) is 0 then return "The conversation matching " & q & " had no readable messages."\n` +
         `set {oldDelims, AppleScript's text item delimiters} to {AppleScript's text item delimiters, return}\n` +
-        `set body to lines as text\n` +
+        `set body to msLines as text\n` +
         `set AppleScript's text item delimiters to oldDelims\n` +
-        `return "Last " & (count of lines) & " message(s) with " & q & ":" & return & body\n`,
+        `return "Last " & (count of msLines) & " message(s) with " & q & ":" & return & body\n`,
     };
   },
 };
@@ -249,13 +249,13 @@ const messagesFind: AppTool = {
         `set chatCap to ${CHAT_SCAN_CAP}\n` +
         `set msgCap to ${PER_CHAT_SCAN_CAP}\n` +
         `set permNote to ${asStr(PERMISSION_NOTE)}\n` +
-        `set lines to {}\n` +
+        `set msLines to {}\n` +
         `set scanned to 0\n` +
         `set refused to ""\n` +
         `tell application "Messages"\n` +
         `\ttry\n` +
         `\t\trepeat with c in chats\n` +
-        `\t\t\tif (count of lines) < cap then\n` +
+        `\t\t\tif (count of msLines) < cap then\n` +
         `\t\t\t\tset scanned to scanned + 1\n` +
         `\t\t\t\tif scanned > chatCap then exit repeat\n` +
         `\t\t\t\tset who to ""\n` +
@@ -291,8 +291,8 @@ const messagesFind: AppTool = {
         `\t\t\t\t\t\t\t\tset tx to text of m\n` +
         `\t\t\t\t\t\t\tend try\n` +
         `\t\t\t\t\t\t\tif tx contains q then\n` +
-        `\t\t\t\t\t\t\t\tset end of lines to (who & " - " & tx)\n` +
-        `\t\t\t\t\t\t\t\tif (count of lines) is greater than or equal to cap then exit repeat\n` +
+        `\t\t\t\t\t\t\t\tset end of msLines to (who & " - " & tx)\n` +
+        `\t\t\t\t\t\t\t\tif (count of msLines) is greater than or equal to cap then exit repeat\n` +
         `\t\t\t\t\t\t\tend if\n` +
         `\t\t\t\t\t\tend repeat\n` +
         `\t\t\t\t\tend if\n` +
@@ -305,12 +305,12 @@ const messagesFind: AppTool = {
         `\t\treturn "Messages would not answer at all (error " & errNum & ": " & errMsg & "). " & permNote\n` +
         `\tend try\n` +
         `end tell\n` +
-        `if refused is not "" and (count of lines) is 0 then return permNote & " (" & refused & ")"\n` +
-        `if (count of lines) is 0 then return "No message in the scanned conversations contains " & q & "."\n` +
+        `if refused is not "" and (count of msLines) is 0 then return permNote & " (" & refused & ")"\n` +
+        `if (count of msLines) is 0 then return "No message in the scanned conversations contains " & q & "."\n` +
         `set {oldDelims, AppleScript's text item delimiters} to {AppleScript's text item delimiters, return}\n` +
-        `set body to lines as text\n` +
+        `set body to msLines as text\n` +
         `set AppleScript's text item delimiters to oldDelims\n` +
-        `return "Showing " & (count of lines) & " message(s) containing " & q & ":" & return & body\n`,
+        `return "Showing " & (count of msLines) & " message(s) containing " & q & ":" & return & body\n`,
     };
   },
 };

@@ -26,8 +26,14 @@ import { asStr } from '../applescript.js';
  *   the owner meant is how a listing answer turns into the wrong listing.
  */
 
-/** Items scanned in one listing. An unbounded folder of 50,000 files holds the turn open. */
-const SCAN_CAP = 400;
+/**
+ * Items scanned in one listing. An unbounded folder of 50,000 files holds the turn open.
+ *
+ * 400 was measured too many: Finder answers one item's `modification date` at a time through
+ * ScriptingBridge, and a live run over a 409-item Downloads folder blew past the 20s osascript
+ * timeout. 60 items answers in a few seconds, and the returned sentence says how many were looked at.
+ */
+const SCAN_CAP = 60;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 25;
 
@@ -87,24 +93,24 @@ function folderLabel(raw: string): string {
 /**
  * Newest first, over the two parallel lists a listing builds.
  *
- * `every item of` is not ordered by modification date, so dates and rendered lines are kept in
+ * `every item of` is not ordered by modification date, so fdDates and rendered fdLines are kept in
  * two lists and sorted together. A bubble sort is deliberate: AppleScript has no list sort and
  * the scan is capped. The `n > 1` guard is not optional: `repeat with i from 1 to n - 1` counts
  * down when the end is below the start, so a one-item folder would try `item 0` of an empty list.
  */
 function sortNewestFirst(): string {
   return (
-    `set n to count of dates\n` +
+    `set n to count of fdDates\n` +
     `if n > 1 then\n` +
     `\trepeat with i from 1 to n - 1\n` +
     `\t\trepeat with j from 1 to n - i\n` +
-    `\t\t\tif (item j of dates) < (item (j + 1) of dates) then\n` +
-    `\t\t\t\tset keepDate to item j of dates\n` +
-    `\t\t\t\tset item j of dates to item (j + 1) of dates\n` +
-    `\t\t\t\tset item (j + 1) of dates to keepDate\n` +
-    `\t\t\t\tset keepLine to item j of lines\n` +
-    `\t\t\t\tset item j of lines to item (j + 1) of lines\n` +
-    `\t\t\t\tset item (j + 1) of lines to keepLine\n` +
+    `\t\t\tif (item j of fdDates) < (item (j + 1) of fdDates) then\n` +
+    `\t\t\t\tset keepDate to item j of fdDates\n` +
+    `\t\t\t\tset item j of fdDates to item (j + 1) of fdDates\n` +
+    `\t\t\t\tset item (j + 1) of fdDates to keepDate\n` +
+    `\t\t\t\tset keepLine to item j of fdLines\n` +
+    `\t\t\t\tset item j of fdLines to item (j + 1) of fdLines\n` +
+    `\t\t\t\tset item (j + 1) of fdLines to keepLine\n` +
     `\t\t\tend if\n` +
     `\t\tend repeat\n` +
     `\tend repeat\n` +
@@ -161,8 +167,8 @@ const finderRecent: AppTool = {
     if (limit === undefined) {
       return refuse(`The limit has to be a whole number of items, like 10, or left empty for the ${DEFAULT_LIMIT} most recent.`);
     }
-    const target = folderExpression(String(args.folder ?? ''));
-    if (!target) {
+    const fdTarget = folderExpression(String(args.folder ?? ''));
+    if (!fdTarget) {
       return refuse('That folder name is not one I read by name. Name Downloads, Desktop, Documents, Home, Pictures, Movies or Public, or give the full path beginning with a slash.');
     }
     const label = folderLabel(String(args.folder ?? ''));
@@ -171,29 +177,29 @@ const finderRecent: AppTool = {
       script:
         `set cap to ${limit}\n` +
         `set scanCap to ${SCAN_CAP}\n` +
-        `set target to ${target}\n` +
+        `set fdTarget to ${fdTarget}\n` +
         `tell application "Finder"\n` +
         `\ttry\n` +
-        `\t\tset theItems to every item of target\n` +
+        `\t\tset fdItems to every item of fdTarget\n` +
         `\ton error\n` +
         `\t\treturn "That location is not a folder I can read, so nothing was read out."\n` +
         `\tend try\n` +
-        `\tset total to count of theItems\n` +
+        `\tset total to count of fdItems\n` +
         `\tif total is 0 then return "That folder is empty, so there was nothing to read out."\n` +
         `\tset scan to total\n` +
         `\tif scan > scanCap then set scan to scanCap\n` +
-        `\tset dates to {}\n` +
-        `\tset lines to {}\n` +
+        `\tset fdDates to {}\n` +
+        `\tset fdLines to {}\n` +
         `\trepeat with i from 1 to scan\n` +
-        `\t\tset r to item i of theItems\n` +
-        `\t\tset end of dates to (modification date of r)\n` +
-        `\t\tset end of lines to ((name of r) & " - " & (kind of r) & " - " & (modification date of r as string))\n` +
+        `\t\tset r to item i of fdItems\n` +
+        `\t\tset end of fdDates to (modification date of r)\n` +
+        `\t\tset end of fdLines to ((name of r) & " - " & (kind of r) & " - " & (modification date of r as string))\n` +
         `\tend repeat\n` +
         sortNewestFirst() +
         `\tset out to {}\n` +
-        `\trepeat with i from 1 to (count of lines)\n` +
+        `\trepeat with i from 1 to (count of fdLines)\n` +
         `\t\tif (count of out) is greater than or equal to cap then exit repeat\n` +
-        `\t\tset end of out to (item i of lines)\n` +
+        `\t\tset end of out to (item i of fdLines)\n` +
         `\tend repeat\n` +
         `end tell\n` +
         `if (count of out) is 0 then return "Nothing was read out of that folder."\n` +
@@ -257,8 +263,8 @@ const finderFind: AppTool = {
     if (limit === undefined) {
       return refuse(`The limit has to be a whole number of matches, like 10, or left empty for the ${DEFAULT_LIMIT} newest.`);
     }
-    const target = folderExpression(String(args.folder ?? ''));
-    if (!target) {
+    const fdTarget = folderExpression(String(args.folder ?? ''));
+    if (!fdTarget) {
       return refuse('That folder name is not one I read by name. Name Downloads, Desktop, Documents, Home, Pictures, Movies or Public, or give the full path beginning with a slash.');
     }
     const label = folderLabel(String(args.folder ?? ''));
@@ -267,16 +273,16 @@ const finderFind: AppTool = {
       script:
         `set cap to ${limit}\n` +
         `set q to ${asStr(query)}\n` +
-        `set target to ${target}\n` +
+        `set fdTarget to ${fdTarget}\n` +
         `set hits to {}\n` +
         `tell application "Finder"\n` +
         `\ttry\n` +
-        `\t\tset theItems to every item of target\n` +
+        `\t\tset fdItems to every item of fdTarget\n` +
         `\ton error\n` +
         `\t\treturn "That location is not a folder I can search, so nothing was looked for."\n` +
         `\tend try\n` +
-        `\tif (count of theItems) is 0 then return "That folder is empty, so nothing was found."\n` +
-        `\trepeat with k in theItems\n` +
+        `\tif (count of fdItems) is 0 then return "That folder is empty, so nothing was found."\n` +
+        `\trepeat with k in fdItems\n` +
         `\t\tset r to contents of k\n` +
         `\t\tif (name of r contains q) then\n` +
         `\t\t\tset end of hits to ((name of r) & " - " & (kind of r) & " - " & (modification date of r as string))\n` +

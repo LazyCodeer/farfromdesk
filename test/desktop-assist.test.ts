@@ -9,7 +9,7 @@ import { DesktopControl } from '../src/desktop-control.js';
  *   "press escape" was refused by the driver with "observe: pid and window_id are required",
  *   because the batch named no window for the observation to attach to.
  */
-function control(tree: any, windows: any[], results: Record<string, any> = {}, activate: (app: string, bundleId?: string) => Promise<unknown> = async () => {}) {
+function control(tree: any, windows: any[], results: Record<string, any> = {}, activate: (app: string, bundleId?: string) => Promise<unknown> = async () => {}, exec?: (file: string, args: string[], options: any) => Promise<{ stdout: string; stderr: string }>) {
   const calls: { name: string; args: any }[] = [];
   const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
   const driver = {
@@ -21,7 +21,7 @@ function control(tree: any, windows: any[], results: Record<string, any> = {}, a
       return results[name] ?? {};
     },
   };
-  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, activate as any);
+  const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, activate as any, exec as any);
   return { c, calls, of: (name: string) => calls.filter(x => x.name === name) };
 }
 
@@ -157,22 +157,18 @@ const NOTES_WINDOWS = [
   { pid: 16976, app_name: 'Notes', title: 'Notes', window_id: 19221 },
 ];
 
-test('the reviewed Notes tool runs its whole sequence in one background batch', async () => {
-  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 16976 }], windows: [] }, NOTES_WINDOWS, { run_steps: { ok: true, window_title: 'Notes' } });
-  const out = await h.c.packTool('brain:t', 'notes_create_note', { body: 'tomorrow meeting at 10pm' });
-  const args = h.of('run_steps')[0].args;
-  assert.equal(args.delivery_mode, 'background');
-  // Either Notes window works: the search state and a note share the toolbar, and the
-  // resolver prefers the frontmost titled window. What matters is that a window is named,
-  // because the driver refuses a batch whose observation cannot attach to one.
-  assert.ok([19220, 19221].includes(args.window_id), `named window ${args.window_id}`);
-  assert.deepEqual(args.steps, [
-    { press_key: { key: 'escape' } },
-    { click: { role: 'AXButton', name: 'New Note' } },
-    { type_text: { role: 'AXTextArea', text: 'tomorrow meeting at 10pm' } },
-  ]);
-  assert.equal(out.ok, true);
-  assert.equal(out.window, 'Notes');
+test('a reviewed Notes tool runs one AppleScript and never a keystroke batch', async () => {
+  // The old Notes create was a background keystroke batch (escape, click "New Note", type_text).
+  // Live on 2026-11-04 that batch typed into whatever note was open when the search field was not
+  // there, which appended to the owner's own note. It is one AppleScript now, and the guarantee
+  // worth pinning is that no app tool writes a note through keystrokes at all.
+  const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 16976 }], windows: [] }, NOTES_WINDOWS, {}, async () => {}, async (file, args) => {
+    assert.equal(file, '/usr/bin/osascript');
+    return { stdout: 'Wrote the note tomorrow meeting at 10pm in Notes.', stderr: '' };
+  });
+  const out = await h.c.packTool('brain:t', 'notes_create_note', { body: 'tomorrow meeting at 10pm\nsecond line' });
+  assert.equal(h.of('run_steps').length, 0, 'a note is never written with keystrokes');
+  assert.equal(out.output, 'Wrote the note tomorrow meeting at 10pm in Notes.');
 });
 
 test('an unknown tool or a missing argument is refused before the driver acts', async () => {
@@ -182,9 +178,12 @@ test('an unknown tool or a missing argument is refused before the driver acts', 
   assert.equal(h.of('run_steps').length, 0);
 });
 
-test('an app tool with no open window is refused before the driver is asked', async () => {
+test('a reading action with no open window is refused before the driver is asked', async () => {
+  // An AppleScript tool needs no window; a window action still does, and it must refuse before
+  // anything reaches the Mac rather than reading whatever happens to be in front.
   const h = control({ apps: [{ name: 'Notes', bundle_id: 'com.apple.Notes', pid: 1 }], windows: [] }, []);
-  await assert.rejects(() => h.c.packTool('brain:t', 'notes_create_note', { body: 'x' }), /DESKTOP_APP_NOT_RUNNING/);
+  await assert.rejects(() => h.c.assist('brain:t', { action: 'read_window', app: 'Notes' }), /DESKTOP_APP_NOT_RUNNING/);
+  assert.equal(h.of('get_window_state').length, 0);
   assert.equal(h.of('run_steps').length, 0);
 });
 

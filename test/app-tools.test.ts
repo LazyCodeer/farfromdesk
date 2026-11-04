@@ -59,15 +59,16 @@ test('every typing step says which control it types into', () => {
   }
 });
 
-test('creating a note never types into the search field', () => {
+test('creating a note goes through Notes itself, never through keystrokes', () => {
   const plan = toolByName('notes_create_note')!.plan({ body: 'tomorrow meeting at 10pm' });
-  assert.equal(plan.kind, 'steps');
-  const steps = plan.kind === 'steps' ? plan.steps : [];
-  assert.deepEqual(steps[0], { press_key: { key: 'escape' } });
-  // A name-only click on "New Note" is refused live because it also names a menu item.
-  assert.deepEqual(steps[1], { click: { role: 'AXButton', name: 'New Note' } });
-  assert.deepEqual(steps[2], { type_text: { role: 'AXTextArea', text: 'tomorrow meeting at 10pm' } });
-  assert.ok(!JSON.stringify(steps).includes('Search'));
+  // Live on 2026-11-03 the keystroke path typed into a note that was already open. Creating through
+  // Apple Notes returns the note's name, so the tool can say what it made and nothing can be typed.
+  assert.equal(plan.kind, 'osascript');
+  const script = plan.kind === 'osascript' ? plan.script : '';
+  assert.match(script, /make new note with properties \{body:theText\}/);
+  assert.match(script, /set name of fresh to "tomorrow meeting at 10pm"/);
+  assert.match(script, /Wrote the note /);
+  assert.doesNotMatch(script, /type_text|keystroke|click|Search/);
 });
 
 test('apple dates are refused unless they are the one shape AppleScript accepts', () => {

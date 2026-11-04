@@ -178,8 +178,11 @@ test('a notes write reads the note before and after, and refuses what it cannot 
   for (const name of ['notes_append', 'notes_update']) {
     const script = scriptOf(name, samples[name]);
     assert.match(script, /every note whose name is sought/, `${name} must find by exact name`);
-    assert.match(script, /if \(count of hits\) is greater than 1 then return/, `${name} must refuse an ambiguous name`);
-    assert.match(script, /if \(count of hits\) is 0 then return/, `${name} must refuse a missing note`);
+    assert.match(script, /if \(count of liveHits\) is greater than 1 then return/, `${name} must refuse an ambiguous name`);
+    assert.match(script, /if \(count of liveHits\) is 0 then return/, `${name} must refuse a missing note`);
+    // A note the owner deleted sits in Recently Deleted, and `every note` includes it: naming a
+    // note that only exists there must not resolve to it.
+    assert.match(script, /Recently Deleted/, `${name} must not treat a deleted note as a live one`);
     const before = script.indexOf('copy (plaintext of n) to beforeText');
     const write = script.indexOf('set body of n to');
     const after = script.indexOf('plaintext of n) to nowText') >= 0 ? script.indexOf('plaintext of n) to nowText') : script.indexOf('plaintext of n) to afterText');
@@ -200,7 +203,8 @@ test('a notes write reads the note before and after, and refuses what it cannot 
   const deleteScript = scriptOf('notes_delete', samples.notes_delete);
   assert.match(deleteScript, /if confirmation is not sought then return/);
   assert.match(deleteScript, /every note whose name is sought/);
-  assert.match(deleteScript, /if \(count of hits\) is greater than 1 then return/);
+  assert.match(deleteScript, /if \(count of liveHits\) is greater than 1 then return/);
+  assert.match(deleteScript, /Recently Deleted/);
   assert.match(deleteScript, /return "Deleted the note /);
   const deleteTool = NOTES_PACK.tools.find(tool => tool.name === 'notes_delete')!;
   assert.match(deleteTool.description, /never a folder and never a group/);

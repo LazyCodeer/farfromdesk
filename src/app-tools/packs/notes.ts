@@ -32,7 +32,7 @@ import { asStr } from '../applescript.js';
  * - Notes writes can land more than twenty seconds late, or never, so every write tool reads
  *   the note back and reports what it found instead of assuming the change took.
  * - `every note` probes the whole library, so the plaintext of only the newest few is fetched
- *   (the scan collects names and dates first, sorts those, then reads the bodies it will send).
+ *   (the scan collects names and ntDates first, sorts those, then reads the bodies it will send).
  */
 
 /** Notes read in one scan. An unbounded `every note` on a large library holds the turn open. */
@@ -72,8 +72,8 @@ function wholeNumber(value: unknown, fallback: number, max: number): number | un
 /**
  * Newest first, over the three parallel lists the scan builds.
  *
- * `every note` is not ordered by modification date, so the dates, the rendered headers and the
- * note references are kept in three lists and sorted together here. The dates were already read
+ * `every note` is not ordered by modification date, so the ntDates, the rendered ntHeaders and the
+ * note references are kept in three lists and sorted together here. The ntDates were already read
  * from Notes, so the sort does no more work in the app. A bubble sort is deliberate: AppleScript
  * has no list sort built in and the list is capped. The `total > 1` guard is not optional:
  * `repeat with i from 1 to total - 1` counts *down* when the end is below the start, so a
@@ -81,20 +81,20 @@ function wholeNumber(value: unknown, fallback: number, max: number): number | un
  */
 function sortNewestFirst(): string {
   return (
-    `set total to count of dates\n` +
+    `set total to count of ntDates\n` +
     `if total > 1 then\n` +
     `\trepeat with i from 1 to total - 1\n` +
     `\t\trepeat with j from 1 to total - i\n` +
-    `\t\t\tif (item j of dates) < (item (j + 1) of dates) then\n` +
-    `\t\t\t\tset keepDate to item j of dates\n` +
-    `\t\t\t\tset item j of dates to item (j + 1) of dates\n` +
-    `\t\t\t\tset item (j + 1) of dates to keepDate\n` +
-    `\t\t\t\tset keepLine to item j of headers\n` +
-    `\t\t\t\tset item j of headers to item (j + 1) of headers\n` +
-    `\t\t\t\tset item (j + 1) of headers to keepLine\n` +
-    `\t\t\t\tset keepRef to item j of refs\n` +
-    `\t\t\t\tset item j of refs to item (j + 1) of refs\n` +
-    `\t\t\t\tset item (j + 1) of refs to keepRef\n` +
+    `\t\t\tif (item j of ntDates) < (item (j + 1) of ntDates) then\n` +
+    `\t\t\t\tset keepDate to item j of ntDates\n` +
+    `\t\t\t\tset item j of ntDates to item (j + 1) of ntDates\n` +
+    `\t\t\t\tset item (j + 1) of ntDates to keepDate\n` +
+    `\t\t\t\tset keepLine to item j of ntHeaders\n` +
+    `\t\t\t\tset item j of ntHeaders to item (j + 1) of ntHeaders\n` +
+    `\t\t\t\tset item (j + 1) of ntHeaders to keepLine\n` +
+    `\t\t\t\tset keepRef to item j of ntRefs\n` +
+    `\t\t\t\tset item j of ntRefs to item (j + 1) of ntRefs\n` +
+    `\t\t\t\tset item (j + 1) of ntRefs to keepRef\n` +
     `\t\t\tend if\n` +
     `\t\tend repeat\n` +
     `\tend repeat\n` +
@@ -107,10 +107,34 @@ function findOneNamedNote(name: string): string {
   return (
     `set sought to ${asStr(name)}\n` +
     `set hits to (every note whose name is sought)\n` +
-    `if (count of hits) is 0 then return "There is no note called " & sought & ", so nothing was changed."\n` +
-    `if (count of hits) is greater than 1 then return "There are " & (count of hits) & " notes called " & sought & ", so nothing was changed: say which one you mean."\n` +
-    `set n to item 1 of hits\n`
+    // `every note` includes the Recently Deleted folder, and a name that exists only in the trash
+    // is not a note this can read, change or delete. Comparing the container object is what
+    // survives a library where the folder is not called "Recently Deleted" in English.
+    `set deadFolder to missing value\n` +
+    `try\n` +
+    `\tset deadFolder to first folder whose name is "Recently Deleted"\n` +
+    `end try\n` +
+    `set liveHits to {}\n` +
+    `repeat with h in hits\n` +
+    `\ttry\n` +
+    `\t\tset r to contents of h\n` +
+    `\t\tif deadFolder is missing value or (container of r) is not deadFolder then set end of liveHits to r\n` +
+    `\tend try\n` +
+    `end repeat\n` +
+    `if (count of liveHits) is 0 then return "There is no note called " & sought & ", so nothing was changed."\n` +
+    `if (count of liveHits) is greater than 1 then return "There are " & (count of liveHits) & " notes called " & sought & ", so nothing was changed: say which one you mean."\n` +
+    `set n to item 1 of liveHits\n`
   );
+}
+
+/** The first line of a body is what Apple Notes shows as the note's name. */
+function noteTitle(text: string): string {
+  const first = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line.length > 0);
+  const title = (first ?? text.trim()).slice(0, 120);
+  return title || 'Untitled note';
 }
 
 /**
@@ -184,9 +208,9 @@ const notesRecent: AppTool = {
         `set cap to ${limit}\n` +
         `set scanCap to ${SCAN_CAP}\n` +
         `set budget to ${BODY_BUDGET}\n` +
-        `set dates to {}\n` +
-        `set headers to {}\n` +
-        `set refs to {}\n` +
+        `set ntDates to {}\n` +
+        `set ntHeaders to {}\n` +
+        `set ntRefs to {}\n` +
         `set seen to 0\n` +
         `tell application "Notes"\n` +
         `\trepeat with n in notes\n` +
@@ -195,13 +219,20 @@ const notesRecent: AppTool = {
         `\t\tset r to contents of n\n` +
         `\t\tcopy (name of r) to nm\n` +
         `\t\tif nm is "" then set nm to "untitled note"\n` +
-        `\t\tset fd to "unknown folder"\n` +
+        `\t\tset fd to missing value\n` +
         `\t\ttry\n` +
-        `\t\t\tset fd to name of (container of r)\n` +
+        `\t\t\tset cA to container of r\n` +
+        `\t\t\tset fd to name of cA\n` +
         `\t\tend try\n` +
-        `\t\tset end of dates to modification date of r\n` +
-        `\t\tset end of headers to "### " & nm & " (folder: " & fd & ", modified: " & (modification date of r as string) & ")"\n` +
-        `\t\tset end of refs to r\n` +
+        // `every note` includes the ones the owner deleted: they sit in the Recently Deleted
+        // folder and would otherwise show up in "summarise all my notes" (measured live
+        // 2026-11-04: 3 of 14 notes were trash). Reading a trashed note's container fails, so a
+        // note whose folder cannot be read is left out too rather than shown as "unknown folder".
+        `\t\tif fd is not missing value and fd is not "Recently Deleted" then\n` +
+        `\t\t\tset end of ntDates to modification date of r\n` +
+        `\t\t\tset end of ntHeaders to "### " & nm & " (folder: " & fd & ", modified: " & (modification date of r as string) & ")"\n` +
+        `\t\t\tset end of ntRefs to r\n` +
+        `\t\tend if\n` +
         `\tend repeat\n` +
         sortNewestFirst() +
         `\tset out to {}\n` +
@@ -209,10 +240,10 @@ const notesRecent: AppTool = {
         `\tif total > 0 then\n` +
         `\t\trepeat with k from 1 to total\n` +
         `\t\t\tif (count of out) is greater than or equal to cap then exit repeat\n` +
-        `\t\t\tset ln to item k of headers & return\n` +
+        `\t\t\tset ln to item k of ntHeaders & return\n` +
         `\t\t\tset room to budget - used - (length of ln)\n` +
         `\t\t\tif room is less than 1 then exit repeat\n` +
-        `\t\t\tcopy (plaintext of (item k of refs)) to tx\n` +
+        `\t\t\tcopy (plaintext of (item k of ntRefs)) to tx\n` +
         `\t\t\tif (length of tx) is 0 then\n` +
         `\t\t\t\tset ln to ln & "(empty note)"\n` +
         `\t\t\telse if (length of tx) is greater than room then\n` +
@@ -335,10 +366,10 @@ const notesCreate: AppTool = {
   description:
     'Create a new note in Apple Notes and put the given text in its body. Use this when the owner ' +
     'asks to write, note down, jot, save or take down something and the destination is Notes. ' +
-    'It always creates a new note in the folder that is already open; it does not append to an ' +
-    'existing note and it does not edit the note that is on screen. It also does not use the ' +
-    'search field, so the text can never land in a search box. Returns the driver result, which ' +
-    'is only reported as success when the new note body actually received the text.',
+    'It always creates a new note, in the folder Apple Notes uses by default; it does not append ' +
+    'to an existing note and it does not type into the note that is on screen. It creates through ' +
+    'Apple Notes itself rather than keystrokes, so the text can never land in a search box or in ' +
+    'the wrong note. Returns the name of the note it created and the folder it landed in.',
   args: [
     { name: 'body', description: "The owner's words for the note body, written out in full.", required: true },
   ],
@@ -353,18 +384,32 @@ const notesCreate: AppTool = {
   // create, so this is what keeps "find my note about the roof" from making a second note.
   notFor: ['find a note', 'look for a note', 'search my notes', 'show my notes'],
   writes: true,
-  plan: args => ({
-    kind: 'steps',
-    steps: [
-      // Escape first: if the owner left Notes in search, the caret is in the search field and
-      // the first keystrokes would filter the list instead of writing a note.
-      { press_key: { key: 'escape' } },
-      // Role is required: "New Note" also names a menu item, and a name-only click is refused
-      // as ambiguous (measured 2026-11-03: two elements matched).
-      { click: { role: 'AXButton', name: 'New Note' } },
-      { type_text: { role: 'AXTextArea', text: String(args.body ?? '') } },
-    ],
-  }),
+  plan: args => {
+    const text = String(args.body ?? '');
+    if (!text.trim()) return refuse('There is nothing to write, so no note was created. Tell me what the note should say.');
+    // Measured 2026-11-04 on this Mac: `make new note with properties {body:...}` lands in the
+    // default folder, but the note's `name` then reads back as the whole body flattened onto one
+    // line, so setting `name` explicitly is what keeps the note addressable by what it says.
+    const title = noteTitle(text);
+    return {
+      kind: 'osascript',
+      script:
+        `set theText to ${asStr(text)}\n` +
+        `tell application "Notes"\n` +
+        `\tset fresh to make new note with properties {body:theText}\n` +
+        `\tset name of fresh to ${asStr(title)}\n` +
+        // The container is read in two steps and through a try: reading `name of container of fresh`
+        // in one expression failed live on 2026-11-04 (-1728) right after the note was made.
+        `\tset folderName to "Notes"\n` +
+        `\ttry\n` +
+        `\t\tset freshFolder to container of fresh\n` +
+        `\t\tset folderName to name of freshFolder\n` +
+        `\tend try\n` +
+        `\tset freshId to id of fresh\n` +
+        `end tell\n` +
+        `return "Wrote the note " & ${asStr(title)} & " in " & folderName & "."\n`,
+    };
+  },
 };
 
 /** `notes_find` moved here from `packs.ts` by the integrator; the name is unchanged. */
@@ -402,24 +447,39 @@ const notesFind: AppTool = {
   writes: false,
   plan: args => ({
     kind: 'osascript',
-    // Titles are compared case-insensitively by AppleScript's default, and the loop is capped
-    // so a large Notes library cannot hold the turn open. `notes` at the application level is
-    // real: /tmp/sdef_Notes.xml:49 lists <element type="note"> on the application class.
+    // Titles and bodies are compared with `whose`, which Apple Notes answers itself: the manual
+    // 300-note scan this replaced timed out at 20s live (2026-11-04). `notes` at the application
+    // level is real: /tmp/sdef_Notes.xml:49 lists <element type="note"> on the application class.
     script:
       `set q to ${asStr(String(args.query ?? ''))}\n` +
       `set hits to {}\n` +
-      `set seen to 0\n` +
       `tell application "Notes"\n` +
-      `\trepeat with n in notes\n` +
-      `\t\tset seen to seen + 1\n` +
-      `\t\tif seen > 300 then exit repeat\n` +
-      `\t\tif (name of n contains q) or (body of n contains q) then\n` +
-      `\t\t\tset t to (name of n)\n` +
+      `\tset deadFolder to missing value\n` +
+      `\ttry\n` +
+      `\t\tset deadFolder to first folder whose name is "Recently Deleted"\n` +
+      `\tend try\n` +
+      `\tset byName to every note whose name contains q\n` +
+      `\tset byBody to every note whose body contains q\n` +
+      `\trepeat with n in byName\n` +
+      `\t\tset r to contents of n\n` +
+      `\t\tif deadFolder is missing value or (container of r) is not deadFolder then\n` +
+      `\t\t\tset t to (name of r)\n` +
       `\t\t\tif t is "" then set t to "untitled note"\n` +
       `\t\t\tset end of hits to t\n` +
-      `\t\t\tif (count of hits) is greater than or equal to 8 then exit repeat\n` +
       `\t\tend if\n` +
+      `\t\tif (count of hits) is greater than or equal to 8 then exit repeat\n` +
       `\tend repeat\n` +
+      `\tif (count of hits) is less than 8 then\n` +
+      `\t\trepeat with n in byBody\n` +
+      `\t\t\tset r to contents of n\n` +
+      `\t\t\tif deadFolder is missing value or (container of r) is not deadFolder then\n` +
+      `\t\t\t\tset t to (name of r)\n` +
+      `\t\t\t\tif t is "" then set t to "untitled note"\n` +
+      `\t\t\t\tif hits does not contain t then set end of hits to t\n` +
+      `\t\t\tend if\n` +
+      `\t\t\tif (count of hits) is greater than or equal to 8 then exit repeat\n` +
+      `\t\tend repeat\n` +
+      `\tend if\n` +
       `end tell\n` +
       `if (count of hits) is 0 then return "no note mentions " & q\n` +
       `return hits\n`,
@@ -477,9 +537,13 @@ const notesAppend: AppTool = {
         findOneNamedNote(name) +
         refuseLossyBody() +
         `\tcopy (plaintext of n) to beforeText\n` +
+        `\tcopy (name of n) to nm\n` +
         `\tset newB to oldB & "<div><br></div><div>" & extra & "</div>"\n` +
         `\tset body of n to newB\n` +
-        `\tcopy (name of n) to nm\n` +
+        // Setting the body makes the note's `name` read back as the whole text flattened onto one
+        // line (measured 2026-11-04), which would leave the note unaddressable by the name the
+        // owner knows. The name was read before the write, and setting it back keeps it findable.
+        `\tset name of n to nm\n` +
         `\tcopy (plaintext of n) to nowText\n` +
         `\tset total to length of nowText\n` +
         `\tset shown to nowText\n` +
@@ -539,6 +603,10 @@ const notesUpdate: AppTool = {
         `\tcopy (name of n) to nm\n` +
         `\tcopy (plaintext of n) to beforeText\n` +
         `\tset body of n to replacement\n` +
+        // The note's name follows the first line of its body, and setting the body makes the name
+        // read back as the whole flattened text (measured 2026-11-04). Setting the title from the
+        // new first line is what keeps the note addressable by what it now says.
+        `\tset name of n to ${asStr(noteTitle(text))}\n` +
         `\tcopy (plaintext of n) to afterText\n` +
         `\tset total to length of afterText\n` +
         `\tif total is 0 then return "The update did not take: " & nm & " is now empty."\n` +
@@ -604,10 +672,12 @@ const notesDelete: AppTool = {
         findOneNamedNote(name) +
         `\tcopy (name of n) to nm\n` +
         `\tcopy (plaintext of n) to tx\n` +
-        `\tset size to length of tx\n` +
+        // `size` is a class in Notes' own dictionary (measured live 2026-11-04: `Can't set size to 36`),
+        // so the local that reports the deleted note's length cannot be called that.
+        `\tset ntSize to length of tx\n` +
         `\tdelete n\n` +
         `end tell\n` +
-        `return "Deleted the note " & nm & " (" & size & " characters)."\n`,
+        `return "Deleted the note " & nm & " (" & ntSize & " characters)."\n`,
     };
   },
 };

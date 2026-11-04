@@ -89,8 +89,9 @@ test('every finder plan is a read-only AppleScript that answers in words', () =>
   const recent = scriptOf('finder_recent', samples.finder_recent);
   assert.match(recent, /path to downloads folder/);
   // The recent listing walks every item and compares dates, so it caps the walk as well as the
-  // answer; a folder with more than 400 items still answers promptly.
-  assert.match(recent, /set scanCap to 400/);
+  // answer. 400 was measured too slow on a real Downloads folder (the osascript call timed out at
+  // 20s), so the walk is capped at 60 and the sentence says how many items it looked at.
+  assert.match(recent, /set scanCap to 60/);
   const documents = scriptOf('finder_find', { query: 'invoice', folder: 'Documents', limit: '10' });
   assert.match(documents, /path to documents folder/);
   const absolute = scriptOf('finder_find', { query: 'invoice', folder: '/Users/someone/Desktop', limit: '10' });

@@ -56,7 +56,7 @@ async function waitFor(condition: () => boolean, ms = 5000) {
   return condition();
 }
 
-/** A driver that answers the read calls and holds any action open until `release()`. */
+/** A driver that answers the read calls, plus an executor that holds an action open until `release()`. */
 function gatedDriver() {
   let inflight = 0, maxInflight = 0;
   let release: (() => void) | undefined;
@@ -71,18 +71,22 @@ function gatedDriver() {
       if (name === 'list_windows') return { windows };
       if (name === 'get_accessibility_tree') return { ...apps, windows };
       if (name === 'get_window_state') return { window_title: 'Notes', tree_markdown: '- [0] AXWindow "Notes"', element_count: 1 };
-      if (name === 'run_steps') {
-        inflight += 1; maxInflight = Math.max(maxInflight, inflight);
-        await new Promise<void>(resolve => { release = resolve; });
-        inflight -= 1;
-        return { ok: true, observation: { summary: 'changed 1' } };
-      }
       return {};
     },
     stop: () => {},
   };
+  // App tools now run their AppleScript or their bundled helper through the executor the control
+  // was built with, so that is where an action can be held open. A steps plan still goes through
+  // the driver, and that path is covered by the assist tests.
+  const exec = async () => {
+    inflight += 1; maxInflight = Math.max(maxInflight, inflight);
+    await new Promise<void>(resolve => { release = resolve; });
+    inflight -= 1;
+    return { stdout: 'ok', stderr: '' };
+  };
   return {
     driver,
+    exec,
     calls,
     peak: () => maxInflight,
     inFlight: () => inflight,
@@ -105,7 +109,7 @@ function fixture() {
 
   const gate = gatedDriver();
   const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : undefined), set: () => {} };
-  const control = new DesktopControl(prefs as any, gate.driver as any, undefined as any, 'darwin', Date.now, (async () => {}) as any);
+  const control = new DesktopControl(prefs as any, gate.driver as any, undefined as any, 'darwin', Date.now, (async () => {}) as any, gate.exec as any);
 
   const seen: any[] = [];
   const model = { interpret: async (_k: any, _p: any, input: any) => { seen.push({ destination: store.destination(), input }); return chat('Okay.'); } };
