@@ -271,7 +271,10 @@ export class DesktopControl {
       const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};
-      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
+      // The driver throws DESKTOP_NATIVE_REFUSED for a refused step; a key press keeps it to retry in front below.
+      let result:any;
+      try{result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);}
+      catch(e){if(plan.action!=='press_key'||!/Background input refused/i.test(String((e as Error)?.message)))throw e;result={ok:false,observation:{summary:String((e as Error).message)}};}
       // On success the evidence is counts, never the diff. The diff quotes the focused
       // element, and on a mail page that reached the owner's chat as a sender address and a
       // subject line. The observation's own summary is driver bookkeeping

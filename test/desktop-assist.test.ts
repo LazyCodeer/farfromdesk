@@ -18,7 +18,7 @@ function control(tree: any, windows: any[], results: Record<string, any> = {}, a
       if (name === 'check_permissions') return { accessibility: true, screen_recording: true };
       if (name === 'get_accessibility_tree') return tree;
       if (name === 'list_windows') return { windows };
-      return results[name] ?? {};
+      return typeof results[name] === 'function' ? results[name](args) : results[name] ?? {};
     },
   };
   const c = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, activate as any, exec as any);
@@ -205,6 +205,13 @@ test('a tool that refuses its own arguments answers with its own sentence', asyn
 test('a key press refused in the background retries in front, as in a system file picker', async () => {
   const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: false, observation: { summary: 'press_key ERROR (action): Background input refused (off_space_or_ax_unresolved)' } }, press_key: { ok: true } });
   const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'return' });
+  assert.equal(h.of('press_key')[0].args.delivery_mode, 'foreground');
+  assert.equal(r.ok, true);
+});
+
+test('a key press the driver refuses by throwing also retries in front', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: () => { throw new Error('DESKTOP_NATIVE_REFUSED: run_steps: press_key ERROR (action): Background input refused (off_space_or_ax_unresolved)'); }, press_key: { ok: true } });
+  const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'escape' });
   assert.equal(h.of('press_key')[0].args.delivery_mode, 'foreground');
   assert.equal(r.ok, true);
 });
