@@ -43,6 +43,8 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 20;
 /** Characters of note text one `notes_recent` answer may carry, in total. */
 const BODY_BUDGET = 60000;
+/** Characters of each note shown in a listing, so a listing stays a summary. */
+const EXCERPT = 90;
 const DEFAULT_READ = 4000;
 const MAX_READ = 40000;
 /** Characters of the changed text quoted back as proof of a write. */
@@ -240,17 +242,21 @@ const notesRecent: AppTool = {
         `\tif total > 0 then\n` +
         `\t\trepeat with k from 1 to total\n` +
         `\t\t\tif (count of out) is greater than or equal to cap then exit repeat\n` +
-        `\t\t\tset ln to item k of ntHeaders & return\n` +
+        `\t\t\tset ln to item k of ntHeaders\n` +
         `\t\t\tset room to budget - used - (length of ln)\n` +
         `\t\t\tif room is less than 1 then exit repeat\n` +
         `\t\t\tcopy (plaintext of (item k of ntRefs)) to tx\n` +
-        `\t\t\tif (length of tx) is 0 then\n` +
-        `\t\t\t\tset ln to ln & "(empty note)"\n` +
-        `\t\t\telse if (length of tx) is greater than room then\n` +
-        `\t\t\t\tset ln to ln & (text 1 thru room of tx) & " [cut off here: the note continues]"\n` +
-        `\t\t\telse\n` +
-        `\t\t\t\tset ln to ln & tx\n` +
-        `\t\t\tend if\n` +
+        // A listing is a summary, not a dump: the owner asked for the shape of what is there,
+        // and measured live on 4 November 2026 a full body per note filled the whole reply with
+        // one note's text. Only the start of each note is shown here; notes_read has the rest.
+        `\t\t\tset {od, AppleScript's text item delimiters} to {AppleScript's text item delimiters, return}\n` +
+        `\t\t\tset txParts to text items of tx\n` +
+        `\t\t\tset AppleScript's text item delimiters to " "\n` +
+        `\t\t\tset tx to txParts as text\n` +
+        `\t\t\tset AppleScript's text item delimiters to od\n` +
+        `\t\t\tif (length of tx) is greater than ${EXCERPT} then set tx to (text 1 thru ${EXCERPT} of tx) & "…"\n` +
+        `\t\t\tif (length of tx) is 0 then set tx to "(empty note)"\n` +
+        `\t\t\tset ln to ln & " — " & tx\n` +
         `\t\t\tset used to used + (length of ln)\n` +
         `\t\t\tset end of out to ln\n` +
         `\t\tend repeat\n` +
@@ -260,7 +266,7 @@ const notesRecent: AppTool = {
         `set {oldDelims, AppleScript's text item delimiters} to {AppleScript's text item delimiters, return}\n` +
         `set body to out as text\n` +
         `set AppleScript's text item delimiters to oldDelims\n` +
-        `return "Showing " & (count of out) & " note(s), newest first, with their text, out of the first " & scanCap & " scanned:" & return & body\n`,
+        `return "Showing " & (count of out) & " note(s), newest first, with the start of each note, out of the first " & scanCap & " scanned:" & return & body\n`,
     };
   },
 };
