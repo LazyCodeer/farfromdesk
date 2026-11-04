@@ -79,6 +79,11 @@ test('bare /muse keeps the chat with Muse: a plain message runs Muse until /back
     assert.match(f.replies().at(-1)!,/Muse answered the plain message\./);
     await f.wa.receiveMessage(f.msg('M5','/back'));
     assert.match(f.replies().at(-1)!,/Back to normal routing/);
+    f.store.set(`owner-target:${f.store.destination()}`,JSON.stringify({kind:'brain'}));
+    await f.wa.receiveMessage(f.msg('M6','/muse'));
+    await f.wa.receiveMessage(f.msg('M7','/back'));
+    assert.match(f.replies().at(-1)!,/Left Muse\. Back to Meta brain/);
+    assert.equal(f.store.get(`owner-target:${f.store.destination()}`),JSON.stringify({kind:'brain'}));
   }finally{
     f.close();
     if(previous===undefined)delete process.env.MUSE_BIN;else process.env.MUSE_BIN=previous;

@@ -314,10 +314,19 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   if(cmd==='muse'||cmd==='deepseek'||cmd==='cursor'){
     if(arg)return runTool(r,m,cmd,arg);
     // A bare command selects the tool, like /claude selects a session: plain messages go there until /back.
-    const ready=await runTool(r,m,cmd,'');clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'tool',tool:cmd}));
+    const ready=await runTool(r,m,cmd,'');
+    // /back from a tool returns to the mode the owner was in (brain or a session), not to plain routing.
+    const before=r.store.get(routeKey(r))??'null';
+    if(JSON.parse(before)?.kind!=='tool')r.store.set(`${routeKey(r)}:before-tool`,before);
+    clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'tool',tool:cmd}));
     return `${ready}\n\nYour next messages go to ${TOOL_NAMES[cmd]} until you send /back.`;
   }
-  if(cmd==='back'){clear(r);return 'Back to normal routing. Your next messages use the configured brain/proxy.';}
+  if(cmd==='back'){
+    const now=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null,before=r.store.get(`${routeKey(r)}:before-tool`)??'null';
+    clear(r);r.store.set(`${routeKey(r)}:before-tool`,'null');
+    if(now?.kind==='tool'&&before!=='null'){r.store.set(routeKey(r),before);return `Left ${TOOL_NAMES[now.tool]}. Back to ${currentTarget(r)}.`;}
+    return 'Back to normal routing. Your next messages use the configured brain/proxy.';
+  }
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
   if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Settings > Remote control in FarFromDesk.':'Screen viewing is unavailable in this build. Open Settings > Remote control in FarFromDesk on your Mac.';
   const provider=cmd==='codex'?'codex':'claude';if(!enabled(r,provider))throw Error(`${provider==='claude'?'Claude':'Codex'} is disabled. Enable it in Coding platforms first.`);
