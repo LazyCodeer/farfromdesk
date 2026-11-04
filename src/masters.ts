@@ -4,7 +4,7 @@ import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import { checkCodexEnvironment } from './provider-readiness.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync,writeFileSync,realpathSync,existsSync } from 'node:fs';
+import { mkdirSync,writeFileSync,realpathSync,existsSync,statSync } from 'node:fs';
 import { join, basename, dirname, resolve, sep } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { cursorOwnerHome } from './cursor-paths.js';
@@ -82,6 +82,14 @@ export function isCoordinatorFolder(path:string) {
   const marker=join('.farfromdesk','coordinators');
   return path.includes(sep+marker+sep)||path.endsWith(sep+marker);
 }
+/** A folder the owner picked in the system dialog: an existing real folder, never app scaffolding. */
+export function pickedWorkspace(path:string) {
+  if(!path.startsWith('/'))throw new Error('Choose an existing project folder.');
+  let cwd:string;try{cwd=realpathSync(path);}catch{throw new Error('That folder no longer exists. Choose it again.');}
+  if(!statSync(cwd).isDirectory())throw new Error('Choose a folder, not a file.');
+  if(isCoordinatorFolder(cwd)||isScratchFolder(cwd)||cwd==='/'||cwd===cursorOwnerHome())throw new Error('Choose a project folder, not the home folder or an app folder.');
+  return {id:`folder:${path}`,name:basename(cwd)||cwd,cwd,accountScope:null,available:true};
+}
 export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[],resolved?:ResolvedWorkspaces) {
   const choices=new Map<string,any>();
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
@@ -100,11 +108,13 @@ export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:a
       if(isCoordinatorFolder(cwd)||isScratchFolder(cwd))continue;
       const accountScope=s.accountScope??null;
       const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,accountScope])).digest('hex');
-      const available=provider!=='claude'||mode!=='desktop'||s.available===true;
+      // A new Claude Desktop coordinator opens its own chat in the folder, so any folder Claude has
+      // worked in is a valid place; only a launcher needs an open chat with a reachable inbox.
+      const available=true,launcher=provider==='claude'&&mode==='desktop'&&s.available===true;
       const existing=choices.get(id);
       // Prefer a reachable root-project chat over a newer temporary worktree.
-      const rank=(available?2:0)+(sessionCwd===cwd?1:0);
-      if(!existing||rank>existing.rank)choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,rank,launcherId:provider==='claude'&&mode==='desktop'?s.id:undefined});
+      const rank=(launcher?2:0)+(sessionCwd===cwd?1:0);
+      if(!existing||rank>existing.rank)choices.set(id,{id,name:basename(cwd)||cwd,cwd,accountScope,available,rank,launcherId:launcher?s.id:undefined});
     }catch{/* A moved or inaccessible folder is not a creation target. */}
   }
   const result=[...choices.values()];
@@ -463,9 +473,12 @@ export class Masters {
     let workspace:any,sessions:any[]|undefined;
     if(workspaceId!==undefined) {
       if(typeof workspaceId!=='string'||!workspaceId)throw new Error('Choose a detected workspace.');
+      if(workspaceId.startsWith('folder:'))workspace=pickedWorkspace(workspaceId.slice(7));
+      else {
       sessions=await this.catalog(provider,true);
       const resolved=await this.workspaceScanner.scan(sessions.map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));
       workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode),resolved).find(w=>w.id===workspaceId);
+      }
       if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
       if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
     }

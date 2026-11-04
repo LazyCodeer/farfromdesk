@@ -79,14 +79,29 @@ extension _BridgeScreens on _DeskState {
         : '…/${parts.sublist(parts.length - 2).join('/')}';
   }
 
-  /// Projects this platform can run in, most recently used first. A desktop coordinator works in
-  /// its own folder and opens its own chat there, so the choice is only offered for a terminal.
-  List<Map> get setupWorkspaces => platform.endsWith(':desktop')
-      ? const []
-      : (selectedPlatform?['workspaces'] ?? [])
+  /// Projects this platform can run in, most recently used first, plus a folder the owner picked.
+  /// Desktop apps get the choice too: a new desktop coordinator opens its own chat in that folder.
+  List<Map> get setupWorkspaces => [
+        if (pickedFolder != null)
+          {
+            'id': 'folder:$pickedFolder',
+            'name': pickedFolder!.split('/').where((p) => p.isNotEmpty).lastOrNull ?? pickedFolder,
+            'cwd': pickedFolder,
+          },
+        ...(selectedPlatform?['workspaces'] ?? [])
             .cast<Map>()
-            .where((w) => w['available'] != false)
-            .toList();
+            .where((w) => w['available'] != false && w['cwd'] != pickedFolder),
+      ];
+
+  /// Choose folder…: any project folder on the Mac, through the system folder dialog.
+  Future<void> pickCoordinatorFolder() async {
+    final path = await getDirectoryPath(confirmButtonText: 'Use this folder');
+    if (path == null) return;
+    editSetup(() {
+      pickedFolder = path;
+      selectedWorkspaceId = 'folder:$path';
+    });
+  }
 
   /// Default to the project the owner last worked in, the way they run the CLI themselves.
   String defaultWorkspaceId() {
@@ -3711,6 +3726,12 @@ extension _BridgeScreens on _DeskState {
                         color: muted,
                       ),
                     ),
+                  const SelectOption(
+                    value: '__choose',
+                    label: 'Choose folder…',
+                    detail: 'Any project on this Mac',
+                    leading: Icon(Icons.create_new_folder_outlined, size: 15, color: muted),
+                  ),
                   if (setupProjects.isEmpty &&
                       selectedPlatform?['workspaceError'] != null)
                     SelectOption(
@@ -3720,8 +3741,9 @@ extension _BridgeScreens on _DeskState {
                       enabled: false,
                     ),
                 ],
-                onChanged: (value) =>
-                    editSetup(() => selectedWorkspaceId = value),
+                onChanged: (value) => value == '__choose'
+                    ? pickCoordinatorFolder()
+                    : editSetup(() => selectedWorkspaceId = value),
               ),
             ),
           ],

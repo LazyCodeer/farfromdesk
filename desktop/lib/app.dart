@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
+import 'package:file_selector/file_selector.dart';
 
 import 'gateway.dart';
 import 'native_gateway.dart';
@@ -96,6 +97,8 @@ class _DeskState extends State<Desk> {
   bool onboardingSkipped = false;
   // An explicit request from the offline banner to reopen setup.
   bool setupRequested = false;
+  // A project folder the owner picked with Choose folder…, offered beside the detected ones.
+  String? pickedFolder;
   int section = 0, page = 0;
   String platform = 'codex:cli',
       setupAction = 'new',
