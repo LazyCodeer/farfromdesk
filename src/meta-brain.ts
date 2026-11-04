@@ -496,7 +496,12 @@ export class MetaBrain {
           const page=await read().catch(async e=>{if(!/lost the connection/.test(deviceRefusal(e)))throw e;await new Promise(r=>setTimeout(r,3000));return read();});
           const sent=screenshot&&this.keepShot(m,page);
           const {screenshot:_omit,...rest}=page??{};
-          return JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})}).slice(0,14000);
+          // The whole page text the driver gives (24,000 characters). This was cut at 14,000, and on
+          // Gmail the sidebar comes first, so only five of the owner's messages today survived (live,
+          // 4 November 2026). A cut is said out loud so the model never presents part as all.
+          const out=JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})});
+          this.store.event(m.id,'device_action',{action:'read_tab',chars:out.length});
+          return out.length>30000?out.slice(0,30000)+' [cut here: the page has more than this]':out;
         }catch(e){return `Refused: ${deviceRefusal(e)}`;}
       }
     }
@@ -630,7 +635,7 @@ export class MetaBrain {
     // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
     // once. A second copy would silently stop applying when that one changes.
     // Room for an answer built from tool results (a tab list was cut mid-word at 400).
-    const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,2500);
+    const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,3800);
     if(decision.intent==='clarify') {this.stop(m.id,said||'Please clarify the task and which coding platform you want. Nothing has been dispatched.','clarification');return true;}
     if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);// The screenshot is the fact. Live on build 2423 the image was taken and sent while the
       // reply, echoing earlier failures in the conversation, said it could not be taken.
