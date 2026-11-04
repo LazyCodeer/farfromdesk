@@ -122,8 +122,9 @@ export async function renderSocialPlan(input:SocialRenderPlan,artwork?:Uint8Arra
 
     shapes+=rectangle(68,1251,944,1,fg);
     await put(p.brand.name,68,1280,780,40,24);
-    const footer=index<p.slides.length-1?'SWIPE TO CONTINUE':'SAVE THIS GUIDE';
-    await put(footer,696,1280,316,40,24,fg,true);
+    // A single image is a post, not a guide: it gets no footer call to action.
+    const footer=p.slides.length===1?'':index<p.slides.length-1?'SWIPE TO CONTINUE':'SAVE THIS GUIDE';
+    if(footer)await put(footer,696,1280,316,40,24,fg,true);
     const background=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350">${shapes}</svg>`);
     const bytes=await sharp(background).composite([...media,...text]).jpeg({quality:94,chromaSubsampling:'4:4:4'}).toBuffer();
     if(bytes.length>2_000_000)throw Error('Rendered slide is too large.');

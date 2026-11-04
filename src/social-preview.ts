@@ -16,6 +16,17 @@ export function socialPreviewDeliveryState(store:Store,id:string):'ready'|'hold'
  }
  return prior.some(p=>p.status!=='sent')?'hold':'ready';
 }
+/** The preview already carries each draft's caption, so the final reply drops a verbatim copy
+ * (the owner saw it twice, live 5 Nov 2026). Only an exact copy is replaced; anything else stays. */
+export function withoutPreviewCaptions(store:Store,requestId:string,text:string):string{
+ if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='social_drafts'").get())return text;
+ let out=text;
+ for(const row of store.db.prepare("SELECT json FROM social_drafts WHERE json_extract(json,'$.requestId')=?").all(requestId) as {json:string}[]){
+  const caption=String(JSON.parse(row.json).caption??'').trim();
+  if(caption.length>=40&&out.includes(caption))out=out.replace(caption,'The caption is with the image above, ready to copy.');
+ }
+ return out;
+}
 /** Called inside the final-reply transaction, only for the original owner route.
  * Existing drafts are never scanned or sent on startup. */
 export function queueSocialPreviews(store:Store,b:Binding,requestId:string){

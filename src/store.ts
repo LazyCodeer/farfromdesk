@@ -333,7 +333,8 @@ export class Store {
       try {
         this.jobState(row.id,'uncertain','Bridge restarted during delivery. Check the native session before retrying.');
         if(opening&&row.destination) this.db.prepare("UPDATE outbox SET status='cancelled',error='Opening notice superseded after bridge restart' WHERE source=? AND destination=? AND status='queued'").run(`native-opening:${row.id}:0`,row.destination);
-        if(opening&&row.destination) this.output(undefined,
+        // Every cut request is said, not only one that had an opening notice (silent ones were found live, 5 Nov 2026).
+        if(row.destination) this.output(undefined,
           'FarFromDesk restarted before this request’s delivery outcome was recorded. Check this exact session before sending your message again.',
           `native-restart:${row.id}`,row.destination,{requestId:row.id,kind:'system',origin:'system'});
         this.db.exec('RELEASE recover_native_delivery');

@@ -415,7 +415,8 @@ export function clearOwnerTarget(r:Router){clear(r);}
 export function specialtyTarget(r:Router,m:Incoming):Binding {
   if(!authenticatedOwner(r,m)||m.quotedId||(m.source==='voice'?m.ownerIntent!==true:m.ownerCommand!==true))throw Error('Send this request as a new message in your own chat.');
   const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
-  if(target?.kind==='brain'||target?.kind==='tool')throw Error('Choose a Codex or Claude session before starting this task.');
+  // A tool mode (Cursor, Muse, DeepSeek) runs one-off turns with no session, so Social uses the default session below.
+  if(target?.kind==='brain')throw Error('Choose a Codex or Claude session before starting this task.');
   if(target?.kind==='session')return session(r,target);
   const directKey=`direct:${r.store.destination()??'owner'}`,raw=r.store.get(directKey);
   if(raw){

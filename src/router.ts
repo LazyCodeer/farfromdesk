@@ -1,4 +1,4 @@
-import {prepareSocialPreviews,queueSocialPreviews} from './social-preview.js';
+import {prepareSocialPreviews,queueSocialPreviews, withoutPreviewCaptions} from './social-preview.js';
 import {asksForSocialCreation} from './social-intent.js';
 import {requestedSocialImageProvider} from './social-image-provider.js';
 import { DesktopReadinessError } from './session-activation.js';
@@ -1078,8 +1078,9 @@ export class Router {
     if(relayOnly&&context.options)throw new Error('Message choices must be offered by the owner-facing proxy, not a relay-only reply.');
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
-    if(!relayOnly&&requestId&&kind==='final')queueSocialPreviews(this.store,b,requestId);
-    queued=relayOnly||this.store.output(b,text,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination(),{...context,requestId,kind:kind==='final'?'final':'progress',origin:'agent'})===true;
+    const previews=!relayOnly&&requestId&&kind==='final'?queueSocialPreviews(this.store,b,requestId):[];
+    const body=previews.length?withoutPreviewCaptions(this.store,requestId!,text):text;
+    queued=relayOnly||this.store.output(b,body,source,requestId?this.store.job(requestId)?.destination??this.store.get('whatsapp-owner')??null:this.store.destination(),{...context,requestId,kind:kind==='final'?'final':'progress',origin:'agent'})===true;
     if(queued&&!coordinator&&requestId&&source)this.ownerReplyPolicy.recordWorker(requestId,source,text);
     if(requestId&&kind==='final')this.store.set(`final-reply:${requestId}`,replyIdentity);
     if(requestId&&kind==='final')this.store.jobState(requestId,'completed',null,context.outcome);
