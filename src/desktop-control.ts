@@ -241,6 +241,14 @@ export class DesktopControl {
       // to inherit"), which is what a bare `press escape` produced live.
       const target=await this.resolve(plan.app,plan.window);
       if(!target?.window_id)throw new Error('DESKTOP_APP_NOT_RUNNING: '+(plan.app??'that app')+' has no open window to act on.');
+      // Keystrokes into whatever has focus: a spreadsheet cell or a web editor publishes no named
+      // field, so a named type step was refused on Google Sheets (live, 4 November 2026). This is
+      // foreground typing, like the owner's own keyboard, so the app is brought forward first.
+      if(plan.action==='type'&&!plan.name&&!plan.role){
+        await this.frontApp(plan.app!,target.pid,target.bundle_id,controller.signal);
+        const typed=await this.driver.call('type_text',{pid:target.pid,window_id:target.window_id,text:plan.text!,delivery_mode:'foreground'},controller.signal);
+        return {action:plan.action,ok:typed?.ok!==false&&!typed?.error,observation:typed?.error??null,changes:null};
+      }
       const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};

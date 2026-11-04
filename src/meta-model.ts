@@ -119,7 +119,8 @@ export class MetaModel {
   }
   async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void,observe?:MetaObserver,apps?:AppExecutor):Promise<Interpretation> {
     // Tool calls run inside this budget (a Notes read alone can take ten seconds), so a loop with app tools gets longer.
-    const signal=AbortSignal.timeout(apps?Math.max(this.timeoutMs,90000):this.timeoutMs);let status=0;
+    // Real work (open a web sheet, read it, type rows, check) took longer than 90 s live (4 Nov 2026).
+    const signal=AbortSignal.timeout(apps?Math.max(this.timeoutMs,180000):this.timeoutMs);let status=0;
     // Bound streamed bytes and never follow redirects with the key attached.
     const request:typeof fetch=async(url,init)=>{
       authorize?.();const response=await this.fetcher(url,{...init,redirect:'error'});authorize?.();status=response.status;
@@ -157,13 +158,13 @@ export class MetaModel {
             write_file:tool({description:'Write a new text file the owner asked for (for a sheet, a .csv with a header row) in Downloads, or "Documents/<name>". Never overwrites. Returns the full path.',inputSchema:z.object({name:z.string().min(3).max(200),content:z.string().max(2_000_000)}),execute:async(i)=>{authorize?.();return apps.writeFile(i.name,i.content);}}),
             open_file:tool({description:'Open a file from the owner\'s folders, optionally in a named app (a .csv in Numbers).',inputSchema:z.object({path:z.string().min(1).max(1000),app:z.string().max(80).optional()}),execute:async(i)=>{authorize?.();return apps.openFile(i.path,i.app);}}),
             send_file:tool({description:'Send a file from the owner\'s Mac to them in this chat (a photo, PDF or document they ask for). path is the full path from a Finder tool result, or a name inside Downloads. Only Downloads, Desktop, Documents, Pictures, Movies and Music.',inputSchema:z.object({path:z.string().min(1).max(1000)}),execute:async(i)=>{authorize?.();return apps.sendFile(i.path);}}),
-            act:tool({description:'Click, type or press a key in an app window, one step at a time. click: app plus name (the visible label from read_window) or role. type: app, the field\'s name or role, and text. press_key: app and key (return sends a message in chat apps). Read the window again after a step to see what changed.',inputSchema:z.object({action:z.enum(['click','type','press_key']),app:z.string().min(1).max(120),name:z.string().max(160).optional(),role:z.string().max(40).optional(),text:z.string().max(1200).optional(),key:z.enum(['return','tab','escape','up','down','left','right']).optional()}),execute:async(i)=>{authorize?.();return apps.act(i);}}),
+            act:tool({description:'Click, type or press a key in an app window, one step at a time. click: app plus name (the visible label from read_window) or role. type: app, the field\'s name or role, and text; leave name and role out to type as keystrokes into whatever has focus (a spreadsheet cell, a web editor), where a tab moves to the next cell and a newline to the next row. press_key: app and key (return sends a message in chat apps). Read the window again after a step to see what changed.',inputSchema:z.object({action:z.enum(['click','type','press_key']),app:z.string().min(1).max(120),name:z.string().max(160).optional(),role:z.string().max(40).optional(),text:z.string().max(1200).optional(),key:z.enum(['return','tab','escape','up','down','left','right']).optional()}),execute:async(i)=>{authorize?.();return apps.act(i);}}),
             open_app:tool({description:'Open (or bring forward) an app on the Mac by its name. After opening a messaging or mail app, read its window and tell the owner what is new there.',inputSchema:z.object({app:z.string().min(1).max(120)}),execute:async(i)=>{authorize?.();return apps.openApp(i.app);}}),
             read_window:tool({description:'Read what is in the front window of any app on the Mac (its visible controls and text). Set screenshot true when the owner wants to see it; the image is sent to them.',inputSchema:z.object({app:z.string().min(1).max(120),screenshot:z.boolean().optional()}),execute:async(i)=>{authorize?.();return apps.readWindow(i.app,i.screenshot===true);}}),
           }:{}),
           decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation}),
         },
-        stopWhen:[hasToolCall('decide'),stepCountIs(apps?12:6)]});
+        stopWhen:[hasToolCall('decide'),stepCountIs(apps?24:6)]});
       let result=await ask();
       // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
       if(!result.steps.some(s=>s.toolCalls.length)){authorize?.();result=await ask();}
