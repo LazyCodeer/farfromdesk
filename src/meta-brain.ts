@@ -9,7 +9,7 @@ import type { Store, Binding } from './store.js';
 import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret, type BrainPolicy, type BrainProvider } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
-import { runDevicePlan, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
+import { runDevicePlan, deviceRefusal, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
@@ -498,19 +498,24 @@ export class MetaBrain {
   private async answerTabs(router:Router,m:Incoming,policy:BrainPolicy):Promise<boolean>{
     const control=this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>;view?:()=>{enabled:boolean}};
     if(!control.run||control.view?.().enabled===false)return false;
-    const browsers:{browser:string;windows:{tabs:{title:string;url:string;active:boolean}[]}[]}[]=[];
+    const browsers:{browser:string;windows:{tabs:{title:string;url:string;active:boolean}[]}[]}[]=[],unread:string[]=[];
     for(const browser of ['comet','chrome','edge','brave']){
       try{
         const listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});
         browsers.push({browser,windows:(listed?.windows??[]).map((w:any)=>({tabs:(w.tabs??[]).map((t:any)=>({title:String(t.title??'').slice(0,160),url:String(t.url??'').slice(0,200),active:t.tabId!==undefined&&t.tabId===w.activeTabId||t.active===true}))}))});
-      }catch{/* not running or not supported: left out */}
+      }catch(e){
+        // A browser that is not running is simply left out; one that is running but could not be
+        // read is named with the reason, so the owner is not shown Safari alone with no word on why.
+        const said=String((e as Error)?.message??e);
+        if(!/NOT_RUNNING|DESKTOP_SELECT_SUPPORTED_BROWSER|ONLY_ONE|no running/i.test(said))unread.push(`${browser}: ${deviceRefusal(e)}`);
+      }
     }
     let safari='';
     try{safari=String((await control.packTool?.(`brain:${m.id}`,'safari_tabs',{}))?.output??'');}catch{}
     if(router.stopped||this.get(m.id)?.state!=='interpreting')return true;
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
-    if(!browsers.length&&!safari){this.store.outputBrain(m.id,'I could not see any open browser tabs. Is a browser running?');return true;}
-    const evidence=JSON.stringify({browsers,...(safari?{safari}:{})}).slice(0,14000);
+    if(!browsers.length&&!safari&&!unread.length){this.store.outputBrain(m.id,'I could not see any open browser tabs. Is a browser running?');return true;}
+    const evidence=JSON.stringify({browsers,...(safari?{safari}:{}),...(unread.length?{couldNotRead:unread}:{})}).slice(0,14000);
     const count=browsers.reduce((n,b)=>n+b.windows.reduce((k,w)=>k+w.tabs.length,0),0);
     this.store.outputBrain(m.id,await this.explain(m,policy,{action:'list_tabs'},{ok:true,line:`${count} tab(s) open across ${browsers.map(b=>b.browser).join(', ')||'Safari'}.`,evidence}));
     return true;

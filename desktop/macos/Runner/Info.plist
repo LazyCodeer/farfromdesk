@@ -2,6 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- macOS judges Calendar and Reminders access by this app (the responsible process for the
+	     bundled EventKit helper). Without these keys it denies silently: no dialog, and nothing the
+	     owner can switch on (live, 4 November 2026). -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>FarFromDesk reads and adds calendar events only when you ask it to from your phone.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>FarFromDesk reads and adds calendar events only when you ask it to from your phone.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>FarFromDesk reads and adds reminders only when you ask it to from your phone.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>FarFromDesk reads and adds reminders only when you ask it to from your phone.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>FarFromDesk uses your existing browser tabs only when you request a browser task.</string>
 	<key>CFBundleDevelopmentRegion</key>
