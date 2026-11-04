@@ -264,11 +264,7 @@ export class DesktopControl {
       const step=plan.action==='click'?{click:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{})}}
         :plan.action==='type'?{type_text:{...(plan.role?{role:plan.role}:{}),...(plan.name?{name:plan.name}:{}),text:plan.text!}}
         :{press_key:{key:plan.key!}};
-      // Web content in a browser drops background clicks and keys (driver docs), so a browser
-      // gets them in the foreground, like the owner's own mouse and keyboard.
-      const web=Object.values(knownBrowsers).includes(target.bundle_id);
-      if(web)await this.frontApp(plan.app!,target.pid,target.bundle_id,controller.signal);
-      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:web?'foreground':'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
+      const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[step],observe:{}} as Record<string,unknown>,controller.signal);
       // On success the evidence is counts, never the diff. The diff quotes the focused
       // element, and on a mail page that reached the owner's chat as a sender address and a
       // subject line. The observation's own summary is driver bookkeeping
