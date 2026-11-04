@@ -59,7 +59,10 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
       // which then failed with "Connection closed" (logged live, 4 November 2026).
       let result;
       try{result=await client.callTool({name,arguments:args},undefined,{signal,timeout:12000});}
-      catch(e){this.stop();throw e;}
+      // A slow call (foreground input waiting on a file picker) times out on its own; the driver is still
+      // serving, so closing the client here turned that one timeout into "Connection closed" for every
+      // other call (live, 5 Nov 2026). Only a broken transport closes it.
+      catch(e){if(!/timed out|-32001/i.test(String((e as {code?:unknown})?.code)+' '+String((e as Error)?.message)))this.stop();throw e;}
       if(result.isError)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText(result.content));
       const text=(result.content as any[])?.find(c=>c.type==='text')?.text;
       const value=result.structuredContent??(text?JSON.parse(text):{});
