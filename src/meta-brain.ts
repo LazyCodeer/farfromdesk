@@ -490,7 +490,8 @@ export class MetaBrain {
     const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
     const asked=raw.trim().replace(/^~(?=\/|$)/,home),path=asked.startsWith('/')?asked:/^(Downloads|Desktop|Documents|Pictures|Movies|Music)\//.test(asked)?join(home,asked):join(home,base,asked);
     const root=roots.find(r=>path.startsWith(r+sep));
-    if(!root||path.slice(root.length).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
+    // After the root's own separator, so the first part is the file or folder, not an empty string (which refused every path).
+    if(!root||path.slice(root.length+1).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
     return path;
   }
   /**
