@@ -1,0 +1,49 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DesktopControl, desktopInput } from '../../src/desktop-control.js';
+
+/**
+ * The app tools through the coordinator route (master_desktop_control, session_desktop_control,
+ * `ffd desktop`), not only through the brain.
+ *
+ * Measured 4 November 2026: with Muse as the coordinator, "check my recent notes" went to a
+ * session whose only desktop functions were clicks and window reads, so the reviewed Notes,
+ * Calendar and Mail tools were out of its reach. These pin that every coordinator can find a
+ * tool from the owner's words and run it, with writes guarded like every other mutation.
+ */
+function harness() {
+  const saved = new Map<string, string>();
+  const prefs = { get: (k: string) => (k === 'mac-control-enabled' ? 'true' : saved.get(k)), set: (k: string, v: string) => { saved.set(k, v); } };
+  const driver = { call: async (name: string) => (name === 'check_permissions' ? { accessibility: true, screen_recording: true } : {}) };
+  const runs: { file: string; args: string[] }[] = [];
+  const exec = async (file: string, args: string[]) => { runs.push({ file, args }); return { stdout: 'Groceries: milk, eggs', stderr: '' }; };
+  const control = new DesktopControl(prefs as any, driver as any, undefined as any, 'darwin', Date.now, (async () => {}) as any, exec as any);
+  return { control, runs };
+}
+
+test('a coordinator finds the right app tool from the owner words, typos included', async () => {
+  const { control } = harness();
+  assert.equal((await control.run('b:r1', { action: 'app_tools', text: 'Check my calender' })).tools[0].name, 'calendar_list_events');
+  assert.equal((await control.run('b:r1', { action: 'app_tools', text: 'check my recent notes' })).tools[0].name, 'notes_recent');
+  const none = await control.run('b:r1', { action: 'app_tools', text: 'refactor the sync loop' });
+  assert.deepEqual(none.tools, []);
+  assert.ok(none.available.some((line: string) => line.startsWith('notes_recent')), 'the catalog is offered when nothing matches');
+});
+
+test('a coordinator runs a reading tool and gets its content back', async () => {
+  const { control, runs } = harness();
+  const result = await control.run('b:r2', { action: 'app_tool', tool: 'notes_recent', args: {} });
+  assert.match(JSON.stringify(result), /Groceries/);
+  assert.equal(runs.length, 1, 'one helper run, no window clicks');
+});
+
+test('a writing tool needs a fresh action ID and is never replayed', async () => {
+  const { control } = harness();
+  const write = { action: 'app_tool', tool: 'notes_create_note', args: { body: 'hackathon test' } };
+  await assert.rejects(control.run('b:r3', write), /DESKTOP_ACTION_ID_REQUIRED/);
+  const actionId = '0b7c3c2e-6a2f-4d7e-9a49-8f7c1f3f1a11';
+  await control.run('b:r3', { ...write, actionId });
+  await assert.rejects(control.run('b:r3', { ...write, actionId }), /DESKTOP_ACTION_ALREADY_ATTEMPTED/);
+  await assert.rejects(control.run('b:r3', { action: 'app_tool', tool: 'shell_exec', args: {} }), /APP_TOOL_UNKNOWN/);
+  assert.throws(() => desktopInput.parse({ action: 'app_tool', tool: 'notes_recent', args: { n: 5 } }), 'arguments are strings only');
+});

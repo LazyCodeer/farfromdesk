@@ -4,10 +4,11 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { EmbeddedDesktopDriver,type DesktopDriver } from './desktop-driver.js';
-import { toolByName } from './app-tools/packs.js';
-import type { AppToolPlan } from './app-tools/types.js';
+import { allPackTools, toolByName } from './app-tools/packs.js';
+import { shortlistTools } from './app-tools/retrieve.js';
+import type { AppTool, AppToolPlan } from './app-tools/types.js';
 
-export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','stop'] as const;
+export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','stop'] as const;
 /**
  * Coordinates are window-local pixels of the get_window_state screenshot, which is
  * the only addressing that works on a canvas: Flutter, WebGL and any custom-drawn
@@ -35,6 +36,9 @@ export const desktopInput=z.object({
   // A screenshot is what makes an unlabelled canvas addressable, and it is also the
   // privacy-sensitive part, so it is opt-in per read rather than always on.
   screenshot:z.boolean().optional(),
+  // A reviewed app tool, by name, with its own string arguments (see app_tools).
+  tool:z.string().max(80).optional(),
+  args:z.record(z.string(),z.string().max(8000)).optional(),
 }).strict();
 type Input=z.infer<typeof desktopInput>;
 /**
@@ -111,6 +115,9 @@ const fields:Record<Input['action'],string[]>={
   scroll:['windowRef','snapshotId','controlId','x','y','amount','direction','actionId','deliveryMode'],
   type_text:['windowRef','snapshotId','controlId','text','actionId','deliveryMode'],press_key:['windowRef','snapshotId','controlId','key','actionId','deliveryMode'],
   chat_action:['windowRef','chatAction','text','expectedDraft','actionId'],
+  // The reviewed per-app tools, so a coordinator session reads Notes, Calendar or Mail content
+  // instead of window chrome. app_tools takes the owner's words; app_tool runs one by name.
+  app_tools:['text'],app_tool:['tool','args','actionId'],
 };
 
 /** Coordinate-addressed actions: they work where the accessibility tree is empty. */
@@ -439,6 +446,21 @@ export class DesktopControl {
     const q=desktopInput.parse(raw);
     for(const k of Object.keys(q))if(k!=='action'&&!fields[q.action].includes(k))throw new Error('Unexpected desktop action parameter: '+k);
     if(q.action==='stop')return this.stop();
+    if(q.action==='app_tools'){
+      // Measured 4 November 2026: with Muse as the coordinator, "check my recent notes" reached a
+      // session that only had clicks and window reads, so it could not read a single note.
+      const shortlist=q.text?.trim()?await shortlistTools(q.text,{app:await this.activeApp()}):[];
+      const describe=(tool:AppTool)=>({name:tool.name,app:tool.app,writes:tool.writes,description:tool.description,args:tool.args.map(arg=>({name:arg.name,required:Boolean(arg.required),description:arg.description})),examples:tool.examples.slice(0,3)});
+      return shortlist.length
+        ?{tools:shortlist.map(entry=>describe(entry.tool)),next:'Run the best match with action app_tool, tool and args. A tool that writes needs a new UUID actionId.'}
+        :{tools:[],available:allPackTools().map(tool=>`${tool.name} (${tool.app}${tool.writes?', writes':''})`),next:'Nothing matched those words. Pick from available by name, or ask the owner.'};
+    }
+    if(q.action==='app_tool'){
+      const tool=toolByName(q.tool??'');
+      if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+(q.tool??'')+' is not an app tool I have. Use app_tools first.');
+      if(tool.writes)this.reserve(scope,q);
+      return await this.packTool(scope,tool.name,q.args??{},authorize);
+    }
     if(q.action==='status'){
         // Read-only, so it can refresh the grants without disturbing an action.
         if(!this.pending)await this.permissionReport();
