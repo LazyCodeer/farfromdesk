@@ -18,7 +18,24 @@ export type AppToolPlan =
   /** Accessibility steps run against the app's window by the desktop driver. */
   | { kind: 'steps'; steps: Record<string, unknown>[] }
   /** An AppleScript program. Needs Automation consent for the app, once. */
-  | { kind: 'osascript'; script: string };
+  | { kind: 'osascript'; script: string; outputChars?: number }
+  /**
+   * A bundled, code-signed helper under the app's `Resources/backend/native/`, run with an
+   * argument array (never a shell string). Used where a scripting dictionary cannot reach the
+   * data: EventKit for Calendar and Reminders.
+   *
+   * The helper answers in JSON, so the plan may carry a `format` that turns that JSON into the
+   * readable lines the model is given. Parsing lives in `src/app-tools/adapters/<app>.ts` and
+   * must never throw: a reply it cannot read becomes a sentence, the same way a refusal does.
+   */
+  | {
+      kind: 'cli';
+      binary: string;
+      args: string[];
+      timeoutMs?: number;
+      outputChars?: number;
+      format?: (raw: string) => string;
+    };
 
 export interface AppToolArg {
   name: string;

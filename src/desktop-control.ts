@@ -278,15 +278,50 @@ export class DesktopControl {
         // sentence instead of the generic "I could not do that on your Mac".
         throw new Error('APP_TOOL_ARGUMENT_INVALID: '+String((error as Error)?.message??error));
       }
-      if(plan.kind==='osascript'){
+      if(plan.kind==='osascript'||plan.kind==='cli'){
         try{
-          const run=await execute('/usr/bin/osascript',['-e',plan.script],{timeout:20000,signal:controller.signal,maxBuffer:1024*1024});
-          const output=String(run.stdout??'').trim().replace(/\s*\n\s*/g,' | ').slice(0,600);
+          let run;
+          if(plan.kind==='osascript')run=await execute('/usr/bin/osascript',['-e',plan.script],{timeout:20000,signal:controller.signal,maxBuffer:1024*1024});
+          else{
+            // A bundled, code-signed helper from backend/native. The binary is a bare file name,
+            // never a path and never a shell string, so a plan cannot reach anywhere else.
+            if(!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(plan.binary))throw new Error('the helper name "'+plan.binary+'" is not a plain file name');
+            const binary=fileURLToPath(new URL('../native/'+plan.binary,import.meta.url));
+            run=await execute(binary,plan.args,{timeout:plan.timeoutMs??20000,signal:controller.signal,maxBuffer:4*1024*1024});
+          }
+          const raw=String(run.stdout??'').trim();
+          // A helper answers in JSON, and its plan carries the parser, so the model is given lines
+          // it can read instead of a data structure it would have to decode. The parser never
+          // throws: a reply it cannot read becomes a sentence, which is what the owner should
+          // hear anyway.
+          const formatter=plan.kind==='cli'?plan.format:undefined;
+          const parsed=Boolean(formatter);
+          const text=formatter?formatter(raw):raw;
+          // How much of the result the owner's answer may be built from. The default is a status
+          // line, which is all a click or a created event needs. A tool that returns document
+          // text (the note bodies behind "summarise all my notes", a parsed list of events) asks
+          // for more in its plan, because 600 characters of a 20-note library cannot produce a
+          // summary.
+          const cap=Math.max(200,Math.min(plan.outputChars??(parsed?8000:600),120000));
+          // Document text (long or parsed) keeps its line breaks because its structure is what the
+          // answer is built from; a short result is a status line and reads better on one line.
+          const output=(parsed||cap>600?text:text.replace(/\s*\n\s*/g,' | ')).slice(0,cap);
           return {action:'app_tool',tool:tool.name,app:tool.app,ok:true,output,window:null};
         }catch(e){
-          const text=String((e as {stderr?:string}).stderr??(e as Error).message??'');
-          // -1743 is macOS saying the Automation grant is missing, and it arrives on stderr.
-          if(/-1743|not authori[sz]ed|not permitted|errAEEventNotPermitted/i.test(text))throw new Error('AUTOMATION_PERMISSION_REQUIRED: macOS is waiting for your permission to control '+tool.app+'. Open System Settings > Privacy & Security > Automation, allow FarFromDesk Local to control '+tool.app+', then ask me again. Nothing was sent.');
+          // A helper reports a refusal as `Error: <sentence>` on stderr. The prefix is the
+          // helper's convention, not something the owner should read, so it comes off here; what
+          // is left is already a sentence written for them.
+          const stderr=String((e as {stderr?:string}).stderr??'').replace(/^\s*Error:\s*/,'').replace(/\s+/g,' ').trim();
+          const text=stderr||String((e as Error).message??'');
+          // A helper that is not in this build is not a failed action, it is a tool this build
+          // does not have yet. It gets its own sentinel so the sentence survives: APP_TOOL_FAILED
+          // is reduced to a cause phrase ("the helper could not complete it"), which would send the
+          // owner looking for a fault in an action that never started.
+          if((e as {code?:string}).code==='ENOENT')throw new Error('APP_TOOL_HELPER_MISSING: '+tool.name+' is not available on this Mac yet: the '+(plan.kind==='cli'?plan.binary:tool.name.split('_')[0])+' helper is missing from this build. Nothing was changed.');
+          // -1743 is macOS saying the Automation grant is missing, and it arrives on stderr. An
+          // EventKit helper says the same thing in words, because TCC denies access to a process
+          // with no usage description instantly and silently, with no dialog to accept.
+          if(/-1743|not authori[sz]ed|not permitted|errAEEventNotPermitted|permission denied|access was denied/i.test(text))throw new Error('AUTOMATION_PERMISSION_REQUIRED: macOS is waiting for your permission to control '+tool.app+'. Open System Settings > Privacy & Security, allow FarFromDesk Local to reach '+tool.app+', then ask me again. Nothing was changed.');
           throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+text.replace(/\s+/g,' ').slice(0,300));
         }
       }

@@ -16,12 +16,13 @@
  * (8/10 -> 10/10), which is why the widened pass may add tools and may never reorder them.
  */
 import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { allPackTools } from '../src/app-tools/packs.js';
 import { buildIndex, shortlistTools, type ShortlistEntry } from '../src/app-tools/retrieve.js';
 import { describeReport, evaluateRetrieval } from '../src/app-tools/metrics.js';
 import { GOLDEN, type GoldenUtterance } from '../src/app-tools/golden.js';
-import { PARAPHRASES } from '../src/app-tools/golden-paraphrase.js';
+import { PARAPHRASES, PARAPHRASE_COVERAGE } from '../src/app-tools/golden-paraphrase.js';
 import { embedStats, resetEmbedCache, resetEmbedStats } from '../src/app-tools/embed.js';
 
 const tools = allPackTools();
@@ -67,14 +68,30 @@ line('paraphrases, lexical', describeReport(lexicalShort));
 const wideShort = await widened(PARAPHRASES);
 line('paraphrases, embeddings', `recall@1 ${wideShort.recall1}, recall@5 ${wideShort.recall5}, wrong-first ${wideShort.wrong.length}`);
 
-for (const [name, report] of [['golden', wideGolden], ['paraphrases', wideShort]] as const) {
+// Every tool, not every hard sentence: one paraphrase per reviewed tool, so a pack cannot land
+// without at least one sentence the owner would really say that lands on it.
+const lexicalCoverage = evaluateRetrieval(PARAPHRASE_COVERAGE, index);
+line('per-tool paraphrases, lexical', describeReport(lexicalCoverage));
+const wideCoverage = await widened(PARAPHRASE_COVERAGE);
+line('per-tool paraphrases, embeddings', `recall@1 ${wideCoverage.recall1}, recall@5 ${wideCoverage.recall5}, wrong-first ${wideCoverage.wrong.length}`);
+
+for (const [name, report] of [['golden', wideGolden], ['paraphrases', wideShort], ['coverage', wideCoverage]] as const) {
   for (const row of report.wrong) console.log(`  wrong (${name}): ${row}`);
   for (const row of report.missed) console.log(`  missed (${name}): ${row}`);
 }
 
+// The per-app pack tests are part of this gate, not only `npm test`: `npm test` reads the
+// top-level test/ directory only, so a test living under test/app-tools/ would never run. The
+// list is read from disk rather than written out here, because a new pack that adds a test and
+// forgets this line would otherwise be a pack nobody ever gated.
+const packTests = readdirSync(new URL('../test/app-tools', import.meta.url))
+  .filter(name => name.endsWith('.test.ts'))
+  .sort()
+  .map(name => `test/app-tools/${name}`);
 const files = [
   'test/app-tools-retrieval.test.ts',
   'test/app-tools-embed.test.ts',
+  ...packTests,
   'test/brain-conversation.test.ts',
   'test/brain-sessions.test.ts',
   'test/brain-fanout.test.ts',
@@ -112,6 +129,10 @@ if (lexicalShort.recall1 < 0.9) failures.push(`lexical paraphrase recall@1 fell 
 if (wideShort.recall1 < 1) failures.push(`widened paraphrase recall@1 fell to ${wideShort.recall1}`);
 if (wideShort.recall5 < 1) failures.push(`widened paraphrase recall@5 fell to ${wideShort.recall5}`);
 if (wideShort.wrong.length) failures.push(`${wideShort.wrong.length} paraphrase request(s) answered with the wrong tool`);
+// Coverage is a demand, not a floor: every tool has one sentence and every sentence is first.
+if (lexicalCoverage.recall1 < 1) failures.push(`a per-tool paraphrase no longer lands on its tool first: recall@1 ${lexicalCoverage.recall1}`);
+if (wideCoverage.recall1 < 1) failures.push(`widened per-tool paraphrase recall@1 fell to ${wideCoverage.recall1}`);
+if (wideCoverage.wrong.length) failures.push(`${wideCoverage.wrong.length} per-tool paraphrase answered with the wrong tool`);
 if (run.status !== 0) failures.push('a transcript eval failed');
 console.log('');
 if (failures.length) { for (const failure of failures) console.error(`FAIL ${failure}`); process.exitCode = 1; }

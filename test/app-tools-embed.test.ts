@@ -5,7 +5,7 @@ import { allPackTools } from '../src/app-tools/packs.js';
 import { buildIndex, selectTools, shortlistTools } from '../src/app-tools/retrieve.js';
 import { embedBinaryPath, embedRank, embeddingsAvailable, embedDocs, embedStats, resetEmbedStats, resetEmbedCache } from '../src/app-tools/embed.js';
 import { GOLDEN } from '../src/app-tools/golden.js';
-import { PARAPHRASES } from '../src/app-tools/golden-paraphrase.js';
+import { PARAPHRASES, PARAPHRASE_COVERAGE } from '../src/app-tools/golden-paraphrase.js';
 
 /**
  * What the embedding layer is allowed to do, and the proof that it does it.
@@ -71,7 +71,7 @@ test('the shortlist keeps the golden set at recall@5 and lifts the paraphrases',
 
 test('the lexical order is never rearranged by the embedding layer', async (t) => {
   if (!haveHelper) return t.skip('native/tool-embed is not built on this machine');
-  for (const row of [...GOLDEN, ...PARAPHRASES]) {
+  for (const row of [...GOLDEN, ...PARAPHRASES, ...PARAPHRASE_COVERAGE]) {
     const lexical = selectTools(row.text, { app: row.app, index, k: 5 }).map(m => m.tool.name);
     const union = (await shortlistTools(row.text, { app: row.app, index, k: 5 })).map(e => e.tool.name);
     assert.deepEqual(union.slice(0, lexical.length), lexical, `order changed for "${row.text}"`);
@@ -86,7 +86,14 @@ test('no app in front means no embedding candidates at all', async (t) => {
   if (!haveHelper) return t.skip('native/tool-embed is not built on this machine');
   // The measured win came from requests made while the owner is in the app. Without that
   // anchor, "add a retry to the sync loop" could be widened into another app's tools.
-  assert.deepEqual(await shortlistTools('remind me to buy milk later', { index }), []);
+  //
+  // This asserts the layer, not the scorer: whatever the words alone found is the whole
+  // shortlist, and nothing was added by an embedding. When the reminder pack learned the
+  // everyday subject words, "remind me to buy milk later" started resolving lexically to
+  // reminders_add without any app in front, which is the right answer and not a widening.
+  for (const entry of await shortlistTools('remind me to buy milk later', { index })) {
+    assert.equal(entry.via, 'lexical', `${entry.tool.name} was added by an embedding with no app in front`);
+  }
   assert.deepEqual(await shortlistTools('add a retry to the sync loop', { app: 'Cursor', index }), []);
 });
 test('the pack docs are embedded once per tool set, not once per turn', async (t) => {

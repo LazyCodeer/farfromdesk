@@ -84,27 +84,38 @@ test('apple dates are refused unless they are the one shape AppleScript accepts'
   assert.equal(asStr('he said "hi"\\'), '"he said \\"hi\\"\\\\"');
 });
 
-test('the calendar tools build a script that touches one calendar and reads only', () => {
+test('the calendar tools go through the bundled EventKit helper and read only', () => {
+  // Calendar and Reminders moved off AppleScript onto a bundled Swift helper that talks to
+  // EventKit directly. The plan is a command line, never a shell string, so the arguments are
+  // discrete and a value with a space in it cannot become a second command.
   const create = toolByName('calendar_create_event')!.plan({
-    title: 'Meeting with Ashitosh',
+    title: 'Meeting with the team',
     start: '2026-11-04 17:00:00',
     end: '2026-11-04 17:30:00',
     calendar: 'Home',
   });
-  assert.equal(create.kind, 'osascript');
-  const script = create.kind === 'osascript' ? create.script : '';
-  assert.match(script, /tell application "Calendar"/);
-  assert.match(script, /tell calendar "Home"/);
-  assert.match(script, /make new event at end of events with properties/);
-  assert.ok(!/send|mail|invite/i.test(script), 'creating an event must not invite anyone');
+  assert.equal(create.kind, 'cli');
+  const argv = create.kind === 'cli' ? create.args : [];
+  assert.equal(create.kind === 'cli' ? create.binary : '', 'eventkit-helper');
+  assert.deepEqual(argv.slice(0, 5), ['create', '--title', 'Meeting with the team', '--start', '2026-11-04 17:00:00']);
+  assert.ok(argv.includes('--end') && argv.includes('2026-11-04 17:30:00'), 'the end time must be passed');
+  assert.ok(argv.includes('--calendar') && argv.includes('Home'), 'the chosen calendar must be passed');
+  assert.ok(!argv.some(word => /send|invite|mail|attendee/i.test(word)), 'creating an event must not invite anyone');
 
   const list = toolByName('calendar_list_events')!.plan({ days: '1' });
-  const listScript = list.kind === 'osascript' ? list.script : '';
-  assert.match(listScript, /1 \* days/);
-  assert.ok(!/make new|delete/.test(listScript), 'listing events must not change anything');
+  assert.equal(list.kind, 'cli');
+  const listArgs = list.kind === 'cli' ? list.args : [];
+  assert.equal(listArgs[0], 'events', 'listing events is the helper read command');
+  assert.ok(!listArgs.some(word => /^(?:create|update|delete|complete|reminder-create|reminder-update|reminder-delete)$/.test(word)), 'listing events must not change anything');
+  const window = (args: string[]) => {
+    const from = args[args.indexOf('--from') + 1];
+    const to = args[args.indexOf('--to') + 1];
+    return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+  };
+  assert.equal(window(listArgs), 1);
   // A wild number cannot turn a read into a storm.
   const capped = toolByName('calendar_list_events')!.plan({ days: '9999' });
-  assert.match(capped.kind === 'osascript' ? capped.script : '', /60 \* days/);
+  assert.equal(capped.kind === 'cli' ? window(capped.args) : -1, 60);
 });
 
 const choose = (text: string, app?: string) => selectTools(text, { app, index: index }).map(match => match.tool.name);
@@ -145,7 +156,7 @@ test('an app that is named but not acted on does not become a tool call', () => 
 });
 
 test('the pack list tells the owner what is installed', () => {
-  assert.deepEqual(PACKS.map(pack => pack.id), ['notes', 'calendar', 'reminders']);
+  assert.deepEqual(PACKS.map(pack => pack.id), ['notes', 'calendar', 'reminders', 'mail', 'finder', 'safari', 'music', 'messages']);
   assert.equal(packFor('notes')?.app, 'Notes');
   assert.equal(packFor('Calendar')?.id, 'calendar');
   assert.equal(packFor('Reminders')?.app, 'Reminders');
@@ -174,8 +185,25 @@ test('the owner opening verb decides read against write', () => {
 });
 
 test('a tool that only reads never carries a step that changes the Mac', () => {
+  const WRITING_HELPER_COMMANDS = new Set(['create', 'update', 'delete', 'complete', 'reminder-create', 'reminder-update', 'reminder-delete']);
   for (const tool of tools.filter(candidate => !candidate.writes)) {
-    const plan = tool.plan(Object.fromEntries(tool.args.map(arg => [arg.name, 'x'])));
+    let plan;
+    try {
+      plan = tool.plan(Object.fromEntries(tool.args.map(arg => [arg.name, 'x'])));
+    } catch (error) {
+      // Argument values here are deliberately junk, so a read tool is allowed to answer with an
+      // argument error instead of a plan: a plan that was never built cannot have changed
+      // anything. Anything else it throws is a real failure.
+      assert.match(String(error), /A date has to look like|whole number|The end of the window/, `${tool.name} threw something that is not an argument sentence`);
+      continue;
+    }
+    if (plan.kind === 'cli') {
+      // A cli plan is a helper command line: the helper's own verb is what would change
+      // something, so a read tool must never be handed a writing subcommand.
+      assert.match(plan.binary, /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, `${tool.name} names a helper that is not a plain file`);
+      assert.ok(!WRITING_HELPER_COMMANDS.has(String(plan.args[0])), `${tool.name} reads with a writing helper command`);
+      continue;
+    }
     assert.equal(plan.kind, 'osascript', `${tool.name} reads with UI steps, which can type`);
     const script = plan.kind === 'osascript' ? plan.script : '';
     assert.doesNotMatch(script, /\bmake new\b|\bdelete\b|\bduplicate\b|\bmove\b|\bset (?:name|body|value) of\b/i, `${tool.name} mutates something`);
@@ -195,10 +223,24 @@ test('a tool that only reads never carries a step that changes the Mac', () => {
  */
 const SCRIPT_SAMPLES: Record<string, Record<string, string>> = {
   notes_find: { query: 'the roof' },
-  calendar_create_event: { title: 'Call Ashitosh', start: '2026-11-05 17:00:00', end: '2026-11-05 17:30:00' },
+  notes_read: { name: 'Roof', chars: '4000' },
+  notes_recent: { limit: '5' },
+  notes_append: { name: 'Roof', text: 'the plumber comes monday' },
+  notes_update: { name: 'Roof', text: 'the leak is fixed' },
+  notes_delete: { name: 'Roof', confirm: 'Roof' },
+  calendar_create_event: { title: 'Call the plumber', start: '2026-11-05 17:00:00', end: '2026-11-05 17:30:00' },
   calendar_list_events: { days: '7' },
+  calendar_find_events: { query: 'standup', start: '2026-11-04', end: '2026-11-11' },
+  calendar_read_event: { summary: 'Standup', start: '2026-11-04 09:00:00' },
+  calendar_update_event: { summary: 'Standup', start: '2026-11-04 09:00:00', new_start: '2026-11-04 10:00:00' },
+  calendar_delete_event: { summary: 'Standup', start: '2026-11-04 09:00:00', confirm: 'Standup' },
   reminders_add: { title: 'Buy oat milk', due: '2026-11-06 09:00:00' },
   reminders_list: {},
+  reminders_open: { limit: '10' },
+  reminders_read: { name: 'buy milk' },
+  reminders_complete: { name: 'buy milk', confirm: 'buy milk' },
+  reminders_update: { name: 'buy milk', confirm: 'buy milk', due: '2026-11-06 09:00:00' },
+  reminders_delete: { name: 'buy milk', confirm: 'buy milk' },
 };
 
 test('every AppleScript tool compiles against its app dictionary', { skip: process.platform !== 'darwin' ? 'macOS only' : false }, () => {
@@ -220,17 +262,48 @@ test('every AppleScript tool compiles against its app dictionary', { skip: proce
 });
 
 /**
- * The tools that write into the owner's apps may only create. Nothing in the reviewed set is
- * allowed to complete, delete, move or rename something the owner already has, because a plan
- * that touches existing data is a different decision than "add this".
+ * Every writing plan changes one thing at a time, and an AppleScript plan that changes something
+ * that already exists reads it first.
+ *
+ * This replaced an earlier rule that the reviewed set may only create ("a writing AppleScript
+ * plan only creates"). The owner asked to add to a note, replace its text and delete one, so
+ * create-only is no longer true and the old assertion failed the moment the notes pack was
+ * registered. The invariant that still has to hold is narrower and more important: one sentence
+ * never changes more than one of the owner's things, and a plan that could drop something refuses
+ * after the read instead of attempting the write. Each pack's own test pins its exact refusal
+ * sentences; this one pins the shape of every writing plan in the registry.
  */
-test('a writing AppleScript plan only creates', () => {
+test('a writing plan changes one thing at a time and reads it before writing', () => {
+  const WRITING_HELPER_COMMANDS = new Set(['create', 'update', 'delete', 'complete', 'reminder-create', 'reminder-update', 'reminder-delete']);
   for (const tool of allPackTools()) {
     if (!tool.writes) continue;
     const planned = tool.plan(SCRIPT_SAMPLES[tool.name] ?? {});
+    if (planned.kind === 'cli') {
+      // The EventKit helper resolves its target by title (and, for events, by time), so the
+      // match is the read: it changes one thing or refuses. There is no way to ask it for a
+      // range, which is the property this asserts.
+      assert.match(planned.binary, /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, `${tool.name} names a helper that is not a plain file`);
+      assert.ok(WRITING_HELPER_COMMANDS.has(String(planned.args[0])), `${tool.name} does not name a writing helper command`);
+      assert.ok(!planned.args.includes('--all') && !planned.args.includes('--span'), `${tool.name} could change more than one thing`);
+      if (/delete|complete/.test(String(planned.args[0]))) {
+        const at = planned.args.indexOf('--confirm');
+        assert.ok(at > 0, `${tool.name} deletes or completes without the owner's confirmation`);
+        assert.ok(planned.args[at + 1] && planned.args[at + 1] !== '--confirm', `${tool.name} confirms nothing`);
+      }
+      continue;
+    }
     if (planned.kind !== 'osascript') continue;
-    assert.match(planned.script, /make new /, `${tool.name} does not create anything`);
-    assert.doesNotMatch(planned.script, /\b(?:delete|remove|complete|completed|move|rename)\b/i, `${tool.name} touches something that already exists`);
+    const script = planned.script;
+    // A tool that refused a dummy sample is doing its job; there is no write to check.
+    if (/^return "/.test(script)) continue;
+    assert.doesNotMatch(script, /\b(?:delete|remove|complete|duplicate|move|rename)\s+(?:every|all|each)\b/i, `${tool.name} changes more than one thing`);
+    assert.doesNotMatch(script, /\b(?:delete|clear|remove)\s+(?:the\s+)?(?:folder|container|group)\b/i, `${tool.name} deletes a container`);
+    assert.doesNotMatch(script, /\brename\b/i, `${tool.name} renames something the owner already has`);
+    // A plan that only creates a new thing has nothing to read first.
+    if (/\bmake new /.test(script)) continue;
+    // Changing something that exists: resolve exactly one item, read it, and only then write.
+    assert.match(script, /whose name is/, `${tool.name} changes something without naming exactly one`);
+    assert.match(script, /(?:body|plaintext) of n/, `${tool.name} writes without reading the thing first`);
   }
 });
 

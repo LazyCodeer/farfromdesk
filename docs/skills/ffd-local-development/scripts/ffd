@@ -112,7 +112,8 @@ sign_grant_holders() {
   local app="$1" identity="$2" rel target
   [ -n "$identity" ] || return 0
   for rel in "Contents/Resources/backend/native/FarFromDesk Accessibility.app" \
-             "Contents/Resources/backend/native/session-state"; do
+             "Contents/Resources/backend/native/session-state" \
+             "Contents/Resources/backend/native/eventkit-helper"; do
     target="$app/$rel"
     [ -e "$target" ] || continue
     if /usr/bin/codesign --force --sign "$identity" --preserve-metadata=entitlements "$target" >/dev/null 2>&1; then
@@ -567,6 +568,18 @@ cmd_ship() {
     fi
   else
     say "  tool-embed skipped (no Swift toolchain)"
+  fi
+  # The Calendar and Reminders helper is compiled here for the same reason as tool-embed.
+  # It is compiled with its usage descriptions embedded, because macOS reads them from the
+  # helper itself; without them the Calendar grant is denied instantly and silently.
+  if command -v xcrun >/dev/null 2>&1; then
+    if xcrun swiftc -O -framework EventKit -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$FFD_SOURCE/native/eventkit-helper-Info.plist" "$FFD_SOURCE/native/eventkit-helper.swift" -o "$app/Contents/Resources/backend/native/eventkit-helper" 2>/tmp/ffd-eventkit-helper.log; then
+      say "  eventkit-helper ok"
+    else
+      say "  eventkit-helper skipped (see /tmp/ffd-eventkit-helper.log)"
+    fi
+  else
+    say "  eventkit-helper skipped (no Swift toolchain)"
   fi
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$app/Contents/Info.plist"
   python3 - "$app/Contents/Resources/backend/build.json" "$FFD_SOURCE" "local-$note-$build" "$FFD_SOURCE" <<'PY'

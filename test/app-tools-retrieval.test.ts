@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { allPackTools } from '../src/app-tools/packs.js';
 import { buildIndex, selectTools } from '../src/app-tools/retrieve.js';
 import { GOLDEN, uncoveredTools } from '../src/app-tools/golden.js';
+import { PARAPHRASE_COVERAGE } from '../src/app-tools/golden-paraphrase.js';
 import { describeReport, evaluateRetrieval } from '../src/app-tools/metrics.js';
 
 /**
@@ -31,6 +32,18 @@ test('retrieval holds on the golden set', () => {
 test('every reviewed tool is covered by at least one golden utterance', () => {
   assert.deepEqual(uncoveredTools(tools, GOLDEN), [], 'a tool with no golden utterance cannot regress visibly');
   assert.ok(GOLDEN.length >= tools.length * 3, 'the set has to be wider than the tool list');
+});
+
+test('every reviewed tool has a paraphrase of its own, and every one lands first', () => {
+  // A golden row is a sentence the tool was built from, so it can pass on the words its own
+  // description shares. The paraphrase set is the owner's phrasing instead: it is what catches a
+  // pack whose examples are the only sentences that work.
+  assert.deepEqual(uncoveredTools(tools, PARAPHRASE_COVERAGE), [], 'a tool with no paraphrase of its own is only reachable by its own example sentences');
+  const coverage = evaluateRetrieval(PARAPHRASE_COVERAGE, index, 5);
+  console.log(describeReport(coverage));
+  for (const line of coverage.wrong) console.log('  wrong-first: ' + line);
+  assert.equal(coverage.wrong.length, 0, `a wrong first choice is a bug: ${coverage.wrong.join(' | ')}`);
+  assert.equal(coverage.recall1, 1, `every paraphrase must land on its tool: ${coverage.missed.join(' | ')}`);
 });
 
 test('the two failures this gate was built from stay fixed', () => {
