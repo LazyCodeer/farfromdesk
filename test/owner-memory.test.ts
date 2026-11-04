@@ -86,6 +86,8 @@ function brain(script:(tool:(i:any)=>string,input:any)=>Partial<Interpretation>)
 test('the first hi goes to the model for an intro, and what it saves is announced and undoable', async () => {
   const f=brain((tool,input)=>{
     if(input.original==='Sam')tool({command:'str_replace',path:'about-me.md',old_str:'- Call me:',new_str:'- Call me: Sam'});
+    // "undo" is the brain's decision now, not a pattern before it.
+    if(input.original==='undo')return {intent:'manage',operation:'undo_memory'};
     return {reply:input.intro?'Hi, I pass work to your sessions. What should I call you?':'Nice to meet you, Sam.'};
   });
   await f.say('hi');
@@ -96,7 +98,7 @@ test('the first hi goes to the model for an intro, and what it saves is announce
   assert.ok(f.out().some(b=>/Saved "Call me: Sam" in about-me\.md[\s\S]*undo/.test(b)));
   const calls=f.inputs.length;
   await f.say('hello');
-  assert.equal(f.inputs.length,calls,'greetings skip the model once the intro is answered');
+  assert.equal(f.inputs.length,calls+1,'greetings go to the model too; nothing is matched before it');
   await f.say('undo');
   assert.doesNotMatch(f.router.brain.owner.read('about-me.md')!,/Call me: Sam/);
   f.close();

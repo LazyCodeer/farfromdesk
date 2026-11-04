@@ -316,27 +316,34 @@ test('brain answers correlate delivery and never claim queued chunks are sent',a
     f.store.db.prepare('DELETE FROM seen WHERE id=?').run('wa:answer');await f.router.receive({id:'wa:answer',text:'List all my items'});assert.equal(f.out().length,rows.length);
   }finally{f.close();}
 });
-test('task is assigned and tracked when queued; follow-up status uses the current topic without inference',async()=>{
+// Status, watches, recent sessions and numbered answers are the model's decisions now; no pattern
+// answers them before it. Each test gives the decision a model would make and checks the code
+// that runs on it.
+const itemRef=(f:any,id:string)=>`item:${f.store.itemOf(id)}`;
+const status=(taskIds:string[]=[]):Interpretation=>({...decision(),intent:'status',taskIds});
+test('task is assigned and tracked when queued; follow-up status uses the current topic',async()=>{
  const f=fixture();try{
   await f.router.receive({id:'wa:work',text:'Fix CSV export'});
   const item=f.c.items().get(f.store.itemOf('wa:work')!);assert.equal(item.binding_id,f.codex.id);assert.equal(item.status,'in progress');
-  const calls=f.calls;await f.router.receive({id:'wa:update',text:'Any update from that session'});assert.equal(f.calls,calls);
+  f.respond(async()=>status());
+  const calls=f.calls;await f.router.receive({id:'wa:update',text:'Any update from that session'});assert.equal(f.calls,calls+1);
   assert.match(String(f.out().at(-1)?.body),/CSV export/);assert.doesNotMatch(String(f.out().at(-1)?.body),/clarify the task/);
  }finally{f.close();}
 });
-test('numbered status clarification is durable, scoped, and cannot dispatch new work',async()=>{
+test('a numbered answer to the brain question reaches the brain and cannot dispatch new work',async()=>{
  const f=fixture();try{
   await f.router.receive({id:'wa:a',text:'Fix CSV export'});await f.router.receive({id:'wa:b',text:'Fix PDF export'});
-  f.store.set('brain-topic:owner@s.whatsapp.net','');
+  f.respond(async()=>({...decision(),intent:'clarify',reply:'Which one?\n1. Fix CSV export\n2. Fix PDF export'}));
   await f.router.receive({id:'wa:which',text:'Any update from that session'});
   assert.match(String(f.out().at(-1)?.body),/1\./);
-  f.router.brain=new MetaBrain(f.store,f.secret,f.model);
-  await f.router.receive({id:'wa:one',text:'1'});assert.equal(f.store.jobs().length,2);assert.match(String(f.out().at(-1)?.body),/export/);
+  f.respond(async()=>status([itemRef(f,'wa:a')]));
+  await f.router.receive({id:'wa:one',text:'1'});assert.equal(f.store.jobs().length,2);assert.match(String(f.out().at(-1)?.body),/CSV export/);
  }finally{f.close();}
 });
 test('notify-on-completion persists, waits for evidence and queues once without replaying work',async()=>{
  const f=fixture(decision(),true);try{
   await f.router.receive({id:'wa:work',text:'Fix CSV export'});
+  f.respond(async()=>({...decision(),intent:'manage',operation:'watch',taskIds:[itemRef(f,'wa:work')]}));
   await f.router.receive({id:'wa:watch',text:'Okay let me know once itls done'});
   assert.match(String(f.out().at(-1)?.body),/notify/i);assert.equal(f.store.jobs().length,1);
   const before=f.out().length;f.router.brain.tick(f.router);assert.equal(f.out().length,before);
@@ -348,25 +355,27 @@ test('notify-on-completion persists, waits for evidence and queues once without 
   assert.match(String(f.out().at(-1)?.body),/reported.*complete/i);
  }finally{f.close();}
 });
-test('items answer uses scoped sections and does not require Meta',async()=>{
+test('items answer is scoped to the chat',async()=>{
  const f=fixture();try{
-  await f.router.receive({id:'wa:work',text:'Fix CSV export'});const calls=f.calls;
-  await f.router.receive({id:'wa:items',text:'List all my items'});assert.equal(f.calls,calls);assert.match(String(f.out().at(-1)?.body),/In progress/);
+  await f.router.receive({id:'wa:work',text:'Fix CSV export'});
+  f.respond(async()=>status());
+  await f.router.receive({id:'wa:items',text:'List all my items'});assert.match(String(f.out().at(-1)?.body),/CSV export/);
   await f.store.destinationContext.run('other-owner',()=>f.router.receive({id:'wa:items-other',text:'List all my items'}));assert.doesNotMatch(String(f.out().at(-1)?.body),/CSV export/);
  }finally{f.close();}
 });
 
 test('recent session request filters one catalog call by time and platform without a proxy turn',async()=>{
- const f=fixture();try{
+ const f=fixture({...decision('codex'),intent:'manage',operation:'recent_sessions',hours:24});try{
   let calls=0;f.router.native.catalog=async(provider)=>{calls++;assert.equal(provider,'codex');return {sessions:[{id:'recent',provider:'codex',name:'Real work',cwd:'/work',status:'existing',updatedAt:Date.now()},{id:'old',provider:'codex',name:'Old work',cwd:'/work',status:'existing',updatedAt:Date.now()-2*86400000}],cursor:null};};
   await f.router.receive({id:'wa:recent',text:'List all my codex session in last 24 hra'});
-  assert.equal(calls,1);assert.equal(f.calls,0);assert.equal(f.store.jobs().length,0);assert.match(String(f.out().at(-1)?.body),/Real work/);assert.doesNotMatch(String(f.out().at(-1)?.body),/Old work/);
+  assert.equal(calls,1);assert.equal(f.calls,1);assert.equal(f.store.jobs().length,0);assert.match(String(f.out().at(-1)?.body),/Real work/);assert.doesNotMatch(String(f.out().at(-1)?.body),/Old work/);
  }finally{f.close();}
 });
 test('native interrupted evidence updates tracking without completing or replaying the request',async()=>{
  const f=fixture();try{
   await f.router.receive({id:'wa:native-work',text:'Fix CSV export'});f.store.jobState('wa:native-work','submitted');
   (f.router.native as any).requestStatus=async()=>({status:'interrupted',turnId:'exact-turn'});
+  f.respond(async()=>status());
   await f.router.receive({id:'wa:native-update',text:'Any update'});
   assert.equal(f.store.job('wa:native-work')?.status,'uncertain');assert.equal(f.store.job('wa:native-work')?.outcome,null);assert.equal(f.store.jobs().length,1);
   assert.match(String(f.out().at(-1)?.body),/interrupted/i);
@@ -389,21 +398,24 @@ test('old brain replies are backfilled without enqueueing, resending, or inventi
   f.router.brain=new MetaBrain(f.store,f.secret,f.model);assert.equal(f.out().length,1);assert.equal(f.out()[0].request_id,'wa:old');assert.equal(f.router.brain.tasks()[0].responseState,'sent');assert.equal(f.store.events('wa:old').length,0);
  }finally{f.close();}
 });
-test('ambiguous choice expires and revoked status policy cannot register a watch',async()=>{
+test('revoked status policy cannot register a watch',async()=>{
  const f=fixture();try{
-  await f.router.receive({id:'wa:c1',text:'Fix CSV export'});await f.router.receive({id:'wa:c2',text:'Fix PDF export'});f.store.set('brain-topic:owner@s.whatsapp.net','');
-  await f.router.receive({id:'wa:choose',text:'Any update'});const key='brain-choice:owner@s.whatsapp.net',choice=JSON.parse(f.store.get(key)!);f.store.set(key,JSON.stringify({...choice,at:0}));
-  await f.router.receive({id:'wa:expired',text:'1'});assert.match(String(f.out().at(-1)?.body),/expired/);assert.equal(f.store.jobs().length,2);
-  saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowStatus:false}});await f.router.receive({id:'wa:denied-watch',text:'Notify me when it is done'});
+  await f.router.receive({id:'wa:c1',text:'Fix CSV export'});
+  saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowStatus:false}});
+  f.respond(async()=>({...decision(),intent:'manage',operation:'watch',taskIds:[itemRef(f,'wa:c1')]}));
+  await f.router.receive({id:'wa:denied-watch',text:'Notify me when it is done'});
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM brain_watches').get()?.n,0);
  }finally{f.close();}
 });
 
-test('task clarification numbers cannot select an older session menu',async()=>{
+test('a number answering the brain question never selects an older session menu',async()=>{
  const f=fixture();try{
-  await f.router.receive({id:'wa:choice-a',text:'Fix CSV export'});await f.router.receive({id:'wa:choice-b',text:'Fix PDF export'});f.store.set('brain-topic:owner@s.whatsapp.net','');
+  await f.router.receive({id:'wa:choice-a',text:'Fix CSV export'});await f.router.receive({id:'wa:choice-b',text:'Fix PDF export'});
   f.store.set('selection-awaiting','true');f.c.select=async()=>{throw new Error('stale session menu was used');};
-  await f.router.receive({id:'wa:choice-task',text:'Any update'});await f.router.receive({id:'wa:choice-number',text:'1'});
+  f.respond(async()=>({...decision(),intent:'clarify',reply:'Which one?\n1. Fix CSV export\n2. Fix PDF export'}));
+  await f.router.receive({id:'wa:choice-task',text:'Any update'});
+  f.respond(async()=>status([itemRef(f,'wa:choice-a')]));
+  await f.router.receive({id:'wa:choice-number',text:'1'});
   assert.match(String(f.out().at(-1)?.body),/export/);assert.doesNotMatch(String(f.out().at(-1)?.body),/stale session/);
  }finally{f.close();}
 });

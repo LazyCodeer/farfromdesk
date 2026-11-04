@@ -51,15 +51,12 @@ const PLATFORM_WORDS:ReadonlyArray<readonly [BrainProvider,readonly string[]]>=[
 ];
 const PLATFORM_ALTERNATION=PLATFORM_WORDS.flatMap(([,words])=>words).join('|');
 /** Any spoken platform name. */
-const PLATFORM_RE=new RegExp(`\\b(?:${PLATFORM_ALTERNATION})\\b`,'i');
 const PLATFORM_RE_ALL=new RegExp(`\\b(?:${PLATFORM_ALTERNATION})\\b`,'gi');
 /**
  * Fast-path phrasings that carry a platform name. These must be built with the RegExp constructor:
  * a regex literal never interpolates ${...}, so a platform name spliced into a literal silently
  * matches nothing at all - the phrase then falls through to the model instead of the fast path.
  */
-const RECENT_RE=new RegExp(`^(?:please )?(?:list|show|give me)(?: all)?(?: my| the)? (${PLATFORM_ALTERNATION}) sessions?(?: in| from)? (?:the )?last (\\d{1,3}) (?:h|hr|hrs|hra|hours?)$`,'i');
-const STATUS_ONE_RE=new RegExp(`^(?:the )?(?:${PLATFORM_ALTERNATION}) one i want to know the update$`,'i');
 /** The platform a spoken name refers to, or undefined when the word isn't a platform. */
 function platformProvider(word:string|undefined):BrainProvider|undefined {
   const w=(word??'').toLowerCase();
@@ -142,7 +139,8 @@ export class MetaBrain {
       }catch{this.store.set(`brain-native:${id}`,JSON.stringify({at:Date.now(),status:'unavailable'}));}
     }));
   }
-  hasChoice() {return brainPolicy(this.store).enabled&&!!this.store.get(`brain-choice:${this.store.destination()}`)&&this.store.get(`brain-choice:${this.store.destination()}`)!=='null';}
+  /** The brain asked the owner a question, so a bare number answers it, never a stale session menu. */
+  hasChoice() {return brainPolicy(this.store).enabled&&this.awaitingAnswer(this.store.destination()??'');}
   clearChoice(){this.store.set(`brain-choice:${this.store.destination()}`,'null');}
   /** Recent owner messages from every route (brain, named item, direct, quoted) with the replies they got,
    * including worker and proxy answers on delegated children. Untrusted history, never new permission. */
@@ -181,7 +179,7 @@ export class MetaBrain {
     return true;
   }
   /** Ask the session that owns an item for a fresh report. It is a status question, never a rerun of the task. */
-  private requestUpdate(router:Router,m:Incoming,item:ReturnType<BrainMemory['board']>[number],original=m.text) {
+  private requestUpdate(router:Router,m:Incoming,item:ReturnType<BrainMemory['board']>[number],original=m.text,provider?:string) {
     const answer=(s:string)=>{this.answer(m.id,s);return true;};
     const policy=brainPolicy(this.store);
     // Model intent is advisory. Explicit negation and quoted instructions cannot authorize a dispatch.
@@ -194,7 +192,8 @@ export class MetaBrain {
     try{target=this.memory.owner(item,router);}catch(e){return answer(`#${item.id} ${item.title}: ${(e as Error).message}`);}
     if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider)||(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id)))
       return answer(`#${item.id} ${item.title}: its session isn't connected, so I can't ask it. Connect it in the app, or send the task again.`);
-    const named=namedPlatforms(original);
+    // A platform the brain carried over from an earlier turn ("ask claude", then "1") constrains it too.
+    const named=[...new Set([...namedPlatforms(original),...(provider&&provider!=='unspecified'?[provider]:[])])];
     if(named.length>1||(named.length===1&&named[0]!==target.provider))return answer('This item belongs to another platform. Please clarify which owning session you want to ask. Nothing was sent.');
     const proxy=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
     if(!proxy?.enabled||c.registry.identity(proxy).key!==c.registry.entry(proxy.id)?.key)return answer(`#${item.id} ${item.title}: the account or app behind its session changed, so I didn't ask it. Review it in Coding platforms first.`);
@@ -262,75 +261,38 @@ export class MetaBrain {
     out.push(...notes);
     return out.join('\n')||'No matching tracked tasks.';
   }
-  /** Fast paths are literal, read-only owner intents. They never reinterpret consent. */
-  private async localIntent(router:Router,m:Incoming) {
-    const text=m.text.trim().replace(/[.!?]+$/,'').toLowerCase(),policy=brainPolicy(this.store),destination=this.store.destination();
-    const key=`brain-choice:${destination}`,topic=this.store.get(`brain-topic:${destination}`),board=this.memory.board();
+  /**
+   * Owner operations the brain chose (decision.operation). These used to be matched by patterns
+   * before the model ran ("undo", "notify me when it's done", "start #3 again"); now the model
+   * decides and this code does exactly what those patterns did. Undefined means not an operation.
+   */
+  private async ownerOperation(router:Router,m:Incoming,decision:Interpretation):Promise<boolean|undefined>{
+    const op=decision.operation,policy=brainPolicy(this.store),destination=this.store.destination();
+    if(!op||!['undo_memory','watch','stop_watching','restart','recent_sessions','list_items'].includes(op))return undefined;
     const answer=(s:string)=>{this.answer(m.id,s);return true;};
-    // "undo" only takes back a memory line this chat saved in the last 30 minutes.
-    if(text==='undo'){let saved:{source:string;at:number}|undefined;try{saved=JSON.parse(this.store.get(`memory-last:${destination}`)??'null')??undefined;}catch{}
-      if(saved&&Date.now()-saved.at<30*60000){this.store.set(`memory-last:${destination}`,'null');try{for(const c of this.owner.changes(saved.source).reverse())this.owner.undo(c.id);return answer('Done, I took that back out of your memory.');}catch(e){return answer((e as Error).message);}}}
-    // Greetings skip the model, except while the brain still has to introduce itself.
-    if(/^(?:(?:hey|hi|hello)(?: there)?|how are you(?: doing)?)$/.test(text)&&!this.owner.introNeeded()){
-      const waiting=board.filter(i=>i.status==='waiting on owner'||i.status==='blocked');
-      return answer(waiting.length?`Hi! ${waiting.length===1?'One item needs':`${waiting.length} items need`} you: ${waiting.slice(0,3).map(i=>`#${i.id} ${i.title}`).join(', ')}. Ask for your items, an update, or tell me what you want done.`:'Hi! Ask for your items, a task update, or tell me what you want done.');
+    if(op==='undo_memory'){
+      // Only a memory line this chat saved in the last 30 minutes.
+      let saved:{source:string;at:number}|undefined;try{saved=JSON.parse(this.store.get(`memory-last:${destination}`)??'null')??undefined;}catch{}
+      if(!saved||Date.now()-saved.at>=30*60000)return answer('There is nothing recent in your memory to take back.');
+      this.store.set(`memory-last:${destination}`,'null');
+      try{for(const c of this.owner.changes(saved.source).reverse())this.owner.undo(c.id);return answer('Done, I took that back out of your memory.');}catch(e){return answer((e as Error).message);}
     }
-    const recent=RECENT_RE.exec(text);
-    const list=/^(?:please )?(?:list|show|give me)(?: all)?(?: of)?(?: my| the)? (?:items|tasks)(?: list)?$/.test(text);
-    const status=/^(?:any update(?:s)?(?: from that session)?|(?:what(?: is|'s) )?(?:the )?(?:status|progress)(?: of (?:that|it))?)$/.test(text)||STATUS_ONE_RE.test(text);
-    const watch=/^(?:(?:okay|ok)[, ]+)?(?:please )?(?:let me know|notify me) (?:once|when) (?:it(?:'s| is|ls)?|that(?:'s| is)?) (?:done|finished|complete)$/.test(text);
-    const cancel=/^(?:stop|cancel) (?:the )?(?:notification|notifications|follow-up)$/.test(text);
-    const numeric=/^\d+$/.test(text);
-    const bareTask=/^(?:task|item) (\d{1,5})$/.exec(text);
-    const mentioned=bareTask?[Number(bareTask[1])]:mentionedItems(m.text,JSON.parse(this.store.get(`item-codes:${destination}`)??'{}'));
-    const updateWord=/\b(?:upd\w*|status|progress|news)\b/.test(text);
-    // "Ask update from codex" asks the session; "update on P1" reads the saved status.
-    const ask=updateWord&&/^(?:please )?(?:ask|check with|ping|request)\b/.test(text);
-    const named=!ask&&(updateWord||!!bareTask)&&mentioned.length>0;
-    let choice:{kind:'status'|'watch'|'update';ids:number[];at:number;original?:string}|undefined;
-    try{choice=JSON.parse(this.store.get(key)??'null')??undefined;}catch{}
-    const restart=/^(?:start|send|resend|restart) (?:#\s?|item )?(\d{1,5}|[tpd]\d{1,3}) again$/.exec(text);
-    if(restart)return this.restart(router,m,restart[1]);
-    if(!recent&&!list&&!status&&!watch&&!cancel&&!ask&&!named&&!(numeric&&choice)){this.clearChoice();return false;}
-    if(recent||list)this.clearChoice();
+    const board=this.memory.board(),ref=decision.taskIds[0];
+    const item=ref?board.find(i=>i.ref===ref||this.store.itemOf(ref)===i.id):undefined;
+    if(op==='restart'){if(!item)return answer('Which item should I start again? Ask for your items to see the codes.');return this.restart(router,m,String(item.id));}
     if(!policy.allowStatus){this.stop(m.id,'Status summaries and follow-up notifications are disabled in Meta Settings.');return true;}
-    if(recent){
-      const provider=platformProvider(recent[1]),hours=Number(recent[2]);
-      if(!provider)return answer('Choose a coding platform to list sessions for.');
-      if(!hours||hours>168)return answer('Choose a time range between 1 and 168 hours.');
+    if(op==='recent_sessions'){
+      const provider=decision.provider==='unspecified'?undefined:decision.provider,hours=decision.hours??24;
+      if(!provider)return answer('Which coding platform should I list sessions for?');
       if(!policy.providers.includes(provider)||!router.coordinator?.enabled().includes(provider))return answer('That coding platform is disabled in Settings.');
       try{return answer(await router.coordinator.recentSessions(provider,Date.now()-hours*3600000));}
       catch{return answer('Session discovery is unavailable. Nothing was dispatched; check the native app connection.');}
     }
-    if(cancel){this.store.db.prepare("UPDATE brain_watches SET state='cancelled' WHERE destination IS ? AND state='waiting'").run(destination);return answer('Follow-up notifications cancelled. Tasks and sessions are unchanged.');}
-    if(list)return answer(this.memory.items.text(true,board,`item-codes:${destination}`));
-    let selected=board.filter(i=>i.ref===topic);
-    let kind:'status'|'watch'|'update'=watch?'watch':ask?'update':'status';
-    if(numeric&&choice){
-      if(Date.now()-choice.at>30*60000){this.store.set(key,'null');return answer('That choice has expired. Ask for the task update again.');}
-      const id=choice.ids[Number(text)-1];selected=board.filter(i=>i.id===id);kind=choice.kind;
-      if(!selected.length)return answer('Choose one of the numbers in the last task question.');
-      this.store.set(key,'null');
-    }else if(mentioned.length){
-      selected=board.filter(i=>mentioned.includes(i.id));
-      if(!selected.length)return answer(`I can't find ${mentioned.length===1?`item #${mentioned[0]}`:'those items'} in this chat. Ask for your items to see the current codes.`);
-    }else{
-      const provider=platformProvider(PLATFORM_RE.exec(text)?.[0]);
-      if(provider)selected=board.filter(i=>i.jobs.some(j=>this.store.binding(String(j.binding_id))?.provider===provider));
-      if(!selected.length&&board.length===1)selected=board;
-    }
-    if(selected.length!==1){
-      const options=(selected.length?selected:board).slice(0,8);
-      if(!options.length)return answer('No tracked task in this chat yet. Tell me which task you mean.');
-      this.store.set(key,JSON.stringify({kind,ids:options.map(i=>i.id),at:Date.now(),original:m.text}));
-      return answer('Which task do you mean?\n'+options.map((i,n)=>`${n+1}. #${i.id} ${i.title}`).join('\n'));
-    }
-    const item=selected[0];this.store.set(`brain-topic:${destination}`,item.ref);
-    if(kind==='update'){
-      if(numeric&&!choice?.original)return answer('Ask for the update again so I can confirm the original session choice.');
-      return this.requestUpdate(router,m,item,numeric?choice!.original:m.text);
-    }
-    if(kind==='status'){await this.refreshEvidence(router,selected);return answer(this.statusText(this.memory.board().filter(i=>i.id===item.id),router));}
+    // The coded list (P1, D2) the owner reads is what later "update on P1" resolves against.
+    if(op==='list_items')return answer(this.memory.items.text(true,board,`item-codes:${destination}`));
+    if(op==='stop_watching'){this.store.db.prepare("UPDATE brain_watches SET state='cancelled' WHERE destination IS ? AND state='waiting'").run(destination);return answer('Follow-up notifications cancelled. Tasks and sessions are unchanged.');}
+    if(!item)return answer('Which task should I watch? Ask for your items to see the codes.');
+    this.store.set(`brain-topic:${destination}`,item.ref);
     const job=item.jobs[0];
     if(!job)return answer('This task has not been sent to a session yet. I cannot watch for completion until it starts.');
     this.store.db.prepare("INSERT OR IGNORE INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)").run(m.id,destination,item.id,job.id,Date.now());
@@ -611,9 +573,7 @@ export class MetaBrain {
     if(mode)this.store.set(`brain-mode:${m.id}`,router.guidedModes.summary(router,m));
     const routingChanged=()=>{if(routingSnapshot()===routingAtStart)return false;this.stop(m.id,'Executor or task mode changed while Brain was routing. Nothing was sent; send a new message.');return true;};
     this.memory.synchronize();
-    let handled:boolean;
-    try{handled=await this.localIntent(router,m);}catch(e){if(revoked())return true;throw e;}
-    if(revoked()||routingChanged())return true;if(handled)return true;
+    if(revoked()||routingChanged())return true;
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
@@ -678,6 +638,7 @@ export class MetaBrain {
       const reply=taken?(said.split('\n').map(line=>line.replace(/[^.!?\n]*\b(could not|couldn't|unable to|can't|cannot)\b[^.!?\n]*screenshot[^.!?\n]*[.!?]?\s*/gi,'')).filter((line,i,all)=>line.trim()||i<all.length-1).join('\n').trim()||'Here it is.'):said;
       const withNote=taken&&!/screenshot follows/i.test(reply)?`${reply}\nScreenshot follows.`:reply;
       this.store.outputBrain(m.id,withNote||'Send a task, or ask where are we.');this.sendShots(m);return true;}
+    const operated=await this.ownerOperation(router,m,decision);if(operated!==undefined)return operated;
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);
     // The brain decided this is coding work (or the answer to a pending review), so the task
     // review runs now, on its decision. The router no longer guesses with a pattern first.
@@ -704,7 +665,7 @@ export class MetaBrain {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
       const picked=decision.taskIds.length===1?this.memory.board().find(i=>i.ref===decision.taskIds[0]||this.store.itemOf(decision.taskIds[0])===i.id):undefined;
       if(!picked){this.stop(m.id,'Which item should I ask about? Ask for your items and name its code, like P1.','clarification');return true;}
-      return this.requestUpdate(router,m,picked);
+      return this.requestUpdate(router,m,picked,m.text,decision.provider);
     }
     if(decision.intent==='status') {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}

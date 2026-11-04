@@ -16,6 +16,12 @@ import { mentionedItems } from '../src/owner-routing.js';
 import { TaskContracts } from '../src/task-contracts.js';
 
 const task:Interpretation={intent:'task',provider:'unspecified',normalized:'n',taskIds:[]};
+// Greetings, lists, status and restarts are the model's decisions now; these are the decisions.
+const chat=(reply:string):Interpretation=>({...task,intent:'chat',reply});
+const op=(operation:any,taskIds:string[]=[],extra:any={}):Interpretation=>({...task,intent:'manage',operation,taskIds,...extra});
+const status=(taskIds:string[]):Interpretation=>({...task,intent:'status',taskIds});
+const update=(taskIds:string[],provider:Interpretation['provider']='unspecified'):Interpretation=>({...task,intent:'update',taskIds,provider});
+const clarify=(reply:string):Interpretation=>({...task,intent:'clarify',reply});
 function fixture() {
   const dir=mkdtempSync(join(tmpdir(),'ffd-companion-'));
   const store=new Store(':memory:'),approvals=new Approvals(store),native={run:async()=>{},stop:()=>{},catalog:async()=>({sessions:[]})};
@@ -42,21 +48,19 @@ test('the latest owner messages: a replaced proxy item is explained, never answe
     // Personal Bot is replaced by atlas before it answers.
     f.store.jobState('tg:8','replaced');f.store.enable(f.proxy.id,false);
     const atlas=f.store.register('atlas','codex',randomUUID(),'/tmp/atlas').binding;f.store.set(`name:${atlas.id}`,'atlas');f.c.registry.register(atlas);f.store.set('master',atlas.id);
-    const before=f.calls;
-    await f.send('tg:23','Hey');
-    assert.match(f.last(),/One item needs you: #1 Fix the invoice export/);
-    await f.send('tg:25','Give me all items');
+    await f.send('tg:23','Hey',chat('Hi Sam. One item needs you: #1 Fix the invoice export.'));
+    assert.match(JSON.stringify(f.seen.needsOwner),/Fix the invoice export/,'the model is told what needs the owner');
+    await f.send('tg:25','Give me all items',op('list_items'));
     assert.match(f.last(),/P1 ⚠️ Fix the invoice export · waiting on owner/);
-    await f.send('tg:27','Give me updtar on P1');
+    await f.send('tg:27','Give me updtar on P1',status(['item:1']));
     assert.match(f.last(),/Personal Bot was replaced before it finished\. Nothing was resent\. Say "start #1 again"/);
-    assert.equal(f.calls,before,'greeting, list and coded status stay local');
     await f.send('tg:29',"I didn't get anythung from that session",{...task,intent:'status',taskIds:['item:1']});
     assert.match(f.last(),/replaced before it finished/);
-    await f.send('tg:31','Ask update from codex');
+    await f.send('tg:31','Ask update from codex',update(['item:1'],'codex'));
     assert.match(f.last(),/replaced before it finished/);
     assert.equal(f.jobs().filter(j=>j.binding_id===atlas.id).length,0,'atlas never receives the old task on its own');
     // Only the owner's explicit choice sends the original request again, word for word, to the current proxy.
-    await f.send('tg:33','start #1 again');
+    await f.send('tg:33','start #1 again',op('restart',['item:1']));
     assert.equal(f.store.job('tg:33')?.binding_id,atlas.id);assert.equal(f.store.job('tg:33')?.body,'Fix the invoice export');
     assert.match(f.c.items().show(1),/Owner started it again with atlas/);
   }finally{f.close();}
@@ -66,7 +70,7 @@ test('a fresh update asks the owning worker once, status only, and its reply is 
   const f=fixture();try {
     await f.send('tg:1','Fix the invoice export',task);
     const [child]=f.c.dispatch('tg:1',[f.worker.id],'Fix the invoice export.','e1');
-    await f.send('tg:2','Ask codex for an update');
+    await f.send('tg:2','Ask codex for an update',update(['item:1'],'codex'));
     const ask=f.store.job('tg:2')!;
     assert.equal(ask.binding_id,f.worker.id);
     assert.match(ask.body,/^Status check from the owner for #1 /);assert.match(ask.body,/Do not resume, rerun or continue the task/);
@@ -92,19 +96,19 @@ test('a fresh update asks the owning worker once, status only, and its reply is 
 test('a proxy that owns its item is asked; ambiguous, undispatched and unconnected items are explained',async()=>{
   const f=fixture();try {
     await f.send('tg:1','Plan the launch',task);
-    await f.send('tg:2','ask for an update on #1');
+    await f.send('tg:2','ask for an update on #1',update(['item:1']));
     assert.equal(f.store.job('tg:2')?.binding_id,f.proxy.id,'the proven proxy owner answers its own item');
     await f.send('tg:3','Fix the export',task);f.c.dispatch('tg:3',[f.worker.id],'Fix the export','e3');
-    await f.send('tg:4','Ask update from codex');
+    await f.send('tg:4','Ask update from codex',clarify('Which task do you mean?\n1. #2 Fix the export\n2. #1 Plan the launch'));
     assert.match(f.last(),/Which task do you mean\?/);assert.equal(f.store.job('tg:4'),undefined);
-    await f.send('tg:5','1');
+    await f.send('tg:5','1',update(['item:2'],'codex'));
     assert.ok(f.store.job('tg:5'),'the numbered choice sends one status question');
     f.c.items().add('Write the release notes');
     f.store.db.prepare('INSERT INTO brain_item_routes VALUES(?,?)').run(3,f.store.destination());
-    await f.send('tg:6','ask for an update on #3');
+    await f.send('tg:6','ask for an update on #3',update(['item:3']));
     assert.match(f.last(),/hasn't been sent to a session yet/);assert.equal(f.store.job('tg:6'),undefined);
     f.store.set('selected','[]');
-    await f.send('tg:7','check with it for an update on #2');
+    await f.send('tg:7','check with it for an update on #2',update(['item:2']));
     assert.match(f.last(),/isn't connected/);assert.equal(f.store.job('tg:7'),undefined);
   }finally{f.close();}
 });
@@ -116,7 +120,7 @@ test('item codes resolve anywhere in a sentence from the list the owner last saw
   assert.deepEqual(mentionedItems('compare P1 with D2 and P9',codes),[4,9]);
   assert.deepEqual(mentionedItems('MP3 files and HTTP2',codes),[]);
   const f=fixture();try {
-    await f.send('tg:1','Fix the export',task);await f.send('tg:2','Give me all items');
+    await f.send('tg:1','Fix the export',task);await f.send('tg:2','Give me all items',op('list_items'));
     await f.send('tg:3','please look at P1 when you can',{...task,intent:'clarify'});
     assert.deepEqual(f.seen.itemCodes,{P1:'item:1'});
   }finally{f.close();}
@@ -139,7 +143,7 @@ test('status questions respect negation, quoted text, provider choice and disabl
 test('memory retains brain answers while excluding unrelated destination replies',async()=>{
  const f=fixture();try{
   await f.send('wa:memory-work','Fix the invoice export',task);
-  await f.send('wa:memory-status','Give me all items');
+  await f.send('wa:memory-status','Give me all items',op('list_items'));
   f.store.output(f.proxy,'foreign destination content','foreign-memory-reply','other-owner',{requestId:'wa:memory-work',kind:'progress',origin:'agent'});
   await f.send('wa:memory-next','what should I do next',{...task,intent:'clarify'});
   const history=JSON.stringify(f.seen.conversation);
@@ -154,9 +158,9 @@ test('an explicitly restarted item uses the new attempt for ownership and comple
   f.store.jobState(child,'replaced');f.store.jobState('tg:old','replaced');
   f.store.enable(f.worker.id,false);f.store.enable(f.proxy.id,false);
   const atlas=f.store.register('atlas','codex',randomUUID(),'/tmp/atlas').binding;f.c.registry.register(atlas);f.store.set('master',atlas.id);
-  await f.send('tg:restart','start #1 again');
+  await f.send('tg:restart','start #1 again',op('restart',['item:1']));
   assert.equal(f.store.job('tg:restart')?.binding_id,atlas.id);
-  await f.send('tg:ask-new','ask for an update on #1');
+  await f.send('tg:ask-new','ask for an update on #1',update(['item:1']));
   assert.equal(f.store.job('tg:ask-new')?.binding_id,atlas.id);
   f.store.jobState('tg:restart','submitted');
   f.router.channelReply(atlas,'✅ *Export fixed*\nTests passed.','final','tg:restart',undefined,{outcome:'done'});
@@ -168,21 +172,21 @@ test('an explicitly restarted item uses the new attempt for ownership and comple
 test('a numbered update choice retains the original platform constraint',async()=>{
  const f=fixture();try{
   await f.send('tg:a','Fix the export',task);await f.send('tg:b','Plan launch',task);
-  await f.send('tg:choose','Ask claude for an update');
+  await f.send('tg:choose','Ask claude for an update',clarify('Which task do you mean?\n1. #1 Fix the export\n2. #2 Plan launch'));
   assert.match(f.last(),/Which task/);
-  await f.send('tg:number','1');
+  // The brain keeps the platform the owner named; the item belongs to codex, so nothing is sent.
+  await f.send('tg:number','1',update(['item:1'],'claude'));
   assert.equal(f.store.job('tg:number'),undefined);
   assert.match(f.last(),/another platform/);
  }finally{f.close();}
 });
 
-test('latest small talk and bare task reference answer locally with the replaced-owner context',async()=>{
+test('latest small talk and a bare task reference carry the replaced-owner context',async()=>{
  const f=fixture();try{
   await f.send('tg:work','List all my codex sessions',task);
   f.store.jobState('tg:work','replaced');f.store.enable(f.proxy.id,false);
-  const calls=f.calls;
-  await f.send('tg:greeting','How are you');assert.match(f.last(),/One item needs you/);
-  await f.send('tg:reference','Task 1');assert.match(f.last(),/replaced before it finished/);
-  assert.equal(f.calls,calls);assert.equal(f.store.job('tg:reference'),undefined);
+  await f.send('tg:greeting','How are you',chat('Good, thanks. One item needs you.'));assert.match(JSON.stringify(f.seen.needsOwner),/codex sessions/);
+  await f.send('tg:reference','Task 1',status(['item:1']));assert.match(f.last(),/replaced before it finished/);
+  assert.equal(f.store.job('tg:reference'),undefined);
  }finally{f.close();}
 });
