@@ -42,6 +42,26 @@ export function dshLabelsKey(folder: string): string {
 }
 
 /** The queue key: one conversation, not one folder. */
+/**
+ * Every workspace with a DeepSeek conversation. Labels are the authoritative record, because the
+ * prefix leaves the folder unqualified; the session keys are a fallback for a folder where only the
+ * default conversation was ever opened, and the last colon separates the label (`C:\repo:default`
+ * still splits correctly, which is why the split is from the right).
+ */
+export function dshWorkspaces(keys: (prefix: string) => string[]): string[] {
+  const folders = new Set<string>();
+  for (const key of keys('deepseek-labels:')) {
+    const folder = key.slice('deepseek-labels:'.length);
+    if (folder) folders.add(folder);
+  }
+  for (const key of keys('deepseek-session:')) {
+    const rest = key.slice('deepseek-session:'.length);
+    const at = rest.lastIndexOf(':');
+    if (at > 0 && rest.slice(0, at)) folders.add(rest.slice(0, at));
+  }
+  return [...folders].sort();
+}
+
 export function dshQueueKey(folder: string, label: string = DEFAULT_DSH_LABEL): string {
   return `${folder}\u0000${label}`;
 }

@@ -9,7 +9,7 @@ import {sessionSpecialty} from './session-specialty.js';
 import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
 import { dshSettings, dshStatus, readProfile, credentialRef } from './dsh-provider.js';
-import { DEFAULT_DSH_LABEL, dshActiveLabelKey, dshCancel, dshLabels, dshLegacySessionKey, dshQueueState, dshSessionKey, addDshLabel } from './dsh-sessions.js';
+import { DEFAULT_DSH_LABEL, dshActiveLabelKey, dshCancel, dshLabels, dshWorkspaces, dshLegacySessionKey, dshQueueState, dshSessionKey, addDshLabel } from './dsh-sessions.js';
 import { listMessages, pendingMessages, sendMessage } from './dsh-inbox.js';
 import { dshHome } from './dsh-paths.js';
 import { SocialAssistant } from './social-assistant.js';
@@ -582,28 +582,47 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           if(d.clearKey===true)store.set('deepseek-api-key','');
           else if(key!==undefined&&key)store.set('deepseek-api-key',key);
         }
-        const folder=typeof action?.folder==='string'&&action.folder.trim()?action.folder.trim():(store.get('deepseek-workspace')||homedir());
+        const requested=typeof action?.folder==='string'&&action.folder.trim()?action.folder.trim():(store.get('deepseek-workspace')||'');
         const named=(value:unknown,label:string)=>{
           const text=typeof value==='string'?value.trim():'';
           if(!text||text.length>80||!/^[A-Za-z0-9._-]+$/.test(text))throw new Error(`${label} has to be a short name without spaces.`);
           return text;
         };
-        // The sessions view is what the app draws: the labelled conversations of one workspace, each
-        // with its own session, queue and undelivered messages. It reads the same keys and records the
-        // chat commands write, so the panel and the chat can never disagree.
-        const view=()=>{
-          const labels=dshLabels(name=>store.get(name)??undefined,folder);
-          const active=(store.get(dshActiveLabelKey(folder))??'').trim()||DEFAULT_DSH_LABEL;
+        if(action?.action==='workspace'){
+          const folder=typeof action.folder==='string'?action.folder.trim():'';
+          if(!folder||!existsSync(folder))throw new Error('Choose a folder that exists on this Mac.');
+          store.set('deepseek-workspace',folder);
+        }
+        // The view the app draws: the workspace the owner picked, and every workspace that already has
+        // a DeepSeek conversation, each with its own labelled sessions, queues and undelivered
+        // messages. It reads the same keys and the same records the chat commands write, so the panel
+        // and the chat cannot disagree.
+        const folderList=()=>{
+          const found=new Set(dshWorkspaces(prefix=>store.keys(prefix)));
+          const configured=(store.get('deepseek-workspace')||'').trim();
+          if(configured)found.add(configured);
+          // A folder an action names is included before the action runs, so "new session in this
+          // folder" works the first time, when the folder has no conversation yet.
+          if(requested&&existsSync(requested))found.add(requested);
+          if(!found.size)found.add(homedir());
+          return [...found].sort();
+        };
+        const before=folderList();
+        const folder=requested&&before.includes(requested)?requested:(before.includes((store.get('deepseek-workspace')||'').trim())?(store.get('deepseek-workspace')||'').trim():before[0]);
+        const viewFor=(target:string)=>{
+          const labels=dshLabels(name=>store.get(name)??undefined,target);
+          const active=(store.get(dshActiveLabelKey(target))??'').trim()||DEFAULT_DSH_LABEL;
+          const chosen=labels.includes(active)?active:DEFAULT_DSH_LABEL;
           return {
-            folder,
-            activeLabel:labels.includes(active)?active:DEFAULT_DSH_LABEL,
+            folder:target,
+            activeLabel:chosen,
             sessions:labels.map(label=>{
-              const queue=dshQueueState(folder,label);
-              const stored=store.get(dshSessionKey(folder,label))||(label===DEFAULT_DSH_LABEL?store.get(dshLegacySessionKey(folder))||'':'');
-              return {label,sessionId:stored||null,active:label===(labels.includes(active)?active:DEFAULT_DSH_LABEL),busy:queue.busy,waiting:queue.waiting,pending:pendingMessages(stateDir,folder,label).length};
+              const queue=dshQueueState(target,label);
+              const stored=store.get(dshSessionKey(target,label))||(label===DEFAULT_DSH_LABEL?store.get(dshLegacySessionKey(target))||'':'');
+              return {label,sessionId:stored||null,active:label===chosen,busy:queue.busy,waiting:queue.waiting,pending:pendingMessages(stateDir,target,label).length};
             }),
-            inboxLabel:labels.includes(active)?active:DEFAULT_DSH_LABEL,
-            inbox:listMessages(stateDir,folder,labels.includes(active)?active:DEFAULT_DSH_LABEL).slice(-20),
+            inboxLabel:chosen,
+            inbox:target===folder?listMessages(stateDir,target,chosen).slice(-20):[],
           };
         };
         if(action?.action==='new'){
@@ -628,7 +647,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         }
         const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
         const settings=dshSettings(name=>store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
-        json(res,200,{...status,reasoningEffort:settings.reasoningEffort??'',hasStoredKey:!!settings.key,workspace:store.get('deepseek-workspace')??'',...view()});return;
+        const folders=folderList();
+        json(res,200,{...status,reasoningEffort:settings.reasoningEffort??'',hasStoredKey:!!settings.key,workspace:store.get('deepseek-workspace')??'',folders,workspaces:folders.map(viewFor),...viewFor(folder)});return;
       }
       if(path==='/api/destination'&&req.method==='POST') {
         const d=await body(req);if(d.jid!==undefined&&(typeof d.jid!=='string'||d.jid.length>100))throw new Error('Invalid group');

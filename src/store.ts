@@ -120,6 +120,8 @@ export class Store {
       BEGIN INSERT INTO settings(key,value) VALUES('reach-request-generation:'||OLD.id,lower(hex(randomblob(16)))) ON CONFLICT(key) DO UPDATE SET value=excluded.value; END;`);
   }
   get(key: string) { return (this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as any)?.value as string | undefined; }
+  /** Setting names with this prefix, sorted. Used to find the folders that have conversations. */
+  keys(prefix: string): string[] { return (this.db.prepare('SELECT key FROM settings WHERE key LIKE ? ORDER BY key').all(`${prefix}%`) as any[]).map(row => row.key as string); }
   set(key: string, value: string) {
     const authority=key==='whatsapp-owner'||key==='destination-jid'||key==='control-channel'||key.startsWith('owned-group:');
     if(!authority){this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);return;}

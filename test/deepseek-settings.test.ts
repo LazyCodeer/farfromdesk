@@ -133,6 +133,23 @@ test('the app sees, switches and feeds the labelled DeepSeek sessions of one fol
 
     const stopped = await view({ action: 'stop', label: 'research' });
     assert.equal(stopped.sessions.length, 2, 'stopping nothing is not an error');
+
+    // A session belongs to a workspace, so the view has to keep them apart rather than pile them up.
+    const other = mkdtempSync(join(tmpdir(), 'wsb-deepseek-other-'));
+    try {
+      const elsewhere = await view({ action: 'new', label: 'release', folder: other });
+      assert.equal(elsewhere.folder, other, 'the action happened in the folder it named');
+      assert.deepEqual(elsewhere.sessions.map((s: any) => s.label), ['default', 'release']);
+      assert.deepEqual(elsewhere.workspaces.map((w: any) => w.folder), [workspace, other].sort());
+      const here = elsewhere.workspaces.find((w: any) => w.folder === workspace);
+      assert.deepEqual(here.sessions.map((s: any) => s.label), ['default', 'research'], 'each workspace keeps its own sessions');
+      const staged = await view({ action: 'workspace', folder: workspace });
+      assert.equal(staged.workspace, workspace, 'the app can pick which workspace it is looking at');
+      const refused = await fetch(url + '/api/deepseek', { method: 'POST', headers, body: JSON.stringify({ action: 'workspace', folder: join(other, 'not-there') }) });
+      assert.equal(refused.status, 400, 'a folder that does not exist is refused');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   } finally {
     if (savedDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDshHome;
     await new Promise<void>(r => server.close(() => r()));

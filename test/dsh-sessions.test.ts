@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { DshResult, DshRunOptions } from '../src/dsh-session.js';
-import { addDshLabel, dshCancel, dshLabels, dshLegacySessionKey, dshQueueKey, dshQueueState, dshSessionKey, runDshQueued } from '../src/dsh-sessions.js';
+import { addDshLabel, dshCancel, dshLabels, dshLegacySessionKey, dshQueueKey, dshQueueState, dshSessionKey, dshWorkspaces, runDshQueued } from '../src/dsh-sessions.js';
 
 const answer = (text: string): DshResult => ({ text, sessionId: 'session-x', error: null });
 
@@ -105,4 +105,23 @@ test('labels list the default first, add once, and survive a broken record', () 
   assert.deepEqual(dshLabels(get, '/w'), ['default'], 'a broken record is not a label list');
   store.set('deepseek-labels:/w', JSON.stringify(Array.from({ length: 20 }, (_, index) => `l${index}`)));
   assert.deepEqual(dshLabels(get, '/w').length, 12, 'a folder cannot accumulate unbounded labels');
+});
+
+test('the folders that have conversations are found from the keys the commands wrote', () => {
+  const keys = [
+    'deepseek-labels:/Users/sagar/work/spliceai',
+    'deepseek-session:/Users/sagar/work/spliceai:default',
+    'deepseek-session:/Users/sagar/work/spliceai:research',
+    'deepseek-session:/tmp/lonely:default',
+    'deepseek-session:/tmp/legacy',
+    'deepseek-session:C:\\repo:default',
+    'unrelated:key',
+  ];
+  const found = dshWorkspaces(prefix => keys.filter(key => key.startsWith(prefix)));
+  assert.deepEqual(found, [
+    '/Users/sagar/work/spliceai',
+    '/tmp/lonely',
+    'C:\\repo',
+  ], 'the label prefix is authoritative, the last colon separates the label, and nothing else is a workspace');
+  assert.deepEqual(dshWorkspaces(() => []), [], 'no keys means no workspaces');
 });
