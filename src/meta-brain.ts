@@ -485,6 +485,26 @@ export class MetaBrain {
     list.push({bytes:readFileSync(real),name:basename(real)});this.files.set(m.id,list);
     return JSON.stringify({queued:basename(real),bytes:st.size,note:'It is sent to the owner right after your reply. Say it follows.'});
   }
+  /**
+   * The newest Social drafts, so "post the one you just made" uses that draft's own caption and image.
+   * The chat history can hold an older caption (live, 5 Nov 2026: LinkedIn got the previous post's text).
+   * Each finished image is written once to Downloads for pick_file.
+   */
+  private socialDraftsFor():string{
+    if(!this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='social_drafts'").get())return 'No social drafts yet.';
+    const rows=this.store.db.prepare('SELECT id,json FROM social_drafts ORDER BY rowid DESC LIMIT 3').all() as {id:string;json:string}[];
+    if(!rows.length)return 'No social drafts yet.';
+    const downloads=join(userInfo().homedir,'Downloads');
+    return JSON.stringify(rows.map(row=>{
+      const d=JSON.parse(row.json),slides=(d.carousel?.slides??(d.image?[d.image]:[])) as {base64?:string}[];
+      const images=slides.slice(0,10).flatMap((slide,i)=>{
+        if(!slide?.base64)return [];
+        const file=join(downloads,`farfromdesk-${String(d.platform??'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')}-${row.id.slice(0,8)}-${i+1}.jpg`);
+        try{if(!existsSync(file))writeFileSync(file,Buffer.from(slide.base64,'base64'));return [file];}catch{return [];}
+      });
+      return {platform:d.platform??null,caption:typeof d.caption==='string'?d.caption:'',images};
+    }));
+  }
   /** The owner's folders the brain may put or open files in: never hidden ones, never Library. */
   private ownerPath(raw:string,base:'Downloads'|'Documents'='Downloads'):string|undefined{
     const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
@@ -581,9 +601,10 @@ export class MetaBrain {
     if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot this time. If it keeps failing, check that Screen Recording is on for FarFromDesk Local in System Settings > Privacy & Security. The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
     // Trimmed off the reply path; the photo rows follow the reply in order.
     void (async()=>{for(const [i,png] of (list??[]).entries()){try{
+      // Only the full-quality file: Telegram recompresses a photo, and the owner got a blurry copy and a sharp
+      // one of the same screen (5 Nov 2026). A file keeps every pixel and still previews in the chat.
       const shot=await this.trimShot(png),label=list!.length>1?`Screenshot ${i+1} of ${list!.length}`:'Screenshot';
-      this.store.outputBrainPhoto(m.id,shot,label);
-      if(original)this.store.outputBrainFile(m.id,shot,`screenshot-${i+1}.png`,`${label}, full quality`);
+      void original;this.store.outputBrainFile(m.id,shot,`screenshot-${i+1}.png`,label);
     }catch{}}})();
   }
   private desktop(){return this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>};}
@@ -601,7 +622,7 @@ export class MetaBrain {
           // A tab the loop opened a moment ago is still loading, and the driver drops that read
           // (live, 4 November 2026: open_page then read_tab on Gmail). One retry after it settles.
           const page=await read().catch(async e=>{if(!/lost the connection/.test(deviceRefusal(e)))throw e;await new Promise(r=>setTimeout(r,3000));return read();});
-          const sent=screenshot&&this.keepShot(m,page,'tab:'+match.toLowerCase());
+          const sent=screenshot&&this.keepShot(m,page,'app:'+browser);
           const {screenshot:_omit,...rest}=page??{};
           // The whole page text the driver gives (24,000 characters). This was cut at 14,000, and on
           // Gmail the sidebar comes first, so only five of the owner's messages today survived (live,
@@ -644,7 +665,7 @@ export class MetaBrain {
       const win=windows.find((w:any)=>w.onScreen)??windows[0];
       if(!win)return `${target.name} is running but has no window open.`;
       const state=await control.run(`brain:${m.id}`,{action:'read_window',windowRef:win.windowRef,...(screenshot?{screenshot:true}:{})});
-      const sent=screenshot&&this.keepShot(m,state,'app:'+app.toLowerCase());
+      const sent=screenshot&&this.keepShot(m,state,'app:'+app.toLowerCase().replace(/[^a-z0-9]/g,''));
       const controls=(state?.controls??[]).slice(0,250).map((c:any)=>[c.role,c.label,c.value].filter(Boolean).join(': ')).filter(Boolean);
       return JSON.stringify({app:target.name,window:win.title,controls,...(state?.elementsEmpty?{note:'This window publishes no readable text (a canvas app); rely on the screenshot.'}:{}),...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})}).slice(0,14000);
     }catch(e){return `Refused: ${deviceRefusal(e)}`;}
@@ -720,6 +741,7 @@ export class MetaBrain {
         writeFile:(name,content)=>{this.ack(m,'Finder');return Promise.resolve(this.writeFileFor(name,content));},
         openFile:(path,app)=>{this.ack(m,app??'Finder');return this.openFileFor(path,app);},
         sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
+        socialDrafts:()=>this.socialDraftsFor(),
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
