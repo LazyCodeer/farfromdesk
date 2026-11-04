@@ -22,7 +22,7 @@ export const DevicePlan = z.object({
   window: z.string().max(160).optional(),
   role: z.string().max(40).optional(),
   name: z.string().max(160).optional(),
-  text: z.string().max(1200).refine(v => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v), 'Control characters are not supported').optional(),
+  text: z.string().max(4000).refine(v => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v), 'Control characters are not supported').optional(),
   key: z.enum(['return', 'tab', 'escape', 'up', 'down', 'left', 'right']).optional(),
 }).strict();
 export type DevicePlan = z.infer<typeof DevicePlan>;
