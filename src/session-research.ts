@@ -1,8 +1,6 @@
 import {agentReachRead,parseReach,PublicReachStop,sourceUrl} from './agent-reach.js';
 import {hash,type Binding,type Store} from './store.js';
 import type {Router} from './router.js';
-import {jobsFollowupCurrent,assertFollowupContracts} from './jobs-followup.js';
-import {researchFollowupCurrent,assertResearchFollowupContracts} from './research-followup.js';
 import {desktopSocialProof} from './desktop-social.js';
 
 type Specialty={kind:'research'|'jobs'|'social';bindingId:string;destination:string;bodyHash:string;identity:string;instructions:string;researchCaptureHash?:string};
@@ -39,11 +37,9 @@ function researchAuthority(store:Store,router:Router,binding:Binding,requestId:u
   const current=()=>{
     try{
       const job=store.job(requestId),live=store.binding(binding.id),origin=store.recordedIncomingInput(requestId),specialty=lookup(store,requestId);
-      if(router.stopped||requestId.startsWith('local:')&&!desktopSocialProof(store,requestId,binding)||store.get(`reach-stop:${requestId}`)||!job||!jobsFollowupCurrent(store,requestId)||!researchFollowupCurrent(store,requestId)||!live?.enabled||job.binding_id!==binding.id||!['queued','dispatched','submitted'].includes(job.status)||!specialty||specialty.kind!==owner.kind||specialty.bindingId!==binding.id||specialty.destination!==owner.destination||specialty.bodyHash!==hash(job.body)||typeof raw!=='string'||specialty.researchCaptureHash!==hash(raw)||job.destination!==owner.destination||store.get(key)!==raw||!origin||
+      if(router.stopped||requestId.startsWith('local:')&&!desktopSocialProof(store,requestId,binding)||store.get(`reach-stop:${requestId}`)||!job||!live?.enabled||job.binding_id!==binding.id||!['queued','dispatched','submitted'].includes(job.status)||!specialty||specialty.kind!==owner.kind||specialty.bindingId!==binding.id||specialty.destination!==owner.destination||specialty.bodyHash!==hash(job.body)||typeof raw!=='string'||specialty.researchCaptureHash!==hash(raw)||job.destination!==owner.destination||store.get(key)!==raw||!origin||
         origin.owner!==owner.owner||origin.destination!==owner.destination||origin.channel!==owner.channel||origin.generation!==owner.generation||owner.owner!==owner.destination||store.ownerFor(owner.destination)!==owner.owner||store.controlChannel()!==owner.channel||store.get('incoming-owner-generation')!==owner.generation||
         (store.get(`reach-binding-generation:${binding.id}`)??'')!==bindingEpoch||(store.get('reach-authority-generation')??'')!==authorityEpoch||(store.get(`reach-request-generation:${requestId}`)??'')!==requestEpoch||store.get(`parent:${requestId}`)||store.get(`report-parent:${requestId}`))return false;
-      assertFollowupContracts(router,requestId);
-      assertResearchFollowupContracts(router,requestId);
       if(hash(job.body.trim())===owner.bodyHash)return true;
       // An approved F3 contract may append constraints to the original task.
       // Revalidate its original text, binding and signed dispatch body.

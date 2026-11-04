@@ -30,15 +30,9 @@ import { DispatchNotSubmittedError,BriefDispatchError,briefDestinationValid,brie
 import {CollaborationHold,type ManagedCollaboration} from './managed-collaboration.js';
 import {isCollaborationFenceError} from './collaboration-dispatch-fence.js';
 import type {ProofOwnerBindings} from './proof-owner-binding.js';
-import {parsePublicCheck,publicCheckObservation} from './proof-public-check.js';
 import {agentReach} from './agent-reach.js';
 import {captureResearchRequest,captureGuidedResearchRequest} from './agent-reach-request.js';
 import {GuidedModes} from './guided-modes.js';
-import {cancelGuidedJobs,resumeGuidedJobs} from './guided-jobs.js';
-import {jobsFollowup,jobsFollowupBody,jobsAttachmentQuestion,jobsAttachmentBody,captureJobsFollowup,jobsFollowupCurrent,assertFollowupContracts,needsFollowupReview,saveFollowupReview,endFollowupReview,dropFollowupReview,loadFollowupReview,proposedPublicJobQuery} from './jobs-followup.js';
-import {researchFollowup,researchFollowupBody,captureResearchFollowup,researchFollowupCurrent,assertResearchFollowupContracts,proposedPublicResearchQuery,saveResearchFollowupReview,endResearchFollowupReview,dropResearchFollowupReview,loadResearchFollowupReview} from './research-followup.js';
-import {researchSpecialty} from './research-agent.js';
-import {jobsSpecialty} from './jobs-agent.js';
 import {socialSpecialty} from './social-agent.js';
 import {prepareSpecialties,specialtyEpoch,specialtyIdentity,markPendingSpecialty,pendingSpecialty,hasPendingSpecialty,bindSessionSpecialty,hasSessionSpecialty,sessionSpecialty,specialtyNoticeDestination,type PendingSpecialty} from './session-specialty.js';
 import {prepareAttachmentTargetEpochs,attachmentTargetEpoch} from './attachment-target-epoch.js';
@@ -54,7 +48,7 @@ export const help = `Just tell me what you need.
 • Find the website session.
 • Use Checkout fix and tell me its progress.
 • Claude, create a session for this task.
-• /research, /jobs and /social use your selected session for research, job search or social drafts.
+• /social uses your selected session for social drafts.
 
 Reply to a permission message with “Yes, allow it” or “No, deny it”. Reply to a session’s message to continue in that session.
 
@@ -71,8 +65,6 @@ export class Router {
   collaboration?:ManagedCollaboration;
   proofBindings?:ProofOwnerBindings;
   /** Injectable only by bridge-owned tests; the default uses public HTTPS. */
-  publicCheckFetch:typeof fetch=fetch;
-  private publicCheckActive=0;
   errands:ErrandWorkflow;
   hasPendingCreation?:(requestId:string)=>boolean;
   workspaceCommand?:(args:string)=>string;
@@ -122,15 +114,10 @@ export class Router {
     // Attachment captions use a separate synchronous path; do not let them bypass task review.
     if(this.contracts.enabled()&&m.text.trim())throw new Error('Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.');
     if(this.attachmentTarget(m).identity!==target.identity)throw new Error('The intended session changed during download. Please resend to the intended session.');
-    const jobsQuestion=file.kind==='document'?jobsAttachmentQuestion(this,m):undefined;
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
       if(this.store.job(m.id))throw new Error('This attachment request already exists. Check its status before resending.');
-      if(jobsQuestion){
-        const body=jobsAttachmentBody(this,jobsQuestion),binding=captureJobsFollowup(this,{...m,text:'unspecified'},jobsQuestion,body);
-        if(binding.id!==target.binding.id)throw new Error('The job-search session changed. Nothing was sent.');
-        this.queue(m.id,binding,body);bindSessionSpecialty(this.store,m.id,binding,'jobs',jobsSpecialty());
-      } else this.queue(m.id,this.need(target.binding.id),target.text);
+      this.queue(m.id,this.need(target.binding.id),target.text);
       this.attachments.stage(target.binding,m.id,file);this.store.remember(m.id);
       this.store.db.prepare("UPDATE media_inbox SET status='processed' WHERE id=?").run(m.id);
       this.store.db.exec('COMMIT');
@@ -193,6 +180,8 @@ export class Router {
       }
     }
     let text=m.text.trim();if(!text)return {status:'ignored',requestId:m.id};
+    // Retired commands are ordinary words now, so they get the normal answer instead of an unknown-command error.
+    if(/^\/(?:checkrun|reach|research|jobs)(?:\s|$)/i.test(text)){text=text.slice(1);m={...m,text};}
     captureResearchRequest(this.store,this,m);
     this.morningBrief?.firstMessage(m);
     let ciReply:string|undefined;
@@ -210,82 +199,6 @@ export class Router {
     let ownerReply=false;
     try {
       if(!contractApproved){const recovered=this.contracts.recoverApproved(this,m);if(recovered)return await this.receiveOnce(recovered,true);}
-      if(contractApproved){
-        const approved=this.contracts.approved(m.id),saved=approved&&loadFollowupReview(this,approved.origin_id);
-        if(saved){
-          if(approved!.original!==m.text.trim()||approved!.review_text!==saved.body||!jobsFollowupCurrent(this.store,saved.q.request_id))throw new Error('The job-search review changed. Nothing was sent.');
-          const result=this.finishJobsFollowup(m,saved.q,saved.body,`pending:${approved!.origin_id}`,saved.confirmedQuery);
-          dropFollowupReview(this,approved!.origin_id,saved.q);return result;
-        }
-        const research=approved&&loadResearchFollowupReview(this,approved.origin_id);
-        if(research){
-          if(approved!.original!==m.text.trim()||approved!.review_text!==research.body||!researchFollowupCurrent(this.store,research.q.request_id))throw new Error('The research review changed. Nothing was sent.');
-          const result=this.finishResearchFollowup(m,research.q,research.body,research.confirmedQuery,`pending:${approved!.origin_id}`);
-          dropResearchFollowupReview(this,approved!.origin_id,research.q);return result;
-        }
-      }
-      // An owner must explicitly approve sending an additional answer to a
-      // public search provider. No search runs while confirmation is pending.
-      const confirmationKey=`jobs-public-query-confirm:${this.store.destination()??''}`;
-      const confirmationRaw=this.store.get(confirmationKey);
-      if(confirmationRaw&&authenticatedOwner(this,m)&&m.source!=='voice'){
-        let pending:{origin:Incoming;question:NonNullable<ReturnType<typeof jobsFollowup>>;body:string;query:string;context:string;bindingHash:string;captureHash:string;selectionEpoch:string;expires:number};
-        try{pending=JSON.parse(confirmationRaw);}catch{this.store.db.prepare('DELETE FROM settings WHERE key=?').run(confirmationKey);throw Error('The public search confirmation changed. Nothing was sent.');}
-        const answer=/^(?:yes|no)[.!]?$/i.exec(text);
-        if(answer){
-          if(!m.quotedId||m.ownerChoice!==true)throw Error('Reply to the confirmation message with your own typed yes or no. Nothing was sent.');
-          const delivered=this.store.db.prepare('SELECT status,destination,wa_id FROM outbox WHERE source=?').get(`jobs-public:${pending.origin.id}:0`) as {status:string;destination:string;wa_id:string}|undefined;
-          if(!delivered||delivered.status!=='sent'||delivered.destination!==this.store.destination()||m.quotedId&&m.quotedId!==delivered.wa_id)throw Error('Wait for the public search confirmation and reply directly to it. Nothing was sent.');
-          this.store.db.prepare('DELETE FROM settings WHERE key=? AND value=?').run(confirmationKey,confirmationRaw);
-          if(answer[0].toLowerCase().startsWith('no')){this.store.output(undefined,'No additional public search was sent. Send a new /jobs request when ready.',`jobs-public:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
-          const context=this.store.incomingOwnerContext.getStore(),binding=this.store.binding(pending.question.binding_id),q=jobsFollowup(this,pending.origin,this.contracts.enabled());
-          const bindingHash=binding&&hash(JSON.stringify([binding.id,binding.native_id,binding.cwd,binding.provider,binding.mode,binding.token_hash,this.store.get(`reach-binding-generation:${binding.id}`)]));
-          if(!context||!this.store.incomingOwnerCurrent()||Date.now()>pending.expires||JSON.stringify(context)!==pending.context||(this.store.get('public-consent-generation')??'')!==pending.selectionEpoch||!q||q.id!==pending.question.id||hash(q.body)!==hash(pending.question.body)||!binding?.enabled||bindingHash!==pending.bindingHash||hash(this.store.get(`reach-owner-request:${q.request_id}`)??'')!==pending.captureHash||proposedPublicJobQuery(this.store,pending.origin,q)!==pending.query||jobsFollowupBody(this,pending.origin,q)!==pending.body)throw Error('The job search or connection changed. Send a new /jobs request. Nothing was sent.');
-          this.store.recordIncomingInput(m.id);
-          this.store.set(`jobs-public-query-consent:${pending.origin.id}`,JSON.stringify({detailId:pending.origin.id,questionId:q.id,query:pending.query,yesId:m.id,context:pending.context,bodyHash:hash(pending.body),expires:Date.now()+10*60_000}));
-          this.store.remember(m.id);
-          if(this.contracts.enabled()&&needsFollowupReview(pending.origin)){
-            saveFollowupReview(this,pending.origin,q,pending.body,pending.query);
-            try{
-              const review=await this.contracts.preflight(this,pending.origin,pending.body,undefined,undefined,false,false,true);
-              if(review.kind==='handled'){
-                if(!this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(pending.origin.id))dropFollowupReview(this,pending.origin.id,q);
-                return {status:'handled',requestId:m.id};
-              }
-              if(review.kind==='replay')throw Error('The job-search review changed. Nothing was sent.');
-              const result=this.finishJobsFollowup(pending.origin,q,pending.body,`pending:${pending.origin.id}`,pending.query);dropFollowupReview(this,pending.origin.id,q);return result;
-            }catch(e){dropFollowupReview(this,pending.origin.id,q);throw e;}finally{endFollowupReview(this,pending.origin.id);}
-          }
-          return this.finishJobsFollowup(pending.origin,q,pending.body,undefined,pending.query);
-        }
-        // Another owner message cancels an unanswered proposal rather than
-        // letting a later unrelated "yes" approve it.
-        this.store.db.prepare('DELETE FROM settings WHERE key=? AND value=?').run(confirmationKey,confirmationRaw);
-      }
-      const researchConfirmKey=`research-public-query-confirm:${this.store.destination()??''}`,researchConfirmRaw=this.store.get(researchConfirmKey);
-      if(researchConfirmRaw&&authenticatedOwner(this,m)&&m.source!=='voice'){
-        let pending:{origin:Incoming;question:NonNullable<ReturnType<typeof researchFollowup>>;body:string;query:string;context:string;bindingHash:string;captureHash:string;selectionEpoch:string;expires:number};
-        try{pending=JSON.parse(researchConfirmRaw);}catch{this.store.db.prepare('DELETE FROM settings WHERE key=?').run(researchConfirmKey);throw Error('The public search confirmation changed. Nothing was sent.');}
-        const answer=/^(?:yes|no)[.!]?$/i.exec(text);
-        if(answer){
-          if(!m.quotedId||m.ownerChoice!==true)throw Error('Reply to the confirmation message with your own typed yes or no. Nothing was sent.');
-          const delivered=this.store.db.prepare('SELECT status,destination,wa_id FROM outbox WHERE source=?').get(`research-public:${pending.origin.id}:0`) as {status:string;destination:string;wa_id:string}|undefined;
-          if(!delivered||delivered.status!=='sent'||delivered.destination!==this.store.destination()||m.quotedId!==delivered.wa_id)throw Error('Wait for the public search confirmation and reply directly to it. Nothing was sent.');
-          this.store.db.prepare('DELETE FROM settings WHERE key=? AND value=?').run(researchConfirmKey,researchConfirmRaw);
-          if(answer[0].toLowerCase().startsWith('no')){this.store.output(undefined,'No additional public search was sent. Send a new /research request when ready.',`research-public:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}
-          const context=this.store.incomingOwnerContext.getStore(),binding=this.store.binding(pending.question.binding_id),q=researchFollowup(this,pending.origin);
-          const bindingHash=binding&&hash(JSON.stringify([binding.id,binding.native_id,binding.cwd,binding.provider,binding.mode,binding.token_hash,this.store.get(`reach-binding-generation:${binding.id}`)]));
-          if(!context||!this.store.incomingOwnerCurrent()||Date.now()>pending.expires||JSON.stringify(context)!==pending.context||(this.store.get('public-consent-generation')??'')!==pending.selectionEpoch||!q||q.id!==pending.question.id||hash(q.body)!==hash(pending.question.body)||!binding?.enabled||bindingHash!==pending.bindingHash||hash(this.store.get(`reach-owner-request:${q.request_id}`)??'')!==pending.captureHash||proposedPublicResearchQuery(this.store,pending.origin,q)!==pending.query||researchFollowupBody(this,pending.origin,q)!==pending.body)throw Error('The research or connection changed. Send a new /research request. Nothing was sent.');
-          this.store.recordIncomingInput(m.id);
-          this.store.set(`research-public-query-consent:${pending.origin.id}`,JSON.stringify({detailId:pending.origin.id,questionId:q.id,query:pending.query,yesId:m.id,context:pending.context,bodyHash:hash(pending.body),expires:Date.now()+10*60_000}));this.store.remember(m.id);
-          if(this.contracts.enabled()&&needsFollowupReview(pending.origin))return await this.reviewResearchFollowup(pending.origin,q,pending.body,pending.query);
-          return this.finishResearchFollowup(pending.origin,q,pending.body,pending.query);
-        }
-        this.store.db.prepare('DELETE FROM settings WHERE key=? AND value=?').run(researchConfirmKey,researchConfirmRaw);
-      }
-      // Approved job-search replay is tied to its saved original turn and must
-      // not be mistaken for a new picker or native approval reply.
-      if(contractApproved&&await resumeGuidedJobs(this,m))return {status:'handled',requestId:m.id};
       if(contractApproved){
         const approved=this.contracts.approved(m.id);
         if(approved&&hasPendingSpecialty(this.store,approved.origin_id)){
@@ -306,7 +219,7 @@ export class Router {
       if(targetReply!==undefined){
         // Selection may come from a channel-authenticated button or a typed
         // reply. Only a successful claim actually changes the selected target.
-        if(this.store.get(targetKey)!==previousTarget||this.store.get(choiceKey)!==previousChoice){cancelGuidedJobs(this,m);this.guidedModes.retarget(this);}
+        if(this.store.get(targetKey)!==previousTarget||this.store.get(choiceKey)!==previousChoice){this.guidedModes.retarget(this);}
         this.store.output(undefined,targetReply+'\n\n'+this.guidedModes.summary(this,{...m,quotedId:undefined,ownerCommand:true}),`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
@@ -361,11 +274,6 @@ export class Router {
         this.pump();return {status:'queued',requestId:m.id};
       }
       if(contractApproved&&this.contracts.approvedBrief(m.id))throw new Error('The approved brief item is unavailable. Nothing was sent.');
-      const voiceMode=this.guidedModes.voice(this,m),voiceOwner=this.store.ownerFor(this.store.destination());
-      if(voiceMode&&voiceMode.kind!=='social'&&!contractApproved&&(!voiceOwner||!this.contracts.hasPendingOwner(voiceOwner,this.store.destination()??''))){
-        this.store.output(undefined,'Please type your research or job-search reply. Voice is not supported in this mode.',`guided:${m.id}`,undefined,{plain:true});
-        this.store.remember(m.id);return {status:'handled',requestId:m.id};
-      }
       if(this.errands.cancel(m))return {status:'handled',requestId:m.id};
       const errandDestination=this.store.destination(),errandOwner=this.store.ownerFor(errandDestination);
       if(!contractApproved&&errandDestination&&errandOwner&&!this.contracts.hasPendingOwner(errandOwner,errandDestination)&&this.errands.draft(m))return {status:'handled',requestId:m.id};
@@ -374,49 +282,6 @@ export class Router {
       if(!contractApproved&&errandDestination&&errandOwner&&!this.contracts.hasPendingOwner(errandOwner,errandDestination)&&this.errands.unsupportedInput(m)&&await this.errands.start(m))return {status:'handled',requestId:m.id};
       if((m.quotedId||!ownerIntent)&&authenticatedOwner(this,m)&&this.schedules.isScheduleLike(text)){this.store.output(undefined,'Send schedules as a new message in your own chat. Nothing was scheduled or sent to a session.',`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       if(this.schedules.shouldHandle(this,m,ownerIntent)&&await this.schedules.handle(this,m,ownerIntent,contractApproved))return {status:'handled',requestId:m.id};
-      const followup=jobsFollowup(this,m,this.contracts.enabled());
-      if(followup){
-        const body=jobsFollowupBody(this,m,followup);
-        const proposed=proposedPublicJobQuery(this.store,m,followup);
-        if(proposed){
-          const context=this.store.incomingOwnerContext.getStore(),binding=this.store.binding(followup.binding_id);
-          if(!context||!this.store.incomingOwnerCurrent()||!binding?.enabled)throw Error('The job search or connection changed. Nothing was sent.');
-          const pending={origin:m,question:followup,body,query:proposed,context:JSON.stringify(context),bindingHash:hash(JSON.stringify([binding.id,binding.native_id,binding.cwd,binding.provider,binding.mode,binding.token_hash,this.store.get(`reach-binding-generation:${binding.id}`)])),captureHash:hash(this.store.get(`reach-owner-request:${followup.request_id}`)??''),selectionEpoch:this.store.get('public-consent-generation')??'',expires:Date.now()+5*60_000};
-          this.store.db.exec('SAVEPOINT jobs_public_confirm');try{
-            this.store.set(confirmationKey,JSON.stringify(pending));
-            this.store.output(undefined,`May I send this search to the public search provider?\n\n${proposed.replace(/^\/reach web search /,'')}\n\nReply to this message with yes or no.`, `jobs-public:${m.id}`,undefined,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE jobs_public_confirm');
-          }catch(e){this.store.db.exec('ROLLBACK TO jobs_public_confirm; RELEASE jobs_public_confirm');throw e;}
-          return {status:'handled',requestId:m.id};
-        }
-        if(this.contracts.enabled()&&needsFollowupReview(m)){
-          saveFollowupReview(this,m,followup,body);
-          try{
-            const review=await this.contracts.preflight(this,m,body,undefined,undefined,false,false,true);
-            if(review.kind==='handled'){
-              if(!this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(m.id))dropFollowupReview(this,m.id,followup);
-              return {status:'handled',requestId:m.id};
-            }
-            if(review.kind==='replay')throw new Error('The job-search review changed. Nothing was sent.');
-            const result=this.finishJobsFollowup(m,followup,body,`pending:${m.id}`);dropFollowupReview(this,m.id,followup);return result;
-          }catch(e){dropFollowupReview(this,m.id,followup);throw e;}finally{endFollowupReview(this,m.id);}
-        }
-        return this.finishJobsFollowup(m,followup,body);
-      }
-      const researchQuestion=researchFollowup(this,m);
-      if(researchQuestion){
-        const body=researchFollowupBody(this,m,researchQuestion),proposed=proposedPublicResearchQuery(this.store,m,researchQuestion);
-        if(proposed){
-          const context=this.store.incomingOwnerContext.getStore(),binding=this.store.binding(researchQuestion.binding_id);
-          if(!context||!this.store.incomingOwnerCurrent()||!binding?.enabled)throw Error('The research or connection changed. Nothing was sent.');
-          const pending={origin:m,question:researchQuestion,body,query:proposed,context:JSON.stringify(context),bindingHash:hash(JSON.stringify([binding.id,binding.native_id,binding.cwd,binding.provider,binding.mode,binding.token_hash,this.store.get(`reach-binding-generation:${binding.id}`)])),captureHash:hash(this.store.get(`reach-owner-request:${researchQuestion.request_id}`)??''),selectionEpoch:this.store.get('public-consent-generation')??'',expires:Date.now()+5*60_000};
-          this.store.db.exec('SAVEPOINT research_public_confirm');try{
-            this.store.set(researchConfirmKey,JSON.stringify(pending));this.store.output(undefined,`May I send this search to the public search provider?\n\n${proposed.replace(/^\/reach web search /,'')}\n\nReply to this message with yes or no.`,`research-public:${m.id}`,undefined,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE research_public_confirm');
-          }catch(e){this.store.db.exec('ROLLBACK TO research_public_confirm; RELEASE research_public_confirm');throw e;}
-          return {status:'handled',requestId:m.id};
-        }
-        if(this.contracts.enabled()&&needsFollowupReview(m))return await this.reviewResearchFollowup(m,researchQuestion,body);
-        return this.finishResearchFollowup(m,researchQuestion,body);
-      }
       // A quoted answer is accepted only to an actual delivered question from
       // this exact Social session. Forwarded text and other quotes are data.
       if(m.quotedId&&m.ownerChoice===true&&m.source!=='voice'&&authenticatedOwner(this,m)&&!text.startsWith('/')){
@@ -467,24 +332,24 @@ export class Router {
       if(authenticatedOwner(this,m)&&!m.quotedId&&(m.ownerCommand===true&&m.source!=='voice'||m.source==='voice'&&m.ownerIntent===true&&this.guidedModes.get(this,m)?.kind==='social'&&!text.startsWith('/'))){
         let mode=this.guidedModes.get(this,m);
         const reply=(message:string)=>{this.store.output(undefined,message+'\n\n'+this.guidedModes.summary(this,m),`guided:${m.id}`,undefined,{plain:true});this.store.remember(m.id);};
-        if(mode?.busy&&(!text.startsWith('/')||/^\/(?:back|cancel|research|jobs|social|claude|codex|brain|use|talk)(?:\s|$)/i.test(text))){reply('A request is still being processed. Please wait before changing modes.');return {status:'handled',requestId:m.id};}
+        if(mode?.busy&&(!text.startsWith('/')||/^\/(?:back|cancel|social|claude|codex|brain|use|talk)(?:\s|$)/i.test(text))){reply('A request is still being processed. Please wait before changing modes.');return {status:'handled',requestId:m.id};}
         if(mode&&/^\/(?:cancel|back)\s*$/i.test(text)){
-          cancelGuidedJobs(this,m);this.guidedModes.close(this,m);
+          this.guidedModes.close(this,m);
           if(/^\/back/i.test(text)){clearOwnerTarget(this);reply('Back to normal routing.');}
           else reply(`Exited ${mode.kind} mode.`);
           return {status:'handled',requestId:m.id};
         }
-        const start=/^\/(research|jobs|social)(?:\s+([\s\S]*))?$/i.exec(text);
+        const start=/^\/(social)(?:\s+([\s\S]*))?$/i.exec(text);
         if(start){
-          const kind=start[1].toLowerCase() as 'research'|'jobs'|'social';
+          const kind='social' as const;
           const owner=this.store.ownerFor(this.store.destination());
-          if(kind==='social'&&owner&&this.contracts.hasPendingOwner(owner,this.store.destination()??'')){
+          if(owner&&this.contracts.hasPendingOwner(owner,this.store.destination()??'')){
             reply('Finish or cancel the pending task contract before starting Social.');return {status:'handled',requestId:m.id};
           }
-          cancelGuidedJobs(this,m);this.guidedModes.start(this,m,kind);
+          this.guidedModes.start(this,m,kind);
           mode=this.guidedModes.get(this,m);
           if(!start[2]?.trim()){
-            reply(kind==='research'?'What would you like to research? Send /back to leave.':kind==='jobs'?'What kind of jobs are you looking for? Send /back to leave.':'What would you like to create posts about, and for which platforms? Send /back to leave.');return {status:'handled',requestId:m.id};
+            reply('What would you like to create posts about, and for which platforms? Send /back to leave.');return {status:'handled',requestId:m.id};
           }
         }
         if(mode&&(!text.startsWith('/')||!!start)){
@@ -507,7 +372,7 @@ export class Router {
               active.socialTarget=target;
               active.imageProvider=requestedSocialImageProvider(m.text)??active.imageProvider??'local';
             }
-            const marker=markPendingSpecialty(this.store,m.id,b,mode.kind,mode.kind==='research'?researchSpecialty():mode.kind==='jobs'?jobsSpecialty():socialSpecialty(active.imageProvider),m.text,mode.kind==='social'?active.imageProvider:undefined);
+            const marker=markPendingSpecialty(this.store,m.id,b,mode.kind,socialSpecialty(active.imageProvider),m.text,active.imageProvider);
             // Social creates content drafts; the optional contract is for coding
             // tasks. Pending contracts were already handled above, and the
             // selected native session asks any missing content questions.
@@ -525,7 +390,7 @@ export class Router {
       if(m.ownerCommand===false&&text.startsWith('/')){this.store.output(undefined,'Type commands as a new text message, not in a quote, forward, file or voice note.',`command:${m.id}`);this.store.remember(m.id);return {status:'blocked',requestId:m.id};}
       ownerReply=!!m.ownerCommand&&isOwnerCommand(text);const commandReply=ownerReply?await ownerCommand(this,m):undefined;ownerReply=false;
       if(commandReply!==undefined){
-        if(/^\/(?:claude|codex|brain)(?:\s|$)/i.test(text)){cancelGuidedJobs(this,m);this.guidedModes.retarget(this);}
+        if(/^\/(?:claude|codex|brain)(?:\s|$)/i.test(text)){this.guidedModes.retarget(this);}
         this.store.output(undefined,commandReply+(commandReply?'\n\n'+this.guidedModes.summary(this,m):''),`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(authenticatedOwner(this,m)&&ownerIntent&&!m.quotedId&&backToProxy.test(text)&&this.store.get(`owner-target:${this.store.destination()}`)&&this.store.get(`owner-target:${this.store.destination()}`)!=='null'){
@@ -562,30 +427,10 @@ export class Router {
             this.store.remember(m.id);this.store.db.exec('RELEASE proof_bind_command');return {status:'handled',requestId:m.id};
           }catch(e){this.store.db.exec('ROLLBACK TO proof_bind_command; RELEASE proof_bind_command');throw e;}
         }
-        else if(cmd==='checkrun') {
-          const owner=this.store.incomingOwnerContext.getStore();
-          if(!authenticatedOwner(this,m)||m.ownerCommand!==true||m.quotedId||m.source==='voice'||!owner||owner.owner!==owner.destination)
-            throw new Error('Send /checkrun as a new typed message in your owner chat.');
-          const request=parsePublicCheck(args);
-          if(this.publicCheckActive>=2)throw new Error('Two public check requests are running. Please try again shortly.');
-          const current=()=>!this.stopped&&this.store.incomingOwnerCurrent()&&this.store.controlChannel()===owner.channel&&this.store.ownerFor(owner.destination)===owner.owner;
-          // Do not replay an interrupted request under a later owner generation.
-          if(!current())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
-          this.store.remember(m.id);
-          this.publicCheckActive++;
-          try {
-            const observation=await publicCheckObservation(request,current,this.publicCheckFetch);
-            if(!current())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};
-            this.store.db.exec('SAVEPOINT public_check_output');
-            try{this.store.output(undefined,observation,`command:${m.id}`,owner.destination,{plain:true});this.store.remember(m.id);this.store.db.exec('RELEASE public_check_output');}
-            catch(e){this.store.db.exec('ROLLBACK TO public_check_output; RELEASE public_check_output');throw e;}
-            return {status:'handled',requestId:m.id};
-          } finally {this.publicCheckActive--;}
-        }
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
         else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
-        else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);cancelGuidedJobs(this,m);this.guidedModes.retarget(this);this.store.output(b,'Selected. Your next messages go to this exact session.\n\n'+this.guidedModes.summary(this,m),`command:${m.id}`);}
-        else if(cmd==='talk'){const message=this.talkDirect(this.need(args));cancelGuidedJobs(this,m);this.guidedModes.retarget(this);this.store.output(undefined,message+'\n\n'+this.guidedModes.summary(this,m),`command:${m.id}`);}
+        else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);this.guidedModes.retarget(this);this.store.output(b,'Selected. Your next messages go to this exact session.\n\n'+this.guidedModes.summary(this,m),`command:${m.id}`);}
+        else if(cmd==='talk'){const message=this.talkDirect(this.need(args));this.guidedModes.retarget(this);this.store.output(undefined,message+'\n\n'+this.guidedModes.summary(this,m),`command:${m.id}`);}
         else if(cmd==='to') {const [alias,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /to NAME message');this.queue(m.id,this.need(alias),words.join(' '));}
         else if(cmd==='status')this.store.output(undefined,`Active: ${this.store.binding(this.store.get('active')??'')?.alias??'none'}\nRunning: ${this.busy.size}\nWaiting permissions: ${this.approvals.pending.size}\n${this.store.jobs().slice(0,8).map(j=>`${j.id} · ${this.store.binding(j.binding_id)?.alias} · ${j.status}${j.error?` · ${j.error}`:''}`).join('\n')}`,`command:${m.id}`);
         else if(cmd==='style') {const [name,style,...extra]=args.split(/\s+/);if(extra.length||!style)throw new Error('Use /style NAME friendly|cheerful|professional|coding.');const b=this.need(name==='master'?this.store.get('master')??'':name);updateRole(this.store,b,style);this.store.output(b,`Reply style set to ${style}. It applies from the next work turn.`,`command:${m.id}`);}
@@ -1044,30 +889,6 @@ export class Router {
     }catch(e){this.store.db.exec('ROLLBACK TO specialty_queue; RELEASE specialty_queue');throw e;}
     this.pump();return {status:'queued' as const,requestId:m.id};
   }
-  private finishJobsFollowup(m:Incoming,q:NonNullable<ReturnType<typeof jobsFollowup>>,body:string,reservation?:string,confirmedQuery?:string) {
-    this.store.db.exec('SAVEPOINT jobs_followup');
-    try {
-      const binding=captureJobsFollowup(this,m,q,body,reservation,confirmedQuery);
-      this.queue(m.id,binding,body);bindSessionSpecialty(this.store,m.id,binding,'jobs',jobsSpecialty());
-      this.store.remember(m.id);this.store.db.exec('RELEASE jobs_followup');
-    }catch(e){this.store.db.exec('ROLLBACK TO jobs_followup; RELEASE jobs_followup');throw e;}
-    this.pump();return {status:'queued' as const,requestId:m.id};
-  }
-  private finishResearchFollowup(m:Incoming,q:NonNullable<ReturnType<typeof researchFollowup>>,body:string,confirmedQuery?:string,reservation?:string) {
-    this.store.db.exec('SAVEPOINT research_followup');
-    try{const binding=captureResearchFollowup(this,m,q,body,confirmedQuery,reservation);this.queue(m.id,binding,body);bindSessionSpecialty(this.store,m.id,binding,'research',researchSpecialty());this.store.remember(m.id);this.store.db.exec('RELEASE research_followup');}
-    catch(e){this.store.db.exec('ROLLBACK TO research_followup; RELEASE research_followup');throw e;}
-    this.pump();return {status:'queued' as const,requestId:m.id};
-  }
-  private async reviewResearchFollowup(m:Incoming,q:NonNullable<ReturnType<typeof researchFollowup>>,body:string,confirmedQuery?:string) {
-    saveResearchFollowupReview(this,m,q,body,confirmedQuery);
-    try{
-      const review=await this.contracts.preflight(this,m,body,undefined,undefined,false,false,true);
-      if(review.kind==='handled'){if(!this.store.db.prepare("SELECT 1 FROM task_contracts WHERE origin_id=? AND state='pending'").get(m.id))dropResearchFollowupReview(this,m.id,q);return {status:'handled' as const,requestId:m.id};}
-      if(review.kind==='replay')throw Error('The research review changed. Nothing was sent.');
-      const result=this.finishResearchFollowup(m,q,body,confirmedQuery,`pending:${m.id}`);dropResearchFollowupReview(this,m.id,q);return result;
-    }catch(e){dropResearchFollowupReview(this,m.id,q);throw e;}finally{endResearchFollowupReview(this,m.id);}
-  }
   queue(id:string,b:Binding,text:string) {
     if(text.length>32000)throw new Error('Message exceeds 32,000 characters.');
     this.store.db.exec('SAVEPOINT queue_owner');
@@ -1112,10 +933,6 @@ export class Router {
       throw new DeliveryChoiceHold(`${hold.app} is closed. This message is held until you choose where it goes.`);
     }
     if(specialty&&sessionSpecialty(this.store,id)?.bindingId!==b.id)throw new DispatchNotSubmittedError('The selected session or request changed. Nothing was sent.');
-    if(specialty&&!jobsFollowupCurrent(this.store,id))throw new DispatchNotSubmittedError('The original job search or question changed. Nothing was sent.');
-    if(specialty)try{assertFollowupContracts(this,id);}catch{throw new DispatchNotSubmittedError('The original approved job search changed. Nothing was sent.');}
-    if(specialty&&!researchFollowupCurrent(this.store,id))throw new DispatchNotSubmittedError('The original research or question changed. Nothing was sent.');
-    if(specialty)try{assertResearchFollowupContracts(this,id);}catch{throw new DispatchNotSubmittedError('The original approved research changed. Nothing was sent.');}
     if(scheduled){
       const state=job.binding_id===b.id?scheduleJobState(this,id):'invalid';
       if(state==='hold')throw new ScheduledChannelHold('Scheduled request held until its original channel is active.');

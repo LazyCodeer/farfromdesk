@@ -42,48 +42,9 @@ function fixture(channel:'telegram'|'whatsapp'){
 }
 
 for(const channel of ['telegram','whatsapp'] as const){
- test(`${channel}: quoted résumé continuation preserves approved Jobs query and exact session`,async()=>{
-  const f=fixture(channel);try{
-   const secret=new MetaSecret(f.root);secret.save('synthetic-key-not-a-real-secret');saveBrainConfig(f.s,secret,{policy:{...DEFAULT_BRAIN,enabled:true,taskContracts:true}});
-   f.r.contracts=new TaskContracts(f.s,secret,async()=>({kind:'contract',goal:'Find jobs',exclusions:['Do not apply'],checks:['Show sources','List roles'],question:''}));
-   await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');
-   f.s.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
-   await f.message(3,'ok');const original=f.jobId(3);assert.ok(f.r.contracts.hasGuard(original));f.publishAnswer(original);
-   if(channel==='telegram')await f.message(4,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},reply_to_message:{message_id:70,from:{id:123456}}});
-   else await f.message(4,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId}}}});
-   await f.settle();const id=f.jobId(4),job=f.s.job(id)!;assert.ok(job);assert.equal(job.binding_id,f.b.id);assert.match(job.body,/Ai engineer in yc startups/);assert.match(job.body,/Do not apply/);
-   assert.match(job.body,/Do not send the document or its contents to a search service/);assert.equal(sessionSpecialty(f.s,id)?.kind,'jobs');assert.ok(f.r.contracts.hasGuard(id));
-   const [ref]=f.r.attachments.references(f.b,id,true);assert.equal(ref.sha256,digest);assert.throws(()=>f.r.attachments.references(f.other,id),/session/);
-   let query='';f.r.reach=async(command)=>{query=command;return 'No usable public results were returned.';};
-   await f.s.destinationContext.run(f.dest,()=>sessionResearchRequest(f.s,f.r,f.b,id,sessionSpecialty));assert.equal(query,'/reach web search Ai engineer in yc startups');
-   await f.s.destinationContext.run(f.dest,()=>f.r.assertDispatchAllowed(id,f.b));
-   if(channel==='telegram')await f.message(5,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},reply_to_message:{message_id:70,from:{id:123456}}});
-   else await f.message(5,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId}}}});
-   await f.settle();assert.equal(f.s.job(f.jobId(5)),undefined);
-   chmodSync(ref.path!,0o600);writeFileSync(ref.path!,'%PDF-1.4 synthetic tamper');assert.throws(()=>f.r.attachments.references(f.b,id),/integrity/);
-  }finally{f.close();}
- });
 }
 
 for(const channel of ['telegram','whatsapp'] as const){
- test(`${channel}: a forwarded Jobs attachment cannot claim the owner's question`,async()=>{const f=fixture(channel);try{
-  await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
-  if(channel==='telegram')await f.message(4,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},forward_origin:{type:'user'},reply_to_message:{message_id:70,from:{id:123456}}});
-  else await f.message(4,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId,isForwarded:true,forwardingScore:1}}}});
-  await f.settle();assert.equal(f.s.job(f.jobId(4)),undefined);
- }finally{f.close();}});
- test(`${channel}: a stale Jobs question cannot authorize a file`,async()=>{const f=fixture(channel);try{
-  await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
-  f.s.db.prepare("UPDATE outbox SET created_at=? WHERE source='synthetic-question:0'").run(Date.now()-11*60_000);
-  if(channel==='telegram')await f.message(4,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},reply_to_message:{message_id:70,from:{id:123456}}});
-  else await f.message(4,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId}}}});
-  await f.settle();assert.equal(f.s.job(f.jobId(4)),undefined);
- }finally{f.close();}});
- test(`${channel}: owner change during Jobs file download cancels the file`,async()=>{const f=fixture(channel);let release!:()=>void,started!:()=>void;const gate=new Promise<void>(r=>release=r),begun=new Promise<void>(r=>started=r);try{
-  await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');f.publishAnswer(f.jobId(2));f.setGate(gate,started);
-  const receive=channel==='telegram'?f.message(4,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},reply_to_message:{message_id:70,from:{id:123456}}}):f.message(4,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId}}}});
-  await begun;const key=channel==='telegram'?'telegram-owner':'whatsapp-owner';f.s.set(key,channel==='telegram'?'tg:123456:888':'999@s.whatsapp.net');f.s.set(key,f.dest);release();await receive;await f.settle();assert.equal(f.s.job(f.jobId(4)),undefined);
- }finally{release();f.close();}});
 }
 
 for(const channel of ['telegram','whatsapp'] as const){
@@ -130,17 +91,6 @@ test('non-owner documents are rejected by both adapters',async()=>{
 });
 
 for(const channel of ['telegram','whatsapp'] as const){
- test(`${channel}: quoted reply and PDF follow-up use a separate session request`,async()=>{
-  const f=fixture(channel);try{
-   await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');const original=f.jobId(2);assert.equal(f.s.job(original)?.binding_id,f.b.id);f.publishAnswer(original);
-   if(channel==='telegram')await f.message(3,'Remote only',{reply_to_message:{message_id:70,from:{id:123456}}});
-   else await f.message(3,'',{message:{extendedTextMessage:{text:'Remote only',contextInfo:{stanzaId:f.answerId}}}});
-   const quoted=f.s.job(f.jobId(3));assert.equal(quoted?.binding_id,f.b.id);assert.match(quoted?.body??'',/Ai engineer in yc startups/);assert.match(quoted?.body??'',/Remote only/);assert.equal(sessionSpecialty(f.s,f.jobId(3))?.kind,'jobs');
-   if(channel==='telegram')await f.message(4,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},reply_to_message:{message_id:70,from:{id:123456}}});
-   else await f.message(4,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId}}}});
-   await f.settle();const fileId=f.jobId(4),fileJob=f.s.job(fileId);assert.equal(fileJob?.binding_id,f.b.id);assert.match(fileJob?.body??'',/without a caption/);assert.equal(f.r.attachments.references(f.b,fileId).length,1);assert.equal(sessionSpecialty(f.s,fileId)?.kind,'jobs');assert.equal(f.s.itemOf(fileId),undefined);
-  }finally{f.close();}
- });
 }
 
 for(const channel of ['telegram','whatsapp'] as const){
@@ -178,15 +128,6 @@ for(const channel of ['telegram','whatsapp'] as const){
    assert.equal(f.s.job(f.jobId(5)),undefined);
   }finally{f.close();}
  });
- test(`${channel}: Jobs attachment fails closed if the selected session changed`,async()=>{
-  const f=fixture(channel);try{
-   await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
-   f.s.destinationContext.run(f.dest,()=>startDirect(f.s,f.other));f.s.set(`owner-target:${f.dest}`,'null');
-   if(channel==='telegram')await f.message(5,'',{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},reply_to_message:{message_id:70,from:{id:123456}}});
-   else await f.message(5,'',{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,contextInfo:{stanzaId:f.answerId}}}});
-   await f.settle();assert.equal(f.s.job(f.jobId(5)),undefined);
-  }finally{f.close();}
- });
  test(`${channel}: explicit /to alias still overrides the direct session for an attachment`,async()=>{
   const f=fixture(channel);try{
    f.s.destinationContext.run(f.dest,()=>startDirect(f.s,f.other));
@@ -198,7 +139,7 @@ for(const channel of ['telegram','whatsapp'] as const){
  for(const route of ['quote','alias'] as const){
   test(`${channel}: ${route} target pause and restore during download is rejected`,async()=>{
    const f=fixture(channel);try{
-    await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
+    await f.message(1,'/codex');await f.message(2,'/social Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
     let release!:()=>void,started!:()=>void;const gate=new Promise<void>(r=>release=r),begun=new Promise<void>(r=>started=r);f.setGate(gate,started);
     const extra=channel==='telegram'?{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},...(route==='quote'?{reply_to_message:{message_id:70,from:{id:123456}}}:{caption:'/to target Review my resume'})}
       :{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,...(route==='quote'?{contextInfo:{stanzaId:f.answerId}}:{caption:'/to target Review my resume'})}}};
@@ -208,12 +149,12 @@ for(const channel of ['telegram','whatsapp'] as const){
   });
   test(`${channel}: unrelated session changes do not redirect a ${route} attachment`,async()=>{
    const f=fixture(channel);try{
-    await f.message(1,'/codex');await f.message(2,'/jobs Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
+    await f.message(1,'/codex');await f.message(2,'/social Ai engineer in yc startups');f.publishAnswer(f.jobId(2));
     let release!:()=>void,started!:()=>void;const gate=new Promise<void>(r=>release=r),begun=new Promise<void>(r=>started=r);f.setGate(gate,started);
     const extra=channel==='telegram'?{document:{file_id:'synthetic',file_size:pdf.length,file_name:'resume.pdf'},...(route==='quote'?{reply_to_message:{message_id:70,from:{id:123456}}}:{caption:'/to target Review my resume'})}
       :{message:{documentMessage:{mimetype:'application/pdf',fileName:'resume.pdf',fileLength:pdf.length,...(route==='quote'?{contextInfo:{stanzaId:f.answerId}}:{caption:'/to target Review my resume'})}}};
     const receive=f.message(5,'',extra);await begun;f.s.enable(f.other.id,false);f.s.enable(f.other.id,true);release();await receive;await f.settle();
-    assert.equal(f.s.job(f.jobId(5))?.binding_id,route==='quote'?undefined:f.b.id);
+    assert.equal(f.s.job(f.jobId(5))?.binding_id,f.b.id);
    }finally{f.close();}
   });
  }
