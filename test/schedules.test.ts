@@ -461,3 +461,12 @@ test('natural reminder wording is accepted with the owner text kept exactly', as
     await assert.rejects(f.send('3', 'remind me to buy 2 milk'), /time/i, 'a bare number inside the reminder is not a time');
   } finally { f.close(); }
 });
+
+// Live on build 2418: the model handed back the whole sentence as the reminder text.
+test('a model that echoes the whole sentence still gets the owner action', async () => {
+  const f = fixture(); try {
+    f.setDecision({ text: 'Remind me tomorrow 10am for meta hackathon submission', date: '2026-10-30', time: '10:00' });
+    await f.send('1', 'Remind me tomorrow 10am for meta hackathon submission');
+    assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as { text: string }).text, 'meta hackathon submission');
+  } finally { f.close(); }
+});

@@ -37,8 +37,17 @@ function reminderDirective(original:string,body:string):{directive:string;action
   // "remind me at TIME to ACTION" used to pass (live, 4 November 2026). The timing is read from
   // the rest of the sentence, so a number inside the reminder is never taken as the time.
   const remind=/\bremind\s+me\b/i.exec(original);
-  const want=body.trim().replace(/[.!?]+$/,'').replace(/^(?:to|for|about|that|of)\s+/i,'');
-  if(!remind||!want)return;
+  if(!remind)return;
+  // A model often hands back the whole sentence as the reminder text. Then the action is worked
+  // out from the owner's words alone: trim timing and filler from both ends of what follows
+  // "remind me", and accept it only if the model's text contains that same action.
+  let want=body.trim().replace(/[.!?]+$/,'').replace(/^(?:to|for|about|that|of)\s+/i,'');
+  if(/\bremind\s+me\b/i.test(want)){
+    const own=ownAction(original.slice(remind.index+remind[0].length));
+    if(!own||!cleanAction(want).includes(cleanAction(own)))return;
+    want=own;
+  }
+  if(!want)return;
   const at=original.toLowerCase().indexOf(want.toLowerCase(),remind.index+remind[0].length);
   if(at<0)return;
   const action=original.slice(at,at+want.length).trim();
@@ -53,6 +62,14 @@ function reminderDirective(original:string,body:string):{directive:string;action
     .replace(/[^a-z]+/g,' ').trim();
   if(leftover)return;
   return {directive,action};
+}
+const TIMING_WORD=/^(?:please|at|on|by|in|the|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekdays?|o'?clock|\d{4}-\d{2}-\d{2}|\d{1,2}(?::\d{2})?(?:a\.?m\.?|p\.?m\.?)?|a\.?m\.?|p\.?m\.?)[,.]?$/i;
+/** What follows "remind me", with timing and filler words trimmed from both ends. */
+function ownAction(rest:string):string{
+  const words=rest.trim().split(/\s+/).filter(Boolean);
+  while(words.length&&TIMING_WORD.test(words[0]))words.shift();
+  while(words.length&&TIMING_WORD.test(words[words.length-1]))words.pop();
+  return words.join(' ').replace(/[.!?]+$/,'');
 }
 function briefDirective(original:string):string|undefined {
   if(/\b(?:remind\s+me|do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original))return;
