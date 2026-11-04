@@ -19,7 +19,7 @@ extension _Panes on _DeskState {
     _ => null,
   };
 
-// One binding identity per saved session; never a request title or a display
+  // One binding identity per saved session; never a request title or a display
   // name, both of which can be reused across sessions.
   String sessionKey(Map j) =>
       '${j['binding_id'] ?? j['master_id'] ?? status['master']?['id'] ?? 'unassigned'}';
@@ -66,7 +66,12 @@ extension _Panes on _DeskState {
   /// The four marks the bridge uses to introduce its own attribution lines.
   /// Matched as characters, not as a regular expression: `\u{...}` needs the
   /// unicode flag in a RegExp and silently matches nothing without it.
-  static const inboxMarks = ['\u{1F916}', '\u{1F4AC}', '\u{1F3A8}', '\u{1F516}'];
+  static const inboxMarks = [
+    '\u{1F916}',
+    '\u{1F4AC}',
+    '\u{1F3A8}',
+    '\u{1F516}',
+  ];
 
   String? inboxMark(String line) {
     final text = line.trim();
@@ -101,15 +106,15 @@ extension _Panes on _DeskState {
 
   String inboxFieldValue(String body, String label) {
     final prefix = '$label:';
-    final text = body.startsWith(prefix)
-        ? body.substring(prefix.length)
-        : body;
+    final text = body.startsWith(prefix) ? body.substring(prefix.length) : body;
     return text.trim();
   }
 
   /// The attribution block, read only from what follows the last blank line so
   /// a leading "💬 *Reply*" marker can never be mistaken for metadata.
-  ({String provider, String session, String mode}) inboxMetadata(dynamic value) {
+  ({String provider, String session, String mode}) inboxMetadata(
+    dynamic value,
+  ) {
     var provider = '', session = '', mode = '';
     // Read the message as the bubble will: the trailing "— FarFromDesk" footer
     // and the leading "*Session: ...*" header are not part of the block, and
@@ -181,7 +186,6 @@ extension _Panes on _DeskState {
     return session.isNotEmpty ? session : inboxMetadata(m['text']).session;
   }
 
-
   // The composer is honest about what this build can do: text replies are sent
   // as the owner and routed exactly like a message to yourself; anything else
   // still belongs in the chat app.
@@ -230,9 +234,11 @@ extension _Panes on _DeskState {
     if (at == null) return '';
     final t = DateTime.fromMillisecondsSinceEpoch(at.toInt()).toLocal();
     final now = DateTime.now();
-    final days = DateTime(now.year, now.month, now.day)
-        .difference(DateTime(t.year, t.month, t.day))
-        .inDays;
+    final days = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).difference(DateTime(t.year, t.month, t.day)).inDays;
     if (days == 0) return clock(at);
     if (days == 1) return 'Yesterday';
     return '${_monthNames[t.month - 1].substring(0, 3)} ${t.day}';
@@ -299,16 +305,18 @@ extension _Panes on _DeskState {
           data['next'] is Map;
       final merged =
           (older || inboxLoadedOlder
-                  ? <String, Map>{
-                      for (final m in previousMessages) '${m['key']}': m,
-                      for (final m in incoming) '${m['key']}': m,
-                    }.values.toList()
-                  : List<Map>.from(incoming))
+                ? <String, Map>{
+                    for (final m in previousMessages) '${m['key']}': m,
+                    for (final m in incoming) '${m['key']}': m,
+                  }.values.toList()
+                : List<Map>.from(incoming))
             ..sort((a, b) {
               final order = (inboxNumber(a['at']) ?? 0).compareTo(
                 inboxNumber(b['at']) ?? 0,
               );
-              return order != 0 ? order : '${a['key']}'.compareTo('${b['key']}');
+              return order != 0
+                  ? order
+                  : '${a['key']}'.compareTo('${b['key']}');
             });
       unawaited(loadMetaEvents());
       changeView(() {
@@ -351,7 +359,8 @@ extension _Panes on _DeskState {
     } catch (e) {
       if (mounted && epoch == inboxEpoch) {
         changeView(
-          () => inboxError = inboxFallback(e, 'Could not refresh conversation.'),
+          () =>
+              inboxError = inboxFallback(e, 'Could not refresh conversation.'),
         );
       }
     } finally {
@@ -523,10 +532,7 @@ extension _Panes on _DeskState {
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: line2),
     ),
-    child: Text(
-      value,
-      style: const TextStyle(fontSize: 11.5, color: muted),
-    ),
+    child: Text(value, style: const TextStyle(fontSize: 11.5, color: muted)),
   );
 
   Widget inboxChip(String id, String label, {bool dot = false}) {
@@ -632,9 +638,7 @@ extension _Panes on _DeskState {
         color: selected ? accentWash : Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: BorderSide(
-            color: selected ? accent : Colors.transparent,
-          ),
+          side: BorderSide(color: selected ? accent : Colors.transparent),
         ),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
@@ -716,7 +720,10 @@ extension _Panes on _DeskState {
       }
     },
     itemBuilder: (_) => const [
-      PopupMenuItem(value: 'reload', child: Text('Reload', style: TextStyle(fontSize: 13))),
+      PopupMenuItem(
+        value: 'reload',
+        child: Text('Reload', style: TextStyle(fontSize: 13)),
+      ),
       PopupMenuItem(
         value: 'cleanup',
         child: Text('Request cleanup', style: TextStyle(fontSize: 13)),
@@ -784,10 +791,13 @@ extension _Panes on _DeskState {
                     onChanged: (value) {
                       changeView(() => inboxQuery = value);
                       inboxSearchTimer?.cancel();
-                      inboxSearchTimer = Timer(const Duration(milliseconds: 250), () {
-                        changeView(() => inboxEpoch++);
-                        unawaited(loadInboxFeed());
-                      });
+                      inboxSearchTimer = Timer(
+                        const Duration(milliseconds: 250),
+                        () {
+                          changeView(() => inboxEpoch++);
+                          unawaited(loadInboxFeed());
+                        },
+                      );
                     },
                     decoration: InputDecoration(
                       isDense: true,
@@ -945,7 +955,8 @@ extension _Panes on _DeskState {
 
   Widget inboxHeader({bool narrow = false}) {
     final view = inboxView;
-    final count = inboxNumber(view['count']) ?? inboxNumber(inboxStats['total']);
+    final count =
+        inboxNumber(view['count']) ?? inboxNumber(inboxStats['total']);
     final started = inboxStarted(
       inboxNumber(view['firstAt']) ?? inboxNumber(inboxStats['firstAt']),
     );
@@ -966,8 +977,7 @@ extension _Panes on _DeskState {
               key: const ValueKey('inbox-back'),
               tooltip: 'Back to views',
               icon: const Icon(Icons.chevron_left),
-              onPressed: () =>
-                  changeView(() => inboxShowConversation = false),
+              onPressed: () => changeView(() => inboxShowConversation = false),
             ),
           inboxViewAvatar(view, size: 40),
           const SizedBox(width: 12),
@@ -1070,15 +1080,27 @@ extension _Panes on _DeskState {
         ? null
         : inboxNumber(inboxMessages.first['at']);
     final kind = '${inboxView['kind'] ?? inboxViewId}';
-    final entries = [
-      ...inboxMessages,
+    final events = [
       if (first != null && (kind == 'all' || kind == 'brain'))
         for (final e in metaEvents)
           if (inboxNumber(e['at'])! >= first) e,
-    ]..sort(
-        (a, b) =>
-            (inboxNumber(a['at']) ?? 0).compareTo(inboxNumber(b['at']) ?? 0),
-      );
+    ];
+    // Messages keep their loaded order; each Meta line goes before the first
+    // message that came after it.
+    final entries = <Map>[];
+    var k = 0;
+    events.sort(
+      (a, b) =>
+          (inboxNumber(a['at']) ?? 0).compareTo(inboxNumber(b['at']) ?? 0),
+    );
+    for (final m in inboxMessages) {
+      final at = inboxNumber(m['at']) ?? 0;
+      while (k < events.length && inboxNumber(events[k]['at'])! < at) {
+        entries.add(events[k++]);
+      }
+      entries.add(m);
+    }
+    entries.addAll(events.skip(k));
     final children = <Widget>[
       if (inboxNext != null)
         Center(
@@ -1109,9 +1131,8 @@ extension _Panes on _DeskState {
             : inboxMessage(m, maxWidth: maxBubble),
       );
     }
-    final approvals = List<Map>.from(status['approvals'] ?? []).where(
-      (a) => a['alias'] == sessionBinding(inboxViewId)?['alias'],
-    );
+    final approvals = List<Map>.from(status['approvals'] ?? [])
+        .where((a) => a['alias'] == sessionBinding(inboxViewId)?['alias']);
     for (final a in approvals) {
       children.add(approvalTile(a));
     }
@@ -1145,15 +1166,12 @@ extension _Panes on _DeskState {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: line2),
         ),
-        child: Text(
-          label,
-          style: const TextStyle(fontSize: 12, color: muted),
-        ),
+        child: Text(label, style: const TextStyle(fontSize: 12, color: muted)),
       ),
     ),
   );
 
-/// An attention entry is not a message: it keeps its own card with actions.
+  /// An attention entry is not a message: it keeps its own card with actions.
   Widget inboxMessage(Map m, {required double maxWidth}) =>
       inboxSource(m) == 'attention'
       ? inboxAttentionCard(m)
@@ -1199,16 +1217,10 @@ extension _Panes on _DeskState {
               children: mine
                   ? [
                       bubble,
-                      if (mark != null) ...[
-                        const SizedBox(width: 8),
-                        mark,
-                      ],
+                      if (mark != null) ...[const SizedBox(width: 8), mark],
                     ]
                   : [
-                      if (mark != null) ...[
-                        mark,
-                        const SizedBox(width: 8),
-                      ],
+                      if (mark != null) ...[mark, const SizedBox(width: 8)],
                       bubble,
                     ],
             ),
@@ -1249,10 +1261,9 @@ extension _Panes on _DeskState {
     }
     return switch (inboxKind(m)) {
       'command' => inboxGlyphMark(Icons.terminal),
-      'memory' || 'brief' || 'routing' => inboxGlyphMark(
-        Icons.psychology_outlined,
-        tone: accent,
-      ),
+      'memory' ||
+      'brief' ||
+      'routing' => inboxGlyphMark(Icons.psychology_outlined, tone: accent),
       'attention' => inboxGlyphMark(Icons.error_outline, tone: warning),
       _ => inboxGlyphMark(Icons.info_outline),
     };
@@ -1350,10 +1361,7 @@ extension _Panes on _DeskState {
         children: [
           // The reserved strip at the bottom holds the quiet details control on
           // the left and the time on the right, both inside the bubble.
-          Padding(
-            padding: const EdgeInsets.only(bottom: 22),
-            child: body,
-          ),
+          Padding(padding: const EdgeInsets.only(bottom: 22), child: body),
           Positioned(left: 0, bottom: 0, child: inboxDetailsButton(m)),
           if (at != null)
             Positioned(
@@ -1398,7 +1406,9 @@ extension _Panes on _DeskState {
     if (rows.isEmpty) return null;
     return Container(
       key: ValueKey('inbox-details-panel-${m['key']}'),
-      constraints: BoxConstraints(maxWidth: maxWidth > 36 ? maxWidth - 36 : maxWidth),
+      constraints: BoxConstraints(
+        maxWidth: maxWidth > 36 ? maxWidth - 36 : maxWidth,
+      ),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(
         color: raised,
@@ -1411,9 +1421,7 @@ extension _Panes on _DeskState {
         children: [
           for (final row in rows)
             Padding(
-              padding: EdgeInsets.only(
-                bottom: row == rows.last ? 0 : 6,
-              ),
+              padding: EdgeInsets.only(bottom: row == rows.last ? 0 : 6),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1425,10 +1433,7 @@ extension _Panes on _DeskState {
                     ),
                   ),
                   Expanded(
-                    child: Text(
-                      row.$2,
-                      style: const TextStyle(fontSize: 12),
-                    ),
+                    child: Text(row.$2, style: const TextStyle(fontSize: 12)),
                   ),
                 ],
               ),
@@ -1467,11 +1472,7 @@ extension _Panes on _DeskState {
     final origin = '${m['origin'] ?? ''}';
     return [
       if (origin == 'app') 'App',
-      if (time.isNotEmpty)
-        [
-          time,
-          if (ticks.isNotEmpty) ticks,
-        ].join(' '),
+      if (time.isNotEmpty) [time, if (ticks.isNotEmpty) ticks].join(' '),
     ];
   }
 
@@ -1511,8 +1512,7 @@ extension _Panes on _DeskState {
     final review = m['needsReview'] == true;
     final tone = review ? danger : accent;
     final at = inboxNumber(m['at']);
-    final title =
-        '${m['kindLabel'] ?? (review ? 'Needs you' : 'Notice')}';
+    final title = '${m['kindLabel'] ?? (review ? 'Needs you' : 'Notice')}';
     final text = inboxText(m['text']);
     return Padding(
       key: ValueKey('inbox-message-$key'),
@@ -1559,7 +1559,10 @@ extension _Panes on _DeskState {
                             if (at != null)
                               Text(
                                 clock(at),
-                                style: const TextStyle(fontSize: 11.5, color: faint),
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  color: faint,
+                                ),
                               ),
                           ],
                         ),
@@ -1663,10 +1666,7 @@ extension _Panes on _DeskState {
     ),
   );
 
-  Future<void> reviewInboxAttention(
-    Map m, {
-    required bool voice,
-  }) async {
+  Future<void> reviewInboxAttention(Map m, {required bool voice}) async {
     final requestId = '${m['requestId'] ?? ''}';
     if (requestId.isEmpty) return;
     if (voice) {
@@ -1751,7 +1751,10 @@ extension _Panes on _DeskState {
             tooltip: inboxOnlyText,
             onPressed: null,
             icon: const Icon(Icons.mic_none, size: 20),
-            style: IconButton.styleFrom(foregroundColor: faint, disabledForegroundColor: faint),
+            style: IconButton.styleFrom(
+              foregroundColor: faint,
+              disabledForegroundColor: faint,
+            ),
           ),
           const SizedBox(width: 6),
           IconButton(
@@ -2028,11 +2031,7 @@ extension _Panes on _DeskState {
       color: accentTile ? const Color(0x28ff6b2c) : const Color(0x0fffffff),
       borderRadius: BorderRadius.circular(size * .3),
     ),
-    child: Icon(
-      icon,
-      size: size * .46,
-      color: accentTile ? accent : ink,
-    ),
+    child: Icon(icon, size: size * .46, color: accentTile ? accent : ink),
   );
 
   /// Small state word. Used where a full [tag] would compete with a control.
@@ -2269,11 +2268,8 @@ extension _Panes on _DeskState {
       children: [
         Text(
           'Settings',
-          style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-            fontSize: 30,
-            height: 1.1,
-            letterSpacing: -.7,
-          ),
+          style: Theme.of(context).textTheme.headlineLarge
+              ?.copyWith(fontSize: 30, height: 1.1, letterSpacing: -.7),
         ),
         gap(9),
         Text(

@@ -44,11 +44,11 @@ void main() {
       expect(find.text('Second complete caption'), findsOneWidget);
       expect(
         tester.getSize(find.byKey(const Key('social-media-a'))).height,
-        320,
+        256,
       );
       expect(
         tester.getSize(find.byKey(const Key('social-media-b'))).height,
-        320,
+        256,
       );
       expect(
         tester.widget<Text>(find.text('First complete caption')).maxLines,

@@ -59,6 +59,7 @@ export function saveBrainConfig(store:Store,secret:MetaSecret,input:unknown) {
   const submitted=(input as {policy?:Record<string,unknown>})?.policy;
   if(submitted&&submitted.taskContracts===undefined)d.policy.taskContracts=brainPolicy(store).taskContracts;
   if(d.removeKey&&d.key)throw new Error('Choose save or remove key.');
+  if(!storedModels(store).includes(d.policy.model))throw new Error('Choose a model Meta lists for your key.');
   if(d.key)secret.save(d.key);
   if(d.removeKey){secret.remove();store.db.prepare("DELETE FROM settings WHERE key='meta-brain-models'").run();}
   store.set('meta-brain-policy',JSON.stringify(d.policy));
