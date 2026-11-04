@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { stateDir } from './config.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { userInfo } from 'node:os';
@@ -693,7 +694,7 @@ export class MetaBrain {
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
           if(/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app)&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
-          this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});if(!outcome.ok&&outcome.detail)console.error(`[brain act] ${plan.action} in ${plan.app} refused: ${outcome.detail}`);return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}${outcome.detail?` (driver: ${outcome.detail})`:''}`;},
+          this.ack(m,plan.app);const outcome=await runDevicePlan(this.deviceControl(),plan as DevicePlan,`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:plan.action,outcome:outcome.ok?'done':'blocked'});if(!outcome.ok&&outcome.detail)try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} ${plan.action} in ${plan.app} refused: ${outcome.detail}\n`,{mode:0o600});}catch{}return outcome.ok?[outcome.line,outcome.evidence].filter(Boolean).join('\n').slice(0,6000):`Refused: ${outcome.line}${outcome.detail?` (driver: ${outcome.detail})`:''}`;},
         // Opening inside the loop, so "open whatsapp" can go on to read what is new there.
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:async(url,browser)=>{this.ack(m,browser);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
