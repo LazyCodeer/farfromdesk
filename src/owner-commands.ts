@@ -8,10 +8,11 @@ import { brainPolicy } from './meta-brain-config.js';
 import { endDirect, DIRECT_IDLE_MS } from './owner-routing.js';
 import { errorCode } from './request-events.js';
 import { runMuse } from './muse-session.js';
-import { runDshQueued, dshCancel, dshQueueState } from './dsh-sessions.js';
+import { runDshQueued, dshCancel, dshQueueState, dshSessionKey, dshLegacySessionKey, dshActiveLabelKey, dshLabelsKey, dshLabels, addDshLabel, DEFAULT_DSH_LABEL } from './dsh-sessions.js';
+import { sendMessage, claimMessages, settleMessages, pendingMessages, listMessages, messagePrompt } from './dsh-inbox.js';
 import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
 import { dshHome } from './dsh-paths.js';
-import { stateDir } from './config.js';
+import { stateDir, currentStateDir } from './config.js';
 import { runCursorTurn } from './cursor-desktop.js';
 
 export const TELEGRAM_COMMANDS=[
@@ -114,7 +115,17 @@ function museWorkspace(r:Router) {
   const master=r.store.get('master'),b=master?r.store.binding(master):undefined;
   return b?.cwd??homedir();
 }
-/** One prompt, one finished run. A run that did not finish is reported, never passed off as an answer. */
+/**
+ * DeepSeek, with labels and a durable inbox.
+ *
+ * One workspace can hold several labelled sessions (the CLI adopts a session scoped to its working
+ * directory, and two sessions in one folder are two different ids). A turn is one finished run: a
+ * run that did not finish is reported, never passed off as an answer. Messages addressed to another
+ * session are written to disk first and carried into that session's next turn, and the owner is told
+ * the difference between "queued" and "read".
+ */
+const DEEPSEEK_SUBCOMMANDS=new Set(['status','list','use','new','reset','stop','send','inbox','help']);
+
 async function museCommand(r:Router,m:Incoming,arg:string) {
   const cwd=museWorkspace(r),key=`muse-session:${cwd}`,label=basename(cwd)||cwd;
   if(!arg)return `Muse Code is ready in ${label}. Send /muse followed by the task. It continues the same Muse session in this folder; /muse reset starts a new one.`;
@@ -134,34 +145,114 @@ function deepseekWorkspace(r:Router) {
   const master=r.store.get('master'),b=master?r.store.binding(master):undefined;
   return b?.cwd??homedir();
 }
+/**
+ * Labels, so one workspace can hold several DeepSeek conversations. A label owns a session id and a
+ * queue; the messages another session left for it are written to disk first and carried into its next
+ * turn, because a headless run is not a daemon that can be handed a message out of band.
+ */
+function dshSessionId(r:Router,folder:string,label:string):string|null {
+  const own=r.store.get(dshSessionKey(folder,label));
+  if(own)return own;
+  // Labels arrived after the first builds; a session saved under the old key is still this folder's
+  // default conversation rather than a lost one.
+  return label===DEFAULT_DSH_LABEL?(r.store.get(dshLegacySessionKey(folder))||null):null;
+}
+function dshActiveLabel(r:Router,folder:string):string {
+  const stored=(r.store.get(dshActiveLabelKey(folder))??'').trim();
+  return stored||DEFAULT_DSH_LABEL;
+}
+function dshLabelLine(r:Router,folder:string,label:string):string {
+  const id=dshSessionId(r,folder,label),pending=pendingMessages(currentStateDir(),folder,label).length;
+  const marks=[`\`${label}\``,id?`session ${id.slice(0,18)}…`:'no session yet',pending?`${pending} queued`:'nothing queued'];
+  return marks.join(' · ');
+}
 /** One prompt, one finished run. A run that did not finish is reported, never passed off as an answer. */
 async function deepseekCommand(r:Router,m:Incoming,arg:string) {
-  const cwd=deepseekWorkspace(r),key=`deepseek-session:${cwd}`,label=basename(cwd)||cwd;
+  const cwd=deepseekWorkspace(r),workspace=basename(cwd)||cwd;
   // The desktop app's own settings are the source of truth for provider and model, and the store's
   // `refs` map is where a key set in the app settings lands for a child process.
   const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
   const settings=dshSettings(name=>r.store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
-  const sub=arg.trim().toLowerCase(),queue=dshQueueState(cwd);
-  const busy=queue.busy?` A turn is still running in ${label}${queue.waiting?` with ${queue.waiting} queued`:''}; your message joins the queue.`:'';
-  if(!arg||sub==='status')
-    return `DeepSeek Harness is ready in ${label}. ${status.hint}${busy} Send /deepseek followed by the task. It continues the same DeepSeek session in this folder; /deepseek new starts a fresh one, /deepseek stop cancels the turn that is running.`;
-  if(sub==='new'||sub==='reset'){r.store.set(key,'');return 'The next /deepseek starts a fresh DeepSeek session in this folder.';}
-  if(sub==='stop')return dshCancel(cwd)?`Stopped the DeepSeek turn in ${label}.`:`Nothing is running in ${label}.`;
+  const words=arg.trim().split(/\s+/),head=(words[0]??'').toLowerCase();
+  const sub=DEEPSEEK_SUBCOMMANDS.has(head)?head:'';
+  const rest=sub===''?arg.trim():arg.trim().slice(words[0].length).trim();
+  let label=dshActiveLabel(r,cwd);
+  const queue=()=>dshQueueState(cwd,label);
+  const busy=()=>{const q=queue();return q.busy?` A turn is still running in \`${label}\`${q.waiting?` with ${q.waiting} queued`:''}; your message joins the queue.`:'';};
+
+  if(!arg||sub==='status'||sub==='help')
+    return `DeepSeek Harness is ready in ${workspace}. ${status.hint}${busy()} Active session: \`${label}\`${dshSessionId(r,cwd,label)?'':' (no session yet; the next task opens one)'}.\n`
+      +'Send /deepseek followed by a task. `/deepseek new [label]` opens a fresh session, `/deepseek use <label>` switches, `/deepseek list` shows them, `/deepseek send <label> <message>` leaves a message for another session, `/deepseek inbox` shows what is queued, `/deepseek stop` cancels the running turn.';
+
+  if(sub==='list'){
+    const labels=dshLabels(name=>r.store.get(name)??undefined,cwd);
+    return `DeepSeek sessions in ${workspace}:\n`+labels.map(name=>`${name===label?'▶ ':'  '}${dshLabelLine(r,cwd,name)}`).join('\n')
+      +`\nEach label is its own conversation and its own queue. Web-search and provider settings are shared.`;
+  }
+
+  if(sub==='use'){
+    const wanted=(rest||'').trim().replace(/^`|`$/g,'');
+    if(!wanted)return `Which session? /deepseek list shows them, then /deepseek use <label>.`;
+    if(!/^[A-Za-z0-9._-]{1,24}$/.test(wanted))return 'A session label is 1-24 letters, digits, dot, dash or underscore.';
+    addDshLabel(name=>r.store.get(name)??undefined,(name,value)=>r.store.set(name,value),cwd,wanted);
+    r.store.set(dshActiveLabelKey(cwd),wanted);
+    return `Now using \`${wanted}\` in ${workspace}${dshSessionId(r,cwd,wanted)?'':' (no session yet; the next task opens one)'}.`;
+  }
+
+  if(sub==='new'||sub==='reset'){
+    const wanted=(rest||'').trim().replace(/^`|`$/g,'')||label;
+    if(!/^[A-Za-z0-9._-]{1,24}$/.test(wanted))return 'A session label is 1-24 letters, digits, dot, dash or underscore.';
+    addDshLabel(name=>r.store.get(name)??undefined,(name,value)=>r.store.set(name,value),cwd,wanted);
+    r.store.set(dshSessionKey(cwd,wanted),'');
+    if(wanted===DEFAULT_DSH_LABEL)r.store.set(dshLegacySessionKey(cwd),'');
+    r.store.set(dshActiveLabelKey(cwd),wanted);
+    label=wanted;
+    return `The next /deepseek starts a fresh DeepSeek session in \`${wanted}\` (${workspace}).`;
+  }
+
+  if(sub==='stop'){
+    const wanted=(rest||'').trim().replace(/^`|`$/g,'')||label;
+    return dshCancel(cwd,wanted)?`Stopped the DeepSeek turn in \`${wanted}\`.`:`Nothing is running in \`${wanted}\`.`;
+  }
+
+  if(sub==='send'){
+    const target=(rest.split(/\s+/)[0]??'').replace(/^`|`$/g,'');
+    const text=rest.slice(target.length).trim();
+    if(!target||!text)return 'Send it like: /deepseek send <label> <message>. /deepseek list shows the labels.';
+    if(!/^[A-Za-z0-9._-]{1,24}$/.test(target))return 'A session label is 1-24 letters, digits, dot, dash or underscore.';
+    addDshLabel(name=>r.store.get(name)??undefined,(name,value)=>r.store.set(name,value),cwd,target);
+    const message=sendMessage({root:currentStateDir(),folder:cwd,label:target,text,from:'the owner'});
+    return `Queued for \`${target}\` as \`${message.id}\`. I carry it into that session's next turn in this workspace; that is a local write, not delivery. Ask that session for the id if you need proof it read it.`;
+  }
+
+  if(sub==='inbox'){
+    const messages=listMessages(currentStateDir(),cwd,label);
+    if(!messages.length)return `Nothing has been sent to \`${label}\` in ${workspace}.`;
+    const lines=messages.slice(-10).map(message=>`${message.state} · ${message.id} · from ${message.from} · ${message.text.slice(0,60).replace(/\s+/g,' ')}`);
+    return `Messages for \`${label}\`:\n${lines.join('\n')}\nprepared = not carried yet, received = a finished turn carried it, unknown = the turn that carried it failed.`;
+  }
+
+  // A task: carry whatever is queued for this session, then run one turn.
+  const claimed=claimMessages(currentStateDir(),cwd,label);
   const destination=r.store.destination();
-  if(destination)r.store.output(undefined,`🤖 DeepSeek is working in ${label}.${queue.busy?' Queued behind the previous task.':''}`,`deepseek-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
+  if(destination)r.store.output(undefined,`🤖 DeepSeek is working in ${workspace}${label===DEFAULT_DSH_LABEL?'':` (${label})`}.${claimed.length?` Carrying ${claimed.length} queued message${claimed.length>1?'s':''}.`:''}${queue().busy?' Queued behind the previous task.':''}`,`deepseek-progress:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
   const {env}=keyEnvironment(settings,process.env,keyOf);
-  const {result}=runDshQueued(cwd,{prompt:arg,cwd,sessionId:r.store.get(key)||null,patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:20*60*1000});
+  const {result}=runDshQueued(cwd,{prompt:`${messagePrompt(claimed)}${arg}`,cwd,sessionId:dshSessionId(r,cwd,label),patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:20*60*1000},undefined,label);
   let finished;
   try {
     finished=await result;
   } catch(error) {
+    const message=(error as Error)?.message??String(error);
+    if(claimed.length)settleMessages(currentStateDir(),cwd,label,claimed.map(entry=>entry.id),'unknown',message.slice(0,200));
     // The run is attempted even without a configured key, because the CLI may resolve its own
     // credential. Only a credential failure is replaced by the next step the owner can take.
-    const hint=credentialHint((error as Error)?.message??String(error),status);
+    const hint=credentialHint(message,status);
+    const carried=claimed.length?` The ${claimed.length} message${claimed.length>1?'s':''} I was carrying ${claimed.length>1?'are':'is'} marked unknown, not re-queued.`:'';
     if(!hint)throw error;
-    return hint;
+    return `${hint}${carried}`;
   }
-  if(finished.sessionId)r.store.set(key,finished.sessionId);
+  if(finished.sessionId)r.store.set(dshSessionKey(cwd,label),finished.sessionId);
+  if(claimed.length)settleMessages(currentStateDir(),cwd,label,claimed.map(entry=>entry.id),'received');
   return finished.text.slice(0,20000);
 }
 /**

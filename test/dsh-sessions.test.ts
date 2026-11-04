@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { DshResult, DshRunOptions } from '../src/dsh-session.js';
-import { dshCancel, dshQueueState, runDshQueued } from '../src/dsh-sessions.js';
+import { addDshLabel, dshCancel, dshLabels, dshLegacySessionKey, dshQueueKey, dshQueueState, dshSessionKey, runDshQueued } from '../src/dsh-sessions.js';
 
 const answer = (text: string): DshResult => ({ text, sessionId: 'session-x', error: null });
 
@@ -68,4 +68,41 @@ test('a queued turn can be cancelled, and cancelling is reported honestly', asyn
   assert.equal(dshCancel('/tmp/ffd-queue-never'), false, 'nothing running is not a stop');
   g.release();
   await assert.rejects(first.result, /cancelled/);
+});
+test('two labels in one folder are two conversations and run together', async () => {
+  const g = gate();
+  const folder = '/tmp/ffd-queue-labelled';
+  const notes = runDshQueued(folder, { prompt: 'notes work', cwd: folder }, g.run, 'notes');
+  const calendar = runDshQueued(folder, { prompt: 'calendar work', cwd: folder }, g.run, 'calendar');
+  assert.equal(notes.queued, false);
+  assert.equal(calendar.queued, false, 'a different label is not behind the first');
+  const second = runDshQueued(folder, { prompt: 'notes again', cwd: folder }, g.run, 'notes');
+  assert.equal(second.queued, true, 'the same label still waits in order');
+  assert.deepEqual(dshQueueState(folder, 'notes'), { busy: true, waiting: 1 });
+  assert.deepEqual(dshQueueState(folder, 'calendar'), { busy: true, waiting: 0 });
+  g.release();
+  await Promise.all([notes.result, calendar.result, second.result]);
+  assert.equal(g.peak(), 2, 'the two conversations ran at once, and only those two');
+});
+
+test('a label has its own session key, and the folder-only key stays readable', () => {
+  assert.equal(dshSessionKey('/w/spliceai', 'notes'), 'deepseek-session:/w/spliceai:notes');
+  assert.equal(dshLegacySessionKey('/w/spliceai'), 'deepseek-session:/w/spliceai');
+  assert.notEqual(dshQueueKey('/w/spliceai', 'notes'), dshQueueKey('/w/spliceai', 'calendar'));
+  assert.equal(dshQueueKey('/w/spliceai', 'calendar'), dshQueueKey('/w/spliceai', 'calendar'));
+});
+
+test('labels list the default first, add once, and survive a broken record', () => {
+  const store = new Map<string, string>();
+  const get = (key: string) => store.get(key);
+  const set = (key: string, value: string) => { store.set(key, value); };
+  assert.deepEqual(dshLabels(get, '/w'), ['default'], 'a folder with no record still has the default');
+  addDshLabel(get, set, '/w', 'notes');
+  addDshLabel(get, set, '/w', 'notes');
+  addDshLabel(get, set, '/w', 'calendar');
+  assert.deepEqual(dshLabels(get, '/w'), ['default', 'notes', 'calendar'], 'each label appears once');
+  store.set('deepseek-labels:/w', 'not json');
+  assert.deepEqual(dshLabels(get, '/w'), ['default'], 'a broken record is not a label list');
+  store.set('deepseek-labels:/w', JSON.stringify(Array.from({ length: 20 }, (_, index) => `l${index}`)));
+  assert.deepEqual(dshLabels(get, '/w').length, 12, 'a folder cannot accumulate unbounded labels');
 });

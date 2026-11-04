@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { defaultStateDirectory, nativeCommand } from './platform.js';
 
 export const stateDir = process.env.WSB_STATE_DIR ?? defaultStateDirectory();
+// The same directory, read at call time. A test (and a caller that changes the setting) can point
+// the durable records at its own folder without re-importing the configuration.
+export const currentStateDir = (): string => process.env.WSB_STATE_DIR ?? defaultStateDirectory();
 // Coordinators get their own folders here, like ~/.codex and ~/.claude; other folders stay behind native permission prompts.
 export const coordinatorHome = process.env.FARFROMDESK_HOME ?? join(homedir(), '.farfromdesk');
 export const port = Number(process.env.WSB_PORT ?? 47831);

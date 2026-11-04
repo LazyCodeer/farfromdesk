@@ -9,7 +9,7 @@ import { join, basename, dirname, resolve, sep } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
-import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
+import { stateDir,currentStateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
 import type { Store,Binding,Provider } from './store.js';
 import type { Router } from './router.js';
 import { saveBindingCredentials } from './server.js';
@@ -33,7 +33,8 @@ import { scopedBridgeCommand } from './reply-args.js';
 import { openCodexDesktop } from './session-activation.js';
 import { museBinary, runMuse } from './muse-session.js';
 import { dshBinary } from './dsh-session.js';
-import { runDshQueued } from './dsh-sessions.js';
+import { runDshQueued, DEFAULT_DSH_LABEL } from './dsh-sessions.js';
+import { claimMessages, settleMessages, messagePrompt } from './dsh-inbox.js';
 import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
 import { dshHome } from './dsh-paths.js';
 import { runCursorTurn } from './cursor-desktop.js';
@@ -587,6 +588,9 @@ export class Masters {
       // continues the same conversation. This profile reports no usage, so none is emitted.
       const key=`deepseek-session:${b.id}`,stored=this.store.get(key)||null;
       handedOff=true;
+      // A message another session left for this folder is carried into this turn, and claimed before
+      // the prompt is built so it can never be delivered twice.
+      const claimed=claimMessages(currentStateDir(),b.cwd,DEFAULT_DSH_LABEL);
       // A headless run needs a key, and the app cannot borrow the desktop session's credential.
       // Say what to fix instead of spawning a turn that fails on an error the owner cannot act on.
       const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
@@ -594,7 +598,7 @@ export class Masters {
       // One conversation per folder, so a second request waits for the first instead of adopting a
       // session that is still being written.
       const {env}=keyEnvironment(settings,process.env,keyOf);
-      const {result:queued,queued:waiting}=runDshQueued(b.cwd,{prompt:message,cwd:b.cwd,sessionId:stored,patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:deepseekTurnTimeoutMs});
+      const {result:queued,queued:waiting}=runDshQueued(b.cwd,{prompt:messagePrompt(claimed)+message,cwd:b.cwd,sessionId:stored,patchPath:writePatch(stateDir,settings,profile),env,timeoutMs:deepseekTurnTimeoutMs},undefined,DEFAULT_DSH_LABEL);
       if(waiting&&this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,'DeepSeek is still on the previous task in this folder. This one is queued behind it.','progress',jobId,`native-progress:${jobId}`);
       let result;
       try {
@@ -602,11 +606,14 @@ export class Masters {
       } catch(error) {
         // The run is attempted even without a configured key, because the CLI may resolve its own
         // credential. Only a credential failure is replaced by the next step the owner can take.
-        const hint=credentialHint((error as Error)?.message??String(error),status);
+        const reason=(error as Error)?.message??String(error);
+        settleMessages(currentStateDir(),b.cwd,DEFAULT_DSH_LABEL,claimed.map(m=>m.id),'unknown',reason);
+        const hint=credentialHint(reason,status);
         if(!hint)throw error;
         if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,hint,'final',jobId,`native-final:${jobId}`);
         return;
       }
+      settleMessages(currentStateDir(),b.cwd,DEFAULT_DSH_LABEL,claimed.map(m=>m.id),'received');
       if(result.sessionId)this.store.set(key,result.sessionId);
       if(this.store.job(jobId)?.status==='replaced')return;
       if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);

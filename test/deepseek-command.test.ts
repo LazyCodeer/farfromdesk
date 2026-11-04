@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -25,11 +25,11 @@ function fixture(workspace:string) {
   return {store,router,wa,sends,msg,replies,close:()=>{wa.close();approvals.cancel();store.close();}};
 }
 
-/** A stand-in for the real CLI: one session event, then a finished run with text. */
+/** A stand-in for the real CLI: it keeps the prompt, then emits one session event and one answer. */
 function fakeDsh(dir:string,text:string) {
   const file=join(dir,'dsh');
   writeFileSync(file,`#!/bin/sh
-cat >/dev/null
+cat > "${dir}/prompt.txt"
 echo '{"type":"session","sessionId":"fake-dsh-session-1","cwd":"${dir}"}'
 echo '{"type":"final","text":${JSON.stringify(text)}}'
 `);
@@ -60,10 +60,100 @@ test('/deepseek with a task runs DeepSeek in the chosen folder and keeps its ses
     await f.wa.receiveMessage(f.msg('D2','/deepseek Say hello'));
     const last=f.replies().at(-1)!;
     assert.match(last,/Hello from the fake DeepSeek\./);
-    assert.equal((f.store.get(`deepseek-session:${dir}`)),'fake-dsh-session-1');
+    assert.equal((f.store.get(`deepseek-session:${dir}:default`)),'fake-dsh-session-1');
   }finally{
     f.close();
     if(previous===undefined)delete process.env.DSH_BIN;else process.env.DSH_BIN=previous;
     rmSync(dir,{recursive:true,force:true});
+  }
+});
+/** A stand-in for a run that never finishes: the prompt is consumed, then the process fails. */
+function failingDsh(dir:string) {
+  const file=join(dir,'dsh-fail');
+  writeFileSync(file,`#!/bin/sh
+cat > "${dir}/failed-prompt.txt"
+echo '{"type":"error","message":"the provider refused"}' >&2
+exit 1
+`);
+  chmodSync(file,0o755);
+  return file;
+}
+
+const promptFile=(dir:string,name='prompt.txt')=>{try{return readFileSync(join(dir,name),'utf8');}catch{return '';}};
+
+test('/deepseek new opens a separate labelled conversation, and /deepseek list shows it',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'deepseek-label-'));
+  const previous=process.env.DSH_BIN;
+  process.env.DSH_BIN=fakeDsh(dir,'Answer one.');
+  const f=fixture(dir);try{
+    await f.wa.receiveMessage(f.msg('L1','/deepseek Say hello'));
+    assert.equal(f.store.get(`deepseek-session:${dir}:default`),'fake-dsh-session-1','the default conversation kept its id');
+    await f.wa.receiveMessage(f.msg('L2','/deepseek new notes'));
+    assert.match(f.replies().at(-1)!,/fresh DeepSeek session in `notes`/);
+    assert.equal(f.store.get(`deepseek-session:${dir}:notes`),'','the new label starts with no session');
+    await f.wa.receiveMessage(f.msg('L3','/deepseek list'));
+    const list=f.replies().at(-1)!;
+    assert.match(list,/`default`/);
+    assert.match(list,/`notes`/);
+    assert.match(list,/▶ `notes`/,'the active label is marked');
+    assert.equal(f.store.get(`deepseek-active-label:${dir}`),'notes');
+  }finally{
+    f.close();
+    if(previous===undefined)delete process.env.DSH_BIN;else process.env.DSH_BIN=previous;
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('a message sent to another session is carried into that session next turn, never twice',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'deepseek-send-'));
+  const state=mkdtempSync(join(tmpdir(),'deepseek-state-'));
+  const previousBin=process.env.DSH_BIN,previousState=process.env.WSB_STATE_DIR;
+  process.env.DSH_BIN=fakeDsh(dir,'Noted.');
+  process.env.WSB_STATE_DIR=state;
+  const f=fixture(dir);try{
+    await f.wa.receiveMessage(f.msg('S1','/deepseek send notes Please check the build 2399.'));
+    const queued=f.replies().at(-1)!;
+    assert.match(queued,/Queued for `notes` as `deepseek-/);
+    assert.match(queued,/local write, not delivery/,'the reply does not claim the other session read it');
+    await f.wa.receiveMessage(f.msg('S2','/deepseek use notes'));
+    await f.wa.receiveMessage(f.msg('S3','/deepseek Look at the queue'));
+    const carried=promptFile(dir);
+    assert.match(carried,/Message from the owner \(deepseek-[a-z0-9-]+\):/);
+    assert.match(carried,/Please check the build 2399\./);
+    assert.match(carried,/Look at the queue$/,'the task follows the message');
+    await f.wa.receiveMessage(f.msg('S4','/deepseek inbox'));
+    assert.match(f.replies().at(-1)!,/received · deepseek-/,'a finished turn settles the message as received');
+    await f.wa.receiveMessage(f.msg('S5','/deepseek Second task.'));
+    assert.doesNotMatch(promptFile(dir),/Message from the owner/,'a settled message is never carried again');
+  }finally{
+    f.close();
+    if(previousBin===undefined)delete process.env.DSH_BIN;else process.env.DSH_BIN=previousBin;
+    if(previousState===undefined)delete process.env.WSB_STATE_DIR;else process.env.WSB_STATE_DIR=previousState;
+    rmSync(dir,{recursive:true,force:true});rmSync(state,{recursive:true,force:true});
+  }
+});
+
+test('a turn that fails leaves the carried message unknown, and says so',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'deepseek-unknown-'));
+  const state=mkdtempSync(join(tmpdir(),'deepseek-state-'));
+  const previousBin=process.env.DSH_BIN,previousState=process.env.WSB_STATE_DIR;
+  process.env.DSH_BIN=failingDsh(dir);
+  process.env.WSB_STATE_DIR=state;
+  const f=fixture(dir);try{
+    await f.wa.receiveMessage(f.msg('U1','/deepseek send notes The build is red.'));
+    await f.wa.receiveMessage(f.msg('U2','/deepseek use notes'));
+    await f.wa.receiveMessage(f.msg('U3','/deepseek Check it'));
+    const failed=f.replies().at(-1)!;
+    assert.match(failed,/DeepSeek Harness exited with code 1/,'a failed turn is reported, not answered');
+    assert.match(failed,/provider refused/,'the measured reason reaches the owner');
+    await f.wa.receiveMessage(f.msg('U4','/deepseek inbox'));
+    const inbox=f.replies().at(-1)!;
+    assert.match(inbox,/unknown · deepseek-/,'an uncertain delivery is reported as unknown');
+    assert.match(promptFile(dir,'failed-prompt.txt'),/The build is red\./,'the turn that failed still carried it');
+  }finally{
+    f.close();
+    if(previousBin===undefined)delete process.env.DSH_BIN;else process.env.DSH_BIN=previousBin;
+    if(previousState===undefined)delete process.env.WSB_STATE_DIR;else process.env.WSB_STATE_DIR=previousState;
+    rmSync(dir,{recursive:true,force:true});rmSync(state,{recursive:true,force:true});
   }
 });
