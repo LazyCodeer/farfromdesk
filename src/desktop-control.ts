@@ -45,7 +45,7 @@ type Input=z.infer<typeof desktopInput>;
  * The owner brain's smaller vocabulary: one action, addressed by name. The caller
  * validates and bounds it; this layer only gates and delivers.
  */
-export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_key';app?:string;window?:string;role?:string;name?:string;text?:string;key?:string;modifiers?:string[]};
+export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_key'|'pick_file';app?:string;window?:string;role?:string;name?:string;text?:string;key?:string;modifiers?:string[]};
 /** LaunchServices activation, injectable so a test never opens a real app. */
 type Activator=(app:string,bundleId:string|undefined)=>Promise<unknown>;
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
@@ -226,6 +226,22 @@ export class DesktopControl {
         let windowReady=launched?.launch_state?.window_ready===true;
         for(let i=0;!windowReady&&i<10&&!controller.signal.aborted;i++){await new Promise(r=>setTimeout(r,500));try{windowReady=!!(await this.resolve(app))?.window_id;}catch{}}
         return {action:plan.action,app,running:launched?.launch_state?.process_running===true,windowReady,stoleFocus:fronted||launched?.self_activation_suppressed===false,fronted};
+      }
+      // The macOS file picker an upload button opens runs in its own process and has no readable
+      // elements, so keys aimed at the browser's window never reach it (live, 5 Nov 2026). With the
+      // browser in front, keys sent to the frontmost app land in the picker: Go to, the path, Return
+      // to go there, Return to choose it.
+      if(plan.action==='pick_file'){
+        const found=await this.resolve(plan.app!);
+        if(!found?.pid)throw new Error('DESKTOP_APP_NOT_RUNNING: '+plan.app+' is not running.');
+        await this.frontApp(plan.app!,found.pid,found.bundle_id,controller.signal);
+        const front=(tool:string,args:Record<string,unknown>)=>this.driver.call(tool,{scope:'desktop',...args},controller.signal);
+        const wait=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+        await front('hotkey',{keys:['cmd','shift','g']});await wait(900);
+        await front('type_text',{text:plan.text!});await wait(600);
+        await front('press_key',{key:'return'});await wait(900);
+        await front('press_key',{key:'return'});await wait(900);
+        return {action:plan.action,ok:true,observation:null,changes:'Not confirmed: read the page to check the file name shows next to the upload button.'};
       }
       if(plan.action==='read_window'){
         const target=await this.resolve(plan.app,plan.window);

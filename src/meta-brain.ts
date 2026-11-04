@@ -545,12 +545,14 @@ export class MetaBrain {
   /** Requests whose screenshots also go out as files: Telegram recompresses photos, never documents. */
   private original=new Set<string>();
   private wanted=new Set<string>();
-  private keepShot(m:Incoming,result:any){
+  private keepShot(m:Incoming,result:any,key=''){
     this.wanted.add(m.id);
     const b64=result?.screenshot?.pngBase64;
     this.store.event(m.id,'device_action',{action:'read_window',outcome:typeof b64==='string'&&b64?'done':'blocked'});
     if(typeof b64!=='string'||!b64)return false;
-    const list=this.shots.get(m.id)??[];if(list.length<3)list.push(Buffer.from(b64,'base64'));this.shots.set(m.id,list);return true;
+    // One screenshot per app, the newest: reading the same window again sent near-identical copies (owner chat, 5 Nov 2026).
+    const list=(this.shots.get(m.id)??[]).filter(s=>(s as {key?:string}).key!==key);
+    if(list.length<3)list.push(Object.assign(Buffer.from(b64,'base64'),{key}));this.shots.set(m.id,list);return true;
   }
   /** Sends the screenshots taken for this request, after its text answer. */
   /**
@@ -598,7 +600,7 @@ export class MetaBrain {
           // A tab the loop opened a moment ago is still loading, and the driver drops that read
           // (live, 4 November 2026: open_page then read_tab on Gmail). One retry after it settles.
           const page=await read().catch(async e=>{if(!/lost the connection/.test(deviceRefusal(e)))throw e;await new Promise(r=>setTimeout(r,3000));return read();});
-          const sent=screenshot&&this.keepShot(m,page);
+          const sent=screenshot&&this.keepShot(m,page,'tab:'+match.toLowerCase());
           const {screenshot:_omit,...rest}=page??{};
           // The whole page text the driver gives (24,000 characters). This was cut at 14,000, and on
           // Gmail the sidebar comes first, so only five of the owner's messages today survived (live,
@@ -641,7 +643,7 @@ export class MetaBrain {
       const win=windows.find((w:any)=>w.onScreen)??windows[0];
       if(!win)return `${target.name} is running but has no window open.`;
       const state=await control.run(`brain:${m.id}`,{action:'read_window',windowRef:win.windowRef,...(screenshot?{screenshot:true}:{})});
-      const sent=screenshot&&this.keepShot(m,state);
+      const sent=screenshot&&this.keepShot(m,state,'app:'+app.toLowerCase());
       const controls=(state?.controls??[]).slice(0,250).map((c:any)=>[c.role,c.label,c.value].filter(Boolean).join(': ')).filter(Boolean);
       return JSON.stringify({app:target.name,window:win.title,controls,...(state?.elementsEmpty?{note:'This window publishes no readable text (a canvas app); rely on the screenshot.'}:{}),...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})}).slice(0,14000);
     }catch(e){return `Refused: ${deviceRefusal(e)}`;}
@@ -720,6 +722,7 @@ export class MetaBrain {
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
+          if(plan.action==='pick_file'){const path=this.ownerPath(plan.text??'');if(!path||!existsSync(path))return 'Refused: that file is not in Downloads, Desktop, Documents, Pictures, Movies or Music. Find it first (find_app) and give the full path.';plan={...plan,text:path};}
           const browser=/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app);
           if(browser&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
           if(browser&&plan.action==='type'&&!plan.name&&!plan.role&&!this.armed.has(m.id))return 'Refused: click where the text should go first (in a sheet: click the Name box, type the cell such as A1, press return), after the last tab switch or read. Keystrokes sent without that land nowhere.';

@@ -10,7 +10,7 @@ import { toolByName } from './app-tools/packs.js';
  * a refused action is reported as refused and the owner decides what happens next.
  */
 export const DevicePlan = z.object({
-  action: z.enum(['open_app', 'read_window', 'click', 'type', 'press_key', 'app_tool']),
+  action: z.enum(['open_app', 'read_window', 'click', 'type', 'press_key', 'app_tool', 'pick_file']),
   /**
    * A reviewed app-pack tool (`src/app-tools`). Running one is not a new capability: it is
    * the same driver steps, written down once and named, so a request like "write a note"
@@ -299,6 +299,7 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
     // refusal the helper chose.
     return { ok: false, line: refusalLine(plan, raw), evidence: null, code: plainCause(raw) === NO_CAUSE ? 'driver_unavailable' : 'driver_refused', detail: String(raw).replace(/\s+/g, ' ').slice(0, 300) || undefined };
   }
+  if (plan.action === 'pick_file') return { ok: true, line: `Chose the file in ${app}'s file picker.`, evidence: result?.changes ?? null };
   const what = plan.action === 'click' ? 'Clicked' : plan.action === 'type' ? 'Typed' : `Pressed ${[...(plan.modifiers ?? []), plan.key].join('+')}`;
   return { ok: true, line: `${what} in ${app}.`, evidence: result?.changes ?? null };
 }
