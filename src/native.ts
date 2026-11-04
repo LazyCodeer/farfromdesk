@@ -25,6 +25,7 @@ import { requireCodexHistory, CodexSession, observeCodexRequest } from './codex-
 import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 import {codexProfileEnvironment,codexProfileHome} from './codex-profile.js';
 import {museDataHome} from './muse-paths.js';
+import {sessionSpecialty} from './session-specialty.js';
 import {dshSessionsDir} from './dsh-paths.js';
 import {cursorSessions} from './cursor-desktop.js';
 
@@ -350,10 +351,15 @@ export class NativeAgents {
     // curl reads the token from this binding's own credential file when it runs: the token is
     // never in the prompt or the transcript.
     const credential=join(stateDir,'bindings',`${b.alias}.json`).replaceAll("'","'\\''");
-    const post=`curl -s --max-time 70 -X POST 'http://127.0.0.1:${new URL(baseUrl).port}/api/master/desktop-control' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
+    const curl=(path:string,secs=70)=>`curl -s --max-time ${secs} -X POST 'http://127.0.0.1:${new URL(baseUrl).port}${path}' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
+    const post=curl('/api/master/desktop-control');
+    // The same gap for Social: FFD social-save and friends do not exist in a headless session, so it
+    // reported that drafts could not be saved and no image preview followed (live, 5 Nov 2026).
+    const headlessSocial=(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor')&&sessionSpecialty(this.store,jobId)?.kind==='social'
+      ?{socialTools:`FFD is not installed here. In place of FFD social-creative, social-save, social-render and social-image, pipe JSON to these commands. Skill and schema: echo '{"requestId":"${jobId}"}' | ${curl('/api/session/social-creative')} . Save drafts: {"requestId":"${jobId}","eventId":"<new id of 8+ letters or digits>","drafts":[...]} | ${curl('/api/session/social-drafts')} . Render: {"requestId":"${jobId}","draftId":"<id>","revision":<n>,"plan":{...}} | ${curl('/api/session/social-render',180)} . Meta image: {"requestId":"${jobId}","draftId":"<id>"} | ${curl('/api/session/social-image',180)} .`}:{};
     const headlessApps=(b.provider==='muse'||b.provider==='deepseek')&&roleConfig(this.store,b).kind==='master'
       ?{macApps:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
-    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer',...headlessApps}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
+    const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer',...headlessApps,...headlessSocial}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
     if(Buffer.byteLength(message)>63000)throw new Error('Message exceeds native transport size limit');

@@ -355,3 +355,20 @@ test('a Social request typed in the app composer can save its drafts',async()=>{
     assert.throws(()=>saveSessionSocialDrafts(f.s,f.b,'app:'+randomUUID(),'app-unclaimed',[{platform:'LinkedIn',format:'Post',title:'x',caption:'x'}]),/exact Social owner request/);
   }finally{f.close();}
 });
+
+test('a Social turn sent to Muse carries curl versions of the Social tools, since FFD is absent there',async()=>{
+  const f=fixture('telegram','claude');try {
+    const {NativeAgents}=await import('../src/native.js');
+    const native=new NativeAgents(f.s,f.a);
+    (native as any).connections={assert:async()=>{},route:()=>({transport:'managed-cli',provider:'muse'})};
+    let sent='';native.managedRun=async(_b,message)=>{sent=message;};
+    await f.send('1','/social');
+    const text='Make a LinkedIn post about a new product';
+    assert.equal((await f.send('2',text)).status,'queued');
+    const muse={...f.b,provider:'muse' as const};
+    await native.run(muse,text,f.id('2'));
+    assert.match(sent,/socialTools/);assert.match(sent,/\/api\/session\/social-drafts/);assert.match(sent,/\/api\/session\/social-render/);
+    f.s.enqueue(f.id('3'),muse,'hello');sent='';await native.run(muse,'hello',f.id('3'));
+    assert.ok(sent);assert.doesNotMatch(sent,/socialTools/);
+  }finally{f.close();}
+});
