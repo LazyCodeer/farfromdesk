@@ -171,7 +171,16 @@ export class MetaModel {
       let result=await ask();
       // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
       if(!result.steps.some(s=>s.toolCalls.length)){authorize?.();result=await ask();}
-      const call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
+      let call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
+      // A long app task can end its steps without the final decide (live, 5 Nov 2026: a LinkedIn draft after
+      // 16 actions). One more turn, with only decide offered, reports what the tools did instead of failing.
+      if(!call&&result.steps.some(s=>s.toolCalls.length)){
+        authorize?.();
+        const wrap=await generateText({model:meta(policy.model),system:BRAIN_PROMPT,maxRetries:0,abortSignal:signal,toolChoice:'auto',providerOptions:{meta:{reasoningEffort:'low'}},
+          messages:[{role:'user',content:JSON.stringify(input)},...result.response.messages,{role:'user',content:'Stop using tools now. Call decide once with your answer to the owner, built only from what the tools returned: say what is done, what is not, and what you need from them.'}],
+          tools:{decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation})},stopWhen:[hasToolCall('decide'),stepCountIs(1)]});
+        call=wrap.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
+      }
       if(!call){field='no_decision';throw new Error('Meta interpretation was incomplete.');}
       const parsed=Interpretation.safeParse(tolerant(call.input,input.original));
       if(!parsed.success){const path=parsed.error.issues[0]?.path.map(String)??[];field=path[0]==='device'?(path[1]==='args'?'device.args':'device'):['normalized','intent','provider','reply'].includes(path[0]??'')?path[0]!:'other';throw parsed.error;}
