@@ -25,3 +25,17 @@ test('one slow call timing out keeps the connection for the other steps', async 
   assert.equal(d.revision, 0, 'still connected');
   d.stop();
 });
+
+test('overlapping calls leave one idle timer, so a stray one cannot stop the driver mid-task', async () => {
+  const d = new EmbeddedDesktopDriver('/nonexistent/');
+  let release!: () => void;
+  const slow = new Promise<void>(r => { release = r; });
+  const client = { callTool: async ({ name }: any) => { if (name === 'slow') await slow; return { content: [{ type: 'text', text: '{}' }] }; }, close: async () => {} };
+  (d as any).client = client;
+  const a = d.call('slow', {});
+  await d.call('fast', {});
+  assert.equal((d as any).idle, undefined, 'no idle timer while a call is still running');
+  release(); await a;
+  assert.ok((d as any).idle, 'idle timer once nothing runs');
+  d.stop();
+});

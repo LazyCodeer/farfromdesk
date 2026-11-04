@@ -25,7 +25,7 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
     this.host=viaLaunchServices?launchServicesNative(nativeDirectory+helperBundle):createMacNative(nativeDirectory+helperBundle+'/Contents/MacOS/ffd-accessibility',new Set(['DESKTOP_DRIVER_MISSING','DESKTOP_DRIVER_HASH_MISMATCH','DESKTOP_DRIVER_FAILED']));
   }
   private client?:Client; private transport?:StdioClientTransport; private starting?:Promise<Client>;
-  private generation=0; private directory?:string; private idle?:ReturnType<typeof setTimeout>;
+  private generation=0; private directory?:string; private idle?:ReturnType<typeof setTimeout>; private inflight=0;
   get revision(){return this.generation;}
   private async connect():Promise<Client> {
     if(this.client)return this.client;
@@ -49,7 +49,7 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
   }
   async call(name:string,args:Record<string,unknown>,signal?:AbortSignal){
     if(signal?.aborted)throw new Error('DESKTOP_STOPPED');
-    clearTimeout(this.idle);
+    clearTimeout(this.idle);this.inflight++;
     const abort=()=>this.stop();signal?.addEventListener('abort',abort,{once:true});
     try{
       const client=await this.connect();
@@ -74,7 +74,9 @@ export class EmbeddedDesktopDriver implements DesktopDriver {
       if((value as any).refusal||(value as any).error)throw new Error('DESKTOP_NATIVE_REFUSED: '+refusalText((value as any).refusal??(value as any).error??value));
       return value;
     }
-    finally{signal?.removeEventListener('abort',abort);this.idle=setTimeout(()=>this.stop(),60000);this.idle.unref();}
+    // One idle timer, started only when no call is running: overlapping calls each left a timer, and a
+    // stray one stopped the driver a minute later in the middle of a long form ("Connection closed", live 5 Nov 2026).
+    finally{signal?.removeEventListener('abort',abort);if(--this.inflight===0){clearTimeout(this.idle);this.idle=setTimeout(()=>this.stop(),60000);this.idle.unref();}}
   }
   stop(){
     this.generation++;clearTimeout(this.idle);this.host.stop?.();
