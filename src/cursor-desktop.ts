@@ -211,19 +211,30 @@ export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefine
   }catch{return;}
 }
 
-/** One headless turn: `cursor-agent -p` prints a JSON result with the answer and its chat id. */
+/**
+ * One headless turn. The stream lists each message Cursor wrote; its final `result` glues them all
+ * together, so a working note ran straight into the answer (live: "...exact ping string.PONG").
+ * The answer is what Cursor wrote after its last tool call.
+ */
 function runCursorCli(bin:string,prompt:string,cwd:string|undefined,timeoutMs:number,env:NodeJS.ProcessEnv):Promise<CursorTurnResult> {
   return new Promise((resolve,reject)=>{
-    const child=spawn(bin,['-p','--output-format','json','--trust',...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
+    const child=spawn(bin,['-p','--output-format','stream-json','--trust',...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
     let out='',err='';
     const timer=setTimeout(()=>{child.kill();reject(new Error('Cursor did not finish this turn in time.'));},timeoutMs);
     child.stdout.on('data',d=>{out+=d;});child.stderr.on('data',d=>{err+=d;});
     child.on('error',e=>{clearTimeout(timer);reject(new Error(`Cursor could not start: ${e.message}`));});
     child.on('close',code=>{
       clearTimeout(timer);
-      let r:any;try{r=JSON.parse(out.trim().split('\n').at(-1)??'');}catch{}
-      if(code!==0||!r||r.is_error||typeof r.result!=='string')return reject(new Error(`Cursor failed: ${(r?.result??err??out).toString().trim().slice(0,300)||`exit ${code}`}`));
-      resolve({text:r.result.trim(),sessionId:r.session_id??r.chatId??null});
+      let answer:string[]=[],result:any;
+      for(const line of out.split('\n')){
+        let e:any;try{e=JSON.parse(line);}catch{continue;}
+        if(e.type==='tool_call')answer=[];
+        else if(e.type==='assistant')answer.push((e.message?.content??[]).filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('').trim());
+        else if(e.type==='result')result=e;
+      }
+      if(code!==0||!result||result.is_error)return reject(new Error(`Cursor failed: ${String(result?.result??err??out).trim().slice(0,300)||`exit ${code}`}`));
+      const text=answer.filter(Boolean).join('\n\n')||String(result.result??'').trim();
+      resolve({text,sessionId:result.session_id??null});
     });
   });
 }
