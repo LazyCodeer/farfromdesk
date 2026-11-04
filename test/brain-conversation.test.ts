@@ -86,6 +86,10 @@ function fixture() {
   };
 }
 
+// The model decides every device step now; these are the decisions it returns.
+const dev = (device: any): Interpretation => ({ intent: 'device', provider: 'unspecified', normalized: 'x', taskIds: [], device } as any);
+const OPEN_NOTES = dev({ action: 'open_app', app: 'Notes' });
+
 test('an app inventory is not swallowed by a pending coding contract', async () => {
   // Live: "Show me opened apps" was answered "I could not update the contract. Please send
   // the correction again." twice, because the pending contract claimed every turn.
@@ -125,16 +129,18 @@ test('a bare write after using an app goes to that app, with the owner words ver
   // Live: "Write a notes about tomorrow meeting at 10pm woth ashitosh" after "Opened Notes"
   // was answered "Notes is not open right now. Do you want me to open it and write it there?"
   const f = fixture(); try {
+    f.replies(OPEN_NOTES);
     await f.send('1', 'open Notes');
     assert.deepEqual(f.calls[0], { action: 'open_app', app: 'Notes' });
     assert.match(f.last(), /has not drawn a window/, 'the driver report is what the owner read');
+    f.replies(dev({ action: 'app_tool', app: 'Notes', tool: 'notes_create_note', args: { body: 'tomorrow meeting at 10pm woth ashitosh' } }));
     await f.send('2', 'Write a notes about tomorrow meeting at 10pm woth ashitosh');
     // The blind type is what landed in the Notes search field live while the owner was told
     // it had been written; the reviewed Notes tool is what replaces it.
     assert.deepEqual(f.calls[1], { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'tomorrow meeting at 10pm woth ashitosh' } });
     assert.match(f.last(), /Wrote the note in Notes/);
     assert.doesNotMatch(f.last(), /not open right now/i);
-    assert.equal(f.seen.length, 0, 'the unambiguous device path never asks the model');
+    assert.equal(f.seen.length, 2, 'the model decided both steps');
   } finally { f.close(); }
 });
 
@@ -142,10 +148,11 @@ test('model prose may not contradict what the driver just reported', async () =>
   // The failing sentence was never in src/: it was model wording on the clarify branch,
   // emitted with no comparison against the device fact.
   const f = fixture(); try {
+    f.replies(OPEN_NOTES);
     await f.send('1', 'open Notes');
     f.replies(clarify('Notes is not open right now. Do you want me to open it and write it there?'));
     await f.send('2', 'Anything new in Notes?');
-    assert.equal(f.seen.length, 1, 'the model was consulted for this one');
+    assert.equal(f.seen.length, 2, 'the model was consulted for both');
     assert.match(f.last(), /has not drawn a window/);
     assert.doesNotMatch(f.last(), /not open right now/i);
   } finally { f.close(); }
@@ -155,6 +162,7 @@ test('ordinary talk about the app is not replaced by the driver line', async () 
   // The guard above must not swallow normal conversation: only a reply that describes app
   // state is a claim about the Mac, and only that kind is replaced.
   const f = fixture(); try {
+    f.replies(OPEN_NOTES);
     await f.send('1', 'open Notes');
     f.replies(chat('Agreed, Notes is handy for meeting minutes.'));
     await f.send('2', 'Notes is my favourite app');
@@ -167,6 +175,7 @@ test('a bare coding request is not stolen by the last app used', async () => {
   // "write the failing test" is authoring and coding work at once. After using Notes it
   // must still get its contract review, not be typed into Notes.
   const f = fixture(); try {
+    f.replies(OPEN_NOTES);
     await f.send('1', 'open Notes');
     f.decisions(proposal('What should the failing test cover?'));
     await f.send('2', 'write the failing test');

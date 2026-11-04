@@ -33,6 +33,7 @@ import type { Interpretation } from '../src/meta-model.js';
 const pass: ContractDecision = { kind: 'pass', goal: '', exclusions: [], checks: [], question: '' };
 const proposal = (question: string): ContractDecision => ({ kind: 'contract', goal: 'Add the requested dark theme', exclusions: ['Do not publish'], checks: ['Theme can be enabled', 'Existing theme still works'], question });
 const chat = (reply: string): Interpretation => ({ intent: 'chat', provider: 'unspecified', normalized: 'x', taskIds: [], reply });
+const dev = (device: any): Interpretation => ({ intent: 'device', provider: 'unspecified', normalized: 'x', taskIds: [], device } as any);
 const clarify = (reply: string): Interpretation => ({ intent: 'clarify', provider: 'unspecified', normalized: 'x', taskIds: [], reply });
 
 const DEST_A = 'owner@s.whatsapp.net';
@@ -96,7 +97,7 @@ function fixture() {
 
 test('two sessions are answered in their own chat', async () => {
   const f = fixture(); try {
-    f.replies(chat('Notes and Calendar are the apps you have open.'));
+    f.replies(dev({ action: 'open_app', app: 'Notes' }), chat('Notes and Calendar are the apps you have open.'));
     await f.send(DEST_A, 'a1', 'Could you open notes');
     await f.send(DEST_B, 'b1', 'Show me all apps');
     assert.match(f.last(DEST_A), /^Opened Notes/);
@@ -112,8 +113,9 @@ test('two sessions are answered in their own chat', async () => {
 test('the device memory is per session, so a bare write does not leak across chats', async () => {
   const f = fixture(); try {
     // Chat A uses Notes, which remembers which app A was working in.
+    f.replies(dev({ action: 'open_app', app: 'Notes' }));
     await f.send(DEST_A, 'a1', 'Could you open notes');
-    f.replies(chat('Alright.'));
+    f.replies(dev({ action: 'app_tool', app: 'Notes', tool: 'notes_create_note', args: { body: 'buy milk' } }));
     await f.send(DEST_A, 'a2', 'write a note that buy milk');
     const wrote = f.calls.filter((call: any) => call.action === 'app_tool');
     assert.equal(wrote.length, 1, 'chat A wrote through the reviewed tool');

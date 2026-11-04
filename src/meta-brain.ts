@@ -553,7 +553,7 @@ export class MetaBrain {
    * open_page: a new tab in the chosen browser, through the gated desktop route. Live on build
    * 2424, "Open gmail in comet" only opened Comet, because the brain could open apps but not pages.
    */
-  private async openPageFor(m:Incoming,url:string,browser='comet'):Promise<string>{
+  private async openPageFor(m:Incoming,url:string,browser:string):Promise<string>{
     const control=this.desktop();if(!control.run)return 'Opening pages is not available in this build.';
     const name=browser.toLowerCase().trim();
     try{
@@ -635,21 +635,10 @@ export class MetaBrain {
     // Only the reviewed tools for the app in front are offered, and only when the owner's
     // message matches them. The model picks from that list or falls back to the five actions.
     const appTools=mine?await this.reviewedTools(m.text):undefined;
-    // An unambiguous device command is executed in code, before the model is asked: the
-    // measured failure was the model choosing coding work for "press escape in Comet",
-    // which turned a Mac request into a task-contract review.
+    // No device command runs in code before the model. The model reads the request with the
+    // whole tool catalog and decides, the way OpenClaw runs its loop: "open gmail in comet" was
+    // turned into "open Comet" by a pattern here and the owner never got Gmail (4 November 2026).
     const last=mine?this.lastDeviceApp():undefined;
-    if(mine){
-      const direct=detectDevicePlan(m.text,devices??[]);
-      if(direct)return await this.executeDevice(router,m,direct,policy);
-      // "now write the notes" names no app, so no pattern can match it. The app the owner
-      // last used is the target; the text is theirs verbatim. Nothing is invented: if the
-      // driver cannot reach that app, its report is what the owner reads. When that app is
-      // Notes the reviewed Notes tool does the write, because a blind type landed in the
-      // search field and was reported to the owner as if it had been written down.
-      const written=notesAuthoringRequest(m.text)?authoringText(m.text):undefined;
-      if(written&&last)return await this.executeDevice(router,m,notesWritePlan(last,written),policy);
-    }
     try {
       const key=this.secret.read();if(!key)throw Object.assign(new Error('Meta API key is missing. Configure it in desktop Settings.'),{code:'configuration_missing'});
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
@@ -662,7 +651,7 @@ export class MetaBrain {
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,shot);},
         readWindow:(app,shot)=>{this.ack(m,app);return this.readWindowFor(m,app,shot);},
-        openPage:(url,browser)=>{this.ack(m,browser??'Comet');return this.openPageFor(m,url,browser);},
+        openPage:(url,browser)=>{this.ack(m,browser);return this.openPageFor(m,url,browser);},
       }:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {

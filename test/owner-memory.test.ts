@@ -23,7 +23,7 @@ test('memory starts with an index, about-me and migrated notes', () => {
   assert.match(memory.read('words.md')!,/ATC means the air-traffic repo/);
   assert.equal(memory.history().length,0);
   assert.equal(memory.introNeeded(),true);
-  assert.deepEqual(Object.keys(memory.always()),['MEMORY.md','about-me.md','collaboration.md']);
+  assert.deepEqual(Object.keys(memory.always()),['MEMORY.md','about-me.md','collaboration.md','preferences.md']);
   assert.match(memory.read('MEMORY.md')!,/\[Collaboration\]\(collaboration\.md\)/);
   assert.equal(memory.collaborates(),false);
 });
@@ -90,7 +90,7 @@ test('the first hi goes to the model for an intro, and what it saves is announce
   });
   await f.say('hi');
   assert.equal(f.inputs[0].intro,'needed');
-  assert.deepEqual(Object.keys(f.inputs[0].memory),['MEMORY.md','about-me.md','collaboration.md']);
+  assert.deepEqual(Object.keys(f.inputs[0].memory),['MEMORY.md','about-me.md','collaboration.md','preferences.md']);
   await f.say('Sam');
   assert.match(f.router.brain.owner.read('about-me.md')!,/^- Call me: Sam$/m);
   assert.ok(f.out().some(b=>/Saved "Call me: Sam" in about-me\.md[\s\S]*undo/.test(b)));

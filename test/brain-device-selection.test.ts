@@ -95,17 +95,16 @@ test('a missing grant reaches the owner as the thing to change, never as a queue
     assert.equal(t.store.job('local:dev-f'), undefined, 'a device request is never dispatched');
   } finally { t.done(); }
 });
-test('an unambiguous device command never asks the model', async () => {
-  // The model is told to answer "task" for everything, which is the exact failure measured
-  // live: "press escape in Comet" was classified as coding work. Nothing may reach it.
-  const t = fixture({ intent: 'task', provider: 'unspecified', normalized: 'open Comet', taskIds: [] }, { action: 'open_app', app: 'Comet', running: true, windowReady: true });
+test('a device command goes to the model, which decides', async () => {
+  // No pattern runs the command first: "open gmail in comet" was cut to "open Comet" by one and
+  // the owner never got Gmail (4 November 2026). The model reads it and picks the action.
+  const t = fixture({ intent: 'device', provider: 'unspecified', normalized: 'open Comet', taskIds: [], device: { action: 'open_app', app: 'Comet' } }, { action: 'open_app', app: 'Comet', running: true, windowReady: true });
   try {
     t.select({ kind: 'brain' });
     assert.equal(await t.brain.handle(router(t.store), { id: 'local:dev-g', text: 'open Comet' } as any), true);
-    assert.equal(t.seen.length, 0, 'the model must not be consulted');
+    assert.equal(t.seen.length, 1, 'the model is consulted');
     assert.deepEqual(t.calls, [{ action: 'open_app', app: 'Comet' }]);
     assert.match(String(t.outbox()[0]?.body ?? ''), /Opened Comet\./);
-    assert.equal(t.brain.get('local:dev-g')?.state, 'answered');
   } finally { t.done(); }
 });
 
