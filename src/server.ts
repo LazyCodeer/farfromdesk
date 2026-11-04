@@ -9,6 +9,8 @@ import {sessionSpecialty} from './session-specialty.js';
 import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
 import { saveBrainConfig } from './meta-brain-config.js';
 import { dshSettings, dshStatus, readProfile, credentialRef } from './dsh-provider.js';
+import { DEFAULT_DSH_LABEL, dshActiveLabelKey, dshCancel, dshLabels, dshLegacySessionKey, dshQueueState, dshSessionKey, addDshLabel } from './dsh-sessions.js';
+import { listMessages, pendingMessages, sendMessage } from './dsh-inbox.js';
 import { dshHome } from './dsh-paths.js';
 import { SocialAssistant } from './social-assistant.js';
 import { saveSessionSocialDrafts } from './social-session-drafts.js';
@@ -33,6 +35,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'no
 import { join, isAbsolute } from 'node:path';
 import QRCode from 'qrcode';
 import { stateDir, port } from './config.js';
+import { homedir } from 'node:os';
 import type { Store, Provider, Binding } from './store.js';
 import type { Router } from './router.js';
 import type { Telegram } from './telegram.js';
@@ -557,8 +560,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // here (or exports the variable before launching). The key is never returned, only whether
         // one is held, and the provider/model become a per-run `--patch` rather than an edit to the
         // profile the owner installed.
+        let action:any=null;
         if(req.method==='POST') {
           const d=await body(req);
+          action=d;
           const line=(value:unknown,label:string,max=120)=>{
             if(value===undefined)return undefined;
             if(typeof value!=='string'||value.length>max)throw new Error(`${label} has to be text.`);
@@ -577,9 +582,53 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           if(d.clearKey===true)store.set('deepseek-api-key','');
           else if(key!==undefined&&key)store.set('deepseek-api-key',key);
         }
+        const folder=typeof action?.folder==='string'&&action.folder.trim()?action.folder.trim():(store.get('deepseek-workspace')||homedir());
+        const named=(value:unknown,label:string)=>{
+          const text=typeof value==='string'?value.trim():'';
+          if(!text||text.length>80||!/^[A-Za-z0-9._-]+$/.test(text))throw new Error(`${label} has to be a short name without spaces.`);
+          return text;
+        };
+        // The sessions view is what the app draws: the labelled conversations of one workspace, each
+        // with its own session, queue and undelivered messages. It reads the same keys and records the
+        // chat commands write, so the panel and the chat can never disagree.
+        const view=()=>{
+          const labels=dshLabels(name=>store.get(name)??undefined,folder);
+          const active=(store.get(dshActiveLabelKey(folder))??'').trim()||DEFAULT_DSH_LABEL;
+          return {
+            folder,
+            activeLabel:labels.includes(active)?active:DEFAULT_DSH_LABEL,
+            sessions:labels.map(label=>{
+              const queue=dshQueueState(folder,label);
+              const stored=store.get(dshSessionKey(folder,label))||(label===DEFAULT_DSH_LABEL?store.get(dshLegacySessionKey(folder))||'':'');
+              return {label,sessionId:stored||null,active:label===(labels.includes(active)?active:DEFAULT_DSH_LABEL),busy:queue.busy,waiting:queue.waiting,pending:pendingMessages(stateDir,folder,label).length};
+            }),
+            inboxLabel:labels.includes(active)?active:DEFAULT_DSH_LABEL,
+            inbox:listMessages(stateDir,folder,labels.includes(active)?active:DEFAULT_DSH_LABEL).slice(-20),
+          };
+        };
+        if(action?.action==='new'){
+          const label=named(action.label??'','The session name');
+          addDshLabel(name=>store.get(name)??undefined,(name,value)=>store.set(name,value),folder,label);
+          store.set(dshSessionKey(folder,label),'');
+          store.set(dshActiveLabelKey(folder),label);
+        } else if(action?.action==='use'){
+          const label=named(action.label??'','The session name');
+          if(!dshLabels(name=>store.get(name)??undefined,folder).includes(label))throw new Error('Choose one of the DeepSeek sessions in this folder.');
+          store.set(dshActiveLabelKey(folder),label);
+        } else if(action?.action==='stop'){
+          const label=named(action.label??'','The session name');
+          dshCancel(folder,label);
+        } else if(action?.action==='send'){
+          const label=named(action.label??'','The session name');
+          if(!dshLabels(name=>store.get(name)??undefined,folder).includes(label))throw new Error('Choose one of the DeepSeek sessions in this folder.');
+          const text=typeof action.text==='string'?action.text.trim():'';
+          if(!text)throw new Error('Write the message to leave for that session.');
+          if(text.length>4000)throw new Error('That message is too long for an inbox note.');
+          sendMessage({root:stateDir,folder,label,text,from:'the app'});
+        }
         const profile=readProfile(dshHome()),keyOf=(name:string)=>credentialRef(dshHome(),name);
         const settings=dshSettings(name=>store.get(name)??undefined,profile),status=dshStatus(settings,process.env,keyOf);
-        json(res,200,{...status,reasoningEffort:settings.reasoningEffort??'',hasStoredKey:!!settings.key,workspace:store.get('deepseek-workspace')??''});return;
+        json(res,200,{...status,reasoningEffort:settings.reasoningEffort??'',hasStoredKey:!!settings.key,workspace:store.get('deepseek-workspace')??'',...view()});return;
       }
       if(path==='/api/destination'&&req.method==='POST') {
         const d=await body(req);if(d.jid!==undefined&&(typeof d.jid!=='string'||d.jid.length>100))throw new Error('Invalid group');

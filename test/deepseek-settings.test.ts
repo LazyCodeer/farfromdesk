@@ -71,3 +71,72 @@ test('the owner stores a DeepSeek provider and key without the key ever coming b
     rmSync(temp, { recursive: true, force: true });
   }
 });
+/**
+ * The sessions view the app draws. It has to agree with the chat commands, because both read the
+ * same store keys and the same records: a session the panel cannot see is a session the owner cannot
+ * switch back to.
+ */
+test('the app sees, switches and feeds the labelled DeepSeek sessions of one folder', async () => {
+  const temp = mkdtempSync(join(tmpdir(), 'wsb-deepseek-sessions-'));
+  const workspace = mkdtempSync(join(tmpdir(), 'wsb-deepseek-folder-'));
+  const probe = createServer();
+  await new Promise<void>(r => probe.listen(0, '127.0.0.1', r));
+  const port = (probe.address() as any).port;
+  await new Promise<void>(r => probe.close(() => r()));
+  process.env.WSB_STATE_DIR = temp;
+  process.env.WSB_PORT = String(port);
+  const savedDshHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = join(temp, 'dsh');
+  const [{ Store }, { Router }, { Approvals }, { serve }] = await Promise.all([
+    import('../src/store.js'),
+    import('../src/router.js'),
+    import('../src/approvals.js'),
+    import('../src/server.js'),
+  ]);
+  const store = new Store(':memory:');
+  store.set('deepseek-workspace', workspace);
+  const router = new Router(store, { run: async () => {}, stop: () => {} } as any, new Approvals(store));
+  const server = serve(store, router, { status: 'not paired' } as any, 'test-admin-token', {} as any);
+  await new Promise<void>(r => server.once('listening', r));
+  // `config.port` is read once at import, so the address the server actually bound is the truth here.
+  const url = `http://127.0.0.1:${(server.address() as any).port}`;
+  const headers = { Authorization: 'Bearer test-admin-token', 'Content-Type': 'application/json' };
+  const view = async (body?: any) => (await (await fetch(url + '/api/deepseek', body ? { method: 'POST', headers, body: JSON.stringify(body) } : { headers })).json()) as any;
+  try {
+    const first = await view();
+    assert.equal(first.workspace, workspace, 'the configured workspace is reported as it is');
+    assert.equal(first.folder, workspace, 'and the view names the folder it is describing');
+    assert.deepEqual(first.sessions.map((s: any) => s.label), ['default'], 'a folder starts with the default session');
+    assert.equal(first.activeLabel, 'default');
+    assert.equal(first.sessions[0].sessionId, null, 'no session id until a task runs');
+    assert.equal(first.inbox.length, 0);
+
+    const created = await view({ action: 'new', label: 'research' });
+    assert.deepEqual(created.sessions.map((s: any) => s.label), ['default', 'research']);
+    assert.equal(created.activeLabel, 'research', 'a new session becomes the active one');
+    assert.equal(created.sessions.find((s: any) => s.label === 'research').active, true);
+
+    const refused = await fetch(url + '/api/deepseek', { method: 'POST', headers, body: JSON.stringify({ action: 'use', label: 'not-a-session' }) });
+    assert.equal(refused.status, 400, 'switching to a session that does not exist is refused');
+
+    const used = await view({ action: 'use', label: 'default' });
+    assert.equal(used.activeLabel, 'default');
+
+    const sent = await view({ action: 'send', label: 'research', text: 'Please check the failing test.' });
+    assert.equal(sent.sessions.find((s: any) => s.label === 'research').pending, 1, 'the panel sees an undelivered message');
+    assert.equal(sent.inboxLabel, 'default', 'the inbox that came back names whose it is');
+    const research = await view({ action: 'use', label: 'research' });
+    assert.equal(research.inboxLabel, 'research');
+    const note = research.inbox.find((m: any) => m.text === 'Please check the failing test.');
+    assert.equal(note?.state, 'prepared', 'a message the app writes is prepared until a turn carries it');
+    assert.equal(note?.from, 'the app');
+
+    const stopped = await view({ action: 'stop', label: 'research' });
+    assert.equal(stopped.sessions.length, 2, 'stopping nothing is not an error');
+  } finally {
+    if (savedDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDshHome;
+    await new Promise<void>(r => server.close(() => r()));
+    rmSync(temp, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
