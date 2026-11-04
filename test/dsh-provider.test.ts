@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { dshArgs } from '../src/dsh-session.js';
 import {
   DEFAULT_DSH_MODEL,
   DEFAULT_DSH_ROUTE,
@@ -118,4 +119,10 @@ test('only a credential failure is replaced by the next step the owner can take'
   // Anything else stays as the CLI said it, because guessing hides the real error.
   assert.equal(credentialHint('DeepSeek Harness exited with code 1: no such file or directory',status),null);
   assert.equal(credentialHint('The DeepSeek run was cancelled.',status),null);
+});
+test('the provider patch is a launcher flag, so it precedes the headless app flags',()=>{
+  // Measured: `dsh --profile headless --json --patch X -` answers `unknown option '--patch'`.
+  const args=dshArgs({prompt:'x',cwd:'/tmp',sessionId:'session-1',patchPath:'/tmp/p.yml'});
+  assert.deepEqual(args,['--profile','headless','--patch','/tmp/p.yml','--json','--session-id','session-1','-']);
+  assert.deepEqual(dshArgs({prompt:'x',cwd:'/tmp'}),['--profile','headless','--json','-']);
 });

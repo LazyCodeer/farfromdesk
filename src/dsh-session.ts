@@ -41,11 +41,13 @@ const MAX_LINE_BYTES=8*1024*1024;
 export function dshBinary():string{return dshBinaryPath();}
 
 export function dshArgs(options:DshRunOptions):string[] {
-  const args=['--profile','headless','--json'];
-  if(options.sessionId)args.push('--session-id',options.sessionId);
-  // `--patch` belongs to the launcher, so it goes before the app's own arguments. A patch replaces
-  // the config of the entry it names; it never edits what the owner installed.
+  const args=['--profile','headless'];
+  // `--patch` belongs to the launcher and must come before the headless app's own flags. Measured
+  // 4 November 2026: `dsh --profile headless --json --patch X -` answers `unknown option '--patch'`,
+  // while the same command with `--patch` before `--json` applies the overlay and runs.
   if(options.patchPath)args.push('--patch',options.patchPath);
+  args.push('--json');
+  if(options.sessionId)args.push('--session-id',options.sessionId);
   // A lone `-` is the documented stdin marker. Sending the task on stdin keeps a long prompt out
   // of the argument vector and out of any shell quoting.
   args.push('-');
