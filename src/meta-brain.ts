@@ -722,7 +722,7 @@ export class MetaBrain {
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
-          if(plan.action==='pick_file'){const path=this.ownerPath(plan.text??'');if(!path||!existsSync(path))return 'Refused: that file is not in Downloads, Desktop, Documents, Pictures, Movies or Music. Find it first (find_app) and give the full path.';plan={...plan,text:path};}
+          if(plan.action==='pick_file'){const asked=(plan.text||plan.name||'').trim(),path=this.ownerPath(asked);if(!path||!existsSync(path)){try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} pick_file refused path ${JSON.stringify(asked)} -> ${path}\n`);}catch{}return `Refused: no file at ${asked||'(no path given)'} in Downloads, Desktop, Documents, Pictures, Movies or Music. Put the full path in text, such as ~/Downloads/report.pdf.`;}plan={...plan,text:path,name:undefined};}
           const browser=/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app);
           if(browser&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
           if(browser&&plan.action==='type'&&!plan.name&&!plan.role&&!this.armed.has(m.id))return 'Refused: click where the text should go first (in a sheet: click the Name box, type the cell such as A1, press return), after the last tab switch or read. Keystrokes sent without that land nowhere.';
