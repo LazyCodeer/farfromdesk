@@ -277,6 +277,13 @@ export class DesktopControl {
       // subject line. The observation's own summary is driver bookkeeping
       // ("full read (no usable earlier read of this window to diff against)") and is kept
       // only for a refusal, where it explains what the driver could not do.
+      // A system file picker never takes background keys ("Background input refused", live 5 Nov 2026).
+      // Only a key press retries in front, like the owner's own keyboard; a refused click is still reported.
+      if(plan.action==='press_key'&&result?.ok!==true&&/Background input refused/i.test(JSON.stringify(result?.observation??result??''))){
+        const r=await this.driver.call('press_key',{pid:target.pid,window_id:target.window_id,key:plan.key!,delivery_mode:'foreground'},controller.signal);
+        const ok=r?.ok!==false&&!r?.error;
+        return {action:plan.action,ok,observation:ok?null:String(r?.error??r?.message??'refused').slice(0,200),changes:ok?`Pressed ${plan.key} in front. Not confirmed: read the window to see what it did.`:null};
+      }
       const ok=result?.ok===true;
       const counts=result?.observation?.state?.diff_counts;
       const total=counts?Number(counts.added??0)+Number(counts.changed??0)+Number(counts.removed??0):0;

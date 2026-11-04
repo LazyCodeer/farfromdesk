@@ -201,3 +201,10 @@ test('a tool that refuses its own arguments answers with its own sentence', asyn
   );
   assert.equal(h.of('run_steps').length, 0);
 });
+
+test('a key press refused in the background retries in front, as in a system file picker', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: { ok: false, observation: { summary: 'press_key ERROR (action): Background input refused (off_space_or_ax_unresolved)' } }, press_key: { ok: true } });
+  const r: any = await h.c.assist('brain:t', { action: 'press_key', app: 'Comet', key: 'return' });
+  assert.equal(h.of('press_key')[0].args.delivery_mode, 'foreground');
+  assert.equal(r.ok, true);
+});
