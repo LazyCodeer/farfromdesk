@@ -39,3 +39,7 @@ On 25 October 2026 the owner renamed the DNS label to ffd for easier typing. Pro
 ## Interactive redesign deployment
 
 The 3D redesign is live as release 20261025-ffd-3d-01. Nginx configuration and TLS renewal remain unchanged. Prior release 20261025-ffd-03 is preserved for rollback. Public HTTPS verification matched all 29 dist files; homepage renders the new scene and missing paths return 404. Only static dist was uploaded.
+
+## farfromdesk.com (5 November 2026)
+
+The product moved to **farfromdesk.com** (Cloudflare DNS, proxied, to the same EC2 host). The site is served from `/var/www/farfromdesk/current` with its own Let's Encrypt certificate (`website/deploy/nginx-farfromdesk-com.conf`), renewed by the same timer. Release `20261105-ffd-101-com` is release 101 with the canonical origin changed. `ffd.codecylabs.com` now 301-redirects to farfromdesk.com, except `/remote/`, `/install.sh`, `/install.ps1` and the ACME path, because installed apps still send phone links to `ffd.codecylabs.com/remote/`. Keep that exception as long as old app versions are in use. New builds use `SITE_URL=https://farfromdesk.com`.

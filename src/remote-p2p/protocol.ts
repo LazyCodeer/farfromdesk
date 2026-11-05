@@ -25,7 +25,7 @@ export const LOGIN_MS=2*60_000;
 /** Idle lock: the phone warns after 30s untouched and closes 15s later; the Mac closes at 75s even if the page never does.
  * A paused session (phone screen off) waits up to PAUSE_MS for the password. */
 export const IDLE_WARN_MS=30_000,IDLE_COUNTDOWN_MS=15_000,MAC_IDLE_MS=75_000,PAUSE_MS=10*60_000;
-export const PAGE_URL='https://ffd.codecylabs.com/remote/';
+export const PAGE_URL='https://farfromdesk.com/remote/';
 export const STUN_URLS=['stun:stun.l.google.com:19302','stun:stun.cloudflare.com:3478'];
 
 /** Data channels, both negotiated (pre-agreed ids), ordered and reliable. */
