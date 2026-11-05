@@ -9,7 +9,8 @@ import { nativeCommand } from './platform.js';
 import { CodexSession } from './codex-session.js';
 import { museAuthPath, museBinary, museConfigDir } from './muse-paths.js';
 import { dshBinary, dshCredentialsPath, dshHome } from './dsh-paths.js';
-import { cursorAppBinary, cursorDataDir } from './cursor-paths.js';
+import { cursorDataDir } from './cursor-paths.js';
+import { CURSOR_CLI_MISSING, findCursorCli } from './cursor-desktop.js';
 import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-provider.js';
 import type { Binding, Provider, Store } from './store.js';
 import type { ExecutionMode } from './desktop-claude.js';
@@ -97,13 +98,12 @@ export async function probeDeepseekAccount(cwd:string,env:NodeJS.ProcessEnv=proc
 }
 export async function probeCursorAccount(cwd:string,env:NodeJS.ProcessEnv=process.env,
   dependencies:{execute?:typeof exec}={}):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
-  // Cursor runs inside its signed-in desktop app, so there is no separate CLI credential to read and
-  // no headless sign-in to check. The app bundle is the whole probe, and even that only proves the app
-  // exists: the deeplink prefills an open window, so a turn proves the account only when the owner has
-  // Cursor open and presses Enter. Never shell out to a binary or read a secret for this one.
-  const app=cursorAppBinary(env);
-  if(!existsSync(app))return {state:'unknown',label:'Cursor desktop app not found · install Cursor, then retry'};
-  return {state:'verified',label:'Cursor desktop · prefills the prompt in your open Cursor window'};
+  // A coordinator turn runs through Cursor's signed-in command-line agent, which can resume one chat.
+  // The desktop deeplink cannot aim at a chat, so the app alone is not enough. `status` is also what
+  // raises any keychain prompt, so it happens here, at setup, instead of on the first message.
+  const cli=findCursorCli(env);
+  if(!cli)return {state:'unknown',label:CURSOR_CLI_MISSING};
+  return {state:'verified',label:'Cursor command-line agent · signed in',accountKey:digest(['cursor',cli])};
 }
 export async function probeAccount(provider:Provider,cwd:string):Promise<Pick<Connection,'state'|'label'|'accountKey'>> {
   if(provider==='muse')return probeMuseAccount(cwd);
