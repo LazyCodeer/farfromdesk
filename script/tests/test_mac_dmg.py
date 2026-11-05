@@ -28,8 +28,11 @@ class MacDmgTests(unittest.TestCase):
             self.assertEqual(command[-1], str(self.dmg))
             self.assertEqual(command[:2], ['hdiutil', 'create'])
             self.assertFalse(self.dmg.exists(), 'partial output leaked into a new attempt')
-            self.assertEqual(kwargs, {'capture_output': True, 'text': True})
+            self.assertEqual(kwargs, {'capture_output': True, 'text': True, 'timeout': 300})
             code, stderr = next(outcomes)
+            if code is None:
+                self.dmg.write_text('partial')
+                raise subprocess.TimeoutExpired(command, 300)
             self.dmg.write_text('valid' if code == 0 else 'partial')
             return subprocess.CompletedProcess(command, code, stdout='', stderr=stderr)
         return run
@@ -76,6 +79,22 @@ class MacDmgTests(unittest.TestCase):
                 create_dmg(self.root, self.dmg)
         run.assert_called_once()
         sleep.assert_not_called()
+        self.assertFalse(self.dmg.exists())
+
+    def test_hung_create_is_killed_and_retried(self):
+        with patch('mac_dmg.subprocess.run', side_effect=self.fake_run([(None, ''), (0, '')])) as run, \
+             patch('mac_dmg.time.sleep') as sleep, patch('sys.stderr', new_callable=io.StringIO):
+            create_dmg(self.root, self.dmg)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(3)
+        self.assertEqual(self.dmg.read_text(), 'valid')
+
+    def test_repeated_hang_fails_without_partial(self):
+        with patch('mac_dmg.subprocess.run', side_effect=self.fake_run([(None, '')] * 3)) as run, \
+             patch('mac_dmg.time.sleep'), patch('sys.stderr', new_callable=io.StringIO):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                create_dmg(self.root, self.dmg)
+        self.assertEqual(run.call_count, 3)
         self.assertFalse(self.dmg.exists())
 
 
