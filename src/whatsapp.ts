@@ -9,6 +9,8 @@ import makeWASocket,{useMultiFileAuthState,DisconnectReason,jidNormalizedUser,no
 import pino from 'pino';
 import { join } from 'node:path';
 import { rm, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import sharp from 'sharp';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
 import type { Router } from './router.js';
@@ -423,6 +425,18 @@ export class WhatsApp {
               });
             }else content={document:Buffer.from(a.data),fileName:a.filename,mimetype:a.mime,caption:m.body};
           }
+          if(!sent&&(m.media_kind==='brain-photo'||m.media_kind==='brain-file')){
+            // A screenshot or file the owner asked for: sent only if the queued copy is unchanged, the
+            // same check Telegram makes. A changed photo falls back to its caption; a changed file fails.
+            const photo=m.media_kind==='brain-photo';
+            try{
+              const saved=JSON.parse(this.store.get(`${m.media_kind}:${m.id}`)??'null') as {path:string;sha:string;filename?:string}|null;
+              const bytes=saved?readFileSync(saved.path):undefined;
+              if(!saved||!bytes||createHash('sha256').update(bytes).digest('hex')!==saved.sha||bytes.length>(photo?10_000_000:100_000_000))throw new Error();
+              // The send guard allows only JPEG previews, and a screenshot is a PNG.
+              content=photo?{image:await sharp(bytes).jpeg({quality:85}).toBuffer(),mimetype:'image/jpeg',caption:m.body}:{document:bytes,fileName:saved.filename||'file',mimetype:'application/octet-stream',caption:m.body};
+            }catch{if(!photo){this.store.db.prepare("UPDATE outbox SET status='failed',error='The file changed or is over 100 MB, so it was not sent.' WHERE id=?").run(m.id);continue;}}
+          }
           if(!sent){
             const isBrief=m.source.startsWith('morning-brief:')||m.source.startsWith('morning-brief-error:');
             const isStuck=m.source.startsWith('stuck-alert:')||m.source.startsWith('stuck-ci-alert:');
@@ -432,7 +446,7 @@ export class WhatsApp {
               const claimed=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claimed.changes)continue;
               briefSending=isBrief;stuckSending=isStuck;errandSending=isErrand;
             }
-            if(m.media_kind==='photo'){
+            if(m.media_kind==='photo'||m.media_kind==='brain-photo'||m.media_kind==='brain-file'){
               const claim=this.store.db.prepare("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=? AND status='queued'").run(m.id);if(!claim.changes)continue;
               photoSending=true;
             }

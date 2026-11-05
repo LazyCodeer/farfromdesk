@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultStateDirectory,nativeCommand } from '../src/platform.js';
 import { exactSession } from '../src/portable-native.js';
-import { acquireServiceLock } from '../src/service-lock.js';
+import { acquireServiceLock,waitForServiceLock } from '../src/service-lock.js';
 import { ClaudeSDKSession } from '../src/claude-sdk-session.js';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -51,6 +51,16 @@ test('a second backend cannot acquire the same live state directory',()=>{
     const release=acquireServiceLock(root);
     assert.throws(()=>acquireServiceLock(root),/already running/);
     release();const next=acquireServiceLock(root);next();
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
+test('a second backend waits for the lock, logging once, instead of crash-looping',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'ffd-wait-lock-'));
+  try {
+    const release=acquireServiceLock(root),lines:string[]=[];
+    const waiting=waitForServiceLock(root,20,line=>lines.push(line));
+    await new Promise(r=>setTimeout(r,100));
+    assert.equal(lines.length,1);assert.match(lines[0],/already running/);
+    release();(await waiting)();
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 test('a crashed backend releases its service lock without stale-PID cleanup',async()=>{

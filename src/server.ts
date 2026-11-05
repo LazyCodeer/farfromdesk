@@ -8,6 +8,7 @@ import {sessionResearchRead,sessionResearchRefine,sessionResearchRequest} from '
 import {sessionSpecialty} from './session-specialty.js';
 import { inboxSessions, inboxThread, inboxFeed } from './inbox-view.js';
 import { saveBrainConfig, fetchMetaModels } from './meta-brain-config.js';
+import { socialDrafts } from './meta-brain.js';
 import { dshSettings, dshStatus, readProfile, credentialRef } from './dsh-provider.js';
 import { DEFAULT_DSH_LABEL, dshActiveLabelKey, dshCancel, dshLabels, dshWorkspaces, dshLegacySessionKey, dshQueueState, dshSessionKey, addDshLabel } from './dsh-sessions.js';
 import { listMessages, pendingMessages, sendMessage } from './dsh-inbox.js';
@@ -25,7 +26,7 @@ import {screenLockGate,sessionProbePath} from './session-lock.js';
 import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
-import { directMacAllowed } from './direct-mac.js';
+import { directMacGrant } from './direct-mac.js';
 import { MacControl } from './mac-control.js';
 import { GrantHealth } from './grant-health.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
@@ -168,15 +169,23 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       // A direct /muse, /deepseek or /cursor run carries a one-run pass instead of a session token.
       if(path==='/api/direct/desktop-control'&&req.method==='POST'){
         const runId=req.headers['x-direct-run'];
-        if(!directMacAllowed(store,runId,token)){json(res,401,{error:'This run has no Mac pass, or it ended.'});return;}
-        const {requestId:_ignored,...input}=await body(req);
+        const grant=directMacGrant(store,runId,token);
+        if(!grant){json(res,401,{error:'This run has no Mac pass, or it ended.'});return;}
+        const {requestId:_ignored,send,...input}=await body(req);
         if(input.action==='stop'){macAccessEpoch++;macControl.stop();json(res,200,{stopped:true});return;}
+        // The same drafts and image files the brain's social_drafts tool reads, instead of sqlite3 on the store.
+        if(input.action==='social_drafts'){json(res,200,{drafts:socialDrafts(store)});return;}
         if(router.stopped)throw new Error('Background operation is paused.');
         const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');
-        const result=await desktopControl.run(`direct:${String(runId)}`,input,()=>{if(router.stopped)throw new Error('Background operation is paused.');});
+        const authorize=()=>{if(router.stopped)throw new Error('Background operation is paused.');};
+        const result=await desktopControl.run(grant.scope,input,authorize);
         store.audit('desktop-control-action','direct-run',String(input.action));
-        // No screenshot bytes back to a CLI transcript; the brain is the path that sends images.
-        if(result?.screenshot?.pngBase64){const {pngBase64:_bytes,...evidence}=result.screenshot as {pngBase64:string};json(res,200,{...result,screenshot:{...evidence,delivery:'not sent'}});return;}
+        // No screenshot bytes back to a CLI transcript. "send" queues them to the chat this run was opened for, never elsewhere.
+        if(result?.screenshot?.pngBase64){
+          const {pngBase64,...evidence}=result.screenshot as {pngBase64:string};
+          const sent=send===true&&!!grant.destination&&grant.destination===store.destination()&&store.outputPhoto(grant.destination,`direct-shot:${String(runId)}`,Buffer.from(pngBase64,'base64'),'Screenshot');
+          json(res,200,{...result,screenshot:{...evidence,delivery:sent?'sent to the owner':'not sent'}});return;
+        }
         json(res,200,result);return;
       }
       if(!isAdmin&&!binding){json(res,401,{error:'Use FarFromDesk or provide a valid session token.'});return;}

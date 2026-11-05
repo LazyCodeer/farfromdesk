@@ -16,7 +16,8 @@ import type { Incoming, Router } from './router.js';
 import { brainPolicy, brainView, MetaSecret, type BrainPolicy, type BrainProvider } from './meta-brain-config.js';
 import { BRAIN_PROMPT, Interpretation, MetaModel, type MemoryTool } from './meta-model.js';
 import { runDevicePlan, deviceRefusal, deviceTargets, detectDevicePlan, deviceVerbLike, appInventoryRequest, notesAuthoringRequest, authoringText, notesWritePlan, type DeviceControl, type DevicePlan } from './brain-device.js';
-import { DesktopControl } from './desktop-control.js';
+import { DesktopControl, ownerPath } from './desktop-control.js';
+export { ownerPath };
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
 import { overviewTool, selectTools, shortlistTools } from './app-tools/retrieve.js';
@@ -72,6 +73,26 @@ function namedPlatforms(text:string):BrainProvider[] {
   return [...new Set((text.match(PLATFORM_RE_ALL)??[]).map(w=>platformProvider(w)).filter((p):p is BrainProvider=>!!p))];
 }
 
+/**
+ * The newest Social drafts, so "post the one you just made" uses that draft's own caption and image.
+ * The chat history can hold an older caption (live, 5 Nov 2026: LinkedIn got the previous post's text).
+ * Each finished image is written once to Downloads for pick_file.
+ */
+export function socialDrafts(store:Store):string{
+  if(!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='social_drafts'").get())return 'No social drafts yet.';
+  const rows=store.db.prepare('SELECT id,json FROM social_drafts ORDER BY rowid DESC LIMIT 3').all() as {id:string;json:string}[];
+  if(!rows.length)return 'No social drafts yet.';
+  const downloads=join(userInfo().homedir,'Downloads');
+  return JSON.stringify(rows.map(row=>{
+    const d=JSON.parse(row.json),slides=(d.carousel?.slides??(d.image?[d.image]:[])) as {base64?:string}[];
+    const images=slides.slice(0,10).flatMap((slide,i)=>{
+      if(!slide?.base64)return [];
+      const file=join(downloads,`farfromdesk-${String(d.platform??'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')}-${row.id.slice(0,8)}-${i+1}.jpg`);
+      try{if(!existsSync(file))writeFileSync(file,Buffer.from(slide.base64,'base64'));return [file];}catch{return [];}
+    });
+    return {platform:d.platform??null,caption:typeof d.caption==='string'?d.caption:'',images};
+  }));
+}
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
 export class MetaBrain {
@@ -486,52 +507,23 @@ export class MetaBrain {
     return JSON.stringify({queued:basename(real),bytes:st.size,note:'It is sent to the owner right after your reply. Say it follows.'});
   }
   /**
-   * The newest Social drafts, so "post the one you just made" uses that draft's own caption and image.
-   * The chat history can hold an older caption (live, 5 Nov 2026: LinkedIn got the previous post's text).
-   * Each finished image is written once to Downloads for pick_file.
-   */
-  private socialDraftsFor():string{
-    if(!this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='social_drafts'").get())return 'No social drafts yet.';
-    const rows=this.store.db.prepare('SELECT id,json FROM social_drafts ORDER BY rowid DESC LIMIT 3').all() as {id:string;json:string}[];
-    if(!rows.length)return 'No social drafts yet.';
-    const downloads=join(userInfo().homedir,'Downloads');
-    return JSON.stringify(rows.map(row=>{
-      const d=JSON.parse(row.json),slides=(d.carousel?.slides??(d.image?[d.image]:[])) as {base64?:string}[];
-      const images=slides.slice(0,10).flatMap((slide,i)=>{
-        if(!slide?.base64)return [];
-        const file=join(downloads,`farfromdesk-${String(d.platform??'post').toLowerCase().replace(/[^a-z0-9]+/g,'-')}-${row.id.slice(0,8)}-${i+1}.jpg`);
-        try{if(!existsSync(file))writeFileSync(file,Buffer.from(slide.base64,'base64'));return [file];}catch{return [];}
-      });
-      return {platform:d.platform??null,caption:typeof d.caption==='string'?d.caption:'',images};
-    }));
-  }
-  /** The owner's folders the brain may put or open files in: never hidden ones, never Library. */
-  private ownerPath(raw:string,base:'Downloads'|'Documents'='Downloads'):string|undefined{
-    const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
-    const asked=raw.trim().replace(/^~(?=\/|$)/,home),path=asked.startsWith('/')?asked:/^(Downloads|Desktop|Documents|Pictures|Movies|Music)\//.test(asked)?join(home,asked):join(home,base,asked);
-    const root=roots.find(r=>path.startsWith(r+sep));
-    // After the root's own separator, so the first part is the file or folder, not an empty string (which refused every path).
-    if(!root||path.slice(root.length+1).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
-    return path;
-  }
-  /**
    * write_file: a new file the owner asked for (a sheet as CSV, notes, a list) in Downloads or
    * Documents. Never overwrites: an existing name gets a number. Text formats only, at most 2 MB.
    */
   private writeFileFor(name:string,content:string):string{
     if(!/\.(csv|tsv|txt|md|json|html)$/i.test(name))return 'Use a .csv, .tsv, .txt, .md, .json or .html name.';
     if(Buffer.byteLength(content)>2_000_000)return 'That is more than 2 MB of text.';
-    const path=this.ownerPath(name);if(!path)return 'Files go in Downloads or Documents, never hidden folders.';
-    const parent=realpathSync(join(path,'..'));if(!this.ownerPath(join(parent,'x.txt')))return 'That folder is outside Downloads or Documents.';
+    const path=ownerPath(name);if(!path)return 'Files go in Downloads or Documents, never hidden folders.';
+    const parent=realpathSync(join(path,'..'));if(!ownerPath(join(parent,'x.txt')))return 'That folder is outside Downloads or Documents.';
     let final=path;for(let i=2;existsSync(final)&&i<100;i++)final=path.replace(/(\.[^.]+)$/,` ${i}$1`);
     writeFileSync(final,content,{flag:'wx',mode:0o644});
     return JSON.stringify({written:final,bytes:Buffer.byteLength(content)});
   }
   /** open_file: open a file from the owner's folders, in a named app if given (Numbers for a CSV). */
   private async openFileFor(raw:string,app?:string):Promise<string>{
-    const path=this.ownerPath(raw);if(!path)return 'I can open files only from Downloads, Desktop, Documents, Pictures, Movies or Music.';
+    const path=ownerPath(raw);if(!path)return 'I can open files only from Downloads, Desktop, Documents, Pictures, Movies or Music.';
     let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}.`;}
-    if(!this.ownerPath(real))return 'That file is outside your folders.';
+    if(!ownerPath(real))return 'That file is outside your folders.';
     try{await promisify(execFile)('/usr/bin/open',[...(app?['-a',app]:[]),real],{timeout:15000});return `Opened ${basename(real)}${app?` in ${app}`:''}. Read the window to check it.`;}
     catch{return app?`${app} could not open ${basename(real)}. Is ${app} installed?`:`${basename(real)} could not be opened.`;}
   }
@@ -741,11 +733,11 @@ export class MetaBrain {
         writeFile:(name,content)=>{this.ack(m,'Finder');return Promise.resolve(this.writeFileFor(name,content));},
         openFile:(path,app)=>{this.ack(m,app??'Finder');return this.openFileFor(path,app);},
         sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
-        socialDrafts:()=>this.socialDraftsFor(),
+        socialDrafts:()=>socialDrafts(this.store),
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
-          if(plan.action==='pick_file'){const asked=(plan.text||plan.name||'').trim(),path=this.ownerPath(asked);if(!path||!existsSync(path)){try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} pick_file refused path ${JSON.stringify(asked)} -> ${path}\n`);}catch{}return `Refused: no file at ${asked||'(no path given)'} in Downloads, Desktop, Documents, Pictures, Movies or Music. Put the full path in text, such as ~/Downloads/report.pdf.`;}plan={...plan,text:path,name:undefined};}
+          if(plan.action==='pick_file'){const asked=(plan.text||plan.name||'').trim(),path=ownerPath(asked);if(!path||!existsSync(path)){try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} pick_file refused path ${JSON.stringify(asked)} -> ${path}\n`);}catch{}return `Refused: no file at ${asked||'(no path given)'} in Downloads, Desktop, Documents, Pictures, Movies or Music. Put the full path in text, such as ~/Downloads/report.pdf.`;}plan={...plan,text:path,name:undefined};}
           const browser=/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app);
           if(browser&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
           if(browser&&plan.action==='type'&&!plan.name&&!plan.role&&!this.armed.has(m.id))return 'Refused: click where the text should go first (in a sheet: click the Name box, type the cell such as A1, press return), after the last tab switch or read. Keystrokes sent without that land nowhere.';

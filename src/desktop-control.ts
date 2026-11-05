@@ -1,5 +1,8 @@
 import { createHash,randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { userInfo } from 'node:os';
+import { join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -9,7 +12,7 @@ import { allPackTools, toolByName } from './app-tools/packs.js';
 import { shortlistTools } from './app-tools/retrieve.js';
 import type { AppTool, AppToolPlan } from './app-tools/types.js';
 
-export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','stop'] as const;
+export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','pick_file','stop'] as const;
 /**
  * Coordinates are window-local pixels of the get_window_state screenshot, which is
  * the only addressing that works on a canvas: Flutter, WebGL and any custom-drawn
@@ -119,7 +122,20 @@ const fields:Record<Input['action'],string[]>={
   // The reviewed per-app tools, so a coordinator session reads Notes, Calendar or Mail content
   // instead of window chrome. app_tools takes the owner's words; app_tool runs one by name.
   app_tools:['text'],app_tool:['tool','args','actionId'],
+  // An upload button opens the macOS file picker, which has no readable controls; browser names the app, text the file.
+  pick_file:['browser','text','actionId'],
 };
+/** Every action with its fields on one line: the single description each runner's prompt is built from, so none drifts or makes a model grep for argument names. */
+export const desktopCatalog=()=>desktopActions.filter(a=>a!=='stop').map(a=>fields[a].length?`${a}{${fields[a].join(',')}}`:a).join(' ');
+/** The owner's folders a file may be put in or picked from: never hidden ones, never Library. */
+export function ownerPath(raw:string,base:'Downloads'|'Documents'='Downloads'):string|undefined{
+  const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
+  const asked=raw.trim().replace(/^~(?=\/|$)/,home),path=asked.startsWith('/')?asked:/^(Downloads|Desktop|Documents|Pictures|Movies|Music)\//.test(asked)?join(home,asked):join(home,base,asked);
+  const root=roots.find(r=>path.startsWith(r+sep));
+  // After the root's own separator, so the first part is the file or folder, not an empty string (which refused every path).
+  if(!root||path.slice(root.length+1).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
+  return path;
+}
 
 /** Coordinate-addressed actions: they work where the accessibility tree is empty. */
 /** What Windows and Linux answer today; the rest is refused by name. */
@@ -250,8 +266,20 @@ export class DesktopControl {
         await front('hotkey',{keys:['cmd','shift','g']});await wait(900);
         await front('type_text',{text:plan.text!});await wait(600);
         await front('press_key',{key:'return'});await wait(900);
-        await front('press_key',{key:'return'});await wait(900);
-        return {action:plan.action,ok:true,observation:null,changes:'Not confirmed: read the page to check the file name shows next to the upload button.'};
+        await front('press_key',{key:'return'});
+        // Checked here rather than left to the model: one extra read is cheaper than a model turn,
+        // and a picker that silently failed was the step nobody saw. Attached means the page now
+        // names the file or shows a remove-media control (X, LinkedIn, Gmail all label it that way).
+        const name=plan.text!.split('/').pop()!.toLowerCase();
+        for(let i=0;i<5&&!controller.signal.aborted;i++){
+          await wait(900);
+          const win=await this.resolve(plan.app!).catch(()=>undefined);if(!win?.window_id)continue;
+          const state=await this.driver.call('get_window_state',{pid:win.pid,window_id:win.window_id,tree_format:'markdown',max_elements:400},controller.signal).catch(()=>undefined);
+          const tree=String(state?.tree_markdown??'').toLowerCase();
+          if(tree.includes(name)||/remove (media|image|photo|attachment|file)|edit (media|image)|delete (media|image|attachment)/.test(tree))
+            return {action:plan.action,ok:true,attached:true,observation:null,changes:'Attached: the page shows '+name+'.'};
+        }
+        return {action:plan.action,ok:false,attached:false,observation:'The page shows no sign of '+name+' after the file picker.',changes:null};
       }
       if(plan.action==='read_window'){
         const target=await this.resolve(plan.app,plan.window);
@@ -638,6 +666,11 @@ export class DesktopControl {
       if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+(q.tool??'')+' is not an app tool I have. Use app_tools first.');
       if(tool.writes)this.reserve(scope,q);
       return await this.packTool(scope,tool.name,q.args??{},authorize);
+    }
+    if(q.action==='pick_file'){
+      const path=ownerPath(q.text??'');
+      if(!path||!existsSync(path))throw new Error('DESKTOP_FILE_REFUSED: No such file in Downloads, Desktop, Documents, Pictures, Movies or Music. Put the full path in text.');
+      this.reserve(scope,q);return await this.assist(scope,{action:'pick_file',app:q.browser??'',text:path},authorize);
     }
     if(q.action==='status'){
         // Read-only, so it can refresh the grants without disturbing an action.
