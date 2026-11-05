@@ -80,7 +80,11 @@ void main() {
   test('a link out of Local to an unpermitted file is refused and named', () async {
     final dir = Directory(p.join(state.path, 'home'))..createSync();
     final link = p.join(dir.path, 'to-shell');
-    Link(link).createSync('/bin/sh');
+    // A real file outside every permitted root. `/bin/sh` does not exist on
+    // Windows, and a link to nothing is allowed on purpose (see above).
+    final outside = File(p.join(root.path, 'elsewhere', 'sh'))
+      ..createSync(recursive: true);
+    Link(link).createSync(outside.path);
     await expectLater(
       check(),
       throwsA(

@@ -189,6 +189,30 @@ void main() {
   );
 
   testWidgets(
+    'Overview on Windows reports the control switch, not macOS permissions',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway(screen: 'overview', fixture: 'connected')
+        ..host = 'windows'
+        ..trusted = true
+        ..captureTrusted = true;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(find.text('PC app control'), findsOneWidget);
+      expect(find.text('Off until you allow it'), findsOneWidget);
+      expect(find.text('Mac app control'), findsNothing);
+      expect(find.textContaining('Accessibility'), findsNothing);
+      expect(find.textContaining('Screen Recording'), findsNothing);
+      api.enabled = true;
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      expect(find.text('FarFromDesk can use apps here'), findsOneWidget);
+      expect(find.text('Allowed'), findsWidgets);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Overview shows Mac permission changes and opens Remote control settings',
     (tester) async {
       size(tester);
@@ -2321,6 +2345,10 @@ class VoiceGateway extends ConnectionGateway {
 
 class MacControlGateway extends PreviewGateway {
   MacControlGateway({super.screen = 'settings', super.fixture = 'onboarding'});
+  /// Null keeps the preview's sample platform.
+  String? host;
+  @override
+  String get platform => host ?? super.platform;
   final macActions = <String>[];
   bool enabled = false;
   bool? trusted;
