@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/LazyCodeer/farfromdesk/releases/latest"><strong>Download FarFromDesk</strong></a> ·
-  <a href="https://ffd.codecylabs.com">Website</a> ·
+  <a href="https://farfromdesk.com">Website</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#what-you-can-do">Features</a> ·
   <a href="#questions">Questions</a>
@@ -78,7 +78,7 @@ Drag **FarFromDesk.app** into Applications. Mac builds are ad-hoc signed and not
 On macOS or Linux you can also install from your terminal. It verifies the archive checksum and installs for your user account:
 
 ```sh
-curl -fsSL https://ffd.codecylabs.com/install.sh | sh
+curl -fsSL https://farfromdesk.com/install.sh | sh
 ```
 
 ### 2. Connect WhatsApp or Telegram

@@ -43,7 +43,7 @@ Already-installed builds containing only the download notifier need one update t
 The live website redirects `/install.sh` to the official latest release installer:
 
 ```sh
-curl -fsSL https://ffd.codecylabs.com/install.sh | sh
+curl -fsSL https://farfromdesk.com/install.sh | sh
 ```
 
 This is for first installation or manual recovery. The installer retains its internal platform, architecture and checksum checks. Normal subsequent macOS updates use the app button.

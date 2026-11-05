@@ -102,13 +102,13 @@ Installer defaults refer to `LazyCodeer/farfromdesk` GitHub release `v0.7.0-prev
 Once the website owner publishes these scripts and matching artifacts, the intended command shape is:
 
 ```sh
-curl -fsSL https://ffd.codecylabs.com/install.sh | sh
+curl -fsSL https://farfromdesk.com/install.sh | sh
 ```
 
 Windows PowerShell command shape:
 
 ```powershell
-Invoke-WebRequest https://ffd.codecylabs.com/install.ps1 -OutFile "$env:TEMP\farfromdesk-install.ps1"
+Invoke-WebRequest https://farfromdesk.com/install.ps1 -OutFile "$env:TEMP\farfromdesk-install.ps1"
 & "$env:TEMP\farfromdesk-install.ps1"
 ```
 
