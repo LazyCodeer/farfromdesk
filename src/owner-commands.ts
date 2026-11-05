@@ -469,3 +469,4 @@ export function sessionSelected(r:Router):boolean {
   }catch{return false;}
 }
 export function brainSelected(r:Router):boolean {try{return JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='brain';}catch{return false;}}
+export function toolSelected(r:Router):boolean {try{return JSON.parse(r.store.get(routeKey(r))??'null')?.kind==='tool';}catch{return false;}}

@@ -90,3 +90,23 @@ test('bare /muse keeps the chat with Muse: a plain message runs Muse until /back
     rmSync(dir,{recursive:true,force:true});
   }
 });
+
+test('/muse after /social still sends the next plain message to Muse, not the default Codex session',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'muse-cmd-'));
+  const previous=process.env.MUSE_BIN;
+  process.env.MUSE_BIN=fakeMuse(dir,'Muse answered inside Social mode.');
+  const f=fixture(dir);try{
+    await f.wa.receiveMessage(f.msg('S1','/social'));
+    await f.wa.receiveMessage(f.msg('S2','/muse'));
+    await f.wa.receiveMessage(f.msg('S3','In one line, what does this project do?'));
+    assert.match(f.replies().at(-1)!,/Muse answered inside Social mode\./);
+    assert.equal(f.store.job('wa:S3'),undefined,'nothing was queued for the Codex coordinator');
+    await f.wa.receiveMessage(f.msg('S4','/codex'));
+    await f.wa.receiveMessage(f.msg('S5','make a post about the launch'));
+    assert.ok(f.store.job('wa:S5'),'after /codex, Social mode routes to the Codex session again');
+  }finally{
+    f.close();
+    if(previous===undefined)delete process.env.MUSE_BIN;else process.env.MUSE_BIN=previous;
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
