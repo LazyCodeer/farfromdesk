@@ -720,7 +720,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           },
         ),
         const Divider(color: hairline, height: 28),
-        MemoryFiles(gateway: widget.gateway),
+        MemoryFiles(gateway: widget.gateway, platforms: widget.platforms),
       ],
     ),
   );
