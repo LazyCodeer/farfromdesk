@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { request as httpRequest } from 'node:http';
 
 /**
  * The owner's DeepSeek settings, over the local admin route. What matters here: a provider that is
@@ -104,7 +105,17 @@ test('the app sees, switches and feeds the labelled DeepSeek sessions of one fol
   // `config.port` is read once at import, so the address the server actually bound is the truth here.
   const url = `http://127.0.0.1:${(server.address() as any).port}`;
   const headers = { Authorization: 'Bearer test-admin-token', 'Content-Type': 'application/json' };
-  const view = async (body?: any) => (await (await fetch(url + '/api/deepseek', body ? { method: 'POST', headers, body: JSON.stringify(body) } : { headers })).json()) as any;
+  // This server reuses the first test's port (config reads it once), so never reuse a pooled
+  // fetch socket here: each call opens its own connection.
+  const call = (body?: any) => new Promise<{ status: number; json: any }>((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : undefined;
+    const req = httpRequest(url + '/api/deepseek', { method: body ? 'POST' : 'GET', headers, agent: false }, res => {
+      let text = ''; res.setEncoding('utf8'); res.on('data', c => { text += c; });
+      res.on('end', () => { try { resolve({ status: res.statusCode ?? 0, json: JSON.parse(text) }); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject); req.end(data);
+  });
+  const view = async (body?: any) => (await call(body)).json;
   try {
     const first = await view();
     assert.equal(first.workspace, workspace, 'the configured workspace is reported as it is');
@@ -119,7 +130,7 @@ test('the app sees, switches and feeds the labelled DeepSeek sessions of one fol
     assert.equal(created.activeLabel, 'research', 'a new session becomes the active one');
     assert.equal(created.sessions.find((s: any) => s.label === 'research').active, true);
 
-    const refused = await fetch(url + '/api/deepseek', { method: 'POST', headers, body: JSON.stringify({ action: 'use', label: 'not-a-session' }) });
+    const refused = await call({ action: 'use', label: 'not-a-session' });
     assert.equal(refused.status, 400, 'switching to a session that does not exist is refused');
 
     const used = await view({ action: 'use', label: 'default' });
@@ -148,7 +159,7 @@ test('the app sees, switches and feeds the labelled DeepSeek sessions of one fol
       assert.deepEqual(here.sessions.map((s: any) => s.label), ['default', 'research'], 'each workspace keeps its own sessions');
       const staged = await view({ action: 'workspace', folder: workspace });
       assert.equal(staged.workspace, workspace, 'the app can pick which workspace it is looking at');
-      const refused = await fetch(url + '/api/deepseek', { method: 'POST', headers, body: JSON.stringify({ action: 'workspace', folder: join(other, 'not-there') }) });
+      const refused = await call({ action: 'workspace', folder: join(other, 'not-there') });
       assert.equal(refused.status, 400, 'a folder that does not exist is refused');
     } finally {
       rmSync(other, { recursive: true, force: true });
