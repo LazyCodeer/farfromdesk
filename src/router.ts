@@ -99,7 +99,7 @@ export class Router {
     if(text.startsWith('/')) {
       const match=/^\/to\s+(\S+)(?:\s+([\s\S]*))?$/i.exec(text);
       if(!match)throw new Error('Attachment captions cannot run bridge commands. Use /to NAME caption or quote a session reply.');
-      b=this.need(match[1]);text=match[2]?.trim()??'';
+      ({binding:b,rest:text}=this.named(text.replace(/^\/to\s+/i,'')));
     } else if(m.quotedId) {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
       this.checkQuotedPlatform(text,b);
@@ -437,10 +437,10 @@ export class Router {
           }catch(e){this.store.db.exec('ROLLBACK TO proof_bind_command; RELEASE proof_bind_command');throw e;}
         }
         else if(cmd==='workspace'){if(!this.workspaceCommand)throw new Error('Workspace creation is unavailable.');this.store.output(undefined,this.workspaceCommand(args),`command:${m.id}`);}
-        else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
+        else if(cmd==='sessions')this.store.output(undefined,this.store.bindings().map(b=>`${b.enabled?'●':'○'} ${this.store.get(`name:${b.id}`)??b.alias} · ${b.provider} · ${b.mode}`).join('\n')||'No sessions registered. Open Session Bridge.app.',`command:${m.id}`);
         else if(cmd==='use') {const b=this.need(args);clearOwnerTarget(this);this.store.set('active',b.id);this.guidedModes.retarget(this);this.store.output(b,'Selected. Your next messages go to this exact session.\n\n'+this.guidedModes.summary(this,m),`command:${m.id}`);}
         else if(cmd==='talk'){const message=this.talkDirect(this.need(args));this.guidedModes.retarget(this);this.store.output(undefined,message+'\n\n'+this.guidedModes.summary(this,m),`command:${m.id}`);}
-        else if(cmd==='to') {const [alias,...words]=args.split(/\s+/);if(!words.length)throw new Error('Use /to NAME message');this.queue(m.id,this.need(alias),words.join(' '));}
+        else if(cmd==='to') {const {binding,rest}=this.named(args);if(!rest)throw new Error('Use /to NAME message');this.assertNotDuplicate(binding,rest,m.id);this.queue(m.id,binding,rest);}
         else if(cmd==='status')this.store.output(undefined,`Active: ${this.store.binding(this.store.get('active')??'')?.alias??'none'}\nRunning: ${this.busy.size}\nWaiting permissions: ${this.approvals.pending.size}\n${this.store.jobs().slice(0,8).map(j=>`${j.id} · ${this.store.binding(j.binding_id)?.alias} · ${j.status}${j.error?` · ${j.error}`:''}`).join('\n')}`,`command:${m.id}`);
         else if(cmd==='style') {const [name,style,...extra]=args.split(/\s+/);if(extra.length||!style)throw new Error('Use /style NAME friendly|cheerful|professional|coding.');const b=this.need(name==='master'?this.store.get('master')??'':name);updateRole(this.store,b,style);this.store.output(b,`Reply style set to ${style}. It applies from the next work turn.`,`command:${m.id}`);}
         else if(cmd==='stop') {const b=this.need(args);this.native.stop(b);this.store.output(b,'Pending bridge approvals denied. Interrupt active work using the native app stop control. The bridge does not kill your session.',`command:${m.id}`);}
@@ -883,6 +883,17 @@ export class Router {
     const target=this.coordinator?.explicitDestination(text);if(!target||target.id===b.id)return;
     const route=this.native.connections?.route(b);
     if(!this.coordinator!.registry.matches(target.id,{provider:b.provider,executionMode:route?.executionMode??this.store.get(`execution-mode:${b.id}`),accountScope:route?.accountScope}))throw new Error('The quoted session and named platform conflict. Choose one destination.');
+  }
+  /** Resolve "NAME message" where NAME is the alias or the shown session name (any case, may contain spaces). Longest match wins. */
+  named(text:string){
+    const words=text.trim().split(/\s+/),after=(n:number)=>text.trim().replace(new RegExp(`^(?:\\S+\\s*){${n}}`),''),key=(v:string)=>v.replace(/\s+/g,' ').trim().toLowerCase();
+    for(let n=words.length;n>0;n--){
+      const head=key(words.slice(0,n).join(' '));
+      const hits=this.store.bindings().filter(b=>key(b.alias)===head||key(this.store.get(`name:${b.id}`)??'')===head);
+      if(hits.length>1)throw new Error(`More than one session is called "${words.slice(0,n).join(' ')}". Rename one in the app, then try again.`);
+      if(hits.length)return {binding:this.need(hits[0].id),rest:after(n)};
+    }
+    return {binding:this.need(words[0]??''),rest:after(1)};
   }
   need(id:string){const b=this.store.binding(id);if(!b?.enabled)throw new Error('That session is missing or paused. Ask me to show your recent sessions, or resume it in the app.');return b;}
   private queueSpecialty(m:Incoming,originId:string,marker:PendingSpecialty) {

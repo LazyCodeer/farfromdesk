@@ -39,6 +39,14 @@ test('session-specific credentials cannot authenticate another binding',()=>{
 test('separate sessions dispatch independently without another model',async()=>{
   const f=fixture();await f.router.receive({id:'wa:3',text:'/to codex-a fix A'});await f.router.receive({id:'wa:4',text:'/to claude-b fix B'});await tick();assert.equal(f.runs.length,2);assert.deepEqual(f.runs.map(r=>r[0].native_id),[idA,idB]);f.close();
 });
+test('/to reaches a session by its shown name, in any case, keeping the message intact', async()=>{
+  const f=fixture();f.store.set(`name:${f.b.binding.id}`,'Site Redesign');
+  await f.router.receive({id:'wa:n1',text:'/to site redesign Fix the header\nthen the footer'});await tick();
+  assert.equal(f.runs.length,1);assert.equal(f.runs[0][0].native_id,idB);assert.match(JSON.stringify(f.runs[0]),/Fix the header\\nthen the footer/);
+  await f.router.receive({id:'wa:n2',text:'/to CODEX-A check A'});await tick();
+  assert.equal(f.runs.length,2);assert.equal(f.runs[1][0].native_id,idA);
+  f.close();
+});
 test('restart holds ambiguous native submissions and retains stable outbound IDs',()=>{
   const dir=mkdtempSync(join(tmpdir(),'wsb-test-'));const path=join(dir,'db.sqlite');let s=new Store(path);const b=s.register('test','codex',idA,'/tmp').binding;
   s.enqueue('wa:5',b,'work');s.jobState('wa:5','dispatched');s.output(b,'done','turn:1');const wa=s.outbound().wa_id;s.close();s=new Store(path);s.recover();assert.equal(s.jobs()[0].status,'uncertain');assert.equal(s.queued(b.id),undefined);assert.equal(s.outbound().wa_id,wa);s.output(b,'done','turn:1');assert.equal(s.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n,1);s.close();rmSync(dir,{recursive:true});
