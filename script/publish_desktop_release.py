@@ -1,4 +1,4 @@
-"""Publish only a complete, verified four-target public desktop release."""
+"""Publish a verified public desktop release from every target build that passed."""
 import argparse
 import json
 from pathlib import Path
@@ -15,11 +15,16 @@ def validate(root, version, commit):
         raise ValueError('Invalid stable version')
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('Exact source commit required')
-    if {p.name for p in root.iterdir()} != {'farfromdesk-'+r for r in TARGETS}:
-        raise ValueError('All four target builds are required')
+    present = {p.name for p in root.iterdir()}
+    known = {'farfromdesk-'+r for r in TARGETS}
+    # A failed or hung target must not block the others; each present one is still fully verified.
+    if not present or not present <= known:
+        raise ValueError('At least one target build is required, and only known targets')
     files = {}
     for runner, (system, arch) in TARGETS.items():
         folder = root / ('farfromdesk-'+runner)
+        if folder.name not in present:
+            continue
         manifest = folder / f'manifest-{system}-{arch}.json'
         extensions = ['zip', 'dmg'] if system == 'macos' else ['tar.gz' if system == 'linux' else 'zip']
         names = {f'FarFromDesk-{version}-{system}-{arch}.{ext}' for ext in extensions}
@@ -121,14 +126,18 @@ def main():
     if state and state['targetCommitish'] != args.commit:
         raise RuntimeError('Draft belongs to another source commit')
     if not state:
+        rows = {'macos-15': f'| Apple Silicon Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-arm64.dmg` or `.zip` |\n',
+                'macos-15-intel': f'| Intel Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-x64.dmg` or `.zip` |\n',
+                'windows-2022': f'| Windows 10/11 x64 | `FarFromDesk-{args.version}-windows-x64-setup.exe` or portable `.zip` |\n',
+                'ubuntu-22.04': f'| Linux x64, glibc 2.35+, GTK 3 | `FarFromDesk-{args.version}-linux-x64.tar.gz` |\n'}
+        built = [r for r in rows if (args.assets / ('farfromdesk-'+r)).is_dir()]
+        missing = '' if len(built) == len(rows) else (
+            'Not every platform finished in time for this version; the next release includes the missing ones.\n\n')
         notes = (f'# FarFromDesk {args.version}\n\n'
                  'Your coding sessions, one WhatsApp message away.\n\n'
                  '## Choose your download\n\n'
                  '| Computer | Asset |\n|---|---|\n'
-                 f'| Apple Silicon Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-arm64.dmg` or `.zip` |\n'
-                 f'| Intel Mac (macOS 14+) | `FarFromDesk-{args.version}-macos-x64.dmg` or `.zip` |\n'
-                 f'| Windows 10/11 x64 | `FarFromDesk-{args.version}-windows-x64-setup.exe` or portable `.zip` |\n'
-                 f'| Linux x64, glibc 2.35+, GTK 3 | `FarFromDesk-{args.version}-linux-x64.tar.gz` |\n\n'
+                 + ''.join(rows[r] for r in built) + '\n' + missing +
                  'Mac DMG/ZIP contains **FarFromDesk.app**. Run the Windows EXE installer, or extract the portable Windows/Linux archive before opening. '
                  'The automatically generated Source code archives are for contributors, not app installation.\n\n'
                  '## Get started\n\n'
@@ -148,7 +157,7 @@ def main():
                  'Your OS may require explicit approval or block installation under organizational policy. '
                  'Do not disable OS protections.\n\n'
                  '## Verification\n\n'
-                 'All four builds must pass configured checks before publication. SHA-256 files and '
+                 'Every included build passed its configured checks before publication. SHA-256 files and '
                  'platform manifests accompany every app archive. These build and isolated startup/speech '
                  'checks do not establish real-phone/provider-account compatibility on every computer.\n\n'
                  f'Source commit: `{args.commit}`. License: MIT.\n')

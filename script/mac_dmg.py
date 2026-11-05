@@ -8,7 +8,7 @@ import time
 
 _RESOURCE_BUSY = re.compile(r'^\s*hdiutil:\s*create failed\s*-\s*resource busy\s*$', re.I | re.M)
 
-CREATE_TIMEOUT = 300  # A healthy create takes well under a minute.
+CREATE_TIMEOUT = 240  # A healthy create takes well under a minute.
 
 
 def create_dmg(source_dir, output):
@@ -18,6 +18,10 @@ def create_dmg(source_dir, output):
     # HFS+ with LZFSE is as fast and mounts on every supported macOS (14+).
     command = ['hdiutil', 'create', '-volname', 'FarFromDesk', '-srcfolder', str(source_dir),
                '-fs', 'HFS+', '-format', 'ULFO', '-ov', str(output)]
+    # ponytail: HFS+ creates sometimes stall on Intel runners (cause not yet isolated);
+    # after a stall, fall back to the larger APFS/UDZO image that never stalled there.
+    fallback = ['hdiutil', 'create', '-volname', 'FarFromDesk', '-srcfolder', str(source_dir),
+                '-format', 'UDZO', '-ov', str(output)]
     for attempt in range(1, 4):
         # Only remove the exact output file owned by this packaging invocation.
         output.unlink(missing_ok=True)
@@ -28,7 +32,8 @@ def create_dmg(source_dir, output):
             output.unlink(missing_ok=True)
             if attempt == 3:
                 raise
-            print(f'hdiutil create: no result after {CREATE_TIMEOUT}s; retrying (attempt {attempt + 1}/3).', file=sys.stderr, flush=True)
+            command = fallback
+            print(f'hdiutil create: no result after {CREATE_TIMEOUT}s; retrying as APFS/UDZO (attempt {attempt + 1}/3).', file=sys.stderr, flush=True)
             time.sleep(attempt * 3)
             continue
         except BaseException:
