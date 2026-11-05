@@ -13,7 +13,7 @@ void main() {
   }
 
   testWidgets(
-    'offline preview opens on an empty week without a provider call',
+    'offline preview opens on an empty day without a provider call',
     (tester) async {
       size(tester);
       final api = PreviewGateway(fixture: 'connected', screen: 'social');
@@ -21,7 +21,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('social-preview')), findsOneWidget);
       expect(find.text('No posts yet'), findsOneWidget);
-      expect(find.text('0 drafts'), findsNWidgets(7));
       expect(find.text('Publish'), findsNothing);
       expect(find.byType(TextField), findsNothing);
       expect(
@@ -35,7 +34,7 @@ void main() {
     },
   );
 
-  testWidgets('preview tabs and week navigation do not create drafts', (
+  testWidgets('preview tabs and day navigation do not create drafts', (
     tester,
   ) async {
     size(tester);
@@ -43,9 +42,9 @@ void main() {
       const MaterialApp(home: Scaffold(body: SocialPreview())),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Next week'));
+    await tester.tap(find.byTooltip('Next day'));
     await tester.pumpAndSettle();
-    expect(find.text('0 drafts'), findsNWidgets(7));
+    expect(find.text('No posts yet'), findsOneWidget);
     for (final tab in ['drafts', 'ideas', 'brand', 'templates', 'calendar']) {
       await tester.tap(find.byKey(Key('social-tab-$tab')));
       await tester.pumpAndSettle();

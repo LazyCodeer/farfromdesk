@@ -4,12 +4,6 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../src/store.js';
-import { Router } from '../src/router.js';
-import { Approvals } from '../src/approvals.js';
-import { updateRole } from '../src/roles.js';
-import { ClaudeSDKSession } from '../src/claude-sdk-session.js';
-import { ClaudeSession } from '../src/claude-session.js';
 
 const dir=mkdtempSync(join(tmpdir(),'ffd-provider-')),log=join(dir,'requests.jsonl'),fake=join(dir,'codex');
 const id='11111111-1111-4111-a111-111111111111';
@@ -23,6 +17,13 @@ rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;fs.appen
  else send({id:m.id,result:{}});
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=dir;process.env.WSB_CODEX_BIN=fake;
+// Source modules read WSB_CODEX_BIN at import, so load them only after the fake is set.
+const { Store }=await import('../src/store.js');
+const { Router }=await import('../src/router.js');
+const { Approvals }=await import('../src/approvals.js');
+const { updateRole }=await import('../src/roles.js');
+const { ClaudeSDKSession }=await import('../src/claude-sdk-session.js');
+const { ClaudeSession }=await import('../src/claude-session.js');
 const { NativeAgents }=await import('../src/native.js');
 const { Masters }=await import('../src/masters.js');
 const { Connections }=await import('../src/connections.js');

@@ -149,6 +149,7 @@ export async function renderSocialPlan(input, artwork) {
         }
         shapes += rectangle(68, 1251, 944, 1, fg);
         await put(p.brand.name, 68, 1280, 780, 40, 24);
+        // A single image is a post, not a guide: it gets no footer call to action.
         const footer = p.slides.length === 1 ? '' : index < p.slides.length - 1 ? 'SWIPE TO CONTINUE' : 'SAVE THIS GUIDE';
         if (footer)
             await put(footer, 696, 1280, 316, 40, 24, fg, true);

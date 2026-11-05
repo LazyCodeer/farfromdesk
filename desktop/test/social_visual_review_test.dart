@@ -27,10 +27,10 @@ void main() {
         ..addFont(rootBundle.load(entry.value));
       await loader.load();
     }
-    final output = Directory(
-      '/Volumes/Personal/Developer/FarFromDesk/Builds/social-complete-cards-20261031/screens',
-    );
-    await tester.runAsync(() => output.create(recursive: true));
+    // Screens land in a temp folder so the check runs on any machine, CI included.
+    final output = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('ffd-social-screens-'),
+    ))!;
     final boundary = GlobalKey();
     final raw = await rootBundle.load('assets/social/template-0.jpg');
     final bytes = Uint8List.sublistView(raw);

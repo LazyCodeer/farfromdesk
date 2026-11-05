@@ -26,10 +26,10 @@ async function fixture(record=true,persistent=false,fenceAtStart=true) {
   router.contracts=new TaskContracts(store,secret,async()=>({kind:'contract',goal:'Change theme',exclusions:[],checks:['Theme works','Previous mode works'],question:''}));
   await router.receive({id:'wa:request',text:'Change theme',ownerIntent:true,ownerCommand:true});
   store.db.prepare("UPDATE outbox SET status='sent' WHERE source LIKE 'task-contract:%'").run();
-  // Simulates the real bridge's durable authenticated-input capture. Main's
-  // current plain-text approval path does not yet provide this automatically.
-  if(record){const captured=store.captureIncomingOwner(owner,'whatsapp')!;store.incomingOwnerContext.run(captured,()=>store.recordIncomingInput('wa:approval'));}
+  // Router.receive now records the authenticated approval input itself.
+  // A missing record (legacy or unsupported root) is simulated by removing it.
   await router.receive({id:'wa:approval',text:'ok',ownerIntent:true,ownerCommand:true});
+  if(!record)store.db.prepare('DELETE FROM incoming_owner_inputs WHERE id=?').run('wa:approval');
   store.jobState('wa:approval','dispatched');
   router.channelReply(binding,'Everything passed, see my PR','final','wa:approval',undefined,{outcome:'done'});
   return {store,router,binding,owner,dir,id:'wa:approval',close(){approvals.cancel();try{store.close();}catch{}rmSync(dir,{recursive:true,force:true});}};

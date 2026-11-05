@@ -769,7 +769,7 @@ test('changed owner or target before source turn end fails closed without sendin
       const id=f.collab.stage('wa:approve',f.worker.id,'Implement',`changed-${mode}`);
       if(mode==='owner')f.store.set('whatsapp-owner','new-owner@s.whatsapp.net');
       else f.store.db.prepare('UPDATE bindings SET native_id=? WHERE id=?').run(randomUUID(),f.worker.id);
-      f.sourceEnd.resolve();await until(()=>f.store.job(id)?.status==='failed');
+      f.sourceEnd.resolve();await until(()=>{f.r.pump();return f.store.job(id)?.status==='failed';}); // a revoked turn's pump stops; a neutral pump fails it closed
       assert.equal(f.starts.filter(x=>x.id===id).length,0);
     }finally{await f.close();}
   }
@@ -962,7 +962,7 @@ test('owner and channel changes away and back invalidate a staged handoff',async
       if(mode==='owner'){f.store.set('whatsapp-owner','replacement@s.whatsapp.net');f.store.set('whatsapp-owner',f.owner);}
       else{f.store.set('control-channel','telegram');f.store.set('control-channel','whatsapp');}
       assert.throws(()=>f.collab.stage('wa:approve',f.worker.id,'Implement',`roundtrip-${mode}`),/changed/);
-      f.sourceEnd.resolve();await until(()=>f.store.job(id)?.status==='failed');
+      f.sourceEnd.resolve();await until(()=>{f.r.pump();return f.store.job(id)?.status==='failed';}); // a revoked turn's pump stops; a neutral pump fails it closed
       assert.equal(f.starts.filter(x=>x.id===id).length,0,mode);
     }finally{await f.close();}
   }
