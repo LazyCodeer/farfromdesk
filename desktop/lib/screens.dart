@@ -4616,9 +4616,10 @@ extension _BridgeScreens on _DeskState {
       settingCard(
         Icons.laptop_mac_rounded,
         'Keep running with the lid closed',
-        'Server mode keeps this $computer awake while it is plugged in, even '
-            'with the lid shut, so tasks keep going. Turning it on asks for an '
-            'administrator approval once.',
+        'Server mode keeps this $computer awake with the lid shut, plugged in '
+            'or on battery above ${serverMode['batteryFloor'] ?? 15}%, so tasks keep '
+            'going. Below that, your phone asks before it keeps running. Turning it '
+            'on asks for an administrator approval once.',
         control: Switch(
           key: const Key('setting-server-mode'),
           value: enabled,
@@ -4629,12 +4630,15 @@ extension _BridgeScreens on _DeskState {
                     final proceed = await confirm(
                       'Turn on server mode?',
                       'This installs a small background helper with administrator '
-                          'approval. While it is on and the power cable is '
-                          'connected, this $computer will not sleep, and a closed '
+                          'approval. While it is on, this $computer will not sleep '
+                          'with the lid closed, plugged in or on battery above '
+                          '${serverMode['batteryFloor'] ?? 15}%. Below that, your phone '
+                          'asks whether to keep running, and below 5% it always '
+                          'sleeps. A closed '
                           'lid gets warm, so keep the vents clear. Closing the lid '
                           'also locks the screen, so you will need your Mac '
                           'password when you open it again. Turning this off or '
-                          'unplugging the cable puts normal sleep back within '
+                          'running low on battery puts normal sleep back within '
                           'seconds. If FarFromDesk stops, the helper keeps holding '
                           'sleep off for up to two hours, then restores normal '
                           'sleep. It cannot log in for you after a restart when '
@@ -4652,8 +4656,8 @@ extension _BridgeScreens on _DeskState {
         ),
         footer: [
           small(
-            'The helper puts normal sleep back when you turn this off or unplug '
-            'the power. If FarFromDesk stops, it holds sleep off for up to two '
+            'The helper puts normal sleep back when you turn this off or the '
+            'battery runs low. If FarFromDesk stops, it holds sleep off for up to two '
             'hours, then restores normal sleep.',
           ),
           if (enabled) ...[
@@ -4662,13 +4666,21 @@ extension _BridgeScreens on _DeskState {
             // reference states it, instead of a pill plus a second paragraph.
             if (serverMode['active'] == true)
               settingsNote(
-                'Lid-closed sleep is off on power, and closing the lid locks the '
-                'screen. Keep the vents clear for proper airflow.',
+                serverMode['onAcPower'] == false
+                    ? 'Running on battery (${serverMode['batteryPercent'] ?? '?'}%) with '
+                          'lid-closed sleep off. Closing the lid locks the screen.'
+                    : 'Lid-closed sleep is off on power, and closing the lid locks the '
+                          'screen. Keep the vents clear for proper airflow.',
               )
             else ...[
               gap(7),
-              if (serverMode['onAcPower'] == false)
-                tag('Waiting for the power cable')
+              if (serverMode['lowBatteryNeedsConfirm'] == true)
+                tag(
+                  'Battery below ${serverMode['batteryFloor'] ?? 15}%: reply /keepawake on your phone to keep running',
+                  tint: warning,
+                )
+              else if (serverMode['onAcPower'] == false)
+                tag('Battery too low: sleeping normally')
               else if (serverModeHelperStale(serverMode))
                 tag('The sleep helper is not taking effect', tint: warning)
               else
@@ -4678,9 +4690,9 @@ extension _BridgeScreens on _DeskState {
                 serverModeHelperStale(serverMode)
                     ? 'macOS is still set to sleep normally. Server mode needs the '
                           'background helper; turn it off and on again to reinstall it.'
-                    : 'The helper holds sleep off while FarFromDesk is alive and the '
-                          'power cable is connected, and puts normal sleep back if '
-                          'either one goes away.',
+                    : 'The helper holds sleep off while FarFromDesk is alive and '
+                          'there is power or enough battery, and puts normal sleep back '
+                          'if either one goes away.',
               ),
             ],
           ],

@@ -57,6 +57,8 @@ In WhatsApp, bind an approved GitHub check with /proof bind #ITEM CHECK_NUMBER O
 export class DuplicateOwnerRequest extends Error {}
 export class Router {
   coordinator?:Coordinator;
+  /** Server mode's low battery answer, set by main. */
+  serverMode?:{setLowBatteryOk(ok:boolean):Promise<string>};
   brain:MetaBrain;
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
@@ -307,6 +309,12 @@ export class Router {
       }
       const guidedOwner=this.store.ownerFor(this.store.destination());
       const pendingContract=!!guidedOwner&&this.contracts.hasPendingOwner(guidedOwner,this.store.destination()??'');
+      // The answer to the low battery question server mode sends to the phone.
+      if(this.serverMode&&authenticatedOwner(this,m)&&!m.quotedId&&m.ownerCommand===true&&/^\/(?:keepawake|letsleep)\s*$/i.test(text)){
+        const message=await this.serverMode.setLowBatteryOk(/keepawake/i.test(text));
+        this.store.output(undefined,message,`power:${m.id}`,undefined,{plain:true});this.store.remember(m.id);
+        return {status:'handled',requestId:m.id};
+      }
       // Never reinterpret a pending contract answer as a new mode selection.
       if(!pendingContract&&authenticatedOwner(this,m)&&!m.quotedId&&(m.source==='voice'?m.ownerIntent===true:m.ownerCommand===true)&&asksForSocialCreation(m.text)&&!this.guidedModes.get(this,m)){
         this.guidedModes.start(this,m,'social');

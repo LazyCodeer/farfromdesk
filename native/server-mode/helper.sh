@@ -9,7 +9,10 @@
 #   1. the app's state file exists, is owned by the installing user, and parses;
 #   2. that file says enabled=true;
 #   3. its heartbeat is younger than GRACE_MAX_AGE seconds;
-#   4. the Mac is drawing from AC power.
+#   4. the Mac is drawing from AC power, or on battery when the state file
+#      says allowBattery=true and the charge is at least batteryFloor percent
+#      (default 15), or above the hard floor of 5 percent when the owner said
+#      lowBatteryOk=true. Below 5 percent normal sleep always returns.
 #
 # MAX_AGE splits rule 3 into the two states worth telling apart. A heartbeat
 # younger than MAX_AGE means the app is running. Between MAX_AGE and
@@ -33,7 +36,7 @@
 set -u
 
 # Read by src/server-mode.ts to decide whether the installed copy is out of date.
-FFD_HELPER_VERSION=4
+FFD_HELPER_VERSION=5
 
 STATE="${FFD_STATE_FILE:-}"
 EXPECT_UID="${FFD_STATE_UID:-}"
@@ -60,8 +63,19 @@ reason() {
   now="$(date +%s)"
   age=$((now - mtime))
   if [ "$age" -gt "$GRACE_MAX_AGE" ]; then echo "stale-heartbeat"; return; fi
-  if ! "$PMSET" -g batt 2>/dev/null | /usr/bin/head -n 1 | /usr/bin/grep -q "AC Power"; then
-    echo "on-battery"; return
+  batt="$("$PMSET" -g batt 2>/dev/null)"
+  if ! printf '%s\n' "$batt" | /usr/bin/head -n 1 | /usr/bin/grep -q "AC Power"; then
+    allow="$(/usr/bin/plutil -extract allowBattery raw -o - "$STATE" 2>/dev/null)"
+    if [ "$allow" != "true" ]; then echo "on-battery"; return; fi
+    pct="$(printf '%s\n' "$batt" | /usr/bin/grep -o '[0-9][0-9]*%' | /usr/bin/head -n 1 | /usr/bin/tr -d '%')"
+    case "$pct" in ''|*[!0-9]*) echo "on-battery"; return ;; esac
+    if [ "$pct" -lt 5 ]; then echo "battery-critical"; return; fi
+    floor="$(/usr/bin/plutil -extract batteryFloor raw -o - "$STATE" 2>/dev/null)"
+    case "$floor" in ''|*[!0-9]*) floor=15 ;; esac
+    if [ "$pct" -lt "$floor" ]; then
+      ok="$(/usr/bin/plutil -extract lowBatteryOk raw -o - "$STATE" 2>/dev/null)"
+      if [ "$ok" != "true" ]; then echo "low-battery"; return; fi
+    fi
   fi
   if [ "$age" -gt "$MAX_AGE" ]; then echo "grace"; return; fi
   echo "ok"
