@@ -2,7 +2,7 @@ import {prepareSocialPreviews,queueSocialPreviews, withoutPreviewCaptions} from 
 import {asksForSocialCreation} from './social-intent.js';
 import {requestedSocialImageProvider} from './social-image-provider.js';
 import { DesktopReadinessError } from './session-activation.js';
-import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected } from './owner-commands.js';
+import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected, toolSelected } from './owner-commands.js';
 import { selectOption, previewOption, parseMessageOptions, createOptions, markActionOption, optionAction } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { MetaModel } from './meta-model.js';
@@ -352,7 +352,8 @@ export class Router {
             reply('What would you like to create posts about, and for which platforms? Send /back to leave.');return {status:'handled',requestId:m.id};
           }
         }
-        if(mode&&(!text.startsWith('/')||!!start)){
+        // A tool mode picked after /social (/muse, /cursor, /deepseek) owns plain messages until /back.
+        if(mode&&(!!start||!text.startsWith('/')&&!toolSelected(this))){
           if(brainSelected(this)){
             // Brain remains a router. Its chosen native executor receives the
             // same task mode, without silently switching the user's executor.
