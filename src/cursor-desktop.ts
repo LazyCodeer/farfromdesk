@@ -42,6 +42,8 @@ export type CursorTurnOptions={
   cli?:string;
   /** The folder the command-line agent works in. */
   cwd?:string;
+  /** The CLI chat to continue. Without it `cursor-agent -p` starts a new chat every turn. */
+  resume?:string;
   /** How long Cursor may take to show it took the prompt before the run is reported as not picked up. */
   pickupMs?:number;
 };
@@ -201,6 +203,9 @@ async function openInCursor(url:string):Promise<void> {
   await openUrl(url);
 }
 
+/** What a Cursor coordinator needs and the owner can fix: the desktop app alone cannot keep one chat. */
+export const CURSOR_CLI_MISSING='Cursor coordinators need the Cursor command-line agent, signed in. The Cursor desktop app alone opens a new chat for every message. In Terminal run: curl https://cursor.com/install -fsS | bash, then cursor-agent login. Then create the coordinator again';
+
 /** Cursor's own command-line agent, when it is installed and signed in in the owner's home. */
 export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefined {
   const home=cursorOwnerHome(env),bin=env.CURSOR_AGENT_BIN?.trim()||join(home,'.local','bin','cursor-agent');
@@ -218,9 +223,9 @@ export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefine
  * (the owner chose this on 5 Nov 2026): without it every command is refused, including the curl that
  * reaches the owner's Mac apps.
  */
-function runCursorCli(bin:string,prompt:string,cwd:string|undefined,timeoutMs:number,env:NodeJS.ProcessEnv):Promise<CursorTurnResult> {
+function runCursorCli(bin:string,prompt:string,cwd:string|undefined,timeoutMs:number,env:NodeJS.ProcessEnv,resume?:string):Promise<CursorTurnResult> {
   return new Promise((resolve,reject)=>{
-    const child=spawn(bin,['-p','--output-format','stream-json','--trust','--force',...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
+    const child=spawn(bin,['-p','--output-format','stream-json','--trust','--force',...(resume?['--resume',resume]:[]),...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
     let out='',err='';
     const timer=setTimeout(()=>{child.kill();reject(new Error('Cursor did not finish this turn in time.'));},timeoutMs);
     child.stdout.on('data',d=>{out+=d;});child.stderr.on('data',d=>{err+=d;});
@@ -253,7 +258,7 @@ export async function runCursorTurn(options:CursorTurnOptions):Promise<CursorTur
   const env=options.env??process.env;
   const timeoutMs=options.timeoutMs??10*60*1000;
   const pollMs=options.pollMs??750;
-  if(options.cli)return runCursorCli(options.cli,prompt,options.cwd,timeoutMs,env);
+  if(options.cli)return runCursorCli(options.cli,prompt,options.cwd,timeoutMs,env,options.resume);
   const open=options.open??openInCursor;
   // Cursor writes the transcript only when the turn ends (live: a one-line answer landed at 60 s), so this is generous.
   const pickupMs=options.pickupMs??180_000;

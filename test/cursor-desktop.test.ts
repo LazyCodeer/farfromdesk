@@ -14,6 +14,7 @@ import {
   findCursorCli,
 } from '../src/cursor-desktop.js';
 import {cursorConversationDb,cursorProjectSlug} from '../src/cursor-paths.js';
+import {probeCursorAccount} from '../src/connections.js';
 
 const realTmp=realpathSync(tmpdir());
 const dirs:string[]=[];
@@ -170,4 +171,31 @@ test('runCursorTurn runs a signed-in cursor-agent by command and returns its ans
   const result=await runCursorTurn({prompt:'say hi',env,cli,cwd:base,open:async()=>{throw new Error('the app must not be used');}});
   assert.equal(result.text,'Hi from the CLI: say hi');
   assert.equal(result.sessionId,'cli-chat-1');
+});
+
+test('runCursorTurn resumes the coordinator chat so every message lands in one Cursor chat',async()=>{
+  const base=fixture('cursor-desktop-resume-');
+  const bin=join(base,'cursor-agent');
+  // The fake agent answers with the chat it was told to resume, or a fresh id when it was not.
+  writeFileSync(bin,`#!${process.execPath}\nconst a=process.argv.slice(2);if(a[0]==='status'){console.log('Logged in as owner');process.exit(0);}\nconst r=a.indexOf('--resume');const id=r<0?'new-'+Date.now():a[r+1];\nfor(const e of [{type:'assistant',message:{content:[{type:'text',text:'ok'}]}},{type:'result',is_error:false,result:'ok',session_id:id}])console.log(JSON.stringify(e));\n`);
+  chmodSync(bin,0o755);
+  const env={CURSOR_DATA_DIR:base,CURSOR_AGENT_BIN:bin} as NodeJS.ProcessEnv;
+  const first=await runCursorTurn({prompt:'hey',env,cli:bin,cwd:base,resume:'chat-1'});
+  const second=await runCursorTurn({prompt:'hey again',env,cli:bin,cwd:base,resume:'chat-1'});
+  assert.equal(first.sessionId,'chat-1');
+  assert.equal(second.sessionId,'chat-1');
+});
+
+test('a Cursor connection without the signed-in command-line agent fails at setup with what to install',async()=>{
+  const base=fixture('cursor-desktop-nocli-');
+  const missing=await probeCursorAccount(base,{CURSOR_DATA_DIR:base,CURSOR_AGENT_BIN:join(base,'absent')} as NodeJS.ProcessEnv);
+  assert.equal(missing.state,'unknown');
+  assert.match(missing.label,/cursor-agent login/);
+  const bin=join(base,'cursor-agent');
+  writeFileSync(bin,`#!${process.execPath}\nconsole.log('Not logged in');\n`);chmodSync(bin,0o755);
+  const signedOut=await probeCursorAccount(base,{CURSOR_DATA_DIR:base,CURSOR_AGENT_BIN:bin} as NodeJS.ProcessEnv);
+  assert.equal(signedOut.state,'unknown');
+  writeFileSync(bin,`#!${process.execPath}\nconsole.log('Logged in as owner');\n`);
+  const ready=await probeCursorAccount(base,{CURSOR_DATA_DIR:base,CURSOR_AGENT_BIN:bin} as NodeJS.ProcessEnv);
+  assert.equal(ready.state,'verified');
 });

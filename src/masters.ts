@@ -38,7 +38,7 @@ import { runDshQueued, DEFAULT_DSH_LABEL } from './dsh-sessions.js';
 import { claimMessages, settleMessages, messagePrompt } from './dsh-inbox.js';
 import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, readProfile, credentialRef } from './dsh-provider.js';
 import { dshHome } from './dsh-paths.js';
-import { runCursorTurn, findCursorCli } from './cursor-desktop.js';
+import { runCursorTurn, findCursorCli, CURSOR_CLI_MISSING } from './cursor-desktop.js';
 import { cursorAppBinary } from './cursor-paths.js';
 
 const exec=promisify(execFile);
@@ -568,10 +568,19 @@ export class Masters {
       try{await confirmCodexSession(runtime,b.native_id,b.cwd);}catch(e){this.stopWorker(b.id);throw e;}
       if(mode==='cli')this.store.set(`managed-codex:${b.id}`,'true');
       else {runtime.close();this.runtimes.delete(b.id);this.saveOperation({...this.operation(),stage:'Opening Codex Desktop'});await this.openCodex(b.native_id);}
-    } else if(provider==='muse'||provider==='deepseek'||provider==='cursor') {
+    } else if(provider==='cursor') {
+      // Create the one chat every request resumes, now, so sign-in, keychain and workspace trust
+      // prompts show up while the owner is at setup, not on the first phone message.
+      this.saveOperation({...this.operation(),stage:'Creating the Cursor chat'});
+      const cli=findCursorCli();
+      if(!cli)throw new Error(CURSOR_CLI_MISSING+'.');
+      const ready=await runCursorTurn({prompt:`${instruction}\n\nReturn exactly READY without using tools. Wait for the owner's first message.`,timeoutMs:cursorTurnTimeoutMs,cli,cwd});
+      if(!ready.sessionId)throw new Error('Cursor did not return a chat id. Check that cursor-agent works in Terminal, then create the coordinator again.');
+      this.store.set(`cursor-chat:${b.id}`,ready.sessionId);
+      this.saveOperation({...this.operation(),nativeId:b.native_id,stage:'Ready for the first request'});
+    } else if(provider==='muse'||provider==='deepseek') {
       // The provider owns its session on disk. Setup only pins the verified CLI route; the first
-      // request creates the session id that later requests resume. Cursor does not resume, so its
-      // recorded chat id is for audit and display.
+      // request creates the session id that later requests resume.
       this.saveOperation({...this.operation(),nativeId:b.native_id,stage:'Ready for the first request'});
     } else {
       this.saveOperation({...this.operation(),nativeId:b.native_id});
@@ -648,19 +657,14 @@ export class Masters {
       return;
     }
     if(b.provider==='cursor') {
-      // One completed app turn per request. The deeplink only prefills the Composer - it never opens a
-      // window. Measured: Cursor submitted and answered four delivered prompts on its own, but the same
-      // surface then took no prompt at all for two hours, so submission is Cursor's own behaviour and
-      // cannot be relied on. `runCursorTurn` waits for the transcript's `turn_ended` record and rejects
-      // on timeout, so a delivery that is never picked up is reported as unfinished rather than as an
-      // answer. The deeplink has no chat-id parameter, so every request is a new chat and cannot
-      // continue an earlier one; the returned chat id is stored for audit and display only. Cursor
-      // reports no usage, so none is emitted. `workspace` is deliberately not passed: a name that
-      // matches no open Cursor window is silently ignored, which is the likeliest cause of the inert
-      // window we measured, and the prompt is then never submitted.
+      // Every turn runs through Cursor's signed-in command-line agent and resumes the one chat setup
+      // created, so the owner sees a single conversation. The desktop deeplink is never used here: it
+      // cannot aim at a chat, opens a new one per message and runs only if someone presses Enter.
       const key=`cursor-chat:${b.id}`;
+      const cli=findCursorCli();
+      if(!cli)throw new Error(CURSOR_CLI_MISSING+'.');
       handedOff=true;
-      const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs,cli:findCursorCli(),cwd:b.cwd}));
+      const result=await verify(runCursorTurn({prompt:message,timeoutMs:cursorTurnTimeoutMs,cli,cwd:b.cwd,resume:this.store.get(key)}));
       if(result.sessionId)this.store.set(key,result.sessionId);
       if(this.store.job(jobId)?.status==='replaced')return;
       if(this.store.job(jobId)?.status!=='completed')this.router.channelReply(b,result.text,(this.router.hasPendingCreation?.(jobId)||this.router.unfinishedChildren(jobId))?'progress':'final',jobId,`native-final:${jobId}`);
