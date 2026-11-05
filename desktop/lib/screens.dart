@@ -3748,6 +3748,10 @@ extension _BridgeScreens on _DeskState {
           small(
             '${setupProjects.length} folders this app has worked in, most recent first.',
           ),
+          if (selectedPlatform?['workspaceError'] != null) ...[
+            gap(4),
+            small('${selectedPlatform?['workspaceError']}'),
+          ],
         ],
         gap(4),
         small(

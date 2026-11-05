@@ -29,7 +29,7 @@ import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js
 import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections, usableCLIConnection } from './connections.js';
-import { WorkspaceScanner,type ResolvedWorkspaces } from './workspace-scanner.js';
+import { WorkspaceScanner,deniedMessage,type ResolvedWorkspaces } from './workspace-scanner.js';
 import { scopedBridgeCommand } from './reply-args.js';
 import { openCodexDesktop } from './session-activation.js';
 import { museBinary, runMuse } from './muse-session.js';
@@ -271,7 +271,7 @@ export class Masters {
       }
     }));
     let resolved:ResolvedWorkspaces=new Map(),workspaceError:string|undefined;
-    try{resolved=await this.workspaceScanner.scan([...claude,...codex,...muse,...deepseek,...cursor].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
+    try{resolved=await this.workspaceScanner.scan([...claude,...codex,...muse,...deepseek,...cursor].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));if(resolved.denied?.length)workspaceError=deniedMessage(resolved.denied);}
     catch(error){workspaceError=error instanceof Error?error.message:'Workspace discovery unavailable';}
     for(const platform of platforms){platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[],resolved,platform.launcherReady===true);delete platform.launcherReady;if(workspaceError)platform.workspaceError=workspaceError;}
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
