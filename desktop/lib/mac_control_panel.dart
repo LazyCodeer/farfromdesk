@@ -68,8 +68,9 @@ extension _MacControlPanel on _DeskState {
   }
 
   Widget macControlPanel() {
-    if (status['macControl']?['portable'] == true)
+    if (status['macControl']?['portable'] == true) {
       return portableControlPanel();
+    }
     final info = status['macControl'] ?? {};
     final trusted = info['trusted'];
     final capture = Map<String, dynamic>.from(info['capture'] ?? {});
