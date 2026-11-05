@@ -1,6 +1,6 @@
 # Contributing to FarFromDesk
 
-FarFromDesk is licensed under MIT. Fork this repository and open a pull request. Only the repository owner can merge or publish changes. Website, installer and release-workflow changes require owner review. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
+FarFromDesk is source-available, not open source (see LICENSE). Contributions need prior written permission from Codecy Labs / Sagar Kumar; open an issue first. Only the repository owner can merge or publish changes. Website, installer and release-workflow changes require owner review. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
 
 ## Local workflow
 
