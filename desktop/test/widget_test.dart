@@ -266,6 +266,25 @@ void main() {
   });
 
   testWidgets(
+    'Remote control off macOS offers no password the backend would refuse',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway()..phoneSupported = false;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
+      expect(find.byKey(const Key('remote-unavailable')), findsOneWidget);
+      expect(find.textContaining('works on Mac today'), findsOneWidget);
+      expect(find.byKey(const Key('remote-password')), findsNothing);
+      expect(find.byKey(const Key('remote-password-save')), findsNothing);
+      expect(api.remoteActions, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     "Remote control lists the driver's grants in the one Permissions list",
     (tester) async {
       size(tester);
@@ -2331,6 +2350,8 @@ class MacControlGateway extends PreviewGateway {
   }
 
   bool remotePasswordSet = false;
+  /// False on Windows and Linux, where the backend refuses phone screen control.
+  bool phoneSupported = true;
   String linkState = 'idle';
   final remoteActions = <String>[];
   @override
@@ -2338,7 +2359,7 @@ class MacControlGateway extends PreviewGateway {
     if (path == '/api/remote-control') return {'state': linkState};
     if (path == '/api/phone-remote') {
       return {
-        'supported': true,
+        'supported': phoneSupported,
         'passwordSet': remotePasswordSet,
         'running': false,
         'addresses': [],

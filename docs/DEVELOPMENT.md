@@ -6,7 +6,7 @@
 
 - Mac running macOS 14 or later. The default local build targets Apple Silicon; the release script supports separate Apple Silicon and Intel targets.
 - Xcode or Command Line Tools with a Swift 6 toolchain.
-- Node.js **22.13+** and npm.
+- Node.js **22.15+** and npm.
 - Python **3.12+**, CMake, and the standard macOS build tools.
 - A supported coding app/runtime, signed in with an eligible account.
 - Internet access for initial dependency, speech source, and model downloads.

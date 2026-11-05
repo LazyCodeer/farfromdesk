@@ -11,7 +11,7 @@ export class ClaudeSession {
   private turn?:{resolve:(text:string)=>void;reject:(e:Error)=>void;timer:NodeJS.Timeout};
   constructor(binary:string,cwd:string,private id:string,resume:boolean,private permission:(tool:string,input:unknown)=>Promise<boolean>,env:NodeJS.ProcessEnv=process.env,options:{name?:string;permissionMode?:'manual'|'acceptEdits';mcpConfig?:string;allowedTools?:string;instructions?:string}={}) {
     this.roleInstructions=!!options.instructions;
-    this.process=spawn(binary,['-p','--verbose','--input-format','stream-json','--output-format','stream-json','--permission-mode',options.permissionMode??'acceptEdits','--permission-prompts','host',...(options.instructions?['--append-system-prompt',options.instructions,'--system-prompt-snapshot','off']:[]),...(options.mcpConfig?['--mcp-config',options.mcpConfig]:[]),...(options.allowedTools?['--allowedTools',options.allowedTools]:[]),...(!resume&&options.name?['--name',options.name]:[]),resume?'--resume':'--session-id',id],{cwd,stdio:'pipe',env});
+    this.process=spawn(binary,['-p','--verbose','--input-format','stream-json','--output-format','stream-json','--permission-mode',options.permissionMode??'acceptEdits','--permission-prompts','host',...(options.instructions?['--append-system-prompt',options.instructions,'--system-prompt-snapshot','off']:[]),...(options.mcpConfig?['--mcp-config',options.mcpConfig]:[]),...(options.allowedTools?['--allowedTools',options.allowedTools]:[]),...(!resume&&options.name?['--name',options.name]:[]),resume?'--resume':'--session-id',id],{cwd,stdio:'pipe',env,windowsHide:true});
     this.process.stderr.resume();
     createInterface({input:this.process.stdout}).on('line',line=>{
       if(line.length>4*1024*1024){this.close();return;}

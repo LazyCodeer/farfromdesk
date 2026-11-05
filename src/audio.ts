@@ -60,7 +60,7 @@ export async function downloadAudio(audio:any,signal?:AbortSignal):Promise<Downl
   return streamMediaDownload(audio,'audio','voice.bin',Number.MAX_SAFE_INTEGER,signal);
 }
 async function decodeWav(ffmpeg:string,format:string,input:string,wav:string,signal?:AbortSignal) {
-  await exec(ffmpeg,['-nostdin','-hide_banner','-loglevel','error','-protocol_whitelist','file,pipe','-f',format,'-i',input,'-vn','-ac','1','-ar','16000','-t','301','-c:a','pcm_s16le',wav],{timeout:45000,killSignal:'SIGKILL',maxBuffer:64000,signal});
+  await exec(ffmpeg,['-nostdin','-hide_banner','-loglevel','error','-protocol_whitelist','file,pipe','-f',format,'-i',input,'-vn','-ac','1','-ar','16000','-t','301','-c:a','pcm_s16le',wav],{timeout:45000,killSignal:'SIGKILL',maxBuffer:64000,signal,windowsHide:true});
   const bytes=(await stat(wav)).size;
   if(bytes<=78||bytes>MAX_AUDIO_SECONDS*32000+78)throw new Error('Audio is empty or longer than five minutes.');
   const pcm=await readFile(wav);
@@ -90,7 +90,7 @@ export async function transcribeLocal(data:Buffer|DownloadedMedia,format:string,
     // The pinned Windows GGML runtime stalls with four threads on the hosted
     // two-core runner; the same binary completes with one. Keep that safe mode.
     return await measureVoiceStage('transcribe',async()=>{
-    const transcription=exec(config.whisper,['-m',config.model,'-f','-','-l','auto','--prompt',VOICE_PROMPT,'-sns','-otxt','-of',output,'-nt','-np','-t',process.platform==='win32'?'1':'4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal});
+    const transcription=exec(config.whisper,['-m',config.model,'-f','-','-l','auto','--prompt',VOICE_PROMPT,'-sns','-otxt','-of',output,'-nt','-np','-t',process.platform==='win32'?'1':'4'],{timeout:180000,killSignal:'SIGKILL',maxBuffer:256000,signal,windowsHide:true});
     // An early decoder exit is reported by the process promise, not an unhandled
     // EPIPE from the input stream. end() also guarantees the decoder receives EOF.
     transcription.child.stdin?.on('error',()=>{});

@@ -64,7 +64,7 @@ export function runMuse(options:MuseRunOptions):Promise<MuseResult> {
     let settled=false,bytes=0,stderr='',pending='',deltas='',model:string|null=null;
     let sessionId:string|null=options.sessionId??null;
     let usage:MuseResult['usage']=null;
-    const child=spawn(binary,args,{cwd:options.cwd,env:museEnv(),stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32'});
+    const child=spawn(binary,args,{cwd:options.cwd,env:museEnv(),stdio:['ignore','pipe','pipe'],detached:process.platform!=='win32',windowsHide:true});
     const finish=(error?:Error,result?:MuseResult)=>{
       if(settled)return;
       settled=true;
