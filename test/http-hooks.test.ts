@@ -22,7 +22,7 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
   let permissionGate:Promise<void>|undefined,permissionEntered:(()=>void)|undefined;
   const macControl={configure:(enabled:boolean)=>{macEnabled=enabled;return {enabled};},view:()=>({enabled:macEnabled}),status:async()=>{if(permissionGate){const gate=permissionGate;permissionGate=undefined;permissionEntered?.();await gate;}return {supported:true,trusted:macTrusted};},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,trusted:macTrusted,enabled:macEnabled};if(input.action==='stop')return {stopped:true};macCalls++;if(input.action==='capture')return {captured:true,pngBase64:Buffer.from([137,80,78,71,13,10,26,10]).toString('base64'),frame:[-1920,125,800,600]};assert.equal(input.action,'discover');return {apps:[]};},stop:()=>{}};
   let desktopCalls=0,desktopStops=0;
-  const desktopControl={view:()=>({supported:true}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,enabled:macEnabled};if(input.action==='stop'){desktopStops++;return {stopped:true};}desktopCalls++;assert.equal(input.action,'list_apps');return {apps:[]};}};
+  const desktopControl={view:()=>({supported:true}),permissionReport:async()=>{if(permissionGate){const gate=permissionGate;permissionGate=undefined;permissionEntered?.();await gate;}return {accessibility:macTrusted};},capabilityProbe:async()=>({ok:false}),stop:()=>{desktopStops++;},run:async(scope:string,input:any)=>{assert.equal(scope,`${a.binding.id}:wa:connect-owner`);if(input.action==='status')return {supported:true,enabled:macEnabled};if(input.action==='stop'){desktopStops++;return {stopped:true};}desktopCalls++;assert.equal(input.action,'list_apps');return {apps:[]};}};
   const services={desktopControl,browser,macControl,masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({}),update:async(background:boolean,awake:boolean)=>{assert.equal(background,false);assert.equal(awake,false);pauseCalls++;}}} as any;
   const server=serve(store,router,wa,'test-admin-token',services);await new Promise<void>(r=>server.once('listening',r));
   const url=`http://127.0.0.1:${port}`;
@@ -140,10 +140,11 @@ test('local HTTP boundary, scoped replies and native hook contract',async()=>{
     assert.equal(desktopCalls,1);
     macTrusted=false;
     assert.equal((await post('/api/master/desktop-control',desktopRequest)).status,400);
-    assert.equal(desktopCalls,1);assert.equal(macEnabled,false);assert.equal(desktopStops,statusStops+1);
+    // The desktop gate is the driver's own capability; a refused action ran nothing, so there is nothing to stop.
+    assert.equal(desktopCalls,1);assert.equal(macEnabled,false);assert.equal(desktopStops,statusStops);
     macTrusted=true;
     assert.equal((await post('/api/mac-control',{action:'disable'},'test-admin-token')).status,200);
-    assert.equal(desktopStops,statusStops+2);
+    assert.equal(desktopStops,statusStops+1);
     const connect={requestId:'wa:connect-owner',targets:[`codex:${ownWorker.binding.native_id}`]};
     assert.equal((await post('/api/master/connect',connect,b.token,b.binding.id)).status,403);
     for(const path of ['/api/master/create-worker','/api/master/recover-worker'])assert.equal((await post(path,{},b.token,b.binding.id)).status,403);

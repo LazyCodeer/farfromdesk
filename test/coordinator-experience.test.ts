@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -114,7 +114,8 @@ test('coordinator role version sends once, keeps the receipt state and renews on
     f.router.queue('wa:first',f.master,'Check work');
     assert.equal(coordinatorRoleStatus(f.store).state,'pending');
     const first=turnEnvelope(f.store,f.master,'Check work','wa:first',{},[],dir);
-    assert.match(first.body,/# FarFromDesk Coordinator/);assert.doesNotMatch(first.body,/"receipt"/);
+    assert.match(first.body,/role bootstrap/);assert.doesNotMatch(first.body,/# FarFromDesk Coordinator/);assert.doesNotMatch(first.body,/"receipt"/);
+    assert.match(readFileSync(first.body.match(/Read the exact role file (\S+) before/)![1],'utf8'),/# FarFromDesk Coordinator/);
     first.acknowledge();assert.equal(coordinatorRoleStatus(f.store).state,'sent');
     const next=turnEnvelope(f.store,f.master,'Next','wa:next',{},[],dir);
     assert.doesNotMatch(next.body,/# FarFromDesk Coordinator/);assert.match(next.body,/reread if context was lost: \//);
@@ -123,7 +124,8 @@ test('coordinator role version sends once, keeps the receipt state and renews on
     const changed={...f.master,native_id:uuid(3)};
     assert.match(turnEnvelope(f.store,changed,'New session','wa:new',{},[],dir).body,/role bootstrap/);
     // Sent once per session and version, then only referenced; message templates and examples make it long.
-    assert.ok(roleConfig(f.store,f.master).instructions.length<24000);
+    // The role lives in a file the envelope points to; this budget still catches runaway growth.
+    assert.ok(roleConfig(f.store,f.master).instructions.length<28000);
   }finally{f.close();rmSync(dir,{recursive:true,force:true});}
 });
 

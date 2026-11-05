@@ -6,6 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 
+// src/config.ts reads WSB_PORT once at import, and the first test imports it, so pick
+// the server port before any src import (the runner's own WSB_PORT is a held guard port).
+const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+process.env.WSB_PORT=String(port);
+
 // Findings from the 29 Oct broad review, each reproduced first on 16cea6a.
 async function setup() {
   const root=mkdtempSync(join(tmpdir(),'ffd-brain-review-'));process.env.WSB_STATE_DIR=root;
@@ -87,8 +92,7 @@ test('watches from another chat or for missing work do not hold back current one
 
 test('a memory save from an editor opened before a newer change keeps the newer one',async()=>{
   const root=mkdtempSync(join(tmpdir(),'ffd-memory-http-'));
-  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
-  process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);
+  process.env.WSB_STATE_DIR=root;
   const [{Store},{Router},{Approvals},{serve}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js')]);
   const store=new Store(':memory:'),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,new Approvals(store));
   const server=serve(store,router,{status:'not paired'} as any,'synthetic-admin',{macControl:{view:()=>({}),stop:()=>{}}} as any);await new Promise<void>(r=>server.once('listening',r));

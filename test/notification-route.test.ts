@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,rmSync } from 'node:fs';
+import { mkdtempSync,readFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -21,7 +21,8 @@ test('fresh coordinator role and local HTTP replies suppress repeats without hid
   const coordinator=new Coordinator(store,native,router,()=>{});router.coordinator=coordinator;
   store.enqueue('tg:root',master.binding,'Check the notification fix','tg:owner');
   const fresh=router.channelPoll(master.binding,'test-client');
-  assert.match(fresh!.body,/quiet acknowledgment, not a rewritten summary/);
+  // The envelope carries only the role file pointer; the fixed rules live in that file.
+  assert.match(readFileSync(fresh!.body.match(/Read the exact role file (\S+) before/)![1],'utf8'),/quiet acknowledgment, not a rewritten summary/);
   const server=serve(store,router,{status:'not paired'} as any,'test-admin',{masters:{options:()=>({}),platformPreferences:()=>[]} as any,power:{view:()=>({})} as any});
   await new Promise<void>(r=>server.once('listening',r));
   const call=(who:typeof master)=>async(path:string,data?:unknown)=>{

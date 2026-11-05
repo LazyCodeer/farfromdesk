@@ -3,11 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtempSync,writeFileSync,rmSync,readFileSync,realpathSync,symlinkSync,existsSync,mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../src/store.js';
-import { Router } from '../src/router.js';
-import { Approvals } from '../src/approvals.js';
-import { WorkspaceScanner } from '../src/workspace-scanner.js';
-import { projectWorkspace } from '../src/project-workspace.js';
 
 const dir=mkdtempSync(join(tmpdir(),'bridge-native-test-')),fake=join(dir,'fake-codex');
 const nativeId='44444444-4444-4444-a444-444444444444';
@@ -24,11 +19,21 @@ else if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'turn-synthetic'
 else send({id:m.id,result:{}});
 });`,{mode:0o700});
 process.env.WSB_STATE_DIR=join(dir,'state');process.env.FARFROMDESK_HOME=join(dir,'home');process.env.WSB_CODEX_BIN=fake;process.env.WSB_CLAUDE_BIN=join(dir,'missing-claude');process.env.MUSE_BIN=fake;process.env.MUSE_CONFIG_DIR=join(dir,'muse-config');
+// Source modules read binaries and homes at import time, so import them only after the overrides above.
+const { Store }=await import('../src/store.js');
+const { Router }=await import('../src/router.js');
+const { Approvals }=await import('../src/approvals.js');
+const { WorkspaceScanner }=await import('../src/workspace-scanner.js');
+const { projectWorkspace }=await import('../src/project-workspace.js');
 const { Connections }=await import('../src/connections.js');
 const { Masters,codexDesktopInstalled,claudeDesktopInstalled,masterName,masterWorkspaces }=await import('../src/masters.js');
 const { Coordinator }=await import('../src/coordinator.js');
 const { CodexSession }=await import('../src/codex-session.js');
-test.after(()=>rmSync(dir,{recursive:true,force:true}));
+// Workspace lists skip temp folders as scratch, so project folders live under the isolated test home.
+const work=realpathSync(mkdtempSync(join(homedir(),'ffd-masters-')));
+test.after(()=>{rmSync(dir,{recursive:true,force:true});rmSync(work,{recursive:true,force:true});});
+// What the workspace scanner child resolves; masterWorkspaces itself never touches the disk.
+function scanned(sessions:any[]){return new Map(sessions.flatMap(s=>{try{const sessionCwd=realpathSync(s.cwd);return [[s.cwd,{sessionCwd,cwd:projectWorkspace(sessionCwd)}]] as const;}catch{return [];}}));}
 
 const cleanups:Array<()=>void>=[];
 test.afterEach(()=>{for(const cleanup of cleanups.splice(0))cleanup();});
@@ -371,14 +376,17 @@ test('Claude Desktop preference saves without any launcher lookup and preserves 
 
 
 test('workspace discovery deduplicates real paths and keeps separate accounts',()=>{
-  const cwd=realpathSync(mkdtempSync(join(dir,'workspace-'))),link=join(dir,'workspace-link');symlinkSync(cwd,link);
-  const rows=masterWorkspaces('claude','desktop',[
+  const cwd=realpathSync(mkdtempSync(join(work,'workspace-'))),link=join(work,'workspace-link');symlinkSync(cwd,link);
+  const sessions=[
     {id:'old',cwd:link,accountScope:'one',available:false,updatedAt:3},
     {id:'live',cwd,accountScope:'one',available:true,updatedAt:2},
     {id:'other-account',cwd,accountScope:'two',available:true,updatedAt:1},
-    {id:'missing',cwd:join(cwd,'missing'),available:true},
-  ]);
-  assert.equal(rows.length,2);assert.equal(rows[0].cwd,cwd);assert.equal(rows[0].launcherId,'live');
+  ];
+  // A new Claude Desktop chat opens in whichever account is signed in, so it gets one row per folder.
+  const desktop=masterWorkspaces('claude','desktop',sessions,scanned(sessions));
+  assert.equal(desktop.length,1);assert.equal(desktop[0].cwd,cwd);assert.equal(desktop[0].launcherId,'live');
+  const rows=masterWorkspaces('codex','cli',sessions,scanned(sessions));
+  assert.equal(rows.length,2);assert.ok(rows.every(w=>w.cwd===cwd));
   assert.notEqual(rows[0].id,rows[1].id);
 });
 
@@ -391,31 +399,32 @@ function worktree(project:string,name:string) {
   return cwd;
 }
 test('project picker groups Git worktrees and prefers the root launcher without mixing accounts',()=>{
-  const cwd=realpathSync(mkdtempSync(join(dir,'project-'))),one=worktree(cwd,'one'),two=worktree(cwd,'two');
+  const cwd=realpathSync(mkdtempSync(join(work,'project-'))),one=worktree(cwd,'one'),two=worktree(cwd,'two');
   const sessions=[
     {id:'tree-one',cwd:one,accountScope:'personal',available:true,updatedAt:9},
     {id:'tree-two',cwd:two,accountScope:'personal',available:true,updatedAt:8},
     {id:'root',cwd,accountScope:'personal',available:true,updatedAt:1},
     {id:'work-account',cwd:two,accountScope:'work',available:true,updatedAt:2},
   ];
-  const rows=masterWorkspaces('claude','desktop',sessions);
+  const desktop=masterWorkspaces('claude','desktop',sessions,scanned(sessions));
+  assert.equal(desktop.length,1);assert.equal(desktop[0].cwd,cwd);assert.equal(desktop[0].launcherId,'root');
+  const rows=masterWorkspaces('codex','cli',sessions,scanned(sessions));
   assert.equal(rows.length,2);assert.ok(rows.every(w=>w.cwd===cwd));
-  assert.equal(rows.find(w=>w.accountScope==='personal')?.launcherId,'root');
-  assert.equal(rows.find(w=>w.accountScope==='work')?.launcherId,'work-account');
-  assert.ok(rows.every(w=>!w.label.includes('/')));
+  assert.deepEqual(rows.map(w=>w.accountScope).sort(),['personal','work']);
+  assert.ok([...desktop,...rows].every(w=>!w.label.includes('/')));
   assert.equal(sessions[0].cwd,one,'Session delivery must retain the worktree path');
-  assert.equal(masterWorkspaces('codex','desktop',sessions.map(s=>({...s,accountScope:undefined}))).length,1);
+  assert.equal(masterWorkspaces('codex','desktop',sessions.map(s=>({...s,accountScope:undefined})),scanned(sessions)).length,1);
 });
 test('worktree-like folder names and broken Git pointers never invent a parent project',()=>{
-  const root=realpathSync(mkdtempSync(join(dir,'ordinary-'))),cwd=join(root,'.claude','worktrees','ordinary');
+  const root=realpathSync(mkdtempSync(join(work,'ordinary-'))),cwd=join(root,'.claude','worktrees','ordinary');
   mkdirSync(cwd,{recursive:true});
-  assert.equal(masterWorkspaces('codex','cli',[{cwd}])[0].cwd,cwd);
+  assert.equal(masterWorkspaces('codex','cli',[{cwd}],scanned([{cwd}]))[0].cwd,cwd);
   writeFileSync(join(cwd,'.git'),'gitdir: /missing/git\n');
-  assert.equal(masterWorkspaces('codex','cli',[{cwd}])[0].cwd,cwd);
+  assert.equal(masterWorkspaces('codex','cli',[{cwd}],scanned([{cwd}]))[0].cwd,cwd);
 });
 
 test('Codex creates in the chosen real workspace without replacing project instructions',async()=>{
-  const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'codex-workspace-')));
+  const f=fixture(),cwd=realpathSync(mkdtempSync(join(work,'codex-workspace-')));
   for(const name of ['AGENTS.md','CLAUDE.md','MASTER.md'])writeFileSync(join(cwd,name),'Owner instructions');
   f.router.native.catalog=async()=>({sessions:[{id:nativeId,cwd,available:true}]}) as any;
   await f.masters.discover();const workspace=f.masters.platforms.find(p=>p.provider==='codex'&&p.executionMode==='cli').workspaces[0];
@@ -433,9 +442,9 @@ test('Codex creates in the chosen real workspace without replacing project instr
 });
 
 test('Claude workspace creation chooses the matching account and folder without asking for a session',async()=>{
-  const f=fixture(),cwd=realpathSync(mkdtempSync(join(dir,'claude-workspace-')));
+  const f=fixture(),cwd=realpathSync(mkdtempSync(join(work,'claude-workspace-')));
   const sessions=[{id:'same-workspace',cwd,executionMode:'desktop',accountScope:'personal',available:true},
-    {id:'other',cwd:realpathSync(dir),executionMode:'desktop',accountScope:'work',available:true,updatedAt:999},
+    {id:'other',cwd:work,executionMode:'desktop',accountScope:'work',available:true,updatedAt:999},
     {id:'newer-worktree',cwd:worktree(cwd,'feature'),executionMode:'desktop',accountScope:'personal',available:true,updatedAt:1000}];
   let scans=0;f.router.native.catalog=async()=>(scans++,{sessions}) as any;
   f.masters.platforms=[{provider:'claude',executionMode:'desktop',available:true}];
@@ -446,8 +455,8 @@ test('Claude workspace creation chooses the matching account and folder without 
   assert.equal(f.masters.operation().status,'ready');assert.equal(starts,1);
   assert.equal(f.masters.operation().resolvedDesktopParentId,'same-workspace');
   assert.equal(f.masters.operation().route.accountScope,'personal');
-  sessions[0].accountScope='changed';
-  sessions[2].accountScope='changed';
+  // The folder's chats are gone from the catalog, so the saved workspace choice is stale.
+  sessions.splice(2,1);sessions.splice(0,1);
   await assert.rejects(f.masters.create('claude','ccddeeaa-2222-4222-a222-222222222222','desktop',undefined,undefined,undefined,workspace.id),/no longer available/);
   assert.equal(starts,1);
 });

@@ -1522,11 +1522,12 @@ void main() {
         ),
         findsOneWidget,
       );
+      // Desktop apps default to the most recent project folder too.
       expect(
-        find.text(
-          '~/.farfromdesk/coordinators/farfromdesk-orbit-claude-desktop-…',
-        ),
-        findsOneWidget,
+        tester
+            .widget<Text>(find.byKey(const ValueKey('coordinator-folder')))
+            .data,
+        '/sample/personal',
       );
       api.reversePlatforms = true;
       await tester.pump(const Duration(seconds: 4));
@@ -1540,7 +1541,7 @@ void main() {
       expect(api.submitted?['name'], 'FarFromDesk Orbit · Claude Desktop');
       expect(api.submitted?['provider'], 'claude');
       expect(api.submitted?['executionMode'], 'desktop');
-      expect(api.submitted!.containsKey('workspaceId'), isFalse);
+      expect(api.submitted?['workspaceId'], 'workspace-personal');
       expect(api.submitted!.containsKey('desktopParentId'), isFalse);
       expect(api.submitted?['connectionRevision'], 'desktop-revision');
       // The dialog returns to the coordinator list, so the submit control is gone.
