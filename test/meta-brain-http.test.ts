@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { reservePort } from './test-port.js';
 test('Meta settings and verification are owner-admin only, reject browser input and never return keys',async()=>{
   const root=mkdtempSync(join(tmpdir(),'ffd-meta-http-'));
-  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+  const port=await reservePort();
   process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);
   const [{Store},{Router},{Approvals},{serve},{DEFAULT_BRAIN}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/meta-brain-config.js')]);
   const store=new Store(':memory:'),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,new Approvals(store));

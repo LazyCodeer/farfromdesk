@@ -2,15 +2,14 @@ import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {createServer} from 'node:net';
 import {join} from 'node:path';
+import { reservePort } from './test-port.js';
 
 // Application modules capture the coordinator root at import time.
 process.env.FARFROMDESK_HOME=join(process.env.WSB_STATE_DIR!,'projects');
 
 test('an update restart waits for incoming messages, transcription, review and active searches',async()=>{
-  const probe=createServer();await new Promise<void>(resolve=>probe.listen(0,'127.0.0.1',resolve));
-  const port=(probe.address() as {port:number}).port;await new Promise<void>(resolve=>probe.close(()=>resolve()));
+  const port=await reservePort();
   process.env.WSB_PORT=String(port);
   const [{Store},{Router},{Approvals},{WhatsApp},{Telegram},{ErrandWorkflow},{TaskContracts},{DEFAULT_BRAIN},{serve}]=await Promise.all([
     import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/whatsapp.js'),import('../src/telegram.js'),import('../src/errand-workflow.js'),import('../src/task-contracts.js'),import('../src/meta-brain-config.js'),import('../src/server.js'),

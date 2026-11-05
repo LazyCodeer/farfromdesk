@@ -4,16 +4,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
+import { reservePort } from './test-port.js';
+
 
 // The server reads its port and state directory when it is first imported, so
 // both are fixed before any module of the app is loaded. Every test then loads
 // the app through load() instead of a hoisted import.
 const stateRoot=mkdtempSync(join(tmpdir(),'ffd-inbox-send-'));
-const probe=createServer();
-await new Promise<void>(resolve=>probe.listen(0,'127.0.0.1',resolve));
-const port=(probe.address() as any).port;
-await new Promise<void>(resolve=>probe.close(()=>resolve()));
+const port=await reservePort();
 process.env.WSB_STATE_DIR=join(stateRoot,'state');mkdirSync(process.env.WSB_STATE_DIR,{recursive:true});
 process.env.WSB_PORT=String(port);
 after(()=>rmSync(stateRoot,{recursive:true,force:true}));

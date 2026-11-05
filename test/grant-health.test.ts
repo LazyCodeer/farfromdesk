@@ -4,8 +4,8 @@ import {randomUUID} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createServer} from 'node:net';
 import {GrantHealth,diagnoseGrant,readAppSignature,WORKING_CDHASH,type AppSignature} from '../src/grant-health.js';
+import { reservePort } from './test-port.js';
 
 const app='/Applications/FarFromDesk.app';
 const adhoc:AppSignature={app,bundleId:'app.sessionbridge.mac',cdhash:'new',adhoc:true,quarantined:false};
@@ -59,7 +59,7 @@ test('remembers the build that worked, and resets only on request',async()=>{
 
 test('status explains a stale grant, and only the app itself can reset it',async()=>{
   const temp=mkdtempSync(join(tmpdir(),'ffd-grant-'));
-  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+  const port=await reservePort();
   process.env.WSB_STATE_DIR=temp;process.env.WSB_PORT=String(port);
   const [{Store},{Router},{Approvals},{serve}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js')]);
   const store=new Store(':memory:');const approvals=new Approvals(store);

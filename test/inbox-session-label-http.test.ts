@@ -4,11 +4,11 @@ import {randomUUID} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createServer} from 'node:net';
+import { reservePort } from './test-port.js';
 
 test('status publishes the exact saved session execution mode without exposing connection secrets',async()=>{
  const temp=mkdtempSync(join(tmpdir(),'ffd-mode-'));
- const probe=createServer();await new Promise<void>(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=(probe.address() as any).port;await new Promise<void>(resolve=>probe.close(()=>resolve()));
+ const port=await reservePort();
  process.env.WSB_STATE_DIR=temp;process.env.WSB_PORT=String(port);
  const [{Store},{Router},{Approvals},{serve}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js')]);
  const store=new Store(':memory:');const approvals=new Approvals(store);const routes=new Map<string,any>();

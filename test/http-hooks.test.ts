@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import { reservePort } from './test-port.js';
 
 test('local HTTP boundary, scoped replies and native hook contract',async()=>{
   const temp=mkdtempSync(join(tmpdir(),'wsb-http-'));
-  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+  const port=await reservePort();
   process.env.WSB_STATE_DIR=temp;process.env.WSB_PORT=String(port);
   const [{Store},{Router},{Approvals},{serve,saveBindingCredentials},{handleHook,drainHooks}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/hooks.js')]);
   const store=new Store(':memory:'),approvals=new Approvals(store);

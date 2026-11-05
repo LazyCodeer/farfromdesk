@@ -3,12 +3,10 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createServer} from 'node:net';
+import { reservePort } from './test-port.js';
 
 test('voice key validation cannot override a newer removal or provider choice',async t=>{
-  const root=mkdtempSync(join(tmpdir(),'ffd-voice-http-')),probe=createServer();
-  await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;
-  await new Promise<void>(r=>probe.close(()=>r()));
+  const root=mkdtempSync(join(tmpdir(),'ffd-voice-http-')),port=await reservePort();
   process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);
   const [{Store},{Router},{Approvals},{serve},{readVoiceKey}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/voice-cloud.js')]);
   const store=new Store(':memory:'),approvals=new Approvals(store),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);
