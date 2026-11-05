@@ -162,10 +162,7 @@ test('WhatsApp sends a file and a screenshot the owner asked for as real media, 
   const dir=mkdtempSync(join(tmpdir(),'ffd-wa-media-'));const f=fixture(dir);
   try{
     assert.equal(f.store.outputFile(owner,'direct-file:t',Buffer.from('hello'),'note.txt','Your file'),true);
-    assert.equal(f.store.outputFile(owner,'direct-shot:t',await (await import('sharp')).default({create:{width:4,height:4,channels:3,background:'#fff'}}).png().toBuffer(),'shot.png','Screenshot'),true);
-    const shot=f.store.db.prepare("SELECT id FROM outbox WHERE body='Screenshot'").get() as {id:string};
-    f.store.db.prepare("UPDATE outbox SET media_kind='brain-photo' WHERE id=?").run(shot.id);
-    f.store.set(`brain-photo:${shot.id}`,f.store.get(`brain-file:${shot.id}`)!);
+    assert.equal(f.store.outputPhoto(owner,'direct-shot:t',await (await import('sharp')).default({create:{width:4,height:4,channels:3,background:'#fff'}}).png().toBuffer(),'Screenshot'),true);
     for(let i=0;i<3;i++)await f.wa.flush();
     assert.equal(f.sends.find(s=>s.content?.document)?.content.fileName,'note.txt');
     assert.equal(f.sends.find(s=>s.content?.image)?.content.caption,'Screenshot');

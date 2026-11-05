@@ -183,7 +183,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // No screenshot bytes back to a CLI transcript. "send" queues them to the chat this run was opened for, never elsewhere.
         if(result?.screenshot?.pngBase64){
           const {pngBase64,...evidence}=result.screenshot as {pngBase64:string};
-          const sent=send===true&&!!grant.destination&&grant.destination===store.destination()&&store.outputFile(grant.destination,`direct-shot:${String(runId)}`,Buffer.from(pngBase64,'base64'),'screenshot.png','Screenshot');
+          const sent=send===true&&!!grant.destination&&grant.destination===store.destination()&&store.outputPhoto(grant.destination,`direct-shot:${String(runId)}`,Buffer.from(pngBase64,'base64'),'Screenshot');
           json(res,200,{...result,screenshot:{...evidence,delivery:sent?'sent to the owner':'not sent'}});return;
         }
         json(res,200,result);return;
