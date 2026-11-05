@@ -290,7 +290,14 @@ export class DesktopControl {
       // The driver throws DESKTOP_NATIVE_REFUSED for a refused step; a key press keeps it to retry in front below.
       const steps=(one:unknown)=>this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,...(plan.app?{app:plan.app}:{}),delivery_mode:'background',steps:[one],observe:{}} as Record<string,unknown>,controller.signal);
       let result:any;
-      try{result=await steps(step);}
+      // A named field is set, not typed into: typing inserts at the caret, so filling a form a second time
+      // doubled every value ("90000000009000000000", live 5 Nov 2026). Typing stays the fallback.
+      if(plan.action==='type'&&plan.name){
+        for(const role of plan.role?[plan.role]:[undefined,'textfield','textarea']){
+          try{result=await steps({set_value:{...(role?{role}:{}),name:plan.name,value:plan.text!}});break;}catch{}
+        }
+      }
+      if(!result)try{result=await steps(step);}
       catch(e){
         const msg=String((e as Error)?.message);
         // A web form names a field and its label alike ("2 elements match Phone", live 5 Nov 2026): the field is the editable one.
