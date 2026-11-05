@@ -4,12 +4,11 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {createServer} from 'node:net';
+import { reservePort } from './test-port.js';
 
 test('a scoped native session saves Social drafts only for its own active request',async()=>{
   const root=mkdtempSync(join(tmpdir(),'ffd-social-save-http-'));
-  const probe=createServer();await new Promise<void>(resolve=>probe.listen(0,'127.0.0.1',resolve));
-  const port=(probe.address() as {port:number}).port;await new Promise<void>(resolve=>probe.close(()=>resolve()));
+  const port=await reservePort();
   process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);process.env.FFD_ISOLATED_LOCAL='1';
   const [{Store},{Router},{Approvals},{serve},{runFfd}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/ffd.js')]);
   const store=new Store(':memory:'),approvals=new Approvals(store),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,approvals);

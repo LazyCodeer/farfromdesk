@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import { reservePort } from './test-port.js';
 
 /**
  * The owner's DeepSeek settings, over the local admin route. What matters here: a provider that is
@@ -13,10 +13,7 @@ import { request as httpRequest } from 'node:http';
  */
 test('the owner stores a DeepSeek provider and key without the key ever coming back', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'wsb-deepseek-settings-'));
-  const probe = createServer();
-  await new Promise<void>(r => probe.listen(0, '127.0.0.1', r));
-  const port = (probe.address() as any).port;
-  await new Promise<void>(r => probe.close(() => r()));
+  const port=await reservePort();
   process.env.WSB_STATE_DIR = temp;
   process.env.WSB_PORT = String(port);
   // The app reads the owner's own DSH profile and credential store, which is the point of the
@@ -83,10 +80,7 @@ test('the owner stores a DeepSeek provider and key without the key ever coming b
 test('the app sees, switches and feeds the labelled DeepSeek sessions of one folder', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'wsb-deepseek-sessions-'));
   const workspace = mkdtempSync(join(tmpdir(), 'wsb-deepseek-folder-'));
-  const probe = createServer();
-  await new Promise<void>(r => probe.listen(0, '127.0.0.1', r));
-  const port = (probe.address() as any).port;
-  await new Promise<void>(r => probe.close(() => r()));
+  const port = await reservePort();
   process.env.WSB_STATE_DIR = temp;
   process.env.WSB_PORT = String(port);
   const savedDshHome = process.env.DSH_HOME;

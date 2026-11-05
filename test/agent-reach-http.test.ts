@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,realpathSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createServer} from 'node:net';
 import {once} from 'node:events';
+import { reservePort } from './test-port.js';
 const root=realpathSync(mkdtempSync(join(tmpdir(),'ffd-reach-api-')));
-const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');const port=(probe.address() as {port:number}).port;await new Promise<void>(r=>probe.close(()=>r()));
+const port=await reservePort();
 process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);
 const [{serve},{Store},{Router},{Coordinator},{Approvals},{captureResearchRequest}]=await Promise.all([import('../src/server.js'),import('../src/store.js'),import('../src/router.js'),import('../src/coordinator.js'),import('../src/approvals.js'),import('../src/agent-reach-request.js')]);
 

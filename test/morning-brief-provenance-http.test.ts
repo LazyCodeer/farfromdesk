@@ -4,11 +4,10 @@ import { mkdtempSync,rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { createServer as createNetServer } from 'node:net';
+import { reservePort } from './test-port.js';
 
 const root=mkdtempSync(join(tmpdir(),'ffd-brief-http-'));process.env.WSB_STATE_DIR=root;
-const probe=createNetServer();await new Promise<void>(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=(probe.address() as any).port;
-await new Promise<void>(resolve=>probe.close(()=>resolve()));process.env.WSB_PORT=String(port);
+const port=await reservePort();process.env.WSB_PORT=String(port);
 const {Store}=await import('../src/store.js');const {Router}=await import('../src/router.js');const {Approvals}=await import('../src/approvals.js');
 const {Coordinator}=await import('../src/coordinator.js');const {serve}=await import('../src/server.js');
 const store=new Store(':memory:'),approvals=new Approvals(store),native={run:async()=>{},stop:()=>{},catalog:async()=>({sessions:[]}),close:()=>{}};

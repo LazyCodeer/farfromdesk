@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
+import { reservePort } from './test-port.js';
 
 // src/config.ts reads WSB_PORT once at import, and the first test imports it, so pick
 // the server port before any src import (the runner's own WSB_PORT is a held guard port).
-const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+const port=await reservePort();
 process.env.WSB_PORT=String(port);
 
 // Findings from the 29 Oct broad review, each reproduced first on 16cea6a.

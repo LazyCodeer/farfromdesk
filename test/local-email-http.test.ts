@@ -10,8 +10,10 @@ import {once} from 'node:events';
 import {LocalMailHost} from '../src/local-email/host.js';
 import {composeMail} from '../src/local-email/transport.js';
 import type {MailSecretStore} from '../src/local-email/service.js';
+import { reservePort } from './test-port.js';
+
 const root=mkdtempSync(join(tmpdir(),'ffd-email-http-'));
-const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');const port=(probe.address() as {port:number}).port;await new Promise<void>(r=>probe.close(()=>r()));
+const port=await reservePort();
 process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);process.env.FFD_ISOLATED_LOCAL='1';
 const [{serve},{Store},{Router},{Approvals}]=await Promise.all([import('../src/server.js'),import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js')]);
 test('Local email HTTP requires the native desktop token and a separate native send decision',async()=>{

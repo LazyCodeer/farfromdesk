@@ -6,11 +6,10 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { createServer } from 'node:net';
+import { reservePort } from './test-port.js';
 
 const dir=mkdtempSync(join(tmpdir(),'ffd-media-api-'));
-const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');
-const port=(probe.address() as {port:number}).port;await new Promise<void>(r=>probe.close(()=>r()));
+const port=await reservePort();
 process.env.WSB_STATE_DIR=dir;process.env.WSB_PORT=String(port);
 // src/config.ts reads WSB_PORT at import, so src loads only after the port is set.
 const [{ Store },{ Router },{ Approvals },{ Attachments },{ serve }]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/attachments.js'),import('../src/server.js')]);

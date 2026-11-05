@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createServer} from 'node:net';
 import {get,request} from 'node:http';
 import {randomUUID} from 'node:crypto';
+import { reservePort } from './test-port.js';
 
 test('social rejects session and browser requests; even admin cannot enable provider or publication actions',async()=>{
- const root=mkdtempSync(join(tmpdir(),'ffd-social-http-'));const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+ const root=mkdtempSync(join(tmpdir(),'ffd-social-http-'));const port=await reservePort();
  process.env.WSB_STATE_DIR=root;process.env.WSB_PORT=String(port);process.env.FFD_ISOLATED_LOCAL='1';
  const [{Store},{Router},{Approvals},{serve}]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/server.js')]);
  const store=new Store(':memory:'),router=new Router(store,{run:async()=>{},stop:()=>{}} as any,new Approvals(store));const worker=store.register('worker','codex',randomUUID(),'/tmp');

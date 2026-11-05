@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync,readFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:net';
+import { reservePort } from './test-port.js';
 
 test('fresh coordinator role and local HTTP replies suppress repeats without hiding new findings',async()=>{
   const temp=mkdtempSync(join(tmpdir(),'ffd-notification-route-'));
-  const probe=createServer();await new Promise<void>(r=>probe.listen(0,'127.0.0.1',r));
-  const port=(probe.address() as any).port;await new Promise<void>(r=>probe.close(()=>r()));
+  const port=await reservePort();
   process.env.WSB_STATE_DIR=temp;process.env.WSB_PORT=String(port);
   const [{Store},{Router},{Coordinator},{Approvals},{serve},{runFfd}]=await Promise.all([
     import('../src/store.js'),import('../src/router.js'),import('../src/coordinator.js'),import('../src/approvals.js'),import('../src/server.js'),import('../src/ffd.js')]);
