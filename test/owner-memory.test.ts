@@ -124,6 +124,15 @@ test('the brain may pick an unnamed platform only by following collaboration.md'
   f.close();
 });
 
+test('a collaboration rule for one platform does not let the brain pick another', async () => {
+  const f=brain(()=>({intent:'task',provider:'cursor',normalized:'Plan the export'}));
+  f.router.brain.owner.write('collaboration.md','# Collaboration\n- Planning and review: Codex\n','owner');
+  await f.say('Plan the invoice export');
+  assert.equal(f.store.jobs().length,0);
+  assert.match(f.out().at(-1)!,/name the coding platform/);
+  f.close();
+});
+
 test('a platform the owner named in the message just before counts, so "yes" after "hey codex" is enough', async () => {
   const f=brain(()=>({intent:'task',provider:'codex',normalized:'Say hi'}));
   await f.say('hey codex, can you take something for me?');

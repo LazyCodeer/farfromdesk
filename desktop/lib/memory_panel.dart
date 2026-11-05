@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'bridge_theme.dart';
 import 'connection_status.dart';
+import 'ffd_select.dart';
 import 'gateway.dart';
 import 'meta_brain_panel.dart' show infoTip;
 
@@ -15,7 +16,14 @@ final _item = RegExp(r'^[-*]\s+');
 /// The owner's memory folder: one card per file with its saved lines, and the change history.
 class MemoryFiles extends StatefulWidget {
   final Gateway gateway;
-  const MemoryFiles({super.key, required this.gateway});
+
+  /// Platform ids with a coordinator on this Mac, so a rule naming another one can say it won't route.
+  final List<String> platforms;
+  const MemoryFiles({
+    super.key,
+    required this.gateway,
+    this.platforms = const [],
+  });
   @override
   State<MemoryFiles> createState() => _MemoryFilesState();
 }
@@ -24,7 +32,8 @@ class _MemoryFilesState extends State<MemoryFiles> {
   final editor = TextEditingController();
   final adders = <String, TextEditingController>{};
   Map<String, dynamic>? data;
-  String? message, editPath, platform = 'Codex';
+  String? message, editPath;
+  String platform = 'codex';
   int? editLine; // null with editPath set means "edit as text"
   bool busy = false;
 
@@ -255,17 +264,20 @@ class _MemoryFilesState extends State<MemoryFiles> {
     'undo': 'undo',
   };
 
+  static const _platforms = ['codex', 'claude', 'muse', 'deepseek', 'cursor'];
+  static String _id(String value) =>
+      const {
+        'muse code': 'muse',
+        'deepseek harness': 'deepseek',
+      }[value.toLowerCase()] ??
+      value.toLowerCase();
+
+  static String? _brand(String id) =>
+      id == 'codex' ? 'openai' : (_platforms.contains(id) ? id : null);
+
   Widget platformChip(String value) {
-    const ids = {'muse code': 'muse', 'deepseek harness': 'deepseek', 'cursor': 'cursor'};
-    final id = ids[value.toLowerCase()] ?? value.toLowerCase();
-    final brand = switch (id) {
-      'codex' => 'openai',
-      'claude' => 'claude',
-      'muse' => 'muse',
-      'deepseek' => 'deepseek',
-      'cursor' => 'cursor',
-      _ => null,
-    };
+    final id = _id(value);
+    final brand = _brand(id);
     final label = brand == null ? value : providerLabel(id);
     return Container(
       padding: EdgeInsets.fromLTRB(brand == null ? 12 : 3, 3, 12, 3),
@@ -276,7 +288,21 @@ class _MemoryFilesState extends State<MemoryFiles> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (brand != null) ...[
-            Container(
+            mark(brand),
+            const SizedBox(width: 7),
+          ],
+          Text(
+            label,
+            style: brand == null
+                ? _mono.copyWith(color: ink, fontSize: 12)
+                : const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget mark(String brand) => Container(
               width: 24,
               height: 24,
               alignment: Alignment.center,
@@ -299,19 +325,104 @@ class _MemoryFilesState extends State<MemoryFiles> {
                 height: brand == 'muse' || brand == 'cursor' ? 15 : 13,
                 fit: BoxFit.contain,
               ),
-            ),
-            const SizedBox(width: 7),
-          ],
-          Text(
-            label,
-            style: brand == null
-                ? _mono.copyWith(color: ink, fontSize: 12)
-                : const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+            );
+
+  /// A platform with no coordinator on this Mac: routing refuses it, so the card says so.
+  /// Unknown when the panel was given no list (the preview), so nothing is flagged then.
+  bool offline(String value) =>
+      widget.platforms.isNotEmpty && !widget.platforms.contains(_id(value));
+
+  static const _starters = [
+    ('Planning and review', 'codex'),
+    ('Coding', 'claude'),
+    ('UI and design', 'cursor'),
+    ('Bug fixes', 'claude'),
+  ];
+
+  /// An empty rule card offers a few rules to add in one tap, preferring connected platforms.
+  Widget starters(String path) {
+    final picks = [
+      for (final s in _starters)
+        if (!offline(s.$2)) s,
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'No rules yet. Messages that name no platform go to your default coordinator. Start with one:',
+            style: TextStyle(fontSize: 12.5, color: muted),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final (work, id) in picks.isEmpty ? _starters : picks)
+                InkWell(
+                  key: Key('collab-starter-$work'),
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: busy
+                      ? null
+                      : () => addLine(path, '$work: ${providerLabel(id)}'),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+                    decoration: const ShapeDecoration(
+                      shape: StadiumBorder(side: BorderSide(color: line2)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.add_rounded, size: 15, color: muted),
+                        const SizedBox(width: 6),
+                        Text(work, style: const TextStyle(fontSize: 12.5)),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 6),
+                          child: Icon(
+                            Icons.arrow_right_alt_rounded,
+                            size: 16,
+                            color: muted,
+                          ),
+                        ),
+                        mark(_brand(id)!),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           ),
         ],
       ),
     );
   }
+
+  /// What happens to everything the rules don't cover, so the list never reads as complete.
+  Widget fallbackRow() => Container(
+    constraints: const BoxConstraints(minHeight: 38),
+    padding: const EdgeInsets.symmetric(vertical: 6),
+    child: Row(
+      children: [
+        SizedBox(
+          width: MediaQuery.sizeOf(context).width < 900 ? null : 160,
+          child: const Text(
+            'Anything else',
+            style: TextStyle(fontSize: 13, color: muted),
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8),
+          child: Icon(Icons.arrow_right_alt_rounded, size: 20, color: muted),
+        ),
+        const Expanded(
+          child: Text(
+            'The platform you name, or your default coordinator',
+            style: TextStyle(fontSize: 12.5, color: muted),
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget fact(String path, int at, String raw, bool rule) {
     if (editPath == path && editLine == at) {
@@ -353,9 +464,19 @@ class _MemoryFilesState extends State<MemoryFiles> {
               ),
             ),
             Expanded(
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: key.isEmpty ? const SizedBox() : platformChip(value),
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (key.isNotEmpty) platformChip(value),
+                  if (key.isNotEmpty && offline(value))
+                    Text(
+                      'Not connected, so this rule is skipped',
+                      key: Key('collab-offline-$at'),
+                      style: const TextStyle(fontSize: 12, color: warning),
+                    ),
+                ],
               ),
             ),
           ]
@@ -421,7 +542,7 @@ class _MemoryFilesState extends State<MemoryFiles> {
       final v = add.text.trim();
       if (v.isEmpty) return;
       add.clear();
-      addLine(path, rule ? '$v: $platform' : v);
+      addLine(path, rule ? '$v: ${providerLabel(platform)}' : v);
     }
 
     return Container(
@@ -475,7 +596,12 @@ class _MemoryFilesState extends State<MemoryFiles> {
             ],
           ),
           const SizedBox(height: 6),
-          Text(hint, style: const TextStyle(fontSize: 12, color: muted)),
+          Text(
+            rule
+                ? 'Who does which kind of work. When a message names no platform, the brain sends it by these rules.'
+                : hint,
+            style: const TextStyle(fontSize: 12, color: muted),
+          ),
           const SizedBox(height: 6),
           if (asText) ...[
             TextField(
@@ -510,7 +636,9 @@ class _MemoryFilesState extends State<MemoryFiles> {
               ],
             ),
           ] else ...[
-            if (at.isEmpty)
+            if (at.isEmpty && rule)
+              starters(path)
+            else if (at.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
                 child: Text(
@@ -521,6 +649,10 @@ class _MemoryFilesState extends State<MemoryFiles> {
             for (final (n, i) in at.indexed) ...[
               if (n > 0) const Divider(height: 1, color: hairline),
               fact(path, i, lines[i].replaceFirst(_item, ''), rule),
+            ],
+            if (rule) ...[
+              if (at.isNotEmpty) const Divider(height: 1, color: hairline),
+              fallbackRow(),
             ],
             const SizedBox(height: 8),
             Row(
@@ -545,14 +677,30 @@ class _MemoryFilesState extends State<MemoryFiles> {
                 ),
                 if (rule) ...[
                   const SizedBox(width: 8),
-                  DropdownButton<String>(
-                    value: platform,
-                    underline: const SizedBox(),
-                    items: [
-                      for (final p in ['Codex', 'Claude', 'Muse Code', 'DeepSeek Harness', 'Cursor'])
-                        DropdownMenuItem(value: p, child: Text(p)),
-                    ],
-                    onChanged: (v) => setState(() => platform = v),
+                  SizedBox(
+                    width: 210,
+                    child: FfdSelect<String>(
+                      key: const Key('collab-platform'),
+                      value: platform,
+                      compact: true,
+                      leading: mark(_brand(platform)!),
+                      options: [
+                        for (final id in _platforms)
+                          SelectOption(
+                            value: id,
+                            label: providerLabel(id),
+                            leading: mark(_brand(id)!),
+                            trailing: Text(
+                              offline(id) ? 'Not connected' : 'Ready',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: offline(id) ? muted : success,
+                              ),
+                            ),
+                          ),
+                      ],
+                      onChanged: (v) => setState(() => platform = v),
+                    ),
                   ),
                 ],
                 const SizedBox(width: 8),

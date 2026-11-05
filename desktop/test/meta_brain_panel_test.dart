@@ -299,4 +299,43 @@ void main() {
     expect(api.saved['path'], 'projects/site.md');
     expect(api.saved['expected'], '');
   });
+
+  testWidgets('collaboration offers connected starter rules and flags a rule that cannot route', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 2600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    Future<MetaGateway> show(String collab) async {
+      final api = MetaGateway();
+      (api.files['files'] as List)[2]['content'] = collab;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: MetaBrainPanel(
+                key: ValueKey(collab),
+                gateway: api,
+                saved: const {'enabled': false},
+                platforms: const ['claude'],
+                onSaved: () async {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return api;
+    }
+
+    final empty = await show('# Collaboration\n');
+    expect(find.byKey(const Key('collab-starter-Planning and review')), findsNothing);
+    await tester.tap(find.byKey(const Key('collab-starter-Coding')));
+    await tester.pumpAndSettle();
+    expect(empty.saved['content'], '# Collaboration\n- Coding: Claude\n');
+
+    await show('# Collaboration\n\n- Planning and review: Codex\n');
+    expect(find.byKey(const Key('collab-offline-2')), findsOneWidget);
+    expect(find.text('Anything else'), findsOneWidget);
+  });
 }
