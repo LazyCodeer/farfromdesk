@@ -14,7 +14,7 @@ const HELPER = readFileSync(new URL('../native/server-mode/helper.sh', import.me
 const FAKE_PMSET = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FFD_TEST_LOG"
 if [ "$1" = "-g" ]; then
-  if [ "$2" = "batt" ]; then printf "Now drawing from '%s'\\n -InternalBattery-0 50%%; charging; present: true\\n" "\${FAKE_POWER:-AC Power}"; exit 0; fi
+  if [ "$2" = "batt" ]; then printf "Now drawing from '%s'\\n -InternalBattery-0 \${FAKE_PERCENT:-50}%%; charging; present: true\\n" "\${FAKE_POWER:-AC Power}"; exit 0; fi
   printf 'System-wide power settings:\\n SleepDisabled\\t\\t%s\\n' "\${FAKE_SLEEPDISABLED:-0}"; exit 0
 fi
 exit 0
@@ -29,7 +29,7 @@ printf '      "AppleClamshellState" = %s\\n' "$v"
 exit 0
 `;
 
-type HelperCase = { enabled?: boolean; power?: 'AC Power' | 'Battery Power'; ageSeconds?: number; graceSeconds?: number; uid?: string; sleepDisabled?: string; raw?: string; lid?: 'open' | 'closed' };
+type HelperCase = { percent?: number; enabled?: boolean; power?: 'AC Power' | 'Battery Power'; ageSeconds?: number; graceSeconds?: number; uid?: string; sleepDisabled?: string; raw?: string; lid?: 'open' | 'closed' };
 
 function helperRun(input: HelperCase) {
   const dir = mkdtempSync(join(tmpdir(), 'ffd-helper-'));
@@ -48,7 +48,7 @@ function helperRun(input: HelperCase) {
   }
   const result = spawnSync('/bin/sh', [new URL('../native/server-mode/helper.sh', import.meta.url).pathname, '--once'], {
     encoding: 'utf8',
-    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: input.uid ?? String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_IOREG: ioreg, FFD_TEST_LOG: log, FAKE_POWER: input.power ?? 'AC Power', FAKE_CLAMSHELL: input.lid === 'closed' ? 'Yes' : 'No', FAKE_SLEEPDISABLED: input.sleepDisabled ?? '0', ...(input.graceSeconds === undefined ? {} : { FFD_GRACE_MAX_AGE: String(input.graceSeconds) }) },
+    env: { ...process.env, FFD_STATE_FILE: state, FFD_STATE_UID: input.uid ?? String(process.getuid?.() ?? 0), FFD_PMSET: pmset, FFD_IOREG: ioreg, FFD_TEST_LOG: log, FAKE_POWER: input.power ?? 'AC Power', FAKE_PERCENT: String(input.percent ?? 50), FAKE_CLAMSHELL: input.lid === 'closed' ? 'Yes' : 'No', FAKE_SLEEPDISABLED: input.sleepDisabled ?? '0', ...(input.graceSeconds === undefined ? {} : { FFD_GRACE_MAX_AGE: String(input.graceSeconds) }) },
   });
   const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean);
   const out = (result.stdout ?? '').trim();
@@ -211,6 +211,7 @@ function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
   const approved: string[] = [];
   const calls: string[] = [];
   let powerOff = false;
+  let percent = 80;
   const store = new Store(':memory:');
   const mode = new ServerMode(store, {
     platform: 'darwin',
@@ -229,14 +230,14 @@ function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
         if (!daemonLoaded) throw new Error('launchctl: Could not find service');
         return 'com.codecylabs.farfromdesk.servermode = { state = running }\n';
       }
-      if (args[1] === 'batt') return powerOff ? "Now drawing from 'Battery Power'\n" : "Now drawing from 'AC Power'\n";
+      if (args[1] === 'batt') return (powerOff ? "Now drawing from 'Battery Power'\n" : "Now drawing from 'AC Power'\n") + ` -InternalBattery-0 ${percent}%; discharging\n`;
       return 'System-wide power settings:\n SleepDisabled\t\t1\n';
     },
     now: () => Date.now(),
     heartbeatMs: 15,
     heartbeatMaxAgeSeconds: 300,
   });
-  return { dir, store, mode, approved, calls, setPowerOff: (v: boolean) => { powerOff = v; } };
+  return { dir, store, mode, approved, calls, setPowerOff: (v: boolean) => { powerOff = v; }, setPercent: (v: number) => { percent = v; } };
 }
 
 test('enabling server mode installs the helper once and records the owner heartbeat', async () => {
@@ -395,4 +396,33 @@ test('a clean shutdown does not release the hold, so a restart cannot sleep the 
     await f.mode.setEnabled(false);
     assert.equal(JSON.parse(readFileSync(join(f.dir, 'server-mode.json'), 'utf8')).enabled, false);
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('on battery the helper holds sleep above the floor and asks below it', () => {
+  const state = (extra: object) => JSON.stringify({ version: 1, enabled: true, heartbeat: Date.now(), pid: 1, allowBattery: true, batteryFloor: 15, ...extra });
+  assert.match(helperRun({ power: 'Battery Power', percent: 60, raw: state({}) }).out, /reason=ok/);
+  assert.match(helperRun({ power: 'Battery Power', percent: 12, raw: state({}) }).out, /reason=low-battery/);
+  assert.match(helperRun({ power: 'Battery Power', percent: 12, raw: state({ lowBatteryOk: true }) }).out, /reason=ok/);
+  assert.match(helperRun({ power: 'Battery Power', percent: 4, raw: state({ lowBatteryOk: true }) }).out, /reason=battery-critical/);
+  // An older state file without allowBattery keeps the AC-only rule.
+  assert.match(helperRun({ power: 'Battery Power', percent: 90, raw: JSON.stringify({ version: 1, enabled: true, heartbeat: Date.now(), pid: 1 }) }).out, /reason=on-battery/);
+});
+
+test('server mode asks once on low battery and keeps the answer until power returns', async () => {
+  const f = fixture();
+  try {
+    await f.mode.setEnabled(true);
+    const asked: number[] = [];
+    f.mode.onLowBattery = pct => { asked.push(pct); };
+    f.setPowerOff(true); f.setPercent(60); await f.mode.refresh();
+    assert.equal(f.mode.view().active, true);
+    f.setPercent(12); await f.mode.refresh(); await f.mode.refresh();
+    assert.deepEqual(asked, [12]);
+    assert.equal(f.mode.view().lowBatteryNeedsConfirm, true);
+    assert.match(await f.mode.setLowBatteryOk(true), /until 5%/);
+    assert.equal(JSON.parse(readFileSync(join(f.dir, 'server-mode.json'), 'utf8')).lowBatteryOk, true);
+    assert.equal(f.mode.view().lowBatteryNeedsConfirm, false);
+    f.setPowerOff(false); await f.mode.refresh();
+    assert.equal(f.mode.lowBatteryOk, false);
+  } finally { f.mode.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });

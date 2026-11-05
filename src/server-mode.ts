@@ -18,7 +18,7 @@ export const SERVER_MODE = {
 export const SERVER_MODE_PLIST = `/Library/LaunchDaemons/${SERVER_MODE.label}.plist`;
 export const SERVER_MODE_HELPER = `${SERVER_MODE.support}/helper.sh`;
 /** Must match FFD_HELPER_VERSION in native/server-mode/helper.sh. */
-export const SERVER_MODE_HELPER_VERSION = 4;
+export const SERVER_MODE_HELPER_VERSION = 5;
 const HELPER_VERSION = /^FFD_HELPER_VERSION=(\d+)$/m;
 
 export type ServerModeView = {
@@ -27,6 +27,10 @@ export type ServerModeView = {
   helperInstalled: boolean;
   lidSleepDisabled: boolean | null;
   onAcPower: boolean | null;
+  batteryPercent?: number | null;
+  batteryFloor?: number;
+  allowBattery?: boolean;
+  lowBatteryNeedsConfirm?: boolean;
   heartbeatAgeMs: number | null;
   /** How much of the window is left in which the helper holds sleep off although
    * the app is not heartbeating. Null when there is no heartbeat to measure. */
@@ -104,6 +108,10 @@ export class ServerMode {
   private timer?: NodeJS.Timeout;
   private lidSleepDisabled: boolean | null = null;
   private onAcPower: boolean | null = null;
+  private batteryPercent: number | null = null;
+  private lowWarned = false;
+  /** Called once each time the Mac drops below the battery floor while server mode holds it awake. */
+  onLowBattery?: (percent:number,floor:number)=>void;
   private error: string | null = null;
   private statusChangedAt = 0;
 
@@ -113,6 +121,20 @@ export class ServerMode {
 
   get supported(){return this.deps.platform==='darwin';}
   get enabled(){return this.store.get('server-mode')==='true';}
+  /** Battery use is on by default: the owner asked for the lid-closed Mac to keep working unplugged. */
+  get allowBattery(){return this.store.get('server-mode-battery')!=='false';}
+  get batteryFloor(){const n=Number(this.store.get('server-mode-battery-floor'));return Number.isInteger(n)&&n>=5&&n<=95?n:15;}
+  get lowBatteryOk(){return this.store.get('server-mode-low-battery-ok')==='true';}
+  private get lowBattery(){return this.enabled&&this.allowBattery&&this.onAcPower===false&&this.batteryPercent!==null&&this.batteryPercent<this.batteryFloor;}
+
+  /** The owner's answer to the low battery question. Kept until the Mac is back on power. */
+  async setLowBatteryOk(ok:boolean):Promise<string>{
+    this.store.set('server-mode-low-battery-ok',ok?'true':'false');
+    if(this.enabled)this.writeState();
+    await this.refresh();
+    const pct=this.batteryPercent===null?'':` (battery ${this.batteryPercent}%)`;
+    return ok?`Keeping the Mac awake with the lid closed until 5% battery${pct}.`:`Normal sleep will return on battery${pct}. Plug in to keep working with the lid closed.`;
+  }
 
   view():ServerModeView{
     const state=this.readState();
@@ -126,7 +148,11 @@ export class ServerMode {
       onAcPower:this.onAcPower,
       heartbeatAgeMs:age,
       graceRemainingMs:age===null?null:Math.max(0,grace-age),
-      active:this.enabled&&this.lidSleepDisabled===true&&this.onAcPower===true,
+      batteryPercent:this.batteryPercent,
+      batteryFloor:this.batteryFloor,
+      allowBattery:this.allowBattery,
+      lowBatteryNeedsConfirm:this.lowBattery&&!this.lowBatteryOk,
+      active:this.enabled&&this.lidSleepDisabled===true&&(this.onAcPower===true||this.onAcPower===false&&this.allowBattery&&this.batteryPercent!==null&&this.batteryPercent>=5&&(this.batteryPercent>=this.batteryFloor||this.lowBatteryOk)),
       statusAgeMs:this.statusChangedAt===0?0:Math.max(0,this.deps.now()-this.statusChangedAt),
       error:this.error,
     };
@@ -142,6 +168,11 @@ export class ServerMode {
       this.lidSleepDisabled=nextSleep;
       const first=battery.split('\n')[0]??'';
       this.onAcPower=/AC Power/.test(first)?true:/Battery Power/.test(first)?false:null;
+      const pct=/(\d{1,3})%/.exec(battery);this.batteryPercent=pct?Number(pct[1]):null;
+      // Back on power: forget the low battery answer, so the next drop asks again.
+      if(this.onAcPower===true&&this.lowBatteryOk){this.store.set('server-mode-low-battery-ok','false');if(this.enabled)this.writeState();}
+      if(!this.lowBattery)this.lowWarned=false;
+      else if(!this.lowWarned&&!this.lowBatteryOk){this.lowWarned=true;try{this.onLowBattery?.(this.batteryPercent!,this.batteryFloor);}catch{}}
     }catch(e){
       // A failed probe is a claim of nothing, not a claim of "off".
       this.lidSleepDisabled=null;this.onAcPower=null;this.error=(e as Error).message;
@@ -212,7 +243,7 @@ export class ServerMode {
   private stopHeartbeat(){if(this.timer){clearInterval(this.timer);this.timer=undefined;}}
 
   private writeState(){
-    const state={version:1,enabled:this.enabled,heartbeat:this.deps.now(),pid:process.pid};
+    const state={version:1,enabled:this.enabled,heartbeat:this.deps.now(),pid:process.pid,allowBattery:this.allowBattery,batteryFloor:this.batteryFloor,lowBatteryOk:this.lowBatteryOk};
     writeFileSync(this.deps.stateFile,JSON.stringify(state),{mode:0o600});
   }
 
