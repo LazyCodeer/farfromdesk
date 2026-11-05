@@ -12,7 +12,7 @@ extension _Panes on _DeskState {
             (status['voiceRequests'] ?? []).isNotEmpty =>
       inboxPane(),
     4 => settingsPane(),
-    6 when api.preview || const bool.fromEnvironment('FFD_ISOLATED_LOCAL') =>
+    6 =>
       api.preview
           ? const SocialPreview()
           : SocialScreen(key: socialKey, gateway: api),

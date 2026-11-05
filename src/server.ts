@@ -135,7 +135,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     notify:text=>{store.output(undefined,text,`remote-locked:${Date.now()}`,undefined,{plain:true});},
   });
   const artifacts=new Artifacts(store),items=new Items(store,b=>router.coordinator?.name(b)??b.alias);
-  const social=process.env.FFD_ISOLATED_LOCAL==='1'?new SocialAssistant(store.db,()=>undefined):undefined;
+  // Social ships in every build (5 November 2026); it was Local-only while it was being built.
+  const social=new SocialAssistant(store.db,()=>undefined);
   artifacts.disk.recover();
   const server=createServer((req,res)=>{
     res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');
@@ -166,7 +167,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(!isAdmin&&!binding){json(res,401,{error:'Use FarFromDesk or provide a valid session token.'});return;}
       if(path==='/api/local-email') {
-        if(!isAdmin||req.headers.origin||process.env.FFD_ISOLATED_LOCAL!=='1'){json(res,403,{error:'Email requires the Local desktop.'});return;}
+        if(!isAdmin||req.headers.origin||process.env.FFD_ISOLATED_LOCAL!=='1'){json(res,403,{error:'Email requires the FarFromDesk desktop app.'});return;}
         const mail=services?.localMail;if(!mail){json(res,200,{available:false,state:'unavailable'});return;}
         try {
           if(req.method==='GET'){json(res,200,mail.status());return;}
@@ -213,13 +214,13 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/session/delivery'&&req.method==='GET'&&binding) {json(res,200,artifacts.status(binding,url.searchParams.get('id')??''));return;}
       if(path==='/api/session/instructions'&&req.method==='GET'&&binding) {json(res,200,roleConfig(store,binding));return;}
       if(path==='/api/session/social-drafts'&&req.method==='POST'&&binding) {
-        if(!social||req.headers.origin){json(res,403,{error:'Social drafts require a Local session.'});return;}
+        if(!social||req.headers.origin){json(res,403,{error:'Social drafts require the FarFromDesk desktop app.'});return;}
         const input=await body(req,150000);
         if(!input||typeof input!=='object'||Object.keys(input).some(k=>!['requestId','eventId','drafts'].includes(k)))throw new Error('Use the exact Social request and generated drafts.');
         json(res,200,saveSessionSocialDrafts(store,binding,input.requestId,input.eventId,input.drafts));return;
       }
       if((path==='/api/session/social-creative'||path==='/api/session/social-render')&&req.method==='POST'&&binding){
-        if(!social||req.headers.origin){json(res,403,{error:'Social creative tools require a Local session.'});return;}
+        if(!social||req.headers.origin){json(res,403,{error:'Social creative tools require the FarFromDesk desktop app.'});return;}
         const input=await body(req,150000);
         const fields=path.endsWith('social-render')?['requestId','draftId','revision','plan']:['requestId'];
         if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!fields.includes(k)))throw Error('Use the exact creative tool fields.');
@@ -227,7 +228,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,path.endsWith('social-render')?await renderSessionSocialCarousel(store,binding,social,input.requestId,input.draftId,input.revision,input.plan):socialCreativeGuide(socialImageProvider(store,input.requestId)));return;
       }
       if(path==='/api/session/social-image'&&req.method==='POST'&&binding) {
-        if(!social||req.headers.origin){json(res,403,{error:'Social images require a Local session.'});return;}
+        if(!social||req.headers.origin){json(res,403,{error:'Social images require the FarFromDesk desktop app.'});return;}
         const input=await body(req,4096);
         if(!input||typeof input!=='object'||Object.keys(input).some(k=>!['requestId','draftId'].includes(k)))throw new Error('Use the exact Social request and saved draft.');
         json(res,200,await renderSessionSocialImage(store,binding,social,()=>router.brain.secret.read(),input.requestId,input.draftId));return;
@@ -393,7 +394,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(!isAdmin){json(res,403,{error:'This token can only operate its registered session'});return;}
       if(path==='/api/social/settings'){
-        if(!social||req.headers.origin){json(res,403,{error:'Social settings require the Local desktop.'});return;}
+        if(!social||req.headers.origin){json(res,403,{error:'Social settings require the FarFromDesk desktop app.'});return;}
         if(req.method==='POST'){
           const d=await body(req,6000);
           if(!d||!['local','meta'].includes(d.imageProvider)||Object.keys(d).some(k=>!['imageProvider','key'].includes(k)))throw Error('Choose Local SVG skill or Meta API.');
@@ -407,10 +408,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{imageProvider:store.get('social-image-provider')==='meta'?'meta':'local',metaConfigured:router.brain.view().configured});return;
       }
       if(path==='/api/social/dispatch'&&req.method==='POST'){
-        if(!social||req.headers.origin){json(res,403,{error:'Social generation requires the Local desktop.'});return;}
+        if(!social||req.headers.origin){json(res,403,{error:'Social generation requires the FarFromDesk desktop app.'});return;}
         json(res,200,dispatchDesktopSocial(store,router,await body(req,4096)));return;
       }
-      if((path==='/api/social'||path==='/api/social/result')&&!social){json(res,404,{error:'Social is available in FarFromDesk Local only.'});return;}
+      if((path==='/api/social'||path==='/api/social/result')&&!social){json(res,404,{error:'Social is not available.'});return;}
       if(path==='/api/social'&&social&&req.method==='GET'){if(req.headers.origin)throw new Error('Use native desktop Social.');const id=url.searchParams.get('id'),receipt=url.searchParams.get('receipt');json(res,200,id?(receipt?{receipt:social.receipt(id,receipt)}:{draft:social.get(id)}):social.list(url.searchParams.get('before')));return;}
       if(path==='/api/social/result'&&social&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Social.');const d=await body(req,20_500_000);json(res,200,{result:social.complete(d.id,d.operationId,d.result)});return;}
       if(path==='/api/social'&&social&&req.method==='POST'){

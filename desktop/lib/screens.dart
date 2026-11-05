@@ -623,9 +623,7 @@ extension _BridgeScreens on _DeskState {
                 navItem(1, titles[1], Icons.inbox_outlined, count),
                 navGroup('Assistant'),
                 navItem(3, titles[3], Icons.psychology_outlined, 0),
-                if (api.preview ||
-                    const bool.fromEnvironment('FFD_ISOLATED_LOCAL'))
-                  navItem(6, titles[6], Icons.auto_awesome_outlined, 0),
+                navItem(6, titles[6], Icons.auto_awesome_outlined, 0),
                 navItem(4, titles[4], Icons.tune_rounded, 0),
               ],
             ),
