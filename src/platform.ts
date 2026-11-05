@@ -46,3 +46,8 @@ export function nativeCommand(binary: string, args: string[], platform = process
 export function requirePortableCLI(mode: unknown) {
   if (portableAgents && mode === 'desktop') throw new Error('Desktop session delivery is not supported by this platform adapter. Choose an exact saved CLI session.');
 }
+
+/** What the owner calls this computer in messages and the app: Mac, PC, or computer elsewhere. */
+export function computerName(platform: NodeJS.Platform = process.platform) {
+  return platform === 'darwin' ? 'Mac' : platform === 'win32' ? 'PC' : 'computer';
+}
