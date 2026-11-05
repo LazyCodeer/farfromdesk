@@ -7,16 +7,13 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { Store } from '../src/store.js';
-import { Router } from '../src/router.js';
-import { Approvals } from '../src/approvals.js';
-import { Attachments } from '../src/attachments.js';
 
 const dir=mkdtempSync(join(tmpdir(),'ffd-media-api-'));
 const probe=createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');
 const port=(probe.address() as {port:number}).port;await new Promise<void>(r=>probe.close(()=>r()));
 process.env.WSB_STATE_DIR=dir;process.env.WSB_PORT=String(port);
-const { serve }=await import('../src/server.js');
+// src/config.ts reads WSB_PORT at import, so src loads only after the port is set.
+const [{ Store },{ Router },{ Approvals },{ Attachments },{ serve }]=await Promise.all([import('../src/store.js'),import('../src/router.js'),import('../src/approvals.js'),import('../src/attachments.js'),import('../src/server.js')]);
 test.after(()=>rmSync(dir,{recursive:true,force:true}));
 
 test('authenticated APIs expose only scoped attachments, preserve local preparation authority and persist per-session styles',async()=>{
