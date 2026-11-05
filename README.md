@@ -15,6 +15,8 @@
   <a href="#questions">Questions</a>
 </p>
 
+> **Free to use right now** as part of the Meta Global AI Developer Hackathon. The Mac version is available today; Windows and Linux versions are coming soon.
+>
 > **Platforms:** The current stable version is tested on macOS only. Testing versions for Windows and Linux are being released as well.
 
 FarFromDesk runs on your computer and links it to your own WhatsApp or Telegram chat. Send a message or a voice note from your phone, and **Atlas**, the FarFromDesk brain built on the **Meta Model API**, reads it and sends it to the right place: one of your Codex, Claude, Muse or Cursor sessions, a Mac app, your notes and calendar, or the Social page. Replies come back to the same chat.
@@ -142,6 +144,6 @@ FarFromDesk uses an unofficial WhatsApp connection and the official Telegram Bot
 
 ## License
 
-Copyright (c) 2026 Codecy Labs / Sagar Kumar. All rights reserved.
+FarFromDesk is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Copyright Codecy Labs (Sagar Kumar).
 
-The source code is public so it can be viewed and reviewed. It is **not** open source. Using, copying, modifying or redistributing this code, in whole or in part, requires written permission from Codecy Labs / Sagar Kumar. See [LICENSE](LICENSE). Third-party components keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Anyone can download and use FarFromDesk for free for personal and other noncommercial purposes. Commercial use, resale or rebranding of the app or its code needs written permission from Codecy Labs / Sagar Kumar. Third-party components keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
