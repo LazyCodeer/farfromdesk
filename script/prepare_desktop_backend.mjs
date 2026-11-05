@@ -25,6 +25,8 @@ if(process.platform==='darwin') {
   // Windows and Linux desktop control: one script each over the OS accessibility layer.
   mkdirSync(join(target,'native'));
   copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
+  // Windows phone screen control: the capture and input helper (src/remote-p2p/windows-desktop.ts).
+  if(process.platform==='win32')copyFileSync(join(root,'native','remote-windows.ps1'),join(target,'native','remote-windows.ps1'));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
