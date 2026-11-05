@@ -1,4 +1,5 @@
 """Create a macOS disk image, tolerating only a known transient hdiutil error."""
+import os
 import pathlib
 import re
 import subprocess
@@ -8,7 +9,7 @@ import time
 
 _RESOURCE_BUSY = re.compile(r'^\s*hdiutil:\s*create failed\s*-\s*resource busy\s*$', re.I | re.M)
 
-CREATE_TIMEOUT = 240  # A healthy create takes well under a minute.
+CREATE_TIMEOUT = 120  # A healthy create takes well under a minute.
 
 
 def create_dmg(source_dir, output):
@@ -30,6 +31,9 @@ def create_dmg(source_dir, output):
         except subprocess.TimeoutExpired:
             # hdiutil can hang forever on CI runners; kill it and retry.
             output.unlink(missing_ok=True)
+            if os.environ.get('GITHUB_ACTIONS') == 'true':
+                # Killing hdiutil orphans its diskimages-helper, which keeps the next try stuck.
+                subprocess.run(['pkill', '-9', '-x', 'diskimages-helper'], check=False)
             if attempt == 3:
                 raise
             command = fallback
@@ -43,7 +47,7 @@ def create_dmg(source_dir, output):
             sys.stdout.write(result.stdout)
         if result.stderr:
             sys.stderr.write(result.stderr)
-        if result.returncode == 0:
+        if result.returncode == 0 and output.is_file():
             return
         output.unlink(missing_ok=True)
         if attempt == 3 or not _RESOURCE_BUSY.search(result.stderr or ''):
