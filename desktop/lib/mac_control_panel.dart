@@ -32,6 +32,9 @@ extension _MacControlPanel on _DeskState {
     final driverCapability = Map<String, dynamic>.from(
       driver['capability'] as Map? ?? const {},
     );
+    final grant = Map<String, dynamic>.from(
+      status['grant'] as Map? ?? const {},
+    );
     final driverChecked = driverCapability.isNotEmpty;
     final driverWorks = driverCapability['ok'] == true;
     final driverDetail = driverCapability['detail'] as String?;
@@ -174,6 +177,30 @@ extension _MacControlPanel on _DeskState {
             ),
           ],
         ),
+        // On in System Settings, yet every check fails: a grant pinned to an earlier
+        // build's signature. Only the owner can clear it; this button is their click.
+        if (grant.isNotEmpty) ...[
+          gap(10),
+          settingsNote(
+            [
+              grant['summary'] ?? '',
+              for (final (i, step) in List<String>.from(
+                grant['steps'] ?? const [],
+              ).indexed)
+                '${i + 1}. $step',
+            ].join('\n'),
+            icon: Icons.warning_amber_rounded,
+          ),
+          gap(8),
+          button(
+            'Reset and re-allow',
+            () => post('/api/mac-control', {'action': 'reset-permission'}),
+            primary: true,
+            compact: true,
+            icon: Icons.restart_alt_rounded,
+            key: const Key('mac-reset-permission'),
+          ),
+        ],
         if (failed) ...[
           gap(10),
           settingsNote(
