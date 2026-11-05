@@ -25,7 +25,9 @@ function fixture(){
 async function window(f:ReturnType<typeof fixture>,gemini=false){const a=await f.service.run('owner',{action:'list_apps'});const w=await f.service.run('owner',{action:'list_windows',appRef:a.apps[gemini?1:0].appRef});return w.windows[0].windowRef;}
 test('desktop opt-in and platform gate precede all native work',async()=>{
   const f=fixture();f.prefs.delete('mac-control-enabled');await assert.rejects(f.service.run('owner',{action:'list_apps'}),/DISABLED/);assert.equal(f.calls.length,0);
-  const other=new DesktopControl({get:()=>undefined,set:()=>{}},f.driver,f.browser,'win32');assert.equal((await other.run('owner',{action:'status'})).supported,false);await assert.rejects(other.run('owner',{action:'list_apps'}),/MACOS_ONLY/);
+  // Windows is supported through its own backend, still behind the owner's switch, and never through the macOS driver.
+  const other=new DesktopControl({get:()=>undefined,set:()=>{}},f.driver,f.browser,'win32');assert.equal((await other.run('owner',{action:'status'})).supported,true);await assert.rejects(other.run('owner',{action:'list_apps'}),/DISABLED/);assert.equal(f.calls.length,0);
+  const unknown=new DesktopControl({get:()=>'true',set:()=>{}},f.driver,f.browser,'freebsd');assert.equal((await unknown.run('owner',{action:'status'})).supported,false);await assert.rejects(unknown.run('owner',{action:'list_apps'}),/PLATFORM_UNSUPPORTED/);
 });
 test('explicit browser, exact request scope and live PID are required',async()=>{
   const f=fixture();await assert.rejects(f.service.run('owner',{action:'list_tabs'}),/SELECT_SUPPORTED_BROWSER/);

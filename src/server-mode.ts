@@ -1,9 +1,10 @@
-import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
+import { windowsPowerShell } from './power.js';
 
 // One-time privileged helper that decides whether system sleep may stay disabled
 // while the owner works with the lid closed. See native/server-mode/helper.sh for
@@ -40,7 +41,40 @@ export type ServerModeView = {
    * never takes effect can be reported instead of spinning forever. */
   statusAgeMs: number;
   error: string | null;
+  /** A step only the owner can take, such as the Windows lid-close action. */
+  guidance: string | null;
 };
+
+/**
+ * Linux: hold a logind block lock on sleep and on the lid switch for as long as this
+ * process lives. logind always honours a handle-lid-switch block lock, whatever
+ * LidSwitchIgnoreInhibited says, and the lock dies with the process, so a crash can
+ * never pin the machine awake.
+ */
+export function spawnLidInhibitor():ChildProcess{
+  return spawn('systemd-inhibit',['--what=sleep:handle-lid-switch','--mode=block','--who=FarFromDesk','--why=Server mode keeps tasks running with the lid closed',process.execPath,'-e','process.stdin.resume()'],{stdio:['pipe','ignore','pipe']});
+}
+
+/** powercfg prints the AC index, then the DC index. Its labels are localized, the hex values are not. */
+export function windowsLidAction(output:string):{ac:number;dc:number}|null{
+  const values=[...output.matchAll(/0x([0-9a-f]{8})/gi)].map(m=>parseInt(m[1]!,16));
+  return values.length>=2?{ac:values.at(-2)!,dc:values.at(-1)!}:null;
+}
+
+/** Mains online, or no battery at all (a desktop). Null when it cannot be read. */
+export function linuxOnAcPower(dir:string):boolean|null{
+  try{
+    let battery=false;
+    for(const name of readdirSync(dir)){
+      const type=readFileSync(join(dir,name,'type'),'utf8').trim();
+      if(type==='Mains')return readFileSync(join(dir,name,'online'),'utf8').trim()==='1';
+      if(type==='Battery')battery=true;
+    }
+    return battery?null:true;
+  }catch{return null;}
+}
+
+export const WINDOWS_LID_GUIDANCE='Windows still sleeps when the lid closes. Open Control Panel > Power Options > Choose what closing the lid does, and set Plugged in to Do nothing. Or run: powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0, then powercfg /setactive SCHEME_CURRENT.';
 
 type Run=(file:string,args:string[])=>Promise<string>;
 export type ServerModeDeps = {
@@ -55,6 +89,8 @@ export type ServerModeDeps = {
   heartbeatMs: number;
   heartbeatMaxAgeSeconds: number;
   graceMaxAgeSeconds: number;
+  inhibit: () => ChildProcess;
+  powerSupplyDir: string;
 };
 
 function commandFailure(file:string,error:Error,stderr:string|Buffer){
@@ -99,6 +135,8 @@ export function systemDeps(overrides:Partial<ServerModeDeps>={}):ServerModeDeps{
     heartbeatMs:20_000,
     heartbeatMaxAgeSeconds:300,
     graceMaxAgeSeconds:7200,
+    inhibit:spawnLidInhibitor,
+    powerSupplyDir:'/sys/class/power_supply',
     ...overrides,
   };
 }
@@ -114,12 +152,16 @@ export class ServerMode {
   onLowBattery?: (percent:number,floor:number)=>void;
   private error: string | null = null;
   private statusChangedAt = 0;
+  private guidance: string | null = null;
+  /** Linux only: the systemd-inhibit lock that is server mode there. */
+  private hold?: ChildProcess;
 
   constructor(private store: Store, overrides:Partial<ServerModeDeps>={}){
     this.deps=systemDeps(overrides);
   }
 
-  get supported(){return this.deps.platform==='darwin';}
+  get supported(){return ['darwin','win32','linux'].includes(this.deps.platform);}
+  private get mac(){return this.deps.platform==='darwin';}
   get enabled(){return this.store.get('server-mode')==='true';}
   /** Battery use is on by default: the owner asked for the lid-closed Mac to keep working unplugged. */
   get allowBattery(){return this.store.get('server-mode-battery')!=='false';}
@@ -143,7 +185,7 @@ export class ServerMode {
     return {
       supported:this.supported,
       enabled:this.enabled,
-      helperInstalled:existsSync(this.deps.helperPath),
+      helperInstalled:this.mac&&existsSync(this.deps.helperPath),
       lidSleepDisabled:this.lidSleepDisabled,
       onAcPower:this.onAcPower,
       heartbeatAgeMs:age,
@@ -155,12 +197,14 @@ export class ServerMode {
       active:this.enabled&&this.lidSleepDisabled===true&&(this.onAcPower===true||this.onAcPower===false&&this.allowBattery&&this.batteryPercent!==null&&this.batteryPercent>=5&&(this.batteryPercent>=this.batteryFloor||this.lowBatteryOk)),
       statusAgeMs:this.statusChangedAt===0?0:Math.max(0,this.deps.now()-this.statusChangedAt),
       error:this.error,
+      guidance:this.enabled?this.guidance:null,
     };
   }
 
   /** Re-reads the real system state so the view never claims more than it knows. */
   async refresh():Promise<void>{
     if(!this.supported)return;
+    if(!this.mac)return this.refreshPortable();
     try{
       const [settings,battery]=await Promise.all([this.deps.run('/usr/bin/pmset',['-g']),this.deps.run('/usr/bin/pmset',['-g','batt'])]);
       const nextSleep=/SleepDisabled\s+1\b/.test(settings)?true:/SleepDisabled\s+0\b/.test(settings)?false:null;
@@ -179,17 +223,67 @@ export class ServerMode {
     }
   }
 
+  /**
+   * Windows and Linux need no privileged helper. Linux holds a logind lock from this
+   * process. Windows already holds idle sleep off through the keep-awake assertion that
+   * server mode implies (power.ts); the lid-close action is a power-plan setting the
+   * owner changes once, so it is read back and named, never claimed.
+   */
+  private async refreshPortable():Promise<void>{
+    let lid:boolean|null=null,ac:boolean|null=null,guidance:string|null=null;
+    if(this.deps.platform==='linux'){
+      lid=this.enabled?!!this.hold&&this.hold.exitCode===null&&this.hold.signalCode===null:false;
+      ac=linuxOnAcPower(this.deps.powerSupplyDir);
+    }else{
+      const root=process.env.SystemRoot??'C:\\Windows';
+      const [action,line]=await Promise.allSettled([
+        this.deps.run(join(root,'System32','powercfg.exe'),['/query','SCHEME_CURRENT','SUB_BUTTONS','LIDACTION']),
+        this.deps.run(windowsPowerShell(),['-NoLogo','-NoProfile','-NonInteractive','-Command','Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.SystemInformation]::PowerStatus.PowerLineStatus']),
+      ]);
+      const parsed=action.status==='fulfilled'?windowsLidAction(action.value):null;
+      lid=parsed?parsed.ac===0:null;
+      if(lid===false)guidance=WINDOWS_LID_GUIDANCE;
+      if(line.status==='fulfilled')ac=/Online/.test(line.value)?true:/Offline/.test(line.value)?false:null;
+    }
+    if(lid!==this.lidSleepDisabled)this.statusChangedAt=this.deps.now();
+    this.lidSleepDisabled=lid;this.onAcPower=ac;this.guidance=guidance;
+  }
+
+  /** Linux: take the lock and wait briefly, so a polkit refusal is reported instead of a dead switch. */
+  private async takeHold():Promise<void>{
+    if(this.deps.platform!=='linux'||(this.hold&&this.hold.exitCode===null))return;
+    const child=this.deps.inhibit();this.hold=child;
+    let said='';child.stderr?.on('data',d=>{said+=String(d);});
+    child.on('exit',()=>{if(this.hold===child&&this.enabled)this.error=`Server mode stopped holding sleep off: ${said.trim()||'systemd-inhibit exited'}. Turn it off and on again.`;});
+    const failed=await new Promise<string|null>(resolve=>{
+      const timer=setTimeout(()=>resolve(null),750);
+      child.once('error',e=>{clearTimeout(timer);resolve(`systemd-inhibit could not start (${e.message}). Server mode needs systemd-logind.`);});
+      child.once('exit',()=>{clearTimeout(timer);resolve(said.trim()||'systemd-inhibit exited at once.');});
+    });
+    if(failed){this.hold=undefined;throw new Error(`The system refused to hold sleep off: ${failed}`);}
+  }
+  private dropHold(){this.hold?.kill();this.hold=undefined;}
+
   /** Called once at startup so a stale heartbeat from the last run cannot pin the Mac. */
   async initialize():Promise<void>{
     if(!this.supported)return;
+    if(!this.mac){if(this.enabled)await this.takeHold().catch(e=>{this.error=(e as Error).message;});return this.refresh();}
     if(this.enabled){this.writeState();this.startHeartbeat();}
     else this.writeState();
     await this.refresh();
   }
 
   async setEnabled(enable:boolean):Promise<void>{
-    if(enable&&!this.supported)throw new Error('Server mode is available on macOS only.');
+    if(enable&&!this.supported)throw new Error('Server mode is available on macOS, Windows and Linux only.');
     this.statusChangedAt=this.deps.now();
+    if(!this.mac){
+      if(enable){
+        try{await this.takeHold();}
+        catch(e){this.store.set('server-mode','false');this.error=(e as Error).message;await this.refresh();throw e;}
+        this.store.set('server-mode','true');this.error=null;
+      }else{this.store.set('server-mode','false');this.dropHold();this.error=null;}
+      return this.refresh();
+    }
     if(enable){
       this.store.set('server-mode','true');
       this.writeState();
@@ -217,6 +311,7 @@ export class ServerMode {
   /** Removes the helper entirely. Only offered while server mode is off. */
   async removeHelper():Promise<void>{
     if(this.enabled)throw new Error('Turn server mode off before removing its helper.');
+    if(!this.mac)return;
     if(!existsSync(this.deps.plistPath)&&!existsSync(this.deps.helperPath))return;
     await this.deps.approve([
       'set -eu',
@@ -233,7 +328,7 @@ export class ServerMode {
    * shutdown must not release the hold: the backend is a KeepAlive agent and a
    * restart is routine, so releasing here would open a window in which a
    * lid-closed Mac could sleep. Only turning the setting off releases it. */
-  close(){this.stopHeartbeat();}
+  close(){this.stopHeartbeat();this.dropHold();}
 
   private startHeartbeat(){
     this.stopHeartbeat();

@@ -326,7 +326,9 @@ export function deviceRefusal(error: unknown): string {
   if (message.startsWith('APP_TOOL_REFUSED')) return message.slice('APP_TOOL_REFUSED: '.length);
   if (message.startsWith('APP_TOOL_FAILED')) return `I could not do that: ${plainCause(message.slice('APP_TOOL_FAILED:'.length))}.`;
   if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app has no open window right now, so there is nothing to act on yet.';
-  if (message.startsWith('DESKTOP_MACOS_ONLY')) return 'I can only control apps on macOS.';
+  if (message.startsWith('DESKTOP_MACOS_ONLY')) return 'That works on macOS only for now.';
+  // Windows and Linux refusals already carry the owner's sentence after the code.
+  for (const code of ['DESKTOP_PLATFORM_UNSUPPORTED', 'ATSPI_UNAVAILABLE', 'WAYLAND_INPUT_UNSUPPORTED', 'ELEVATED_TARGET', 'DESKTOP_CONTROL_NOT_FOUND', 'SCREENSHOT_REFUSED']) if (message.startsWith(code + ': ')) return message.slice(code.length + 2);
   if (message.startsWith('DESKTOP_BUSY')) return 'I am already doing something on your Mac. Let that finish, then ask me again.';
   if (message.startsWith('DESKTOP_STOPPED')) return 'I stopped that action. Nothing else was tried.';
   if (/mcp error|connection closed|\beconn|socket hang|network|terminated/i.test(message)) return 'I lost the connection to the desktop helper just then, so I cannot say what happened. Check the app, then ask me again.';

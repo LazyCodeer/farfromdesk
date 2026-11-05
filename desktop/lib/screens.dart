@@ -82,16 +82,18 @@ extension _BridgeScreens on _DeskState {
   /// Projects this platform can run in, most recently used first, plus a folder the owner picked.
   /// Desktop apps get the choice too: a new desktop coordinator opens its own chat in that folder.
   List<Map> get setupWorkspaces => [
-        if (pickedFolder != null)
-          {
-            'id': 'folder:$pickedFolder',
-            'name': pickedFolder!.split('/').where((p) => p.isNotEmpty).lastOrNull ?? pickedFolder,
-            'cwd': pickedFolder,
-          },
-        ...(selectedPlatform?['workspaces'] ?? [])
-            .cast<Map>()
-            .where((w) => w['available'] != false && w['cwd'] != pickedFolder),
-      ];
+    if (pickedFolder != null)
+      {
+        'id': 'folder:$pickedFolder',
+        'name':
+            pickedFolder!.split('/').where((p) => p.isNotEmpty).lastOrNull ??
+            pickedFolder,
+        'cwd': pickedFolder,
+      },
+    ...(selectedPlatform?['workspaces'] ?? []).cast<Map>().where(
+      (w) => w['available'] != false && w['cwd'] != pickedFolder,
+    ),
+  ];
 
   /// Choose folder…: any project folder on the Mac, through the system folder dialog.
   Future<void> pickCoordinatorFolder() async {
@@ -2298,9 +2300,10 @@ extension _BridgeScreens on _DeskState {
   });
 
   /// The apps the preferences panel shows a card for: every provider the backend reports.
-  List<String> get codingAppProviders => const ['codex', 'claude', 'muse', 'deepseek', 'cursor']
-      .where((provider) => platforms.any((p) => p['provider'] == provider))
-      .toList();
+  List<String> get codingAppProviders =>
+      const ['codex', 'claude', 'muse', 'deepseek', 'cursor']
+          .where((provider) => platforms.any((p) => p['provider'] == provider))
+          .toList();
 
   /// Opens the coding app panel: what was detected, one card per platform, and one save.
   ///
@@ -3725,7 +3728,11 @@ extension _BridgeScreens on _DeskState {
                     value: '__choose',
                     label: 'Choose folder…',
                     detail: 'Any project on this Mac',
-                    leading: Icon(Icons.create_new_folder_outlined, size: 15, color: muted),
+                    leading: Icon(
+                      Icons.create_new_folder_outlined,
+                      size: 15,
+                      color: muted,
+                    ),
                   ),
                   if (setupProjects.isEmpty &&
                       selectedPlatform?['workspaceError'] != null)
@@ -4537,6 +4544,10 @@ extension _BridgeScreens on _DeskState {
     final background = preferences['backgroundEnabled'] == true;
     final awake = preferences['keepAwake'] == true;
     final enabled = serverMode['enabled'] == true;
+    // Windows and Linux need no installed helper: Linux holds a logind lock
+    // from the app, Windows keeps idle sleep off and reads the lid action back.
+    final mac = api.platform == 'macos';
+    final windows = api.platform == 'windows';
     return [
       settingCard(
         Icons.bolt_rounded,
@@ -4616,17 +4627,33 @@ extension _BridgeScreens on _DeskState {
       settingCard(
         Icons.laptop_mac_rounded,
         'Keep running with the lid closed',
-        'Server mode keeps this $computer awake with the lid shut, plugged in '
-            'or on battery above ${serverMode['batteryFloor'] ?? 15}%, so tasks keep '
-            'going. Below that, your phone asks before it keeps running. Turning it '
-            'on asks for an administrator approval once.',
+        mac
+            ? 'Server mode keeps this $computer awake with the lid shut, plugged in '
+                  'or on battery above ${serverMode['batteryFloor'] ?? 15}%, so tasks keep '
+                  'going. Below that, your phone asks before it keeps running. Turning it '
+                  'on asks for an administrator approval once.'
+            : 'Server mode keeps this $computer awake while it is plugged in, even '
+                  'with the lid shut, so tasks keep going. '
+                  '${windows ? 'Windows also needs its lid-close action set to Do nothing when plugged in.' : 'It holds a sleep and lid-switch lock through systemd-logind while FarFromDesk runs.'}',
         control: Switch(
           key: const Key('setting-server-mode'),
           value: enabled,
-          onChanged: busy || !background
+          onChanged: busy || !background || serverMode['supported'] == false
               ? null
               : (v) async {
-                  if (v) {
+                  if (v && !mac) {
+                    final proceed = await confirm(
+                      'Turn on server mode?',
+                      'While it is on and the power cable is connected, this '
+                          '$computer will not sleep, and a closed lid gets warm, '
+                          'so keep the vents clear. Your lock screen and password '
+                          'stay on. Turning this off or quitting FarFromDesk puts '
+                          'normal sleep back. '
+                          '${windows ? 'Windows only skips lid-close sleep when its lid-close action is Do nothing, and some laptops with Modern Standby may still pause apps once the screen is off.' : 'Your desktop must allow FarFromDesk to take a logind lock, which most do for the signed-in user.'}',
+                      actionLabel: 'Turn on',
+                    );
+                    if (!proceed) return;
+                  } else if (v) {
                     final proceed = await confirm(
                       'Turn on server mode?',
                       'This installs a small background helper with administrator '
@@ -4656,9 +4683,11 @@ extension _BridgeScreens on _DeskState {
         ),
         footer: [
           small(
-            'The helper puts normal sleep back when you turn this off or the '
-            'battery runs low. If FarFromDesk stops, it holds sleep off for up to two '
-            'hours, then restores normal sleep.',
+            mac
+                ? 'The helper puts normal sleep back when you turn this off or the '
+                      'battery runs low. If FarFromDesk stops, it holds sleep off for up to two '
+                      'hours, then restores normal sleep.'
+                : 'Normal sleep comes back when you turn this off or FarFromDesk stops.',
           ),
           if (enabled) ...[
             gap(10),
@@ -4666,13 +4695,29 @@ extension _BridgeScreens on _DeskState {
             // reference states it, instead of a pill plus a second paragraph.
             if (serverMode['active'] == true)
               settingsNote(
-                serverMode['onAcPower'] == false
+                !mac
+                    ? 'Lid-closed sleep is off on power. Keep the vents clear for '
+                          'proper airflow.'
+                    : serverMode['onAcPower'] == false
                     ? 'Running on battery (${serverMode['batteryPercent'] ?? '?'}%) with '
                           'lid-closed sleep off. Closing the lid locks the screen.'
                     : 'Lid-closed sleep is off on power, and closing the lid locks the '
                           'screen. Keep the vents clear for proper airflow.',
               )
-            else ...[
+            else if (serverMode['guidance'] != null) ...[
+              gap(7),
+              tag('One setting left', tint: warning),
+              gap(7),
+              SelectableText(
+                serverMode['guidance'],
+                style: const TextStyle(fontSize: 11, height: 1.5, color: muted),
+              ),
+            ] else if (!mac) ...[
+              gap(7),
+              serverMode['onAcPower'] == false
+                  ? tag('Waiting for the power cable')
+                  : tag('Checking the sleep settings', spinning: true),
+            ] else ...[
               gap(7),
               if (serverMode['lowBatteryNeedsConfirm'] == true)
                 tag(
@@ -5927,7 +5972,11 @@ extension _Onboarding on _DeskState {
               'Open the pairing link',
               confirming ? 'now' : 'pending',
             ),
-            ('Set up a coordinator', 'Claude, Codex, Muse Code, DeepSeek Harness or Cursor', 'pending'),
+            (
+              'Set up a coordinator',
+              'Claude, Codex, Muse Code, DeepSeek Harness or Cursor',
+              'pending',
+            ),
           ]
         : [
             (
@@ -5941,7 +5990,11 @@ extension _Onboarding on _DeskState {
               hasChannelChoice ? 'now' : 'pending',
             ),
             ('Pick where replies go', 'Yourself or a private group', 'pending'),
-            ('Set up a coordinator', 'Claude, Codex, Muse Code, DeepSeek Harness or Cursor', 'pending'),
+            (
+              'Set up a coordinator',
+              'Claude, Codex, Muse Code, DeepSeek Harness or Cursor',
+              'pending',
+            ),
           ];
     final right = !hasChannelChoice
         ? chooseCard()

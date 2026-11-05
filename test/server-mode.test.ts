@@ -319,11 +319,11 @@ test('startup clears a leftover enabled state so a crash cannot pin the Mac awak
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test('server mode is macOS only and its helper cannot be removed while on', async () => {
+test('server mode refuses unsupported platforms and its helper cannot be removed while on', async () => {
   const f = fixture();
   try {
-    const other = new ServerMode(f.store, { platform: 'linux' });
-    await assert.rejects(other.setEnabled(true), /macOS only/);
+    const other = new ServerMode(f.store, { platform: 'freebsd' });
+    await assert.rejects(other.setEnabled(true), /macOS, Windows and Linux only/);
     await f.mode.setEnabled(true);
     await assert.rejects(f.mode.removeHelper(), /Turn server mode off/);
   } finally { f.mode.close(); f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }

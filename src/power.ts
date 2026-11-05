@@ -6,11 +6,14 @@ import type { WhatsApp } from './whatsapp.js';
 import type { ServerMode } from './server-mode.js';
 import { join } from 'node:path';
 
+/** Windows PowerShell 5.1, which every supported Windows ships; never a PATH lookup. */
+export function windowsPowerShell(){return join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');}
+
 export function spawnPowerAssertion(pid:number):ChildProcess {
   if(process.platform==='darwin')return spawn('/usr/bin/caffeinate',['-i','-w',String(pid)],{stdio:'ignore'});
   if(process.platform==='win32') {
     const source='$ErrorActionPreference="Stop"; Add-Type -TypeDefinition \'using System; using System.Runtime.InteropServices; public class FFDPower { [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags); }\'; if ([FFDPower]::SetThreadExecutionState(2147483649) -eq 0) { exit 1 }; [Console]::In.ReadToEnd() | Out-Null';
-    return spawn(join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(source,'utf16le').toString('base64')],{stdio:['pipe','ignore','ignore'],windowsHide:true});
+    return spawn(windowsPowerShell(),['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(source,'utf16le').toString('base64')],{stdio:['pipe','ignore','ignore'],windowsHide:true});
   }
   return spawn('systemd-inhibit',['--what=sleep','--mode=block','--who=FarFromDesk','--why=Owner enabled background forwarding',process.execPath,'-e','process.stdin.resume()'],{stdio:['pipe','ignore','ignore']});
 }
