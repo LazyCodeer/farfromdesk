@@ -144,6 +144,6 @@ FarFromDesk uses an unofficial WhatsApp connection and the official Telegram Bot
 
 ## License
 
-FarFromDesk is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Copyright Codecy Labs (Sagar Kumar).
+FarFromDesk is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). Copyright Codecy Labs (Sagar Kumar).
 
-Anyone can download and use FarFromDesk for free for personal and other noncommercial purposes. Commercial use, resale or rebranding of the app or its code needs written permission from Codecy Labs / Sagar Kumar. Third-party components keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+You can use, study and change FarFromDesk for free. If you distribute a modified version, or run one as a service for others, you must publish your changes under the same license. For a commercial license without these terms, contact Codecy Labs / Sagar Kumar. Third-party components keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

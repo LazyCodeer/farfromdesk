@@ -107,7 +107,7 @@ plist = {
     "CFBundleIconFile": "SessionBridge",
     "LSMinimumSystemVersion": "14.0", "NSPrincipalClass": "NSApplication",
     "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
-    "NSHumanReadableCopyright": "Copyright Codecy Labs (Sagar Kumar). PolyForm Noncommercial 1.0.0.",
+    "NSHumanReadableCopyright": "Copyright Codecy Labs (Sagar Kumar). Licensed under AGPL-3.0.",
 }
 with (contents / "Info.plist").open("wb") as stream:
     plistlib.dump(plist, stream)
