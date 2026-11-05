@@ -224,6 +224,15 @@ test('foreground input goes to the window the driver says holds focus, such as a
   assert.equal(r.ok, true);
 });
 
+test('a named field is set, not typed into, so a second fill never doubles its value', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: (args: any) => ({ ok: true }) });
+  const r: any = await h.c.assist('brain:t', { action: 'type', app: 'Comet', name: 'Phone', text: '9000000000' });
+  const steps = h.of('run_steps').map((c: any) => c.args.steps[0]);
+  assert.deepEqual(steps[0].set_value, { name: 'Phone', value: '9000000000' });
+  assert.equal(steps.some((s: any) => s.type_text), false);
+  assert.equal(r.ok, true);
+});
+
 test('typing into a field whose label shares its name retries as the text field', async () => {
   const h = control(COMET_TREE, COMET_WINDOWS, { run_steps: (args: any) => { if (!args.steps[0].type_text.role) throw new Error('DESKTOP_NATIVE_REFUSED: type_text ERROR (find): 2 elements match element "Phone"'); return { ok: true }; } });
   const r: any = await h.c.assist('brain:t', { action: 'type', app: 'Comet', name: 'Phone', text: '9000000000' });
