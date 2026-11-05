@@ -91,7 +91,8 @@ export function pickedWorkspace(path:string) {
   if(isCoordinatorFolder(cwd)||isScratchFolder(cwd)||cwd==='/'||cwd===cursorOwnerHome())throw new Error('Choose a project folder, not the home folder or an app folder.');
   return {id:`folder:${path}`,name:basename(cwd)||cwd,cwd,accountScope:null,available:true};
 }
-export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[],resolved?:ResolvedWorkspaces) {
+const NO_CLAUDE_LAUNCHER='This folder has no open Claude Desktop chat, and no Claude Desktop chat is connected to FarFromDesk. Open a chat in that folder in Claude Desktop, connect one Desktop chat, or choose Claude CLI. Nothing was started.';
+export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:any[],resolved?:ResolvedWorkspaces,launcherReady=false) {
   const choices=new Map<string,any>();
   for(const s of [...sessions].sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0))) {
     if(typeof s.cwd!=='string'||!s.cwd)continue;
@@ -110,9 +111,11 @@ export function masterWorkspaces(provider:Provider,mode:ExecutionMode,sessions:a
       const accountScope=s.accountScope??null;
       // One row per folder for a new Desktop chat: it opens in whichever Claude account is signed in.
       const id=createHash('sha256').update(JSON.stringify([provider,mode,cwd,provider==='claude'&&mode==='desktop'?null:accountScope])).digest('hex');
-      // A new Claude Desktop coordinator opens its own chat in the folder, so any folder Claude has
-      // worked in is a valid place; only a launcher needs an open chat with a reachable inbox.
-      const available=true,launcher=provider==='claude'&&mode==='desktop'&&s.available===true;
+      // A new Claude Desktop coordinator opens its own chat in the folder, started from a launcher:
+      // an open chat in that folder, or an owner-connected Desktop chat (launcherReady). Without
+      // either, the folder cannot start anything, so it is not offered.
+      const launcher=provider==='claude'&&mode==='desktop'&&s.available===true;
+      const available=provider!=='claude'||mode!=='desktop'||launcher||launcherReady;
       const existing=choices.get(id);
       // Prefer a reachable root-project chat over a newer temporary worktree.
       const rank=(launcher?2:0)+(sessionCwd===cwd?1:0);
@@ -260,14 +263,17 @@ export class Masters {
         const coordinators=this.registry.entries().filter(r=>r.provider==='claude'&&r.executionMode==='desktop'&&this.store.binding(r.bindingId)?.enabled);
         platform.coordinatorId=coordinators.length===1?coordinators[0].bindingId:undefined;
         platform.launcherId=platform.coordinatorId?this.store.binding(platform.coordinatorId)?.native_id:preference?.desktopParentId;
-        // New coordinators start in their own folder from a Claude chat the owner sends once; no launcher chat is needed.
-        platform.creationReadiness={state:'ready',message:'Claude opens a new chat in the coordinator folder. Confirm the folder and press Send once to start it.'};
+        platform.launcherReady=this.desktop.hasLauncher(claude);
+        // Claude Desktop has no command that opens a chat with a prompt, so a connected or open chat starts it.
+        platform.creationReadiness=platform.launcherReady||claude.some(s=>s.executionMode==='desktop'&&s.available===true)
+          ?{state:'ready',message:'Claude opens a new chat in the coordinator folder. Confirm the folder and press Send once to start it.'}
+          :{state:'needs-launcher',message:'Open a chat in Claude Desktop first, or connect one to FarFromDesk. Claude Desktop cannot start a new chat with a prompt on its own. Claude CLI needs no open chat.'};
       }
     }));
     let resolved:ResolvedWorkspaces=new Map(),workspaceError:string|undefined;
     try{resolved=await this.workspaceScanner.scan([...claude,...codex,...muse,...deepseek,...cursor].map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));}
     catch(error){workspaceError=error instanceof Error?error.message:'Workspace discovery unavailable';}
-    for(const platform of platforms){platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[],resolved);if(workspaceError)platform.workspaceError=workspaceError;}
+    for(const platform of platforms){platform.workspaces=masterWorkspaces(platform.provider,platform.executionMode,platform.sessions??[],resolved,platform.launcherReady===true);delete platform.launcherReady;if(workspaceError)platform.workspaceError=workspaceError;}
     for(const platform of platforms)if(errors.has(platform.provider))platform.discoveryError='Refresh incomplete. Showing the last saved list; try Refresh. Sessions are checked again before connecting.';
     const digest=createHash('sha256').update(JSON.stringify(platforms)).digest('hex');
     if(digest!==this.catalogDigest){this.catalogDigest=digest;this.catalogRevision=randomUUID();}
@@ -475,11 +481,17 @@ export class Masters {
     let workspace:any,sessions:any[]|undefined;
     if(workspaceId!==undefined) {
       if(typeof workspaceId!=='string'||!workspaceId)throw new Error('Choose a detected workspace.');
-      if(workspaceId.startsWith('folder:'))workspace=pickedWorkspace(workspaceId.slice(7));
-      else {
+      const claudeDesktop=provider==='claude'&&mode==='desktop';
+      if(workspaceId.startsWith('folder:')) {
+        workspace=pickedWorkspace(workspaceId.slice(7));
+        // A picked folder has no chat of its own, so only a connected launcher (or a chosen one) can start it.
+        if(claudeDesktop&&!desktopParentId){sessions=await this.catalog(provider,true);if(!this.desktop.hasLauncher(sessions))throw new Error(NO_CLAUDE_LAUNCHER);}
+      } else {
       sessions=await this.catalog(provider,true);
       const resolved=await this.workspaceScanner.scan(sessions.map(s=>s.cwd).filter((p):p is string=>typeof p==='string'&&!!p));
-      workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode),resolved).find(w=>w.id===workspaceId);
+      const launcherReady=claudeDesktop&&this.desktop.hasLauncher(sessions);
+      workspace=masterWorkspaces(provider,mode,sessions.filter(s=>provider!=='claude'||(s.executionMode??'cli')===mode),resolved,launcherReady).find(w=>w.id===workspaceId);
+      if(claudeDesktop&&workspace&&!workspace.available)throw new Error(NO_CLAUDE_LAUNCHER);
       }
       if(!workspace?.available)throw new Error('Selected workspace is no longer available in this app and account. Refresh and choose it again.');
       if(desktopParentId&&workspace.launcherId!==desktopParentId)throw new Error('Selected workspace does not match the desktop launcher.');
