@@ -9,7 +9,7 @@ import time
 
 _RESOURCE_BUSY = re.compile(r'^\s*hdiutil:\s*create failed\s*-\s*resource busy\s*$', re.I | re.M)
 
-CREATE_TIMEOUT = 240  # A healthy create takes well under a minute.
+CREATE_TIMEOUT = 120  # A healthy create takes well under a minute.
 
 
 def create_dmg(source_dir, output):

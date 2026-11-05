@@ -172,10 +172,6 @@ jobs:
           git status --short --untracked-files=no
           git diff --stat HEAD --
           git diff --quiet HEAD --
-      - name: Stop XProtect scans that stall hdiutil
-        if: runner.os == 'macOS'
-        # Known runner-images issue: XProtect scanning the freshly signed app hangs `hdiutil create`.
-        run: sudo pkill -9 XProtect || true
       - run: python script/package_desktop.py --version ${{ needs.version.outputs.version }}
       - if: runner.os == 'macOS'
         run: node script/smoke_desktop_driver.mjs 'build/desktop-release/stage/FarFromDesk.app/Contents/Resources/backend/native'
