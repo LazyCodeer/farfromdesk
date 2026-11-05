@@ -12,8 +12,10 @@ _RESOURCE_BUSY = re.compile(r'^\s*hdiutil:\s*create failed\s*-\s*resource busy\s
 def create_dmg(source_dir, output):
     """Retry a resource-busy create failure at most twice, then fail closed."""
     output = pathlib.Path(output)
+    # APFS images compress poorly (UDZO+APFS was ~70 MB larger than the zip);
+    # HFS+ with LZFSE is as fast and mounts on every supported macOS (14+).
     command = ['hdiutil', 'create', '-volname', 'FarFromDesk', '-srcfolder', str(source_dir),
-               '-format', 'UDZO', '-ov', str(output)]
+               '-fs', 'HFS+', '-format', 'ULFO', '-ov', str(output)]
     for attempt in range(1, 4):
         # Only remove the exact output file owned by this packaging invocation.
         output.unlink(missing_ok=True)
