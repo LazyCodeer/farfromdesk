@@ -9,7 +9,11 @@ import subprocess
 def build_windows_installer(app: Path, output: Path, version: str):
     if not re.fullmatch(r'\d+\.\d+\.\d+(?:[.-][A-Za-z0-9.-]+)?', version):
         raise ValueError('Invalid installer version')
-    compiler = shutil.which('ISCC.exe') or str(Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Inno Setup 6' / 'ISCC.exe')
+    # winget installs Inno Setup per user (LOCALAPPDATA) unless run elevated.
+    candidates = [Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Inno Setup 6' / 'ISCC.exe']
+    if os.environ.get('LOCALAPPDATA'):
+        candidates.append(Path(os.environ['LOCALAPPDATA']) / 'Programs' / 'Inno Setup 6' / 'ISCC.exe')
+    compiler = shutil.which('ISCC.exe') or next((str(c) for c in candidates if c.is_file()), str(candidates[0]))
     if not Path(compiler).is_file():
         raise RuntimeError('Inno Setup 6 is required on the Windows build host')
     subprocess.run([compiler, '/Qp', '/DAppVersion=' + version,
