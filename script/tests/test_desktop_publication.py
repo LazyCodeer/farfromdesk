@@ -47,9 +47,17 @@ class DesktopPublicationTests(unittest.TestCase):
         with patch('publish_desktop_release.gh', return_value=json.dumps([ref])):
             verify_tag('owner/repo', 'v0.7.1', COMMIT, required=True)
             with self.assertRaises(RuntimeError): verify_tag('owner/repo', 'v0.7.1', 'c'*40)
-    def test_missing_platform(self):
+    def test_missing_platform_publishes_the_rest(self):
+        import shutil; shutil.rmtree(self.root/'farfromdesk-windows-2022')
+        files=validate(self.root,VERSION,COMMIT)
+        self.assertFalse(any('windows' in name for name in files))
+        self.assertIn(f'FarFromDesk-{VERSION}-macos-arm64.dmg',files)
+    def test_unknown_or_no_platform_is_rejected(self):
         (self.root/'farfromdesk-windows-2022').rename(self.root/'unexpected')
-        with self.assertRaisesRegex(ValueError,'four target'):validate(self.root,VERSION,COMMIT)
+        with self.assertRaisesRegex(ValueError,'known targets'):validate(self.root,VERSION,COMMIT)
+        import shutil
+        for p in list(self.root.iterdir()):shutil.rmtree(p)
+        with self.assertRaisesRegex(ValueError,'At least one'):validate(self.root,VERSION,COMMIT)
     def test_corruption(self):
         next(self.root.rglob('*.zip')).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError,'integrity'):validate(self.root,VERSION,COMMIT)

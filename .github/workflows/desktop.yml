@@ -63,7 +63,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     env:
       WSB_TARGET_ARCH: ${{ matrix.arch }}
       # Unique to this workflow run: never reuse a release binary across commits or releases.
@@ -200,7 +200,12 @@ jobs:
           retention-days: 3
           compression-level: 0
   publish:
-    if: needs.version.outputs.publish == 'true' && needs.version.outputs.skip != 'true' && github.ref == 'refs/heads/main'
+    # Publish whichever targets passed: one failed or hung build must not hold back the others.
+    # Checks must pass, and a run cancelled by a newer push never publishes.
+    if: >-
+      !cancelled() && needs.version.outputs.publish == 'true' && needs.version.outputs.skip != 'true'
+      && github.ref == 'refs/heads/main' && needs.checks.result == 'success'
+      && needs.desktop.result != 'skipped'
     needs: [version, checks, desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
