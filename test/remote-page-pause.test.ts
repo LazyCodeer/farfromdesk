@@ -26,7 +26,7 @@ const page=(from:string,to:string)=>{const src=fs.readFileSync('remote-page/remo
 test('a login that finishes while the phone is hidden pauses straight away',()=>{
  let paused=0;
  const context=vm.createContext({document:{hidden:true},authed:false,paused:false,live:false,canList:false,idleMs:0,
-  store:{drop(){},set(){}},PAUSED:'paused',KEEP:'keep',$:()=>({hidden:true,classList:{remove(){}}}),setVoice(){},showLocked(){},
+  store:{drop(){},set(){}},PAUSED:'paused',KEEP:'keep',$:()=>({hidden:true,classList:{remove(){}}}),setVoice(){},showLocked(){},nameHost(){},
   goLive(){context.live=true;},pause(){paused++;}});
  vm.runInContext(page('function onMessage(','// ---- Live view.'),context);
  vm.runInContext('onMessage(JSON.stringify({t:"auth-ok",resume:"fixture",idle:75000}))',context);
@@ -96,4 +96,21 @@ test('a screen wake lock granted after a pause is released',async()=>{
  vm.runInContext(page('async function keepAwake(','function goLive('),context);
  await vm.runInContext('keepAwake()',context);
  assert.equal(released,1);assert.equal(context.wake,null);
+});
+
+test('the page calls a Windows host a PC, with Ctrl shortcuts, Task View and an unlock-at-the-PC lock bar',()=>{
+ const labels:any[]=[{dataset:{key:'c'},textContent:'⌘C',setAttribute(){}},{dataset:{key:'tab'},textContent:'⌘Tab',setAttribute(){}},{dataset:{key:'space'},textContent:'⌘␣',setAttribute(){}}];
+ const el:any={},small:any={textContent:''},lockSmall:any={textContent:''};
+ const ids:Record<string,any>={overview:{querySelector:()=>small},lockbar:{querySelector:()=>lockSmall},locktype:{hidden:false},lockfact:{hidden:false}};
+ const context=vm.createContext({$:(id:string)=>ids[id]??el,document:{body:{},createTreeWalker:()=>({nextNode:()=>null}),querySelectorAll:(q:string)=>q.includes('data-mod')?labels:[]},NodeFilter:{SHOW_TEXT:4},WeakMap});
+ vm.runInContext(page('// ---- Which computer this is.','const explain='),context);
+ assert.equal(vm.runInContext("named('Control your Mac')",context),'Control your computer','neutral before login');
+ vm.runInContext("nameHost('windows')",context);
+ assert.equal(vm.runInContext("named('Your Mac is locked. Check your Mac.')",context),'Your PC is locked. Check your PC.');
+ assert.deepEqual(labels.map(l=>l.textContent),['Ctrl+C','Alt+Tab','Start']);
+ assert.equal(small.textContent,'Opens Task View on your PC');
+ assert.match(lockSmall.textContent,/Unlock it at the PC/);
+ assert.equal(ids.locktype.hidden,true);assert.equal(ids.lockfact.hidden,true);
+ vm.runInContext("nameHost(undefined)",context);
+ assert.equal(vm.runInContext("named('Your Mac')",context),'Your Mac','an older host sends no os: a Mac');
 });

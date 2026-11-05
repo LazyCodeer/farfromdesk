@@ -8,7 +8,7 @@ import {createServer} from 'node:net';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 
 const repo=resolve(fileURLToPath(new URL('..',import.meta.url)));
-const portable=['test/portable.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts','test/server-mode-portable.test.ts','test/platform-desktop.test.ts'];
+const portable=['test/portable.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts','test/server-mode-portable.test.ts','test/platform-desktop.test.ts','test/remote-windows.test.ts'];
 // Keep inherited environment narrow: credentials can appear under arbitrary
 // names such as DATABASE_URL or GH_CONFIG_DIR, not only KEY/TOKEN/SECRET.
 // These explicit test flags opt into local fixtures and never carry credentials.
@@ -20,7 +20,7 @@ const inheritedNames=new Set([
   'LC_ADDRESS','LC_TELEPHONE','LC_MEASUREMENT','LC_IDENTIFICATION','TZ',
   'TERM','COLORTERM','NO_COLOR','FORCE_COLOR','CI','GITHUB_ACTIONS',
   'WSB_AUDIO_TEST_FFMPEG','WSB_AUDIO_TEST_WHISPER','WSB_AUDIO_TEST_MODEL',
-  'WSB_AUDIO_TEST_SAMPLE','FFD_LARGE_DOCUMENT_PROBE',
+  'WSB_AUDIO_TEST_SAMPLE','FFD_LARGE_DOCUMENT_PROBE','FFD_LIVE_DESKTOP',
   'ISOLATION_SENTINEL','ISOLATION_PROBE_FAIL','ISOLATION_EXPECT_AUDIO',
 ]);
 

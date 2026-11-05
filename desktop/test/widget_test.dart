@@ -290,7 +290,7 @@ void main() {
   });
 
   testWidgets(
-    'Remote control off macOS offers no password the backend would refuse',
+    'Remote control where the backend has no phone control (Linux) offers no password',
     (tester) async {
       size(tester);
       final api = MacControlGateway()..phoneSupported = false;
@@ -300,7 +300,7 @@ void main() {
       await tester.pumpAndSettle();
       await openSettingsTab(tester, 'remote');
       expect(find.byKey(const Key('remote-unavailable')), findsOneWidget);
-      expect(find.textContaining('works on Mac today'), findsOneWidget);
+      expect(find.textContaining('works on Mac and Windows today'), findsOneWidget);
       expect(find.byKey(const Key('remote-password')), findsNothing);
       expect(find.byKey(const Key('remote-password-save')), findsNothing);
       expect(api.remoteActions, isEmpty);

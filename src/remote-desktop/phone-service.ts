@@ -10,6 +10,7 @@ import {NativeOwnerBackend} from '../owner-view/native.js';
 import type {AccessStore} from './access.js';
 import {RemotePasswordAccess} from './access.js';
 import {phoneServer} from './phone-server.js';
+import {remoteControlSupported} from '../remote-p2p/service.js';
 
 const exec=promisify(execFile),nativeRoot=fileURLToPath(new URL('../../native/',import.meta.url));
 // 100.64.0.0/10 is Tailscale's private range, so the phone can reach the Mac away from home.
@@ -32,12 +33,18 @@ export class PhoneRemoteService {
  private starting=false;private generation=0;private url?:string;private fingerprint?:string;
  private error?:string;private selected?:{pid:number;windowId:number};
  constructor(store:AccessStore){this.access=new RemotePasswordAccess(store);this.access.stop();}
- get status(){return {supported:process.platform==='darwin',...this.access.status,running:!!this.viewer,url:this.url,fingerprint:this.fingerprint,selected:this.selected,error:this.error,addresses:phoneAddresses(),mode:'selected-window',networkScope:'same-wifi',capture:'refreshed-images'};}
+ // supported: phone screen control (the P2P link sent in chat), which macOS and Windows have.
+ // localViewer: the older same-Wi-Fi viewer below, which needs the macOS driver and openssl.
+ get status(){return {supported:remoteControlSupported(),localViewer:process.platform==='darwin',...this.access.status,running:!!this.viewer,url:this.url,fingerprint:this.fingerprint,selected:this.selected,error:this.error,addresses:phoneAddresses(),mode:'selected-window',networkScope:'same-wifi',capture:'refreshed-images'};}
  private getDriver(){return this.driver??=new EmbeddedDesktopDriver();}
  async command(d:Record<string,unknown>){
   if(d.action==='stop'){this.stop();return this.status;}
+  // The remote password guards the P2P link too, so it is set wherever that link works.
+  if(d.action==='password'){
+   if(!remoteControlSupported())throw Error('UNSUPPORTED_PLATFORM');
+   this.stop();await this.access.setPassword(d.password as string);return this.status;
+  }
   if(process.platform!=='darwin')throw Error('MAC_ONLY');
-  if(d.action==='password'){this.stop();await this.access.setPassword(d.password as string);return this.status;}
   if(d.action==='check')return {...this.status,permissions:await this.getDriver().call('check_permissions',{})};
   if(d.action==='apps'){
    const result=await this.getDriver().call('list_apps',{});

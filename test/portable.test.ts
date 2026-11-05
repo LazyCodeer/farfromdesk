@@ -86,9 +86,3 @@ test('public Claude SDK stops when the native session identity differs',async()=
   const session=new ClaudeSDKSession(process.execPath,'/project','exact',true,async()=>false,{},query);
   await assert.rejects(session.run('Request'),/different session identity/);assert.equal(closed,true);session.close();
 });
-
-test('/screen is offered only where phone screen viewing exists (macOS)', async () => {
-  const { TELEGRAM_COMMANDS, SCREEN_MAC_ONLY } = await import('../src/owner-commands.js');
-  assert.equal(TELEGRAM_COMMANDS.some(c => c.command === 'screen'), process.platform === 'darwin');
-  assert.doesNotMatch(SCREEN_MAC_ONLY, /Settings > Remote control/);
-});

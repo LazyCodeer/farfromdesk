@@ -79,11 +79,12 @@ extension _RemoteControl on _DeskState {
         'SELECT_LOCAL_NETWORK': 'Pick the Wi-Fi network your phone is on.',
         'START_IN_PROGRESS': 'Already starting. Give it a moment.',
         'START_CANCELLED': 'Start was cancelled.',
-        'MAC_ONLY': 'Phone access works on a Mac for now.',
+        'MAC_ONLY': 'This needs a Mac for now.',
+        'UNSUPPORTED_PLATFORM': 'Phone screen control works on Mac and Windows for now.',
         'STOPPED': 'You stopped it.',
         'NEW_LINK': 'A newer link replaced it.',
         'REPLACED': 'A newer connection replaced it.',
-        'LOCKED': 'This Mac was locked.',
+        'LOCKED': 'This computer was locked.',
       }[code] ??
       code;
 
@@ -147,10 +148,10 @@ extension _RemoteControl on _DeskState {
           key: const Key('remote-unavailable'),
           child: settingCard(
             Icons.phonelink_off_outlined,
-            'Phone screen control works on Mac today',
-            'Windows and Linux are next. Until then there is no remote password '
-                'to set on this computer. The switch below still lets '
-                'FarFromDesk read and use apps here when you ask from your phone.',
+            'Phone screen control works on Mac and Windows today',
+            'Linux is next. Until then there is no remote password to set on '
+                'this computer. The switch below still lets FarFromDesk read and '
+                'use apps here when you ask from your phone.',
           ),
         ),
       if (status['macControl']?['supported'] == true) ...[
