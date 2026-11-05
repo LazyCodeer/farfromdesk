@@ -67,6 +67,9 @@ test('the owner stores a DeepSeek provider and key without the key ever coming b
     assert.equal(store.get('deepseek-api-key'), '');
   } finally {
     if (savedDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDshHome;
+    // Both tests bind the same port (config reads it once), so drop keep-alive sockets that
+    // fetch would otherwise reuse against the next server.
+    server.closeAllConnections();
     await new Promise<void>(r => server.close(() => r()));
     rmSync(temp, { recursive: true, force: true });
   }
@@ -152,6 +155,9 @@ test('the app sees, switches and feeds the labelled DeepSeek sessions of one fol
     }
   } finally {
     if (savedDshHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedDshHome;
+    // Both tests bind the same port (config reads it once), so drop keep-alive sockets that
+    // fetch would otherwise reuse against the next server.
+    server.closeAllConnections();
     await new Promise<void>(r => server.close(() => r()));
     rmSync(temp, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
