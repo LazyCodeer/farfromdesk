@@ -63,7 +63,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 60
     env:
       WSB_TARGET_ARCH: ${{ matrix.arch }}
       # Unique to this workflow run: never reuse a release binary across commits or releases.
