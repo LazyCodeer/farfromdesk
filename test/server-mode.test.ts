@@ -212,6 +212,7 @@ function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
   const calls: string[] = [];
   let powerOff = false;
   let percent = 80;
+  let lidClosed = true;
   const store = new Store(':memory:');
   const mode = new ServerMode(store, {
     platform: 'darwin',
@@ -230,6 +231,7 @@ function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
         if (!daemonLoaded) throw new Error('launchctl: Could not find service');
         return 'com.codecylabs.farfromdesk.servermode = { state = running }\n';
       }
+      if (file === '/usr/sbin/ioreg') return `| "AppleClamshellState" = ${lidClosed ? 'Yes' : 'No'}\n`;
       if (args[1] === 'batt') return (powerOff ? "Now drawing from 'Battery Power'\n" : "Now drawing from 'AC Power'\n") + ` -InternalBattery-0 ${percent}%; discharging\n`;
       return 'System-wide power settings:\n SleepDisabled\t\t1\n';
     },
@@ -237,7 +239,7 @@ function fixture({ daemonLoaded = true }: { daemonLoaded?: boolean } = {}) {
     heartbeatMs: 15,
     heartbeatMaxAgeSeconds: 300,
   });
-  return { dir, store, mode, approved, calls, setPowerOff: (v: boolean) => { powerOff = v; }, setPercent: (v: number) => { percent = v; } };
+  return { dir, store, mode, approved, calls, setPowerOff: (v: boolean) => { powerOff = v; }, setPercent: (v: number) => { percent = v; }, setLidClosed: (v: boolean) => { lidClosed = v; } };
 }
 
 test('enabling server mode installs the helper once and records the owner heartbeat', async () => {
@@ -416,7 +418,10 @@ test('server mode asks once on low battery and keeps the answer until power retu
     f.mode.onLowBattery = pct => { asked.push(pct); };
     f.setPowerOff(true); f.setPercent(60); await f.mode.refresh();
     assert.equal(f.mode.view().active, true);
-    f.setPercent(12); await f.mode.refresh(); await f.mode.refresh();
+    // Lid open: the owner is at the Mac, so the phone is not asked.
+    f.setLidClosed(false); f.setPercent(12); await f.mode.refresh();
+    assert.deepEqual(asked, []);
+    f.setLidClosed(true); await f.mode.refresh(); await f.mode.refresh();
     assert.deepEqual(asked, [12]);
     assert.equal(f.mode.view().lowBatteryNeedsConfirm, true);
     assert.match(await f.mode.setLowBatteryOk(true), /until 5%/);

@@ -147,6 +147,7 @@ export class ServerMode {
   private lidSleepDisabled: boolean | null = null;
   private onAcPower: boolean | null = null;
   private batteryPercent: number | null = null;
+  private lidClosed: boolean | null = null;
   private lowWarned = false;
   /** Called once each time the Mac drops below the battery floor while server mode holds it awake. */
   onLowBattery?: (percent:number,floor:number)=>void;
@@ -206,7 +207,9 @@ export class ServerMode {
     if(!this.supported)return;
     if(!this.mac)return this.refreshPortable();
     try{
-      const [settings,battery]=await Promise.all([this.deps.run('/usr/bin/pmset',['-g']),this.deps.run('/usr/bin/pmset',['-g','batt'])]);
+      const [settings,battery,lid]=await Promise.all([this.deps.run('/usr/bin/pmset',['-g']),this.deps.run('/usr/bin/pmset',['-g','batt']),this.deps.run('/usr/sbin/ioreg',['-r','-k','AppleClamshellState','-d','1']).catch(()=>'')]);
+      // Same sensor the helper reads. Unknown counts as open, so the phone is never told a lid is shut that is not.
+      this.lidClosed=/AppleClamshellState" = Yes/.test(lid)?true:/AppleClamshellState" = No/.test(lid)?false:null;
       const nextSleep=/SleepDisabled\s+1\b/.test(settings)?true:/SleepDisabled\s+0\b/.test(settings)?false:null;
       if(nextSleep!==this.lidSleepDisabled)this.statusChangedAt=this.deps.now();
       this.lidSleepDisabled=nextSleep;
@@ -215,7 +218,8 @@ export class ServerMode {
       const pct=/(\d{1,3})%/.exec(battery);this.batteryPercent=pct?Number(pct[1]):null;
       // Back on power: forget the low battery answer, so the next drop asks again.
       if(this.onAcPower===true&&this.lowBatteryOk){this.store.set('server-mode-low-battery-ok','false');if(this.enabled)this.writeState();}
-      if(!this.lowBattery)this.lowWarned=false;
+      // The phone question is only for a closed lid on battery; with the lid open the owner is at the Mac.
+      if(!this.lowBattery||this.lidClosed!==true)this.lowWarned=false;
       else if(!this.lowWarned&&!this.lowBatteryOk){this.lowWarned=true;try{this.onLowBattery?.(this.batteryPercent!,this.batteryFloor);}catch{}}
     }catch(e){
       // A failed probe is a claim of nothing, not a claim of "off".
