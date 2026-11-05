@@ -1,6 +1,6 @@
 # Contributing to FarFromDesk
 
-FarFromDesk is source-available, not open source (see LICENSE). Contributions need prior written permission from Codecy Labs / Sagar Kumar; open an issue first. Only the repository owner can merge or publish changes. Website, installer and release-workflow changes require owner review. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
+FarFromDesk is licensed under the GNU Affero General Public License v3.0 (see LICENSE). Contributions are accepted under the same license. Open an issue before contributing. Only the repository owner can merge or publish changes. Website, installer and release-workflow changes require owner review. Read the [development guide](docs/DEVELOPMENT.md), security policy and relevant adapter before changing behavior.
 
 ## Local workflow
 

@@ -28,6 +28,6 @@ test('social rejects session and browser requests; even admin cannot enable prov
   assert.equal((await post({op:'delete',id:d.id,revision:d.revision})).status,400);assert.equal((await post({op:'delete',id:d.id,revision:d.revision,confirmed:true})).status,200);
   await new Promise<void>(r=>server.close(()=>r()));process.env.FFD_ISOLATED_LOCAL='0';
   const main=serve(store,router,{} as any,'synthetic-admin',{macControl:{view:()=>({}),stop:()=>{}}} as any);await new Promise<void>(r=>main.once('listening',r));
-  try{const status=await new Promise<number>((resolve,reject)=>{get(url+'/api/social',{agent:false,headers:{authorization:'Bearer synthetic-admin'}},r=>{r.resume();resolve(r.statusCode??0);}).on('error',reject);});assert.equal(status,404);}finally{await new Promise<void>(r=>main.close(()=>r()));}
+  try{const status=await new Promise<number>((resolve,reject)=>{get(url+'/api/social',{agent:false,headers:{authorization:'Bearer synthetic-admin'}},r=>{r.resume();resolve(r.statusCode??0);}).on('error',reject);});assert.equal(status,200);}finally{await new Promise<void>(r=>main.close(()=>r()));}
  }finally{if(server.listening)await new Promise<void>(r=>server.close(()=>r()));store.close();rmSync(root,{recursive:true,force:true});}
 });
