@@ -340,6 +340,45 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+    'a grant that shows on but fails explains itself and offers a reset',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway()
+        ..trusted = false
+        ..captureTrusted = false
+        ..driverAccessibility = false
+        ..driverCapability = {'ok': false, 'detail': 'not trusted', 'checkedAt': 1}
+        ..driverProbeResult = {'ok': false, 'detail': 'not trusted', 'checkedAt': 2}
+        ..grant = {
+          'kind': 'stale',
+          'summary':
+              'Accessibility worked for an earlier copy of FarFromDesk. '
+              'The switch still shows on.',
+          'steps': ['Press Reset and re-allow.', 'Allow FarFromDesk again.'],
+        };
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
+      expect(find.textContaining('earlier copy of FarFromDesk'), findsOneWidget);
+      expect(find.textContaining('2. Allow FarFromDesk again.'), findsOneWidget);
+      // Nothing is reset until the owner presses the button.
+      expect(api.macActions, isNot(contains('reset-permission')));
+      final reset = find.byKey(const Key('mac-reset-permission'));
+      await tester.ensureVisible(reset);
+      await tester.tap(reset);
+      await tester.pumpAndSettle();
+      expect(api.macActions, contains('reset-permission'));
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('mac-reset-permission')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('Remote password shows one state at a time', (tester) async {
     size(tester);
     final api = MacControlGateway();
@@ -2279,11 +2318,14 @@ class MacControlGateway extends PreviewGateway {
   /// rows exist to stop misreporting.
   Map<String, dynamic>? driverProbeResult;
   int driverProbes = 0;
+  /// The backend's stale-grant diagnosis, null when every check works.
+  Map<String, dynamic>? grant;
   Future<Map<String, dynamic>> status(String path) async {
     final data = await super.get(path);
     if (path == '/api/status') {
       data['macControl'] = view;
       data['desktopControl'] = driverView;
+      data['grant'] = grant;
     }
     return data;
   }
@@ -2349,6 +2391,7 @@ class MacControlGateway extends PreviewGateway {
       macActions.add(data['action'] as String);
       if (data['action'] == 'enable') enabled = true;
       if (data['action'] == 'disable') enabled = false;
+      if (data['action'] == 'reset-permission') grant = null;
       if (data['action'] == 'check') {
         trusted ??= false;
         captureTrusted ??= false;

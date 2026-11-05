@@ -27,6 +27,7 @@ import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
 import { directMacAllowed } from './direct-mac.js';
 import { MacControl } from './mac-control.js';
+import { GrantHealth } from './grant-health.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
@@ -79,7 +80,7 @@ export function saveBindingCredentials(b:Binding,token:string) {
   const dir=join(stateDir,'bindings');mkdirSync(dir,{recursive:true,mode:0o700});
   writeFileSync(join(dir,`${b.alias}.json`),JSON.stringify({id:b.id,token,alias:b.alias,provider:b.provider,nativeId:b.native_id,cwd:b.cwd}),{mode:0o600});
 }
-export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram;desktopControl?:DesktopControl;macControl?:MacControl;remoteDesktop?:RemoteDesktopService;browser?:BrowserTabs;localMail?:LocalMailHost}) {
+export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,services?:{masters:Masters;power:PowerPolicy;workers?:Workers;telegram?:Telegram;desktopControl?:DesktopControl;macControl?:MacControl;grantHealth?:GrantHealth;remoteDesktop?:RemoteDesktopService;browser?:BrowserTabs;localMail?:LocalMailHost}) {
   // Execution mode is a per-session choice; binding.mode describes transport,
   // not whether a session runs in Desktop or CLI. A disagreement is unknown.
   const bindingExecutionMode=(b:Binding)=>{
@@ -94,6 +95,13 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   const browser=services?.browser??new BrowserTabs();
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
+  const grantHealth=services?.grantHealth??new GrantHealth(store);
+  // Any check that reached the desktop proves the grant; all of them failing is what a stale grant looks like.
+  const checkGrant=()=>{
+    const p=desktopControl.view().permission,c=desktopControl.view().capability,h=macControl.view();
+    const works=p?.accessibility||c?.ok||h.trusted===true?true:c||h.trusted===false?false:null;
+    return grantHealth.check(works,h.capture?.trusted??null);
+  };
   const remoteDesktop=services?.remoteDesktop??new RemoteDesktopService({load:()=>{try{return JSON.parse(store.get('remote-desktop-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('remote-desktop-password',JSON.stringify(record)),loadEnabled:()=>store.get('remote-desktop-enabled')==='true',saveEnabled:value=>store.set('remote-desktop-enabled',String(value))});
   let macAccessEpoch=0;
   // App and browser automation are available only while macOS Accessibility is
@@ -120,7 +128,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     if(permission?.accessibility)return;
     const capability=await desktopControl.capabilityProbe(5000);
     if(capability.ok)return;
-    throw new Error(`ACCESSIBILITY_PERMISSION_REQUIRED: the desktop driver cannot read this Mac${capability.detail?` (${capability.detail})`:''}. Allow FarFromDesk under Privacy & Security > Accessibility, then retry.`);
+    const grant=await grantHealth.check(false,macControl.view().capture?.trusted??null);
+    throw new Error(`ACCESSIBILITY_PERMISSION_REQUIRED: the desktop driver cannot read this Mac${capability.detail?` (${capability.detail})`:''}. `+(grant?`${grant.summary} ${grant.steps.map((step,i)=>`${i+1}. ${step}`).join(' ')}`:'Allow FarFromDesk under Privacy & Security > Accessibility, then retry.'));
   };
   const phoneRemote=new PhoneRemoteService({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))});
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
@@ -510,7 +519,14 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/mac-control'&&req.method==='GET'){json(res,200,macControl.view());return;}
       if(path==='/api/mac-control'&&req.method==='POST') {
         const d=await body(req);
-        if(Object.keys(d).length!==1||!['enable','disable','check','permission','capture-permission'].includes(d.action))throw new Error('Choose enable, disable, check, permission or capture-permission.');
+        if(Object.keys(d).length!==1||!['enable','disable','check','permission','capture-permission','reset-permission'].includes(d.action))throw new Error('Choose enable, disable, check, permission, capture-permission or reset-permission.');
+        // Clearing a stale grant is the owner's own click in the app, never a phone or session request.
+        if(d.action==='reset-permission'){
+          if(!isAdmin){json(res,403,{error:'Resetting a macOS permission requires the FarFromDesk app.'});return;}
+          macAccessEpoch++;desktopControl.stop();macControl.stop();
+          const reset=await grantHealth.reset();
+          json(res,200,{...syncMacPermission(await macControl.status(true)),reset});return;
+        }
         if(d.action==='disable'){macAccessEpoch++;desktopControl.stop();}
         const result=d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):syncMacPermission(d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));
         json(res,200,result);return;
@@ -526,7 +542,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // A forced probe is the only way to re-test after the owner changes a grant,
         // and the only honest answer when the preflight says no.
         const capability=await desktopControl.capabilityProbe(15000,action==='probe');
-        json(res,200,{permission,capability});return;
+        json(res,200,{permission,capability,grant:await checkGrant()});return;
       }
       if(path==='/api/health'&&req.method==='GET'){json(res,200,{app:'FarFromDesk',protocol:1,sourceCommit,buildId:buildMeta.buildId??null,pid:process.pid,platform:process.platform});return;}
       if(path==='/api/update-shutdown'&&req.method==='POST') {
@@ -728,7 +744,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // The pane must not show "Not allowed" for a path that works. The preflight
         // is cached for 15s and only re-tested while it disagrees with reality.
         if(!driverPermission?.accessibility)await desktopControl.capabilityProbe(15000);
-        json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse','deepseek','cursor'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        const grant=await checkGrant();
+        json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),grant,channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse','deepseek','cursor'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');
