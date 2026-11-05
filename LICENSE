@@ -1,21 +1,33 @@
-MIT License
+FarFromDesk Source-Available License (View Only)
 
-Copyright (c) 2026 FarFromDesk contributors
+Copyright (c) 2026 Codecy Labs / Sagar Kumar. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Viewing. You may view and read the source code in this repository on the
+   website where it is published, for the purpose of reviewing or evaluating
+   it (for example, judging a competition entry).
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. No other rights. No other right or license is granted, by implication,
+   estoppel or otherwise. Without prior written permission from
+   Codecy Labs / Sagar Kumar, you may not use, run, copy, download for reuse,
+   modify, merge, publish, distribute, sublicense, sell, host, or create
+   derivative works from this software or any part of it, and you may not use
+   it to train or build any other product or service.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. Permission. Requests for permission may be sent to sagar@codecylabs.com.
+   Permission is only valid if given in writing by Codecy Labs / Sagar Kumar.
+
+4. Third-party components. Files and components owned by third parties remain
+   under their own licenses, listed in THIRD_PARTY_NOTICES.md. Nothing in this
+   license limits rights you have under those licenses.
+
+5. Contributions. Any contribution you submit to this repository is licensed
+   to Codecy Labs / Sagar Kumar for any use, unless agreed otherwise in
+   writing.
+
+6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE
+   FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+Any use without permission terminates any rights you may have had under this
+license and may infringe copyright.

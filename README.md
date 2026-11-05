@@ -1,152 +1,147 @@
 <p align="center">
-  <img src="docs/assets/farfromdesk-banner.svg" alt="FarFromDesk — your coding sessions, one WhatsApp message away" width="960" />
+  <img src="docs/assets/farfromdesk-banner.svg" alt="FarFromDesk, your coding sessions one message away" width="960" />
 </p>
 
 <p align="center">
-  <strong>Step away from your desk. Stay close to your work.</strong><br />
-  Connect WhatsApp or Telegram to your coding assistants on your computer.
+  <strong>Your Mac is at your desk. You do not have to be.</strong><br />
+  Run your coding sessions, your Mac apps and your social posts from WhatsApp or Telegram.
 </p>
 
-The next release adds an opt-in macOS desktop-control preview. See [desktop control](docs/desktop-control.md) for setup, reusable app/browser functions and tested limits.
-
 <p align="center">
-  <a href="https://github.com/LazyCodeer/farfromdesk/releases"><strong>Download FarFromDesk</strong></a> ·
+  <a href="https://github.com/LazyCodeer/farfromdesk/releases/latest"><strong>Download FarFromDesk</strong></a> ·
   <a href="https://ffd.codecylabs.com">Website</a> ·
-  <a href="#get-started-in-three-steps">Get started</a> ·
+  <a href="#get-started">Get started</a> ·
   <a href="#what-you-can-do">Features</a> ·
   <a href="#questions">Questions</a>
 </p>
 
-<p align="center"><strong>Open source · MIT</strong> · macOS · Windows · Linux</p>
+> **Platforms:** The current stable version is tested on macOS only. Testing versions for Windows and Linux are being released as well.
 
-Ask for updates, give your coding assistants instructions, and get their replies on your chosen messaging app. Your assistants keep their own context and tools. You choose which sessions to connect.
+FarFromDesk runs on your computer and links it to your own WhatsApp or Telegram chat. Send a message or a voice note from your phone, and **Atlas**, the FarFromDesk brain built on the **Meta Model API**, reads it and sends it to the right place: one of your Codex, Claude, Muse or Cursor sessions, a Mac app, your notes and calendar, or the Social page. Replies come back to the same chat.
 
 ## A look inside
 
-Connect your WhatsApp account and choose where replies appear. The phone number in this app screenshot is obscured.
-
-<img src="docs/assets/screenshots/whatsapp-connection.webp" alt="FarFromDesk Home with connected WhatsApp account and private reply destination choices; phone number obscured" width="960" />
+<img src="docs/assets/screenshots/overview.jpg" alt="Overview page with request counts, the connected messaging app and Mac app control status" width="960" />
 
 <details>
-<summary>Workspace setup and Settings</summary>
+<summary>Inbox, Brain, Social and Settings</summary>
 
-These previews use sample data from the current interface.
+**Inbox.** Every conversation in one thread, including what Atlas did on Meta and the commands you sent.
 
-<img src="docs/assets/screenshots/workspace-setup.webp" alt="Create a coordinator by choosing the coding app, workspace and session name" width="720" />
+<img src="docs/assets/screenshots/inbox.jpg" alt="Inbox with conversation list, filters and a thread showing Meta activity and command replies" width="960" />
 
-<img src="docs/assets/screenshots/settings.webp" alt="Settings with rounded cards for availability, account permissions and voice tools" width="960" />
+**Brain.** Turn on Atlas routing, add your Meta Model API key and pick a model.
+
+<img src="docs/assets/screenshots/brain.jpg" alt="Brain page with Brain routing on, the Meta Model API key saved and a model selected" width="960" />
+
+**Social.** Drafts with generated images, ready to review and post.
+
+<img src="docs/assets/screenshots/social.jpg" alt="Social page with a calendar of LinkedIn drafts that include generated images" width="960" />
+
+**Settings.** Run in the background, keep awake while locked, and server mode for the lid closed.
+
+<img src="docs/assets/screenshots/settings.jpg" alt="Settings page with background, open at login, keep awake while locked and lid closed server mode" width="960" />
 
 </details>
-
-## Download FarFromDesk
-
-Visit the [latest release](https://github.com/LazyCodeer/farfromdesk/releases/latest) and choose the download for your computer below. Mac ZIP and DMG files contain **FarFromDesk.app**. GitHub's automatic “Source code” downloads are for contributors, not the installed app.
-
-| Your computer | Download | Requirements |
-| --- | --- | --- |
-| Mac with Apple Silicon | `macos-arm64.dmg` or `.zip` | macOS 14+ |
-| Mac with Intel | `macos-x64.dmg` or `.zip` | macOS 14+ |
-| Windows PC | `windows-x64-setup.exe` or portable `.zip` | Windows 10/11 x64; supported signed-in CLI |
-| Linux PC | `linux-x64.tar.gz` | glibc 2.35+, GTK 3, desktop session; supported signed-in CLI |
-
-On Mac, drag **FarFromDesk.app** from the DMG into Applications, or extract the ZIP. On Windows, run the **Setup EXE** for a per-user installation and Start menu shortcut. Windows and Linux archives contain the app and its bundled backend; extract the whole folder together. Each release includes optional installation scripts, checksums and release notes. Local voice tools are included. The multilingual voice model (141 MB) downloads once on the first voice note, or from Settings. Later voice notes work offline with the cached model.
-
-**Signing:** Mac builds are ad-hoc signed and not Apple-notarized; Windows builds are unsigned. Your operating system may require explicit approval or block installation under organizational policy. Do not disable security protections. Downloads do not require a GitHub account.
-
-Mac supports the existing Desktop integrations (which require Python 3) and CLI options. Windows and Linux currently support **Codex CLI and Claude CLI**; controlling their Desktop chats is not available. Native startup and voice checks run on all four build targets, but real-phone/provider account testing is still required on each operating system. ARM Windows/Linux and older Linux distributions are not supported by this release.
-
-## Install from your terminal
-
-On macOS or Linux, this downloads the latest version-pinned installer, verifies the app archive checksum, and installs for your user account:
-
-```sh
-curl -fsSL https://ffd.codecylabs.com/install.sh | sh
-```
-
-The terminal installer shows download progress, then verification, unpacking and installation stages.
-
-On Windows, download **install.ps1** from the latest release and run it in PowerShell, or use the ZIP download. You can inspect either installer before running it. No administrator access is required. Pause forwarding and quit an older FarFromDesk before replacing it; your pairing and saved requests stay outside the app installation.
-
-## Get started in three steps
-
-### 1. Choose WhatsApp or Telegram
-
-For WhatsApp, scan the QR code from **WhatsApp → Settings → Linked devices → Link a device**. Choose **Message yourself** or a supported private group containing only your account. For Telegram, create a dedicated bot with BotFather, enter its token locally, open the pairing link and confirm your account in FarFromDesk. [Telegram setup and limits](docs/telegram.md). Change messaging apps in Settings; switching disconnects the current account first.
-
-### 2. Choose your assistant
-
-Choose Codex or Claude and an available Desktop or CLI option. Connect an existing coordinating session or create one in a detected workspace. For Claude Desktop, FarFromDesk opens a prepared chat on your Mac. Confirm the folder and press Send; FarFromDesk waits for the session's verified acknowledgment before connecting it. Your app's normal sign-in, account limits, and permissions still apply.
-
-### 3. Send a message
-
-Ask FarFromDesk to show your sessions, select the ones you want, and send an instruction or voice note. Keep your computer awake, online, and your chosen coding apps available.
-
-## Your work, a message away
-
-> “Show my recent sessions.”
-
-> “Give me an update on the website redesign.”
-
-> “Ask that session to fix the mobile navigation.”
-
-> “Send me the result when it's ready.”
-
-These are example requests. FarFromDesk routes them to your selected assistants and brings their replies back to you.
 
 ## What you can do
 
 | | |
 | --- | --- |
-| **Stay connected to multiple sessions** | Add another session without disconnecting the ones already selected. |
-| **Find the right conversation** | Browse recent sessions, search by name, or ask for older ones. |
-| **Send a voice note** | Supported recordings are transcribed on your computer and handled like text requests. |
-| **Receive files and updates** | Get approved documents and progress from your selected assistants. |
-| **Choose where replies go** | Use your personal WhatsApp chat or a supported owner-only private group. |
-| **Stay in control** | Review supported permission requests and see unfinished work in Activity. |
-| **Change your assistant** | Switch the coordinating session or platform from Home. |
-| **Work while your screen is locked** | Optionally prevent idle sleep while keeping your computer locked. |
+| **Talk to Atlas** | Atlas, built on the Meta Model API, reads each message and picks which session or tool should handle it. It remembers what to call you and how you like replies. |
+| **Switch coordinators** | Send `/codex`, `/claude`, `/muse` or `/cursor` to talk to that coordinator directly. Send `/back` to return to Atlas. |
+| **Use WhatsApp or Telegram** | Pair your own WhatsApp account (message yourself) or a private Telegram bot. Only your confirmed account can control it. |
+| **Create social posts** | The Social page turns an idea into platform-ready drafts with generated images. Posting always asks you to confirm first. |
+| **Notes, calendar and reminders** | Read and add Apple Notes, check and add calendar events, and set one-time or repeating reminders by message. |
+| **Drive Mac apps and browser tabs** | Open and use Mac apps and browser tabs, fill in forms and attach files, and get a screenshot back. |
+| **Follow everything in the Inbox** | One thread shows your messages, session replies, commands and Meta activity, with filters for what needs you. |
+| **Send a voice note** | Voice notes are transcribed on your computer and handled like text. |
+| **Keep working when you step away** | Server mode keeps tasks running with the lid closed or the screen locked. |
 
-## How it works
+## Get started
 
-**Your WhatsApp or Telegram → FarFromDesk on your computer → Your selected coding sessions → Replies on the original channel.**
+### 1. Download and open
 
-FarFromDesk connects to the assistants you already use. It does not replace their subscriptions or account permissions. The selected coordinating session helps direct your requests to the right worker sessions.
+Get the [latest release](https://github.com/LazyCodeer/farfromdesk/releases/latest).
 
-## Works with your tools
+| Your computer | Download | Status |
+| --- | --- | --- |
+| Mac with Apple Silicon | `macos-arm64.dmg` or `.zip` | Stable, macOS 14+ |
+| Mac with Intel | `macos-x64.dmg` or `.zip` | Stable, macOS 14+ |
+| Windows PC | `windows-x64-setup.exe` or `.zip` | Testing version |
+| Linux PC | `linux-x64.tar.gz` | Testing version |
 
-On Mac, FarFromDesk has **Codex Desktop**, **Codex CLI**, **Claude Desktop**, and **Claude CLI** options. Windows and Linux currently offer the CLI options. Availability depends on your installed version, sign-in, account, and whether the selected session can be reached.
+Drag **FarFromDesk.app** into Applications. Mac builds are ad-hoc signed and not notarized by Apple, so the first open may need **Open** from the right-click menu, or **Open Anyway** in System Settings, Privacy & Security. Only confirm this if you trust the download.
 
-Each Desktop or CLI connection can have its own coordinator, with one default for new messages. New Claude Desktop chats use a prefilled native chat and require your Send action; FarFromDesk verifies the session before dispatching its task. Existing-chat messaging is separate from this creation step. Follow the app’s recovery guidance instead of repeatedly creating replacements.
+On macOS or Linux you can also install from your terminal. It verifies the archive checksum and installs for your user account:
 
-A chat visible in history may need to be opened before FarFromDesk can connect. A Desktop login does not automatically sign you into the CLI. Not every version and account combination has completed a real-phone test.
+```sh
+curl -fsSL https://ffd.codecylabs.com/install.sh | sh
+```
 
-## Private by design, with you in control
+### 2. Connect WhatsApp or Telegram
 
-- Your linked account and selected destination control incoming requests.
-- Voice notes can use the on-device model or your own Deepgram/AssemblyAI API key. Cloud transcription sends the audio to your selected provider; keys are stored locally in a restricted file. Optional fallback uses an already-downloaded local model. Messaging and coding assistants use their normal network services.
-- Your assistants retain their normal permissions. FarFromDesk does not isolate an assistant that already has broad file access.
-- Uncertain requests are held for review rather than automatically repeated.
+On **Overview**, choose a messaging app. For WhatsApp, scan the QR code from WhatsApp, Settings, Linked devices. For Telegram, create a bot with BotFather, enter its token and confirm your account. See [Telegram setup](docs/telegram.md).
 
-FarFromDesk uses an unofficial WhatsApp connection and the official Telegram Bot API. Telegram bots are cloud chats, not end-to-end encrypted Secret Chats. FarFromDesk is not affiliated with WhatsApp, Telegram, Meta, Anthropic, or OpenAI. Changes to those services can affect compatibility.
+### 3. Set up the brain
+
+Open **Brain**. Enter your **Meta Model API key** first. Once the key is saved, the available models load and you pick one. Then turn on Brain routing.
+
+### 4. Connect your coding sessions
+
+Connect Codex, Claude, Muse or Cursor sessions you already use. Each keeps its own context, sign-in and permissions.
+
+### 5. Send a message
+
+> "Give me an update on the website redesign."
+
+> "/claude fix the mobile navigation and send me the result."
+
+> "Remind me at 6 PM to call the bank."
+
+> "Draft a LinkedIn post about today's release with an image."
+
+## Coordinator commands
+
+| Command | What it does |
+| --- | --- |
+| `/codex` | Talk to your Codex coordinator. |
+| `/claude` | Talk to your Claude coordinator. |
+| `/muse` | Talk to Muse. |
+| `/cursor` | Talk to Cursor. |
+| `/back` | Leave the selected coordinator and return to Atlas. |
+| `/help` | Show commands and the current target. |
+
+If several sessions fit, Telegram shows buttons and WhatsApp shows a numbered list. See [owner commands](docs/owner-commands.md).
+
+## Mac control
+
+With Accessibility and Screen Recording allowed, Atlas can open Mac apps and browser tabs, read what is on screen, fill in forms, attach files and send you a screenshot. See [desktop control](docs/desktop-control.md).
+
+**Server mode** (Settings, This Mac) keeps your Mac awake while it is plugged in, so tasks keep going with the lid closed or the screen locked. Your lock screen password stays on. Turning it on asks for administrator approval once. See [lock screen and remote control](docs/remote-control-lock-screen.md).
+
+## Private by design
+
+- Only your paired account and chosen chat can send requests.
+- Keys are stored only on your computer.
+- When Atlas is on, your message, recent conversation and the always-read memory files are sent to the Meta Model API. Keep passwords out of memory files.
+- Your coding apps keep their normal permissions. FarFromDesk does not sandbox an app that already has broad file access.
+- Social posts are never published without your confirmation.
+
+FarFromDesk uses an unofficial WhatsApp connection and the official Telegram Bot API. It is not affiliated with WhatsApp, Telegram, Meta, Anthropic, OpenAI or Cursor.
 
 ## Questions
 
-**Does my computer need to stay on?** Yes. FarFromDesk runs on your computer, so it must stay awake and connected for real-time control.
+**Does my computer need to stay on?** Yes. FarFromDesk runs on your computer, so it must stay awake and online.
 
-**Can I close the lid?** Yes, if server mode is on and the power cable is connected: a root helper holds system sleep off while FarFromDesk is alive, with no external display needed. If the app stops, or on battery, the Mac sleeps normally and remote control stops. It never removes your lock-screen password, and it does not lock the lid for you either: closing the lid only locks the Mac if you have turned on "Require password after screen saver begins or display is turned off" in System Settings → Lock Screen.
+**Can I close the lid?** Yes, with server mode on and the power cable connected. On battery, or if the app stops, the Mac sleeps normally.
 
-**What happens if the app closes during a request?** Request history is saved. Activity shows work that needs a reply or review. If a request may already have run, check its native conversation before retrying.
+**Where do updates appear?** In [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases). The app checks for new versions and shows **Update available**.
 
-**Can I use more than one session?** Yes. Selecting a new session adds it to the connected set. Quote a reply to address that particular session.
-
-**Where do updates appear?** New app downloads and release notes appear in [GitHub Releases](https://github.com/LazyCodeer/farfromdesk/releases). FarFromDesk checks for newer compatible releases automatically and shows **Update available** in the top-right bar. You can also check in Settings. On macOS, **Update and restart** downloads and verifies the compatible release, then replaces and relaunches the app when active work permits. Windows and Linux open the download for manual installation. Checks run on launch and at most every six hours; no model credentials are sent to GitHub.
-
-**Need help?** See [Troubleshooting](docs/TROUBLESHOOTING.md). For a bug report, include your app version, platform, and sanitized steps. Never share pairing QR codes, credentials, or private recordings. Report sensitive issues using [our security policy](SECURITY.md).
+**Need help?** See [Troubleshooting](docs/TROUBLESHOOTING.md). Report security issues using [our security policy](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE)
+Copyright (c) 2026 Codecy Labs / Sagar Kumar. All rights reserved.
 
-## Version 0.7.8 scope
-
-This release adds Telegram, cloud voice options, simpler coordinator management and session-scoped FFD commands. Native permissions and Claude Desktop’s Send step remain required. Experimental browser/Accessibility control remains local-only and is not shipped in this release.
+The source code is public so it can be viewed and reviewed. It is **not** open source. Using, copying, modifying or redistributing this code, in whole or in part, requires written permission from Codecy Labs / Sagar Kumar. See [LICENSE](LICENSE). Third-party components keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
