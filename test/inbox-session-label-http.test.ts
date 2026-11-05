@@ -22,7 +22,8 @@ test('status publishes the exact saved session execution mode without exposing c
  store.set(`execution-mode:${desktop.id}`,'desktop');store.set(`execution-mode:${cli.id}`,'cli');store.set(`execution-mode:${conflict.id}`,'desktop');
  routes.set(routeOnly.id,{provider:'codex',executionMode:'desktop',accountKey:'synthetic-private-account'});
  routes.set(conflict.id,{provider:'claude',executionMode:'cli',accountKey:'synthetic-private-account'});
- const server=serve(store,router,{status:'not paired'} as any,'synthetic-admin',{macControl:{view:()=>({}),stop:()=>{}},desktopControl:{view:()=>({}),stop:()=>{},permissionReport:async()=>({accessibility:true}),capabilityProbe:async()=>({})},masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({})}} as any);
+ // The driver probe never answers here: status must not wait for it, or the app sits on its start screen.
+ const server=serve(store,router,{status:'not paired'} as any,'synthetic-admin',{macControl:{view:()=>({}),stop:()=>{}},desktopControl:{view:()=>({}),stop:()=>{},permissionReport:()=>new Promise(()=>{}),capabilityProbe:async()=>({})},masters:{options:()=>({}),platformPreferences:()=>[]},power:{view:()=>({})}} as any);
  await new Promise<void>(resolve=>server.once('listening',resolve));
  try {
   const response=await fetch(`http://127.0.0.1:${port}/api/status`,{headers:{Authorization:'Bearer synthetic-admin'}});assert.equal(response.status,200);
