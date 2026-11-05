@@ -266,8 +266,20 @@ export class DesktopControl {
         await front('hotkey',{keys:['cmd','shift','g']});await wait(900);
         await front('type_text',{text:plan.text!});await wait(600);
         await front('press_key',{key:'return'});await wait(900);
-        await front('press_key',{key:'return'});await wait(900);
-        return {action:plan.action,ok:true,observation:null,changes:'Not confirmed: read the page to check the file name shows next to the upload button.'};
+        await front('press_key',{key:'return'});
+        // Checked here rather than left to the model: one extra read is cheaper than a model turn,
+        // and a picker that silently failed was the step nobody saw. Attached means the page now
+        // names the file or shows a remove-media control (X, LinkedIn, Gmail all label it that way).
+        const name=plan.text!.split('/').pop()!.toLowerCase();
+        for(let i=0;i<5&&!controller.signal.aborted;i++){
+          await wait(900);
+          const win=await this.resolve(plan.app!).catch(()=>undefined);if(!win?.window_id)continue;
+          const state=await this.driver.call('get_window_state',{pid:win.pid,window_id:win.window_id,tree_format:'markdown',max_elements:400},controller.signal).catch(()=>undefined);
+          const tree=String(state?.tree_markdown??'').toLowerCase();
+          if(tree.includes(name)||/remove (media|image|photo|attachment|file)|edit (media|image)|delete (media|image|attachment)/.test(tree))
+            return {action:plan.action,ok:true,attached:true,observation:null,changes:'Attached: the page shows '+name+'.'};
+        }
+        return {action:plan.action,ok:false,attached:false,observation:'The page shows no sign of '+name+' after the file picker.',changes:null};
       }
       if(plan.action==='read_window'){
         const target=await this.resolve(plan.app,plan.window);

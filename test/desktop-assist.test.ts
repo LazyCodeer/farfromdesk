@@ -243,10 +243,16 @@ test('typing into a field whose label shares its name retries as the text field'
 test('pick_file sends Go to, the path and two Returns to the frontmost app, where the file picker is', async () => {
   const h = control(COMET_TREE, COMET_WINDOWS, {});
   const r: any = await h.c.assist('brain:t', { action: 'pick_file', app: 'Comet', text: '/Users/me/Downloads/a.pdf' });
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, false, 'nothing on the page shows the file');
   assert.deepEqual(h.of('hotkey')[0].args.keys, ['cmd', 'shift', 'g']);
   assert.equal(h.of('type_text')[0].args.scope, 'desktop');
   assert.equal(h.of('type_text')[0].args.text, '/Users/me/Downloads/a.pdf');
   assert.equal(h.of('press_key').length, 2);
   assert.equal('window_id' in h.of('press_key')[0].args, false, 'never aimed at the browser window');
+});
+
+test('pick_file confirms the attachment when the page shows a remove-media control', async () => {
+  const h = control(COMET_TREE, COMET_WINDOWS, { get_window_state: { tree_markdown: '- button "Remove media"' } });
+  const r: any = await h.c.assist('brain:t', { action: 'pick_file', app: 'Comet', text: '/Users/me/Downloads/a.jpg' });
+  assert.equal(r.attached, true);
 });
