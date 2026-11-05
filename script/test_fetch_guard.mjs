@@ -12,5 +12,10 @@ globalThis.fetch=function(input,init) {
   // Native fetch follows redirects internally, bypassing this wrapper. Never
   // follow a loopback response to an unexamined remote destination.
   const redirect=init?.redirect??(input instanceof Request?input.redirect:'follow');
-  return originalFetch(input,redirect==='manual'||redirect==='error'?init:{...init,redirect:'error'});
+  // Tests close a server and open the next one on the same port. A pooled
+  // keep-alive socket from the old server can be reused before its close is
+  // read, and a POST on it fails with ECONNRESET. One connection per request.
+  const headers=new Headers(init?.headers??(input instanceof Request?input.headers:undefined));
+  headers.set('connection','close');
+  return originalFetch(input,{...init,headers,...(redirect==='manual'||redirect==='error'?{}:{redirect:'error'})});
 };
