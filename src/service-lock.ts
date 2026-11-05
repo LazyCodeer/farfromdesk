@@ -15,3 +15,18 @@ export function acquireServiceLock(directory:string) {
   let released=false;
   return ()=>{if(!released){released=true;db.close();}};
 }
+
+/**
+ * Waits for the lock instead of throwing. A KeepAlive LaunchAgent started beside the app's own
+ * backend otherwise died here every ThrottleInterval, dumping a stack each time, and a copy that
+ * simply exited would leave nobody serving once the app quit. The file is closed between tries,
+ * so the app's lsof lock check never mistakes this waiter for the owner.
+ */
+export async function waitForServiceLock(directory:string,poll=15000,log:(line:string)=>void=console.error) {
+  for(let logged=false;;await new Promise(r=>setTimeout(r,poll))){
+    try{return acquireServiceLock(directory);}catch(error){
+      if(!/already running/.test(String(error)))throw error;
+      if(!logged){logged=true;log(`${(error as Error).message} Waiting to take over when it exits.`);}
+    }
+  }
+}

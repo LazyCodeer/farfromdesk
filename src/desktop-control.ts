@@ -1,5 +1,8 @@
 import { createHash,randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { userInfo } from 'node:os';
+import { join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -9,7 +12,7 @@ import { allPackTools, toolByName } from './app-tools/packs.js';
 import { shortlistTools } from './app-tools/retrieve.js';
 import type { AppTool, AppToolPlan } from './app-tools/types.js';
 
-export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','stop'] as const;
+export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','pick_file','stop'] as const;
 /**
  * Coordinates are window-local pixels of the get_window_state screenshot, which is
  * the only addressing that works on a canvas: Flutter, WebGL and any custom-drawn
@@ -119,7 +122,20 @@ const fields:Record<Input['action'],string[]>={
   // The reviewed per-app tools, so a coordinator session reads Notes, Calendar or Mail content
   // instead of window chrome. app_tools takes the owner's words; app_tool runs one by name.
   app_tools:['text'],app_tool:['tool','args','actionId'],
+  // An upload button opens the macOS file picker, which has no readable controls; browser names the app, text the file.
+  pick_file:['browser','text','actionId'],
 };
+/** Every action with its fields on one line: the single description each runner's prompt is built from, so none drifts or makes a model grep for argument names. */
+export const desktopCatalog=()=>desktopActions.filter(a=>a!=='stop').map(a=>fields[a].length?`${a}{${fields[a].join(',')}}`:a).join(' ');
+/** The owner's folders a file may be put in or picked from: never hidden ones, never Library. */
+export function ownerPath(raw:string,base:'Downloads'|'Documents'='Downloads'):string|undefined{
+  const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
+  const asked=raw.trim().replace(/^~(?=\/|$)/,home),path=asked.startsWith('/')?asked:/^(Downloads|Desktop|Documents|Pictures|Movies|Music)\//.test(asked)?join(home,asked):join(home,base,asked);
+  const root=roots.find(r=>path.startsWith(r+sep));
+  // After the root's own separator, so the first part is the file or folder, not an empty string (which refused every path).
+  if(!root||path.slice(root.length+1).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
+  return path;
+}
 
 /** Coordinate-addressed actions: they work where the accessibility tree is empty. */
 /** What Windows and Linux answer today; the rest is refused by name. */
@@ -638,6 +654,11 @@ export class DesktopControl {
       if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+(q.tool??'')+' is not an app tool I have. Use app_tools first.');
       if(tool.writes)this.reserve(scope,q);
       return await this.packTool(scope,tool.name,q.args??{},authorize);
+    }
+    if(q.action==='pick_file'){
+      const path=ownerPath(q.text??'');
+      if(!path||!existsSync(path))throw new Error('DESKTOP_FILE_REFUSED: No such file in Downloads, Desktop, Documents, Pictures, Movies or Music. Put the full path in text.');
+      this.reserve(scope,q);return await this.assist(scope,{action:'pick_file',app:q.browser??'',text:path},authorize);
     }
     if(q.action==='status'){
         // Read-only, so it can refresh the grants without disturbing an action.

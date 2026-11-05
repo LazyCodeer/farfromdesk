@@ -22,7 +22,7 @@ import { installBundledAudio } from './speech-bundle.js';
 import { Workers } from './workers.js';
 import { PortableNative } from './portable-native.js';
 import { portableAgents } from './platform.js';
-import { acquireServiceLock } from './service-lock.js';
+import { waitForServiceLock } from './service-lock.js';
 import { MorningBrief } from './morning-brief.js';
 import { ProofScopeFence } from './proof-contract-scope.js';
 import { StuckDetection } from './stuck-detection.js';
@@ -31,7 +31,7 @@ import { repairProviderHooks } from './hook-install.js';
 import { clearStage,recordStage } from './startup-stage.js';
 
 const token=initializeState();
-const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
+const releaseLock=await waitForServiceLock(stateDir);process.on('exit',releaseLock);
 const store=new Store(join(stateDir,'bridge.sqlite'));
 const agentInstaller=new AgentInstaller(store);
 initializeCoordinatorUpdates(store);
