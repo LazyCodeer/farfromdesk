@@ -106,7 +106,12 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   let macAccessEpoch=0;
   // App and browser automation are available only while macOS Accessibility is
   // granted. Never rely on a previously saved opt-in after permission is revoked.
+  // Windows and Linux have no grant to read: the owner's Settings switch is the whole
+  // opt-in, so it is reported as it is and never switched on here.
+  const portableMac=process.platform!=='darwin'&&desktopControl.view().supported;
+  const macView=(view:ReturnType<MacControl['view']>)=>portableMac?{...view,supported:true,trusted:true,capture:{supported:true,trusted:true,screenRecordingRequired:false},portable:true}:view;
   const syncMacPermission=(permission:ReturnType<MacControl['view']>)=>{
+    if(portableMac)return {...macView(permission),enabled:macControl.view().enabled};
     const allowed=permission.supported===true&&permission.trusted===true;
     if(!allowed&&macControl.view().enabled){macAccessEpoch++;macControl.configure(false);desktopControl.stop();}
     else if(allowed&&!macControl.view().enabled)macControl.configure(true);
@@ -516,7 +521,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/request-events'&&req.method==='GET') {const id=url.searchParams.get('id')??'';json(res,200,{events:store.events(id),deliveries:store.deliveries(id)});return;}
 
-      if(path==='/api/mac-control'&&req.method==='GET'){json(res,200,macControl.view());return;}
+      if(path==='/api/mac-control'&&req.method==='GET'){json(res,200,macView(macControl.view()));return;}
       if(path==='/api/mac-control'&&req.method==='POST') {
         const d=await body(req);
         if(Object.keys(d).length!==1||!['enable','disable','check','permission','capture-permission','reset-permission'].includes(d.action))throw new Error('Choose enable, disable, check, permission, capture-permission or reset-permission.');
@@ -528,7 +533,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           json(res,200,{...syncMacPermission(await macControl.status(true)),reset});return;
         }
         if(d.action==='disable'){macAccessEpoch++;desktopControl.stop();}
-        const result=d.action==='enable'?macControl.configure(true):d.action==='disable'?macControl.configure(false):syncMacPermission(d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));
+        const result=d.action==='enable'?macView(macControl.configure(true)):d.action==='disable'?macView(macControl.configure(false)):syncMacPermission(d.action==='capture-permission'?await macControl.capturePermissionRequest():await macControl.status(d.action==='permission'));
         json(res,200,result);return;
       }
       // The driver's own grant status, and whether it can actually read this Mac.
@@ -747,7 +752,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // view() carries the last result and the next poll shows the new one.
         const grant=await checkGrant();
         void desktopControl.permissionReport(15000).then(p=>p?.accessibility?undefined:desktopControl.capabilityProbe(15000)).catch(()=>{});
-        json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macControl.view(),desktopControl:desktopControl.view(),grant,channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse','deepseek','cursor'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
+        json(res,200,{metaTimelineScope:metaTimelineRevision(store),metaBrain:router.brain.view(),macControl:macView(macControl.view()),desktopControl:desktopControl.view(),grant,channelSwitch:await channelSwitchState(store,{whatsapp:wa,telegram:services?.telegram}),channelChosen:channelChosen(store),controlChannel:store.controlChannel(),telegram:services?.telegram?.view(),unlinkedUpdates:store.unlinkedHooks(),voiceRequests:store.voiceRequests(),commandTurns:store.commandTurns(),voice:audioReadiness(store),preferences:services?.power.view(),coordinators:c?.registry.view(),platformPreferences:services?.masters.platformPreferences(),masterSetup:services?.masters.options(url.searchParams.get('catalogRevision')??undefined),destination:wa.destination?.(),whatsapp:{phoneNumber:wa.phoneNumber?.(),status:wa.status,error:wa.error,qr:wa.qr?await QRCode.toDataURL(wa.qr):undefined},apps:['codex','claude','muse','deepseek','cursor'].map(provider=>({provider,name:provider==='codex'?'Codex':provider==='muse'?'Muse Code':provider==='deepseek'?'DeepSeek Harness':provider==='cursor'?'Cursor':'Claude Code',enabled:c?.enabled().includes(provider as Provider),sessions:c?.sessions.filter(s=>s.provider===provider).length??0,error:c?.errors[provider as Provider]})),master:c?.master()?{id:c.master()!.id,name:c.name(c.master()!),ready:true,provider:c.master()!.provider,executionMode:store.get(`execution-mode:${c.master()!.id}`)??'cli',connection:services?.masters.connections.route(c.master()!)?.label??'Existing connection · account review pending'}:null,selected:c?.selected().map(b=>({id:b.id,name:c.name(b),provider:b.provider})),bindings:store.bindings().map(b=>({...cleanBinding(b),name:store.get(`name:${b.id}`)??b.alias,executionMode:bindingExecutionMode(b),running:router.busy.has(b.id),channelOnline:Date.now()-(router.channelClients.get(b.id)?.seen??0)<20000})),requestCleanup:router.cleanupPolicy(),pendingJobs:store.pendingJobs().map(j=>({...j,canClose:['submitted','uncertain','failed'].includes(j.status)&&!router.requestProtected(j.id,j.binding_id)})),jobs:store.jobs().map(({body,...j})=>({...j,preview:body.replace(/\s+/g,' ').slice(0,180)})),approvals:router.approvals.view(),active:store.get('active')});return;
       }
       if(path==='/api/catalog'&&req.method==='GET') {
         const provider=url.searchParams.get('provider');if(!['codex','claude'].includes(provider??''))throw new Error('Unknown provider');

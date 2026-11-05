@@ -21,6 +21,10 @@ if(process.platform==='darwin') {
   if(ax.status!==0)throw new Error('Could not build the macOS Accessibility helper.');
   const driver=spawnSync('python3',[join(root,'script/prepare_desktop_driver.py'),join(target,'native/cua-driver')],{stdio:'inherit'});
   if(driver.status!==0)throw new Error('Could not verify and bundle the desktop driver.');
+} else {
+  // Windows and Linux desktop control: one script each over the OS accessibility layer.
+  mkdirSync(join(target,'native'));
+  copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.

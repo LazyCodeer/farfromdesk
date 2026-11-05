@@ -18,7 +18,58 @@ part of 'app.dart';
 /// grant path (`cua-driver permissions grant`) is unusable here as shipped: it
 /// launches `/Applications/CuaDriver.app`, which this bundle does not contain.
 extension _MacControlPanel on _DeskState {
+  /// Windows and Linux: no operating-system grant exists, so the owner's switch is
+  /// the whole opt-in, the driver row is a real read, and the limits are stated.
+  Widget portableControlPanel() {
+    final info = status['macControl'] ?? {};
+    final driver = Map<String, dynamic>.from(
+      status['desktopControl'] as Map? ?? const {},
+    );
+    final capability = Map<String, dynamic>.from(
+      driver['capability'] as Map? ?? const {},
+    );
+    final limits = List<String>.from(driver['limits'] as List? ?? const []);
+    final enabled = info['enabled'] == true;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        settingCard(
+          Icons.settings_input_component_rounded,
+          'Let FarFromDesk control apps',
+          '${api.platform == 'windows' ? 'Windows' : 'Linux'} asks for no permission here, so this '
+              'switch is the only gate. It lets your proxy list windows, read them, '
+              'click a named button, type and take screenshots.',
+          control: Switch(
+            key: const Key('portable-control-enabled'),
+            value: enabled,
+            onChanged: busy
+                ? null
+                : (v) async {
+                    await post('/api/mac-control', {
+                      'action': v ? 'enable' : 'disable',
+                    });
+                    if (v) await probeDriverAccess();
+                  },
+          ),
+          footer: [
+            if (capability.isNotEmpty)
+              capability['ok'] == true
+                  ? tag('Reading windows works', good: true)
+                  : tag('Cannot read windows', tint: warning),
+            if (capability['ok'] == false && capability['detail'] != null) ...[
+              gap(7),
+              small(capability['detail'] as String),
+            ],
+            for (final line in limits) ...[gap(5), small(line)],
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget macControlPanel() {
+    if (status['macControl']?['portable'] == true)
+      return portableControlPanel();
     final info = status['macControl'] ?? {};
     final trusted = info['trusted'];
     final capture = Map<String, dynamic>.from(info['capture'] ?? {});
