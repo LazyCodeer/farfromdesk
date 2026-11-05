@@ -43,6 +43,8 @@ export class DesktopStarts {
     if(typeof id!=='string'||!/^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)||id===op.parentId)return null;
     return JSON.stringify([created,ready]);
   }
+  /** Whether an owner-connected Claude Desktop chat can start a new chat for a folder that has none. */
+  hasLauncher(sessions:Session[]){return this.connectedCandidates(sessions).length>0;}
   private connectedCandidates(sessions:Session[]) {
     const bindings=[...new CoordinatorRegistry(this.store).entries().map(r=>this.store.binding(r.bindingId)),...JSON.parse(this.store.get('selected')??'[]').map((key:string)=>this.store.binding(key))].filter(Boolean);
     return sessions.filter(s=>s.executionMode==='desktop'&&s.available===true&&bindings.some((b:any)=>b.enabled&&b.provider==='claude'&&b.native_id===s.id&&sameProject(b.cwd,s.cwd)&&this.store.get(`execution-mode:${b.id}`)==='desktop'));
