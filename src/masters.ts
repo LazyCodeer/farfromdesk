@@ -458,7 +458,9 @@ export class Masters {
     try {
       const session=provider==='claude'&&mode==='desktop'?await this.desktop.parent(sessionId):(await this.catalog(provider,true)).find(s=>s.id===sessionId&&(provider==='codex'||(s.executionMode??'cli')===mode));
       if(!session?.cwd||(!(provider==='claude'&&mode==='desktop')&&session.available!==true))throw new Error('This saved session is not reachable. Open it in its native app or CLI, then refresh.');
-      if(inProject(session.cwd))throw new Error('This chat works in a project folder, so it cannot be your proxy. Choose Create new proxy chat instead, and keep this chat as a worker.');
+      // Re-choosing an existing coordinator confirms it again; it was accepted when it was created.
+      const existingCoordinator=this.store.bindings().some(x=>x.provider===provider&&x.native_id===session.id&&this.registry.isCoordinator(x.id));
+      if(!existingCoordinator&&inProject(session.cwd))throw new Error('This chat works in a project folder, so it cannot be your proxy. Choose Create new proxy chat instead, and keep this chat as a worker.');
       if(!(provider==='claude'&&mode==='desktop'))await this.router.native.validate(provider,session.id,session.cwd);
       let b=this.store.bindings().find(b=>b.provider===provider&&b.native_id===session.id);
       if(b&&realpathSync(b.cwd)!==realpathSync(session.cwd))throw new Error('Selected project differs from the registered binding.');

@@ -167,3 +167,20 @@ test('reselecting a coordinator after its CLI account key changed moves its regi
     assert.equal(after.key, reg.identity(b).key); assert.equal(after.generation, before.generation);
   } finally { store.close(); }
 });
+
+test('a request refused before submission fails visibly instead of waiting forever',async()=>{
+  const {Router}=await import('../src/router.js'),{Approvals}=await import('../src/approvals.js'),{DispatchNotSubmittedError}=await import('../src/brief-dispatch-guard.js');
+  const store=new Store(':memory:'),approvals=new Approvals(store);
+  const native={run:async()=>{throw new DispatchNotSubmittedError('Nothing was sent: Claude CLI account or provider settings changed.');},stop:()=>{}} as any;
+  const router=new Router(store,native,approvals);
+  try{
+    const binding=store.register('coord','claude','33333333-3333-4333-8333-333333333333','/synthetic','desktop').binding;
+    store.set('telegram-owner','tg:123');store.set('control-channel','telegram');
+    store.destinationContext.run('tg:123',()=>store.enqueue('tg:123:7',binding,'What is this'));
+    router.pump();
+    for(let i=0;i<50&&store.job('tg:123:7')?.status!=='failed';i++)await new Promise(r=>setTimeout(r,10));
+    assert.equal(store.job('tg:123:7')?.status,'failed');
+    const notice=store.db.prepare("SELECT body FROM outbox WHERE source LIKE 'not-sent:tg:123:7%'").get() as {body:string}|undefined;
+    assert.match(notice?.body??'',/Nothing was sent/);
+  }finally{router.stop?.();approvals.cancel();store.close();}
+});

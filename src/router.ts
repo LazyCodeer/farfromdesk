@@ -983,6 +983,13 @@ export class Router {
       if(destination&&this.store.incomingOwnerCurrent())this.store.output(undefined,reason,`specialty-not-sent:${id}`,destination,{requestId:id,kind:'system',origin:'system',plain:true});
     }
     this.collaboration?.reject(id,reason);
+    // Any other request refused before submission must end visibly; left as 'dispatched' it would wait forever.
+    const left=this.store.job(id);
+    if(left&&['queued','dispatched'].includes(left.status)){
+      this.store.jobState(id,'failed',reason);
+      const destination=left.destination??this.store.get('whatsapp-owner')??null;
+      if(destination&&!id.startsWith('report:')&&this.store.incomingOwnerCurrent())this.store.output(this.store.binding(left.binding_id)??undefined,reason,`not-sent:${id}`,destination,{requestId:id,kind:'system',origin:'system',plain:true});
+    }
   }
   private routableJob(b:Binding) {
     for(;;){
