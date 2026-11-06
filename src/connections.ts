@@ -92,8 +92,10 @@ export async function probeDeepseekAccount(cwd:string,env:NodeJS.ProcessEnv=proc
   // secret: the presence of that file plus a working `dsh` binary is the whole
   // profile. Never read the credential, and never log its path into a label.
   if(!existsSync(credentials))return {state:'signed-out',label:'DeepSeek Harness signed out · sign in to this CLI'};
-  const command=nativeCommand(dshBinary(),['--version'],process.platform,env);
-  try {await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env,timeout:12000,maxBuffer:65536,windowsHide:true});}
+  // withEnv: on Windows dsh.cmd becomes a direct call to DeepSeek Harness.exe, which needs
+  // ELECTRON_RUN_AS_NODE from command.env; without it --version would open the app window.
+  const command=nativeCommand(dshBinary(),['--version'],process.platform,env,undefined,true);
+  try {await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env:{...env,...command.env},timeout:12000,maxBuffer:65536,windowsHide:true});}
   catch{return {state:'unknown',label:'DeepSeek Harness CLI unavailable · install it, then retry'};}
   return {state:'verified',label:'DeepSeek Harness CLI · local credential',accountKey:digest(['deepseek',canonical(credentials)])};
 }
