@@ -33,6 +33,8 @@ if(process.platform==='darwin') {
   if(process.platform==='win32')for(const file of ['desktop_sync.py','codex_delivery.py'])copyFileSync(join(root,'native',file),join(target,'native',file));
   // Windows app tools: Outlook, OneNote and the media controls (src/app-tools/windows).
   if(process.platform==='win32')copyFileSync(join(root,'native','app-tools-windows.ps1'),join(target,'native','app-tools-windows.ps1'));
+  // Windows browser tabs: the owner's open Chromium tabs over UI Automation (src/browser-windows.ts).
+  if(process.platform==='win32')copyFileSync(join(root,'native','browser-windows.ps1'),join(target,'native','browser-windows.ps1'));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
