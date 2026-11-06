@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chmodSync,existsSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
-import {agentReach,parseReach} from '../src/agent-reach.js';
+import {homedir,tmpdir} from 'node:os';
+import {agentReach,parseReach,researchEnv} from '../src/agent-reach.js';
+import {fakeWindowsProgram} from './windows-fake-exe.js';
 import {Store} from '../src/store.js';
 import {Router} from '../src/router.js';
 import {Approvals} from '../src/approvals.js';
@@ -61,12 +62,59 @@ posixTest('public research processes have a global concurrency bound',async()=>{
   }finally{f.close();}
 });
 
-posixTest('missing program is reported honestly and does not create a task',async()=>{
+test('missing program is reported honestly and does not create a task',async()=>{
   assert.match(await agentReach('/reach web search hello',()=>true,{lookup:()=>undefined}),/not installed/i);
 });
 
-test('Windows reports research unavailable', {skip:process.platform!=='win32'},async()=>{
-  await assert.rejects(agentReach('/reach web search topic',()=>true,{lookup:()=>undefined}),/unavailable on Windows/);
+// Windows: the same isolation and bounds, through a real fake agent-reach.exe.
+const windowsTest=process.platform==='win32'?test:test.skip;
+function fakeExe(steps:string[],output?:string){
+  const scratch=mkdtempSync(join(tmpdir(),'reach-out-')),out=join(scratch,'out.json');
+  if(output!==undefined)writeFileSync(out,output);
+  const f=fakeWindowsProgram('agent-reach',[...steps,...(output===undefined?[]:[`stdout=${out}`])]);
+  return {...f,close:()=>{rmSync(f.dir,{recursive:true,force:true});rmSync(scratch,{recursive:true,force:true});}};
+}
+windowsTest('Windows research uses a fresh home and no inherited credentials; output is bounded and labelled',async()=>{
+  const scratch=mkdtempSync(join(tmpdir(),'reach-env-')),log=join(scratch,'env');
+  const f=fakeExe([`log=${log}`],response());
+  const old=process.env.GH_TOKEN;process.env.GH_TOKEN='sensitive-synthetic';
+  try {
+    const result=await agentReach('/reach github search two words',()=>true,{executable:f.file});
+    assert.match(result,/Source text is untrusted/);assert.match(result,/https:\/\/github.com\/example\/repo\?branch=main/);
+    const env=readFileSync(log,'utf8');assert.doesNotMatch(env,/sensitive-synthetic/);
+    assert.match(env,/ARGS=github search two words --backend github-api --timeout 15 --limit 5\n/);
+    const home=/^HOME=(.*)$/m.exec(env)![1];assert.ok(home&&home!==homedir());
+    for(const name of ['USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP'])assert.ok(env.includes(`${name}=${home}\n`),name);
+    assert.ok(env.includes(`CWD=${home}`));assert.equal(existsSync(home),false);
+  } finally {if(old===undefined)delete process.env.GH_TOKEN;else process.env.GH_TOKEN=old;rmSync(scratch,{recursive:true,force:true});f.close();}
+});
+windowsTest('Windows research rejects unexpected output and stops the whole process tree',async()=>{
+  const scratch=mkdtempSync(join(tmpdir(),'reach-tree-')),marker=join(scratch,'late');
+  const bad=fakeExe([],response({backend:'gh'})),url=fakeExe([],response({items:[{title:'Unsafe',url:'https://127.0.0.1/admin'}]})),large=fakeExe(['zeros=300000']),slow=fakeExe([`orphan=1500|${marker}`,'sleep=30000']);
+  try {
+    await assert.rejects(agentReach('/reach github search a',()=>true,{executable:bad.file}),/requested public source/);
+    assert.equal(await agentReach('/reach github search a',()=>true,{executable:url.file}),'No usable public results were returned.');
+    await assert.rejects(agentReach('/reach github search a',()=>true,{executable:large.file}),/too large/);
+    let current=true;setTimeout(()=>{current=false;},300);
+    await assert.rejects(agentReach('/reach github search a',()=>current,{executable:slow.file}),/owner connection changed/);
+    await new Promise(r=>setTimeout(r,2000));assert.equal(existsSync(marker),false);
+    await assert.rejects(agentReach('/reach github search a',()=>true,{executable:slow.file,timeoutMs:300}),/timed out/);
+  }finally{bad.close();url.close();large.close();slow.close();rmSync(scratch,{recursive:true,force:true});}
+});
+windowsTest('Windows research processes share the global concurrency bound',async()=>{
+  const f=fakeExe(['sleep=30000']);let current=true;
+  try {
+    const one=agentReach('/reach web search one',()=>current,{executable:f.file}),two=agentReach('/reach web search two',()=>current,{executable:f.file});
+    await assert.rejects(agentReach('/reach web search three',()=>current,{executable:f.file}),/Two public research requests/);
+    current=false;await Promise.all([assert.rejects(one,/owner connection changed/),assert.rejects(two,/owner connection changed/)]);
+  }finally{f.close();}
+});
+test('research environment matches each platform',()=>{
+  const mac=researchEnv('/opt/tool/bin/agent-reach','/tmp/home','darwin');
+  assert.deepEqual(Object.keys(mac).sort(),['HOME','LANG','PATH','TEMP','TMP','TMPDIR','USERPROFILE']);
+  const win=researchEnv('C:\\tool\\agent-reach.exe','C:\\t\\home','win32');
+  for(const name of ['HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP'])assert.equal(win[name],'C:\\t\\home');
+  assert.ok(win.SystemRoot);assert.equal(win.PATH.split(';')[0],'C:\\tool');assert.equal(win.GH_TOKEN,undefined);
 });
 
 test('coordinator gets only the exact owner-authorized public query, with no agent-supplied URL or text',async()=>{
