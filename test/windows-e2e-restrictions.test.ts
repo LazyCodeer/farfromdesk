@@ -136,3 +136,18 @@ test('the Windows desktop helper lists windows on other virtual desktops', async
   assert.match(src, /cloaked == 2/, 'only windows the shell cloaks for another desktop');
   assert.match(src, /foreach \(\$h in \[FfdUser32\]::OtherDesktopWindows\(\)\)/);
 });
+
+test('Outlook items are returned as one collection, never unrolled by PowerShell', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../native/app-tools-windows.ps1', import.meta.url), 'utf8');
+  assert.match(src, /return ,\(\$items\.Restrict\(\$filter\)\)/);
+  assert.match(src, /return ,\$plain/);
+});
+
+test('app tool args accept numbers and booleans as text', async () => {
+  const { DesktopControl } = await import('../src/desktop-control.js');
+  const prefs = new Map([['mac-control-enabled', 'true']]);
+  const c = new DesktopControl({ get: (k: string) => prefs.get(k), set: (k: string, v: string) => { prefs.set(k, v); } } as any, undefined, undefined, 'linux');
+  await assert.rejects(c.run('s', { action: 'app_tool', tool: 'nope', args: { limit: 3, all: true } }), /APP_TOOL_UNKNOWN/, 'the args pass validation');
+  await assert.rejects(c.run('s', { action: 'app_tool', tool: 'nope', args: { limit: { x: 1 } } }), /invalid/i);
+});

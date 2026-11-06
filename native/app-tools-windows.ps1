@@ -164,12 +164,14 @@ function Each-Item($items, [int]$cap) {
 function Restricted($folder, [string]$filter, [bool]$recurrences) {
   $items = $folder.Items
   if ($recurrences) { $items.IncludeRecurrences = $true; $items.Sort('[Start]') }
-  try { return $items.Restrict($filter) }
+  # The leading comma keeps PowerShell from unrolling the Items collection on return: unrolled,
+  # an empty day came back as $null and a busy one as a bare array, and GetFirst failed on both.
+  try { return ,($items.Restrict($filter)) }
   catch {
     # A filter Outlook will not take (a locale it cannot parse) falls back to the plain items;
     # every caller filters again by date and title, so the answer stays right, only slower.
     $plain = $folder.Items
-    return $plain
+    return ,$plain
   }
 }
 function Jet([datetime]$d) { $d.ToString('g') }

@@ -43,7 +43,8 @@ export const desktopInput=z.object({
   screenshot:z.boolean().optional(),
   // A reviewed app tool, by name, with its own string arguments (see app_tools).
   tool:z.string().max(80).optional(),
-  args:z.record(z.string(),z.string().max(8000)).optional(),
+  // Models often send counts as numbers and flags as booleans; app tools take text.
+  args:z.record(z.string(),z.union([z.string().max(8000),z.number().finite(),z.boolean()]).transform(v=>String(v))).optional(),
 }).strict();
 type Input=z.infer<typeof desktopInput>;
 /**
