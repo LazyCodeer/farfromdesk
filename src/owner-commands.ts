@@ -43,6 +43,103 @@ type Tool='muse'|'deepseek'|'cursor';
 type Target={kind:'session';id:string;identity:string}|{kind:'brain'}|{kind:'tool';tool:Tool};
 const TOOL_NAMES:Record<Tool,string>={muse:'Muse',deepseek:'DeepSeek',cursor:'Cursor'};
 const runTool=(r:Router,m:Incoming,tool:Tool,arg:string)=>tool==='muse'?museCommand(r,m,arg):tool==='deepseek'?deepseekCommand(r,m,arg):cursorCommand(r,m,arg);
+type HandoffKind='fresh'|'claude'|'codex'|'no';
+type Handoff={tool:Tool;text:string;requestId:string;kinds:HandoffKind[];agent?:{id:string;name:string};expires:number};
+const handoffKey=(optionId:string)=>`owner-handoff:${optionId}`;
+const DSH_LOCKED=/DeepSeek session is open in the DeepSeek Harness app|already owned by an active write handle/i;
+/** The agent a failed tool task can go to: the session chosen before the tool mode, else the default coordinator. */
+function handoffAgent(r:Router):Binding|undefined {
+  try{
+    const before=JSON.parse(r.store.get(`${routeKey(r)}:before-tool`)??'null') as Target|null;
+    if(before?.kind==='session'){const b=session(r,before);if(b)return b;}
+  }catch{}
+  for(const provider of ['claude','codex'])try{return defaultSession(r,provider);}catch{}
+  return undefined;
+}
+function failureReason(tool:Tool,message:string):string {
+  if(tool==='deepseek'&&DSH_LOCKED.test(message))return 'This DeepSeek chat is open in the DeepSeek Harness app on your PC, so a second run cannot write to it.';
+  return message.replace(/^DeepSeek Harness exited with code \d+:\s*/,'').replace(/\s+/g,' ').slice(0,300);
+}
+/**
+ * A tool task that fails asks the owner whether to pass it on, with buttons. Nothing runs
+ * elsewhere until the owner chooses. Returns false when there is nobody to offer it to.
+ */
+function offerHandoff(r:Router,m:Incoming,tool:Tool,text:string,error:unknown,retried=false):boolean {
+  const destination=r.store.destination();if(!destination||!authenticatedOwner(r,m)||!text.trim())return false;
+  const message=(error as Error)?.message??String(error);
+  let agent:Binding|undefined;try{agent=handoffAgent(r);}catch{agent=undefined;}
+  const kinds:HandoffKind[]=[];
+  if(tool==='deepseek'&&DSH_LOCKED.test(message)&&!retried)kinds.push('fresh');
+  if(agent)kinds.push(agent.provider==='codex'?'codex':'claude');
+  if(!kinds.length)return false;
+  kinds.push('no');
+  const agentName=agent?name(r,agent):'';
+  const labels:Record<HandoffKind,string>={fresh:`Yes, new ${TOOL_NAMES[tool]} chat`,claude:'Yes, send to Claude',codex:'Yes, send to Codex',no:'No, leave it'};
+  const choices=kinds.map((kind,i)=>({id:`target${i+1}`,label:`${i+1}. ${labels[kind]}`.slice(0,80)}));
+  const source=`tool-handoff:${m.id}`;
+  const body=[
+    `⚠️ **${TOOL_NAMES[tool]} could not run this task**`,
+    `Reason: ${failureReason(tool,message)}`,
+    'Nothing was done.',
+    '',
+    '**Pass this task to another agent?**',
+    ...(kinds.includes('fresh')?[`New ${TOOL_NAMES[tool]} chat: runs it again in a separate chat the PC app is not using.`]:[]),
+    ...(agent?[`${agent.provider==='codex'?'Codex':'Claude'}: sends it to ${agentName}.`]:[]),
+    ...(destination.startsWith('tg:')?[]:['',...choices.map(c=>c.label),'Reply to this message with a number.']),
+    'This question expires in 10 minutes.',
+  ].join('\n');
+  r.store.db.exec('SAVEPOINT owner_handoff');
+  try{
+    r.store.output(undefined,body,source,undefined,{plain:true});
+    const row=r.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(source+':0') as {id:string}|undefined;
+    if(!row)throw Error('The question could not be queued.');
+    const optionId=createOptions(r.store,row.id,m.id,'',destination,{choices,expiresInSeconds:600});
+    r.store.db.prepare('INSERT INTO owner_target_options(option_id) VALUES(?)').run(optionId);
+    const payload:Handoff={tool,text,requestId:m.id,kinds,agent:agent?{id:agent.id,name:agentName}:undefined,expires:Date.now()+10*60_000};
+    r.store.set(handoffKey(optionId),JSON.stringify(payload));
+    r.store.db.exec('RELEASE owner_handoff');
+  }catch(e){r.store.db.exec('ROLLBACK TO owner_handoff; RELEASE owner_handoff');throw e;}
+  return true;
+}
+/** Run a tool task. A failure becomes a pass-it-on question when one can be offered, and '' is returned. */
+async function runToolOrOffer(r:Router,m:Incoming,tool:Tool,arg:string,retried=false):Promise<string> {
+  try{return await runTool(r,m,tool,arg);}
+  catch(error){if(offerHandoff(r,m,tool,arg,error,retried))return '';throw error;}
+}
+/** The owner's answer to a pass-it-on question. Returns the reply, and starts the chosen run. */
+function answerHandoff(r:Router,m:Incoming,row:any,payload:Handoff):string {
+  let reply='This question was already answered.';
+  let after:(()=>void)|undefined,fresh=false;
+  const typed=m.text.trim();
+  selectOption(r.store,{responseId:m.id,destination:r.store.destination()!,messageId:row.wa_id,token:m.optionToken,number:/^\d+$/.test(typed)?Number(typed):undefined} as any,()=>{throw Error('This question cannot create an agent task.');},(_requestId:string,choiceId:string)=>{
+    if(payload.expires<=Date.now())throw Error('This question expired. Send the task again.');
+    const kind=payload.kinds[Number(choiceId.replace(/^target/,''))-1];
+    if(!kind)throw Error('Choose one of the offered answers.');
+    if(kind==='no'){reply='OK. Nothing was sent anywhere.';return;}
+    if(kind==='fresh'){
+      const cwd=deepseekWorkspace(r);
+      let label='phone';for(let n=2;dshSessionId(r,cwd,label)&&n<100;n++)label=`phone-${n}`;
+      addDshLabel(key=>r.store.get(key)??undefined,(key,value)=>r.store.set(key,value),cwd,label);
+      r.store.set(dshSessionKey(cwd,label),'');r.store.set(dshActiveLabelKey(cwd),label);
+      reply=`Running it again in a new DeepSeek chat called ${label}. Your next DeepSeek tasks use this chat too. Send /deepseek use default to go back.`;
+      const retry:Incoming={...m,id:`${payload.requestId}:fresh`,optionToken:undefined,quotedId:undefined};
+      after=()=>{runToolOrOffer(r,retry,payload.tool,payload.text,true)
+        .then(text=>{if(text)r.store.output(undefined,text,`command:${retry.id}`,undefined,{plain:true});})
+        .catch(e=>r.store.output(undefined,(e as Error).message,`command-error:${retry.id}`,undefined,{plain:true}));};
+      fresh=true;return;
+    }
+    const b=payload.agent&&r.store.binding(payload.agent.id);
+    if(!b||!b.enabled)throw Error(`${payload.agent?.name??'That agent'} is no longer available. Nothing was sent.`);
+    r.queue(`${payload.requestId}:handoff`,b,`[FarFromDesk] ${TOOL_NAMES[payload.tool]} could not run this task, so the owner asked you to do it instead.\n\n${payload.text}`);
+    reply=`Sent to ${payload.agent!.name}. Its answer comes here.`;
+    after=()=>r.pump();
+  });
+  r.store.set(handoffKey(row.id),'"done"');
+  // The note goes out before the rerun's own progress message.
+  if(fresh){r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});after?.();return '';}
+  after?.();
+  return reply;
+}
 /** Cursor's own app process, so a bare /cursor can say whether a run could start right now. */
 function cursorOpen(){return cursorRunning();}
 type Choice={provider:string;targets:Extract<Target,{kind:'session'}>[];expires:number;requestId:string;names:string[]};
@@ -188,8 +285,24 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
   const busy=()=>{const q=queue();return q.busy?` A turn is still running in \`${label}\`${q.waiting?` with ${q.waiting} queued`:''}; your message joins the queue.`:'';};
 
   if(!arg||sub==='status'||sub==='help')
-    return `DeepSeek Harness is ready in ${workspace}. ${status.hint}${busy()} Active session: \`${label}\`${dshSessionId(r,cwd,label)?'':' (no session yet; the next task opens one)'}.\n`
-      +'Send /deepseek followed by a task. `/deepseek new [label]` opens a fresh session, `/deepseek use <label>` switches, `/deepseek list` shows them, `/deepseek send <label> <message>` leaves a message for another session, `/deepseek inbox` shows what is queued, `/deepseek stop` cancels the running turn.';
+    return [
+      '🤖 **DeepSeek Harness is ready**',
+      `Folder: ${workspace}`,
+      status.configured?`Model: ${status.model} (${status.route})`:`Setup needed: ${status.hint}`,
+      `Chat: ${label}${dshSessionId(r,cwd,label)?'':' (new, your first task opens it)'}`,
+      ...(busy()?[busy().trim()]:[]),
+      '',
+      '**How to use**',
+      'Type your task as a normal message.',
+      '',
+      '**Commands**',
+      '/deepseek new [name]: start a fresh chat',
+      '/deepseek use <name>: switch to another chat',
+      '/deepseek list: show your chats',
+      '/deepseek send <name> <message>: leave a message for another chat',
+      '/deepseek inbox: show queued messages',
+      '/deepseek stop: cancel the running task',
+    ].join('\n');
 
   if(sub==='list'){
     const labels=dshLabels(name=>r.store.get(name)??undefined,cwd);
@@ -304,7 +417,7 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
   if(['help','back','brain','screen'].includes(cmd)&&arg)throw Error(`Use /${cmd} on its own.`);
   if(cmd==='help')return `Current target: ${currentTarget(r)}\n\n${TELEGRAM_COMMANDS.map(c=>`/${c.command}: ${c.description}`).join('\n')}\n\nSend /claude list or /codex list to choose another session. Existing /to, /talk, /use, /pause, /resume and permission commands still work.${r.store.controlChannel()==='whatsapp'?'\n\nTo bind an approved GitHub check, use /proof bind #ITEM CHECK_NUMBER OWNER/REPO. This does not verify the task.':''}`;
   if(cmd==='muse'||cmd==='deepseek'||cmd==='cursor'){
-    if(arg)return runTool(r,m,cmd,arg);
+    if(arg)return runToolOrOffer(r,m,cmd,arg);
     // A bare command selects the tool, like /claude selects a session: plain messages go there until /back.
     const ready=await runTool(r,m,cmd,'');
     // /back from a tool returns to the mode the owner was in (brain or a session), not to plain routing.
@@ -373,6 +486,9 @@ export function pickOwnerTarget(r:Router,m:Incoming,provider?:string):string|und
     row=r.store.db.prepare('SELECT o.*,b.wa_id FROM owner_target_options t JOIN message_options o ON o.id=t.option_id JOIN outbox b ON b.id=o.outbox_id WHERE b.wa_id=? AND o.destination=?').get(m.quotedId,destination);
     if(!row)return;
     if(!m.optionToken&&(!authenticatedOwner(r,m)||!m.ownerChoice||m.source==='voice'))throw Error('Choose a session with a button or a typed reply to its list.');
+    const handoff=JSON.parse(r.store.get(handoffKey(row.id))??'null') as Handoff|'done'|null;
+    if(handoff==='done')return 'This question was already answered.';
+    if(handoff)return answerHandoff(r,m,row,handoff);
   }else if(!authenticatedOwner(r,m)||!m.ownerCommand||m.source==='voice')return;
   const value=(provider?m.text.trim().replace(/^\/\S+\s*/, ''):m.text.trim());
   let number=/^\d+$/.test(value)?Number(value):undefined;
@@ -406,8 +522,8 @@ export async function routeOwnerTarget(r:Router,m:Incoming):Promise<boolean> {
   if(target.kind==='brain'){
     brain(r);if(!await r.brain.handle(r,m,true))throw Error('Meta brain is unavailable. Nothing was sent to another session.');
   }else if(target.kind==='tool'){
-    const reply=await runTool(r,m,target.tool,m.text.trim());
-    r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});
+    const reply=await runToolOrOffer(r,m,target.tool,m.text.trim());
+    if(reply)r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});
   }else r.queue(m.id,session(r,target),m.text);
   return true;
 }
@@ -464,8 +580,8 @@ export async function runToolAttachment(r:Router,m:Incoming,tool:Tool,caption:st
   const prompt=`[FarFromDesk] The owner sent ${what} named ${file.filename}. It is saved at ${file.path}. Open it from that path to answer.
 
 ${caption.trim()||'The owner sent no caption. Say what the file is and ask what they want done with it.'}`;
-  const reply=await runTool(r,m,tool,prompt);
-  r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});
+  const reply=await runToolOrOffer(r,m,tool,prompt);
+  if(reply)r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});
 }
 export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
   if(!authenticatedOwner(r,m)||m.quotedId)return;
