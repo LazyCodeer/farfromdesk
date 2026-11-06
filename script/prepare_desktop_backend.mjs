@@ -27,6 +27,8 @@ if(process.platform==='darwin') {
   copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
   // Windows phone screen control: the capture and input helper (src/remote-p2p/windows-desktop.ts).
   if(process.platform==='win32')copyFileSync(join(root,'native','remote-windows.ps1'),join(target,'native','remote-windows.ps1'));
+  // Windows Claude Desktop and Codex Desktop sessions: desktop-sync runs these under Python (src/desktop-apps.ts).
+  if(process.platform==='win32')for(const file of ['desktop_sync.py','codex_delivery.py'])copyFileSync(join(root,'native',file),join(target,'native',file));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
