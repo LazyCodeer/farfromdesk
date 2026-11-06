@@ -167,7 +167,8 @@ export class Store {
    * plus the app's composer while its single-use claim is present. A transported id can never
    * satisfy the app branch, so an app id without a claim stays untrusted.
    */
-  ownerInputId(id:string){return /^(wa|tg|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
+  // tg-choice: a verified owner tapping a Telegram button; it continues the task, so it is owner input (live, 6 Nov 2026).
+  ownerInputId(id:string){return /^(wa|tg|tg-choice|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   /** An owner request the Social session tools may act for, including a claimed app composer turn. */
   socialRequestId(id:string){return /^(?:wa:|tg:|local:social:)/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   recordIncomingInput(id:string){
@@ -389,7 +390,8 @@ export class Store {
       }catch(e){this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output');throw e;}
     }
     // Stable message IDs are recorded before network I/O. Retries reuse them.
-    const optionText=options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';
+    // Telegram shows these as buttons, so the numbered copy there was clutter (live, 6 Nov 2026).
+    const optionText=options&&destination?.startsWith('tg:')?'':options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';
     const specialty=context.requestId?specialtyPresentation(this,context.requestId):undefined;
     const chromeAt=Date.now();
     // The specialty is context, not a signature: it rides in the metadata tail, and only when it changes.

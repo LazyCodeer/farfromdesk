@@ -103,9 +103,10 @@ export function turnEnvelope(store:Store,b:Binding,text:string,requestId:string,
   const specialist=specialty?specialistDocument(store,b,requestId,root):undefined;
   const origin=requestId.startsWith('local:social:')?'desktop-owner':requestId.startsWith('report:')?'worker-report':requestId.startsWith('master:')?'delegated-owner-request':'owner';
   const key=`role-delivered:${b.id}:${b.native_id}`;
-  // Only the versioned file pointer is sent, including the first turn.
+  // Only the versioned file pointer is sent, including the first turn. Persistent sessions get the
+  // update notice too: a resumed Claude chat kept following the rules it read earlier (live, 6 Nov 2026).
   const delivered=store.get(key),kindKey=`role-delivered-kind:${b.id}:${b.native_id}`;
-  const bootstrap=!persistent&&(!delivered||(store.get(kindKey)??role.kind)!==role.kind),updated=!persistent&&!bootstrap&&delivered!==role.version;
+  const bootstrap=!persistent&&(!delivered||(store.get(kindKey)??role.kind)!==role.kind),updated=!bootstrap&&!!delivered&&delivered!==role.version;
   const channel=store.job(requestId)?.destination?.startsWith('tg:')?'telegram':'whatsapp',scope=store.get(`parent:${requestId}`)??requestId;
   // Fixed rules live in the role file; the envelope carries only what changes per request.
   const {skill,...route}=reply;
