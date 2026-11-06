@@ -78,7 +78,7 @@ test('the owner brain vocabulary reads, clicks, types and presses keys off macOS
     assert.equal(opened.app, 'Notepad');
     await assert.rejects(c.assist('s', { action: 'open_app', app: 'Paint' }), /DESKTOP_APP_NOT_RUNNING/);
     await assert.rejects(c.assist('s', { action: 'click', app: 'Notepad', name: 'Nope' }), err => deviceRefusal(err) === 'No control named "Nope" in that window.');
-    await assert.rejects(c.assist('s', { action: 'pick_file', app: 'Notepad', text: '/tmp/x' }), err => deviceRefusal(err) === 'That works on macOS only for now.');
+    await assert.rejects(c.assist('s', { action: 'pick_file', app: 'Notepad', text: '/tmp/x' }), err => /^That works on macOS only for now/.test(deviceRefusal(err)));
   }
 });
 

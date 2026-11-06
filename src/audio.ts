@@ -10,6 +10,7 @@ import type { Store } from './store.js';
 import { readVoiceKey, transcribeCloud, voiceEngine, needsWav } from './voice-cloud.js';
 import { errorCode, type VoiceStage, type VoiceStageEvent } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
+import { computerName } from './platform.js';
 
 export type AudioObserver=(event:VoiceStageEvent)=>void;
 export async function measureVoiceStage<T>(stage:VoiceStage,operation:()=>Promise<T>,observe?:AudioObserver):Promise<T> {
@@ -70,7 +71,7 @@ async function decodeWav(ffmpeg:string,format:string,input:string,wav:string,sig
 // Cloud engines that only take WAV get the same validated 16 kHz PCM the local engine uses.
 async function cloudAudio(store:Store,data:DownloadedMedia,format:string,signal?:AbortSignal,observe?:AudioObserver) {
   let tools:any;try{tools=JSON.parse(store.get('audio-tools')||store.get('audio-config')||'null');}catch{}
-  if(typeof tools?.ffmpeg!=='string'||!isAbsolute(tools.ffmpeg)||!existsSync(tools.ffmpeg))throw new Error('Voice tools are missing, so this voice note can’t be converted. Reinstall FarFromDesk or switch voice notes to this Mac.');
+  if(typeof tools?.ffmpeg!=='string'||!isAbsolute(tools.ffmpeg)||!existsSync(tools.ffmpeg))throw new Error(`Voice tools are missing, so this voice note can’t be converted. Reinstall FarFromDesk or switch voice notes to this ${computerName()}.`);
   const parent=join(stateDir,'audio-tmp');await mkdir(parent,{recursive:true,mode:0o700});
   const dir=await mkdtemp(join(parent,'cloud-')),wav=join(dir,'audio.wav');
   try{await measureVoiceStage('decode',()=>decodeWav(tools.ffmpeg,format,data.path,wav,signal),observe);return {path:wav,dispose:()=>rm(dir,{recursive:true,force:true})};}

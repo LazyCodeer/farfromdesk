@@ -54,6 +54,7 @@ import { audioReadiness } from './speech-bundle.js';
 import { roleConfig, updateRole, companionStyles } from './roles.js';
 import { fileTypes, MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_OUTGOING_DOCUMENT_BYTES, MAX_INLINE_BYTES } from './file-types.js';
 import { PREPARATION_TIMEOUT_MS } from './disk-artifacts.js';
+import { computerName } from './platform.js';
 
 const buildMeta=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8'));}catch{return {};}})();
 const sourceCommit=buildMeta.sourceCommit??null;
@@ -630,7 +631,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         };
         if(action?.action==='workspace'){
           const folder=typeof action.folder==='string'?action.folder.trim():'';
-          if(!folder||!existsSync(folder))throw new Error('Choose a folder that exists on this Mac.');
+          if(!folder||!existsSync(folder))throw new Error(`Choose a folder that exists on this ${computerName()}.`);
           store.set('deepseek-workspace',folder);
         }
         // The view the app draws: the workspace the owner picked, and every workspace that already has

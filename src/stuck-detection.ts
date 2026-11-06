@@ -10,6 +10,9 @@ import type {Store} from './store.js';
 import { hookTroubleLine, type ProviderHookReport } from './provider-hooks.js';
 import { clearHandover, readDecision, readHandover, takeoverGuide } from './companion.js';
 import { sessionShortName } from './coordinator-experience.js';
+import { computerName } from './platform.js';
+/** What the owner calls this computer in messages: Mac, PC or computer. */
+const PC=computerName();
 
 type Kind='idle'|'approval'|'question'|'choice'|'authentication'|'repeated-error'|'stalled';
 type Signal={itemId:number;title:string;requestId:string;bindingId:string;identity:string;kind:Kind;incident:string;choiceId?:string;choiceText?:string;permissionCode?:string;permissionText?:string;permissionHash?:string};
@@ -260,7 +263,7 @@ export class StuckDetection {
   private message(signal:Signal,token:string,opening:string) {
     if(signal.kind==='approval'&&signal.permissionCode&&signal.permissionText&&!unsafePermission.test(signal.permissionText)){
       const quoted=signal.permissionText.split('\n').map(line=>`> ${line}`).join('\n');
-      const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nA session is waiting for your permission to do this.\n\n${quoted}\n\nReply to this notice with 1 to allow, 2 to deny, or 3 to do it on the Mac yourself. Your decision goes to the session; the bridge cannot verify what it does next. The notice expires in 10 minutes. Dismiss with /stuck dismiss ${token}.`;
+      const text=`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\nA session is waiting for your permission to do this.\n\n${quoted}\n\nReply to this notice with 1 to allow, 2 to deny, or 3 to do it on the ${PC} yourself. Your decision goes to the session; the bridge cannot verify what it does next. The notice expires in 10 minutes. Dismiss with /stuck dismiss ${token}.`;
       if(text.length<=3000)return {text,choiceId:undefined,permissionCode:signal.permissionCode};
     }
     if(signal.kind==='choice'&&signal.choiceId&&signal.choiceText&&!/[\u202a-\u202e\u2066-\u2069]/.test(signal.choiceText)){
@@ -275,7 +278,7 @@ export class StuckDetection {
       if(binding){const guide=takeoverGuide({store:this.store,binding,reason:'allow-unmoved',hookReports:this.hookReports()});if(guide.length<=3000)return {text:guide,choiceId:undefined,permissionCode:undefined};}
     }
     const trouble=hookTroubleLine(this.hookReports());
-    return {text:`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your Mac, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.${trouble?`\n\nNote: ${trouble}`:''}`,choiceId:undefined,permissionCode:undefined};
+    return {text:`${opening}\n#${signal.itemId} ${safeTitle(signal.title)}\n${reason[signal.kind]}\n\n1. To view your ${PC}, send control my screen.\n2. Reply to the original task or permission message.\n\nDismiss this notice with /stuck dismiss ${token}. It expires in 10 minutes.${trouble?`\n\nNote: ${trouble}`:''}`,choiceId:undefined,permissionCode:undefined};
   }
   /** A never-sent expired notice may be replaced; a sending, sent or uncertain one never is. */
   private rearmExpiredUnsent(owner:string,destination:string,signal:Signal,now:number) {
@@ -375,14 +378,14 @@ export class StuckDetection {
     const destination=this.store.destination(),owner=this.store.ownerFor(destination);
     if(!owner||!destination||!this.context(owner,destination))return 'This check is unavailable in this chat.';
     const record=readHandover(this.store,owner,destination);
-    if(!record)return 'Nothing is waiting on your Mac from me. Send /status to see the current work.';
+    if(!record)return `Nothing is waiting on your ${PC} from me. Send /status to see the current work.`;
     if(this.clock()-record.at>6*60*60_000){clearHandover(this.store,owner,destination);return 'That handover is too old to check. Send /status to see the current work.';}
     const binding=this.store.binding(record.bindingId);
     if(!binding)return 'That session was removed, so there is nothing left to check.';
     const name=sessionShortName(this.store,binding)||binding.alias,job=record.requestId?this.store.job(record.requestId):undefined;
     if(job?.first_reply_at){clearHandover(this.store,owner,destination);return `✅ ${name} answered this at ${new Date(job.first_reply_at).toLocaleTimeString()}. Nothing was resent.`;}
     const pending=[...this.router.approvals.pending.values()].some(p=>p.binding.id===binding.id&&p.destination===destination);
-    if(pending)return `Still waiting: ${name} has an open permission request. Approve it on the Mac, or reply to my permission message here with 1 to allow, 2 to deny.`;
+    if(pending)return `Still waiting: ${name} has an open permission request. Approve it on the ${PC}, or reply to my permission message here with 1 to allow, 2 to deny.`;
     if(job&&['dispatched','submitted','queued'].includes(job.status))return `Still running: ${name} has no reply for this request yet. I did not resend anything.`;
     if(job)return `This request is ${job.status.replace('_',' ')} with no reply. I did not resend anything.`;
     return `I checked ${name} and no matching request is running now. I did not resend anything.`;
