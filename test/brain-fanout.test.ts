@@ -2,6 +2,7 @@ import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { computerName } from '../src/platform.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -162,11 +163,11 @@ test('the session that loses the Mac race is told, and the one that won is answe
     await waitFor(() => f.gate.inFlight() > 0);
     assert.equal(f.gate.inFlight(), 1, `the first session is acting on the Mac; last reply: ${f.last(AGENTS[0])}; driver calls: ${f.gate.calls.join(',')}`);
     const second = await f.send(AGENTS[1], 'b1', 'write a note that agent two note');
-    assert.match(f.last(AGENTS[1]), /already doing something on your Mac/i, `the second chat is told the Mac is busy (receive: ${JSON.stringify(second)}; rows: ${JSON.stringify(f.rows('outbox').map((row: any) => [row.destination, row.body]))}; tasks: ${JSON.stringify(f.rows('brain_tasks').map((row: any) => [row.id, row.state, row.reason]))})`);
+    assert.match(f.last(AGENTS[1]), new RegExp(`already doing something on your ${computerName()}`, 'i'), `the second chat is told the Mac is busy (receive: ${JSON.stringify(second)}; rows: ${JSON.stringify(f.rows('outbox').map((row: any) => [row.destination, row.body]))}; tasks: ${JSON.stringify(f.rows('brain_tasks').map((row: any) => [row.id, row.state, row.reason]))})`);
     f.gate.release();
     await one;
     assert.match(f.last(AGENTS[0]), /^Wrote the note in Notes/);
-    assert.equal(f.last(AGENTS[1]), 'I am already doing something on your Mac. Let that finish, then ask me again.');
+    assert.equal(f.last(AGENTS[1]), `I am already doing something on your ${computerName()}. Let that finish, then ask me again.`);
     // The refusal is in the refusing chat and the completion is in the acting chat: neither
     // message was broadcast, and neither chat saw the other's sentence.
     const replies = f.rows('outbox').filter((row: any) => row.body);
