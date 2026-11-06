@@ -25,7 +25,8 @@ import {screenLockGate,sessionProbe} from './session-lock.js';
 import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
-import { directMacAllowed } from './direct-mac.js';
+import { directMacAllowed, directRunFileTarget, directRunFileSent } from './direct-mac.js';
+import { ownerFileToSend } from './open-file.js';
 import { MacControl } from './mac-control.js';
 import { GrantHealth, NO_RESET } from './grant-health.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
@@ -174,6 +175,19 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const {requestId:_ignored,...input}=await body(req);
         if(input.action==='stop'){macAccessEpoch++;macControl.stop();json(res,200,{stopped:true});return;}
         if(router.stopped)throw new Error('Background operation is paused.');
+        // A file from the owner's own folders to their own chat, for the request this run answers
+        // (DeepSeek could find the file but had no way to send it, live 6 Nov 2026). Same folders
+        // and limits as the brain's send_file; needs the control switch, not an unlocked screen.
+        if(input.action==='send_file'){
+          await requireDesktopPermission();
+          const target=directRunFileTarget(store,String(runId));
+          if('error' in target){json(res,200,{ok:false,error:target.error});return;}
+          const file=ownerFileToSend(String(input.path??''),homedir());
+          if('error' in file){json(res,200,{ok:false,error:file.error});return;}
+          if(!store.outputOwnerFile(target.requestId,target.destination,readFileSync(file.path),file.name,file.name)){json(res,200,{ok:false,error:'The file could not be queued for the chat.'});return;}
+          directRunFileSent(store,String(runId));store.audit('desktop-control-action','direct-run','send_file');
+          json(res,200,{ok:true,queued:file.name,bytes:file.size});return;
+        }
         const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');
         const result=await desktopControl.run(`direct:${String(runId)}`,input,()=>{if(router.stopped)throw new Error('Background operation is paused.');});
         store.audit('desktop-control-action','direct-run',String(input.action));

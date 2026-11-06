@@ -72,6 +72,14 @@ export const sessionProbe:LockProbe=process.platform==='win32'?()=>windowsSessio
  * stopping clears references, status reports the driver, check_permissions reports the
  * grants. Refusing those would leave the owner unable to diagnose the lock. */
 const EXEMPT=new Set(['stop','status','check_permissions']);
+/**
+ * On Windows these send no input to the screen: app tools go through Outlook and OneNote over
+ * COM, the file system and the media controls, and the listings and reads are UI Automation
+ * queries. Blocking them on a locked PC refused "what is on my calendar" for no reason (live,
+ * 6 Nov 2026). Anything that clicks, types, opens or brings a window forward is still refused.
+ * A read that cannot work while locked (a screenshot) fails on its own with its own reason.
+ */
+const WINDOWS_OFF_SCREEN=new Set(['app_tools','app_tool','list_apps','list_windows','read_window','list_browsers','list_tabs','read_tab']);
 
 /** How long one link stands before another is minted. Every call makes a fresh one and
  * invalidates the last, so a model retrying a blocked action would otherwise send the
@@ -98,6 +106,7 @@ export function screenLockGate(deps:{probe:LockProbe;link:()=>Promise<string|und
   let lastLinkAt=0;
   return async(action:string):Promise<void>=>{
     if(EXEMPT.has(action))return;
+    if(platform==='win32'&&WINDOWS_OFF_SCREEN.has(action))return;
     if(await sessionLocked(deps.probe)!==true)return;
     // Windows keeps the lock screen on a secure desktop that no input from the user's session
     // reaches, the phone's remote screen included (it shows "This PC is locked" instead). A

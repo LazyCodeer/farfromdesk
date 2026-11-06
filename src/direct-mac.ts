@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { computerName } from './platform.js';
+import { ownerFolderList } from './open-file.js';
 import type { Store } from './store.js';
 
 /**
@@ -66,7 +67,10 @@ export function openDirectMac(store: Store, stateDir: string, port: string, runI
   const which = windows
     ? `For anything in ${ownerAppsPhrase(platform)}, use the owner's FarFromDesk tools, not your own memory, APIs or scripts. "My notes" means OneNote and "my calendar" means Outlook.`
     : `For anything in ${ownerAppsPhrase(platform)}, use the owner's FarFromDesk tools, not your own memory, APIs or AppleScript. "My notes" means Apple Notes.`;
-  const note = `${which} List tools: echo '{"action":"app_tools","text":"<the owner words>"}' | ${post} . Run one: echo '{"action":"app_tool","tool":"<name>","args":{...string values}}' | ${post} (a tool that writes also needs "actionId":"<a new UUID>"). Browser tabs: {"action":"list_tabs","browser":"comet"} then {"action":"read_tab","tabRef":"<from list_tabs>"}. Answer from what they return.${windows ? WINDOWS_PIPE_NOTE : ''}`;
+  const note = `${which} List tools: echo '{"action":"app_tools","text":"<the owner words>"}' | ${post} . Run one: echo '{"action":"app_tool","tool":"<name>","args":{...string values}}' | ${post} (a tool that writes also needs "actionId":"<a new UUID>"). ${windows
+    // Comet as the example made the model ask for a browser that was not running (live, 6 Nov 2026).
+    ? 'Browser tabs: {"action":"list_browsers"} shows which browsers are running, then {"action":"list_tabs","browser":"<one that is running>"} and {"action":"read_tab","tabRef":"<from list_tabs>"}.'
+    : 'Browser tabs: {"action":"list_tabs","browser":"comet"} then {"action":"read_tab","tabRef":"<from list_tabs>"}.'} Send the owner a file from their own folders (${ownerFolderList(platform)}, at most 50 MB, five per task): {"action":"send_file","path":"<its full path, from a file tool>"}; it arrives in their chat. Answer from what they return.${windows ? WINDOWS_PIPE_NOTE : ''}`;
   return { note, close() { store.set(key(id), 'null'); rmSync(file, { force: true }); } };
 }
 
@@ -77,4 +81,24 @@ export function directMacAllowed(store: Store, runId: unknown, token: string): b
   if (!grant?.hash || typeof grant.expires !== 'number' || grant.expires < Date.now()) return false;
   const a = Buffer.from(grant.hash), b = Buffer.from(digest(token));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * The owner request a headless run answers, and the chat it was recorded for, from a run pass
+ * that directMacAllowed has already accepted. Run ids are "<tool>:<owner message id>". A run may
+ * send at most five files; directRunFileSent counts one once it is queued.
+ */
+export function directRunFileTarget(store: Store, runId: string): { requestId: string; destination: string | null } | { error: string } {
+  let grant: { destination?: string | null; files?: number } | null = null;
+  try { grant = JSON.parse(store.get(key(runId)) ?? 'null'); } catch { grant = null; }
+  if (!grant) return { error: 'This run has no pass, or it ended.' };
+  const requestId = runId.slice(runId.indexOf(':') + 1);
+  if (!requestId || !store.ownerInputId(requestId)) return { error: 'Files can only answer a message the owner sent.' };
+  if ((grant.files ?? 0) >= 5) return { error: 'At most five files per task.' };
+  return { requestId, destination: grant.destination ?? null };
+}
+export function directRunFileSent(store: Store, runId: string): void {
+  let grant: { files?: number } | null = null;
+  try { grant = JSON.parse(store.get(key(runId)) ?? 'null'); } catch { grant = null; }
+  if (grant) store.set(key(runId), JSON.stringify({ ...grant, files: (grant.files ?? 0) + 1 }));
 }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, lstatSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultStateDirectory } from './platform.js';
 const privateRoot=()=>process.env.WSB_STATE_DIR??defaultStateDirectory();
@@ -66,6 +66,21 @@ export function roleDocument(store:Store,b:Binding,root=privateRoot()) {
   const stat=lstatSync(file);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||readFileSync(file,'utf8')!==role.instructions)throw new Error('Role document integrity check failed.');
   return {...role,file};
+}
+const bundledSkills=fileURLToPath(new URL('../skills/',import.meta.url));
+/**
+ * Whether a session may read this path without asking: only its own role folder
+ * (roles/<binding id>, which holds its role and specialist files) and the bundled
+ * skills its instructions point to. Real paths are compared, so a link cannot lead
+ * out, and Windows paths compare without case.
+ */
+export function ownInstructionFile(b:Binding,path:unknown,root=privateRoot(),skills=bundledSkills,platform:NodeJS.Platform=process.platform):boolean{
+  if(typeof path!=='string'||!path||!isAbsolute(path))return false;
+  let real:string;try{real=realpathSync(path);if(!statSync(real).isFile())return false;}catch{return false;}
+  const inside=(dir:string)=>{let base:string;try{base=realpathSync(dir);}catch{return false;}
+    const rel=platform==='win32'?relative(base.toLowerCase(),real.toLowerCase()):relative(base,real);
+    return !!rel&&!rel.startsWith('..')&&!isAbsolute(rel);};
+  return inside(join(root,'roles',b.id))||inside(skills);
 }
 /** Immutable, integrity-checked specialist document. The envelope grants read
  * access to this exact instruction file, never the rest of private app state. */

@@ -162,8 +162,13 @@ function Page-Of($node, $ui = $null) {
 function Omnibox-Url($ui) {
   $o = $ui.omnibox; $v = $null
   if (-not $o -or $o.Current.HasKeyboardFocus -or -not $o.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$v)) { return '' }
-  $u = "$($v.Current.Value)"
-  if ($u -match '^(https?|file|about|data|chrome|edge|brave)://|^about:|^data:') { $u } else { '' }
+  $u = "$($v.Current.Value)".Trim()
+  if ($u -match '^(https?|file|about|data|chrome|edge|brave)://|^about:|^data:') { return $u }
+  # Chrome and Edge hide "https://" in the address bar ("github.com/owner/repo"); a bare host
+  # with an optional port and path is that https address. Search text and anything else is not a URL.
+  if ($u -match '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+(:\d{1,5})?(/\S*)?$') { return "https://$u" }
+  if ($u -match '^localhost(:\d{1,5})?(/\S*)?$') { return "http://$u" }
+  ''
 }
 function Page-Url($doc) { if (-not $doc) { return '' }; $v = $null; if ($doc.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$v)) { "$($v.Current.Value)" } else { '' } }
 

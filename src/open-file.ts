@@ -1,4 +1,5 @@
 import {execFile} from 'node:child_process';
+import {lstatSync,realpathSync} from 'node:fs';
 import {basename,posix,win32} from 'node:path';
 import {promisify} from 'node:util';
 import {windowsPowerShell} from './power.js';
@@ -162,4 +163,22 @@ export async function openOwnerFile(real:string,app?:string,deps:{platform?:Node
   if(result.error==='STORE_APP')return `${result.name??app} is a Microsoft Store app, and I can only hand it a file as the default app for that file type. Leave the app out to open ${name} in its default app.`;
   if(!app&&/associat/i.test(result.detail??''))return `No app on this PC is set to open ${name}. Name an app to open it in.`;
   return app?`${app} could not open ${name}.`:`${name} could not be opened.`;
+}
+
+/**
+ * A file the owner may be sent from their own folders: the real path (links resolved) must sit
+ * inside one of them with no hidden part, be a regular file and be at most 50 MB. The same rule
+ * as the brain's send_file, for headless sessions (src/server.ts /api/direct/desktop-control).
+ */
+export function ownerFileToSend(raw:string,home:string,platform:NodeJS.Platform=process.platform):{path:string;name:string;size:number}|{error:string}{
+  const p=platform==='win32'?win32:posix;
+  const asked=String(raw??'').trim();
+  if(!asked||!absoluteOwnerPath(asked,platform))return {error:'Give the full path of the file, from a file tool result.'};
+  let real:string;try{real=realpathSync(asked);}catch{return {error:`No file at ${asked}.`};}
+  const root=ownerRoot(real,home,platform);
+  if(!root||real.slice(root.length+1).split(p.sep).some(part=>!part||part.startsWith('.')))return {error:`I can send files only from ${ownerFolderList(platform)}, and never hidden ones.`};
+  const st=lstatSync(real);
+  if(!st.isFile())return {error:`${basename(real)} is a folder, not a file.`};
+  if(st.size>50_000_000)return {error:`${basename(real)} is over 50 MB, which is more than the chat accepts.`};
+  return {path:real,name:basename(real),size:st.size};
 }

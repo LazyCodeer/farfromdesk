@@ -24,7 +24,7 @@ import { ClaudeSession } from './claude-session.js';
 import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { masterPolicy } from './master-policy.js';
-import { roleConfig, rolePointer, coordinatorRoleStatus } from './roles.js';
+import { roleConfig, rolePointer, coordinatorRoleStatus, ownInstructionFile } from './roles.js';
 import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 import { portableAgents, desktopSessions, requirePortableCLI, nativeCommand } from './platform.js';
 import { windowsClaudeDesktop, windowsCodexDesktop } from './desktop-apps.js';
@@ -45,6 +45,8 @@ import { computerName } from './platform.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
+/** The coordinator's own bridge tools: pre-allowed on the CLI route (--allowedTools) and the SDK route alike. */
+export const coordinatorBridgeTools=['session_research','master_reach','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`);
 // Muse has one connection kind and no app, so a requested Desktop mode is refused rather than coerced.
 const masterMode=(provider:Provider,value:unknown):ExecutionMode=>{
   if(provider==='muse'){if(value!==undefined&&value!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');return 'cli';}
@@ -769,6 +771,12 @@ export class Masters {
   private claudeWorker(b:Binding,resume:boolean) {
     if(portableAgents||(this.store.get(`managed-claude:${b.id}`)==='true'&&!this.registry.isCoordinator(b.id)&&this.store.get(`managed-worker:${b.id}`)!=='true'))return new ClaudeSDKSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
+      // The same tools the CLI route pre-allows with --allowedTools, plus reading its own role
+      // and skill files. On Windows (portableAgents) every coordinator takes this SDK route, and
+      // asking the owner for these blocked the first step of every request (live, 6 Nov 2026:
+      // "check my browser" stopped at a prompt to read the role file, then at master_browser).
+      if(this.store.get(`managed-worker:${b.id}`)!=='true'&&coordinatorBridgeTools.includes(tool))return true;
+      if(tool==='Read'&&ownInstructionFile(b,(input as {file_path?:unknown}|undefined)?.file_path))return true;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
     },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b));
@@ -776,7 +784,7 @@ export class Masters {
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:rolePointer(this.store,b),...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['session_research','master_reach','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
+    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:rolePointer(this.store,b),...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:coordinatorBridgeTools.join(',')})});
   }
   async provisionWorker(b:Binding) {
     return withProviderSetup(this.store,'worker-provision',()=>this.provisionWorkerScoped(b));
