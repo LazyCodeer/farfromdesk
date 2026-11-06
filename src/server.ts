@@ -390,6 +390,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{job:router.channelPoll(binding,d.clientId)});return;
       }
       if(path==='/api/session/permission'&&req.method==='POST'&&binding) {
+        // A session FarFromDesk drives through the SDK gets its permission answers from
+        // FarFromDesk directly (pre-allowed bridge tools, or one owner prompt). The hook defers,
+        // so the owner is never asked twice for the same tool call.
+        if(services?.masters.drivesPermissions(binding.id)){json(res,200,{answer:'native'});return;}
         if(router.stopped)throw new Error('Background operation is paused; approval is unavailable.');
         const d=await body(req);if(typeof d.question!=='string')throw new Error('Question required');
         const jobs=store.unfinished(binding.id);

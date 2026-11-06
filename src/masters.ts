@@ -138,6 +138,13 @@ export class Masters {
   registry:CoordinatorRegistry;
   runtimes=new Map<string,CodexSession>();
   claudeRuntimes=new Map<string,ClaudeSession|ClaudeSDKSession>();
+  /**
+   * FarFromDesk answers this session's permission questions itself (the SDK's canUseTool, see
+   * claudeWorker), so the provider PermissionRequest hook in the owner's Claude settings must
+   * defer instead of asking the owner a second time. On Windows every coordinator runs this way,
+   * and each tool call posted a duplicate prompt to the chat (live, 6 Nov 2026).
+   */
+  drivesPermissions(bindingId:string){return this.claudeRuntimes.get(bindingId) instanceof ClaudeSDKSession;}
   runtimeRoles=new Map<string,string>();
   desktop:DesktopStarts;
   private setupContext=new AsyncLocalStorage<{id:string;connection:string}>();
