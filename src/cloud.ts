@@ -1,6 +1,7 @@
 // FarFromDesk Pro cloud: while the laptop sleeps the cloud answers the same Telegram bot,
 // queues work that needs this computer and hands it back here when the laptop wakes.
 import { hostname } from 'node:os';
+export type IceServer={urls:string[];username?:string;credential?:string};
 import type { Store } from './store.js';
 import type { Telegram } from './telegram.js';
 import { memoryHashes,mergeMemory,readMemory,writeMemory,type MemFiles } from './memory-sync.js';
@@ -135,6 +136,19 @@ export class Cloud {
       this.store.set('memory-sync-base',JSON.stringify({rev:Number(put.body.rev)||rev,files:memoryHashes(merged)}));
       return;
     }
+  }
+
+  private turn?:{servers:IceServer[];until:number};
+  /** Pro: short-lived Cloudflare TURN logins so the screen viewer works when a direct connection can't. Never throws. */
+  async relay():Promise<IceServer[]> {
+    if(!this.pro)return [];
+    if(this.turn&&Date.now()<this.turn.until)return this.turn.servers;
+    try{
+      const r=await this.authed('/v1/turn',{});
+      if(r.status!==200||!Array.isArray(r.body.iceServers))return [];
+      this.turn={servers:r.body.iceServers,until:Date.now()+Math.max(0,(Number(r.body.ttl)||0)-600)*1000};
+      return this.turn.servers;
+    }catch{return [];}
   }
 
   /** /laptops: which laptops share this bot and which one answers. */

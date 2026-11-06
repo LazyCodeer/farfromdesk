@@ -140,6 +140,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
   const remoteControl=new RemoteControlService(new RemotePasswordAccess({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))}),undefined,text=>store.output(undefined,text,`remote-reconnect:${Date.now()}`,undefined,{plain:true}),voiceTranscriber(store));
   router.remoteControl=text=>remoteControl.chat(text);
+  remoteControl.relay=async()=>await router.cloud?.relay?.()??[];
   // A locked Mac still accepts synthetic input, but it arrives at the lock screen, so a
   // screen action is refused and the owner is handed the link the "control my screen"
   // command sends. See src/session-lock.ts for why that is the whole point.

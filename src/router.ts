@@ -59,7 +59,7 @@ export class Router {
   coordinator?:Coordinator;
   /** Server mode's low battery answer, set by main. */
   serverMode?:{setLowBatteryOk(ok:boolean):Promise<string>};
-  cloud?:{command(on:boolean):Promise<string>;forward?(name:string,text:string,messageId:number):Promise<string>;laptopList?():string;reminder?(occurrence:string,dueAt:number):'send'|'hold'|'fired';backupView?():unknown;enableBackup?(passphrase:unknown):unknown;disableBackup?():unknown;restoreBackup?(passphrase:unknown,code?:unknown):Promise<unknown>;authenticator?(action:unknown,code?:unknown):Promise<unknown>};
+  cloud?:{command(on:boolean):Promise<string>;forward?(name:string,text:string,messageId:number):Promise<string>;laptopList?():string;relay?():Promise<{urls:string[];username?:string;credential?:string}[]>;reminder?(occurrence:string,dueAt:number):'send'|'hold'|'fired';backupView?():unknown;enableBackup?(passphrase:unknown):unknown;disableBackup?():unknown;restoreBackup?(passphrase:unknown,code?:unknown):Promise<unknown>;authenticator?(action:unknown,code?:unknown):Promise<unknown>};
   brain:MetaBrain;
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;

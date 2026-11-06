@@ -19,15 +19,17 @@ export class P2PHost{
  private session?:Session;private state:State='idle';private reason?:string;private detail?:string;
  /** After an authenticated phone drops, its access token is kept for a while so a fresh link reconnects without the password. */
  private resume?:{secret:string;token:string;until:number;timer:ReturnType<typeof setTimeout>;activeAt?:number};
- constructor(private opts:{access:RemotePasswordAccess;backend:()=>DesktopBackend;stun?:string[];now?:()=>number;rtc?:typeof RTCPeerConnection;onReconnect?:(link:string,password:boolean)=>void;transcriber?:Transcriber}){}
+ constructor(private opts:{relay?:()=>Promise<{urls:string[];username?:string;credential?:string}[]>;access:RemotePasswordAccess;backend:()=>DesktopBackend;stun?:string[];now?:()=>number;rtc?:typeof RTCPeerConnection;onReconnect?:(link:string,password:boolean)=>void;transcriber?:Transcriber}){}
  private now(){return (this.opts.now??Date.now)();}
  get status(){return {state:this.state,session:this.session?.id,reason:this.reason,resumable:!!this.resume,...this.detail?{detail:this.detail}:{}};}
 
  async createOffer(){
+  // Pro adds a TURN relay for networks where a direct connection fails. werift uses the first turn: URL only.
+  const relay=await this.opts.relay?.().catch(()=>[])??[];
   this.stop('REPLACED');
   const stun=this.opts.stun??STUN_URLS,RTC=this.opts.rtc??RTCPeerConnection;
   // werift deep-merges config, so [] would keep its default Google STUN; an empty urls list really disables it.
-  const pc=new RTC({iceServers:[{urls:stun.length?stun:[]}],maxMessageSize:262144} as any);
+  const pc=new RTC({iceServers:[{urls:stun.length?stun:[]},...relay],maxMessageSize:262144} as any);
   const control=pc.createDataChannel(CONTROL_CHANNEL.label,{negotiated:true,id:CONTROL_CHANNEL.id,ordered:true});
   const frames=pc.createDataChannel(FRAME_CHANNEL.label,{negotiated:true,id:FRAME_CHANNEL.id,ordered:true});
   const id=randomBytes(12).toString('base64url'),expiresAt=this.now()+OFFER_TTL_MS;

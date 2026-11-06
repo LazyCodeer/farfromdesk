@@ -33,7 +33,9 @@ export function voiceTranscriber(store:Store):Transcriber{
 /** Owner chat is the signaling path: the link goes out and the phone's code comes back here. */
 export class RemoteControlService {
  private host?:P2PHost;
- constructor(private access:RemotePasswordAccess,private make=(access:RemotePasswordAccess,onReconnect?:(link:string,password:boolean)=>void)=>new P2PHost({access,onReconnect,backend:()=>new NativeDesktopBackend(join(nativeRoot,'session-state')),transcriber:this.transcriber}),private notify?:(text:string)=>void,private transcriber?:Transcriber){}
+ /** Set by the server: TURN logins from the cloud (Pro), or none. */
+ relay?:()=>Promise<{urls:string[];username?:string;credential?:string}[]>;
+ constructor(private access:RemotePasswordAccess,private make=(access:RemotePasswordAccess,onReconnect?:(link:string,password:boolean)=>void)=>new P2PHost({relay:()=>this.relay?.()??Promise.resolve([]),access,onReconnect,backend:()=>new NativeDesktopBackend(join(nativeRoot,'session-state')),transcriber:this.transcriber}),private notify?:(text:string)=>void,private transcriber?:Transcriber){}
  /** Returns the reply for a remote-control chat message, or undefined for any other message. */
  async chat(text:string):Promise<string|undefined>{
   const code=answer.exec(text)?.[1];
