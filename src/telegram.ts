@@ -23,6 +23,8 @@ export const telegramMessageId=(bot:number,chat:number,message:number)=>`tg:${bo
 /** Telegram videos often come without a file name; name them by their type. */
 const videoName=(mime:unknown)=>mime==='video/quicktime'?'video.mov':mime==='video/webm'?'video.webm':'video.mp4';
 export class TelegramError extends Error {
+  /** True when the request never left this PC (no connection), so sending again cannot duplicate it. */
+  notSent=false;
   constructor(public code:number,public retryAfter=0){super(code===401?'Telegram rejected this bot token. Get a valid token from BotFather.':code===409?'This bot is already receiving updates elsewhere. Use a dedicated bot for FarFromDesk.':code===429?'Telegram rate limit reached. Waiting before retrying.':code===403?'Telegram cannot send to this account. Unblock the bot in Telegram.':'Telegram could not complete the request. Check your connection and try again.');}
 }
 // Safe subset of the existing phone format. Escape everything before adding tags;
@@ -95,7 +97,14 @@ export class Telegram {
       const data:any=await res.json();
       if(!res.ok||data.ok!==true)throw new TelegramError(Number(data.error_code)||res.status,Math.min(3600,Math.max(1,Number(data.parameters?.retry_after)||1)));
       return data.result;
-    }catch(e){if(e instanceof TelegramError)throw e;throw new TelegramError(0);}
+    }catch(e){
+      if(e instanceof TelegramError)throw e;
+      const err=new TelegramError(0);
+      // A connection that was never made (DNS, refused, unreachable, connect timeout) sent nothing.
+      const code=String((e as any)?.cause?.code??(e as any)?.code??'');
+      err.notSent=/^(?:ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)$/.test(code);
+      throw err;
+    }
   }
   async connect(supplied?:string) {
     if(this.configuring)throw new Error('Telegram connection is already being checked.');
@@ -331,7 +340,8 @@ export class Telegram {
         this.store.db.prepare('UPDATE outbox SET wa_id=? WHERE id=?').run(telegramMessageId(this.bot.id,sent.chat.id,sent.message_id),row.id);this.store.sent(row.id);
       }catch(e){
         this.error=e instanceof TelegramError?e.message:'Telegram delivery could not be confirmed.';
-        if(e instanceof TelegramError&&e.code===429)this.store.db.prepare("UPDATE outbox SET status='queued',next_at=?,error='Telegram rate limit; retry scheduled' WHERE id=?").run(Date.now()+e.retryAfter*1000,row.id);
+        if(e instanceof TelegramError&&e.notSent&&Number((row as any).attempts??0)<20)this.store.db.prepare("UPDATE outbox SET status='queued',next_at=?,error='Telegram unreachable; retry scheduled' WHERE id=?").run(Date.now()+Math.min(300_000,5_000*2**Number((row as any).attempts??0)),row.id);
+        else if(e instanceof TelegramError&&e.code===429)this.store.db.prepare("UPDATE outbox SET status='queued',next_at=?,error='Telegram rate limit; retry scheduled' WHERE id=?").run(Date.now()+e.retryAfter*1000,row.id);
         else this.store.db.prepare("UPDATE outbox SET status=?,error=? WHERE id=?").run(e instanceof TelegramError&&e.code>=400&&e.code<500?'failed':'uncertain',e instanceof TelegramError?e.message:'Telegram delivery could not be confirmed; check the chat before resending.',row.id);
       }
     }finally{this.flushing=false;}

@@ -13,6 +13,7 @@ import { cursorDataDir } from './cursor-paths.js';
 import { CURSOR_CLI_MISSING, findCursorCli } from './cursor-desktop.js';
 import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-provider.js';
 import type { Binding, Provider, Store } from './store.js';
+import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import type { ExecutionMode } from './desktop-claude.js';
 import { codexProfileHome } from './codex-profile.js';
 import { claudeDesktopDataDir } from './desktop-apps.js';
@@ -185,7 +186,9 @@ export class Connections {
     if(b.provider==='cursor'&&route.transport!=='managed-cli')throw new Error('Cursor has no native session to hand a turn to. Select its channel connection again.');
     if(route.transport==='managed-cli') {
       const current=await this.read(b.provider,'cli',true,b.cwd);
-      if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new Error('CLI account or provider changed. Review and reselect this session before sending more work. No other account was used.');
+      if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new DispatchNotSubmittedError(b.provider==='claude'
+        ?'Nothing was sent: Claude CLI’s account or provider settings changed since this session was chosen (for example a new ANTHROPIC_BASE_URL in ~/.claude/settings.json). On your PC, open FarFromDesk and choose this session again to confirm the new setup. No other account was used.'
+        :'Nothing was sent: the CLI account or provider changed since this session was chosen. On your PC, open FarFromDesk and choose this session again to confirm. No other account was used.');
     }
   }
 }

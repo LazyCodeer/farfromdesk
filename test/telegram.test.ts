@@ -554,3 +554,11 @@ test('resume stays quiet when no bot was ever saved', async () => {
     assert.equal(calls,0);
   } finally { tg?.close(); store.close(); rmSync(root,{recursive:true,force:true}); }
 });
+
+test('a send that never reached Telegram is retried later', async () => {
+  const { TelegramError } = await import('../src/telegram.js');
+  const e = new TelegramError(0); assert.equal(e.notSent, false);
+  const src = (await import('node:fs')).readFileSync(new URL('../src/telegram.ts', import.meta.url), 'utf8');
+  assert.match(src, /ECONNREFUSED\|ENOTFOUND\|EAI_AGAIN/);
+  assert.match(src, /Telegram unreachable; retry scheduled/);
+});

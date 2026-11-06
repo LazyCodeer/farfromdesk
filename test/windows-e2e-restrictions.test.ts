@@ -151,3 +151,19 @@ test('app tool args accept numbers and booleans as text', async () => {
   await assert.rejects(c.run('s', { action: 'app_tool', tool: 'nope', args: { limit: 3, all: true } }), /APP_TOOL_UNKNOWN/, 'the args pass validation');
   await assert.rejects(c.run('s', { action: 'app_tool', tool: 'nope', args: { limit: { x: 1 } } }), /invalid/i);
 });
+
+test('reselecting a coordinator after its CLI account key changed moves its registry entry', async () => {
+  const { Store } = await import('../src/store.js');
+  const { CoordinatorRegistry } = await import('../src/coordinator-registry.js');
+  const store = new Store(':memory:');
+  try {
+    const reg0 = store.register('coord', 'claude', '11111111-2222-3333-4444-555555555555', process.cwd(), 'cli' as any) as any; const b = store.binding(reg0.id ?? reg0.binding?.id ?? reg0) as any;
+    const route = (k: string) => store.set(`session-route:${b.id}`, JSON.stringify({ provider: 'claude', executionMode: 'cli', transport: 'managed-cli', profileId: 'p', accountKey: k }));
+    route('old'); const reg = new CoordinatorRegistry(store); reg.register(b);
+    const before = reg.entry(b.id)!;
+    route('new'); assert.notEqual(reg.identity(b).key, before.key);
+    reg.rekey(b);
+    const after = reg.entry(b.id)!;
+    assert.equal(after.key, reg.identity(b).key); assert.equal(after.generation, before.generation);
+  } finally { store.close(); }
+});

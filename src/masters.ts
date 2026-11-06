@@ -467,12 +467,14 @@ export class Masters {
       const managed=mode==='cli'&&(provider==='codex'||portableAgents);
       const route=await this.connections.prepare({provider,cwd:session.cwd},mode,managed,session.accountScope,connectionRevision);
       const priorRoute=b?this.connections.route(b):undefined;
-      if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountKey!==route.accountKey||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
-      if(b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
+      if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
+      const rekey=!!(b&&this.registry.isCoordinator(b.id)&&priorRoute&&priorRoute.accountKey!==route.accountKey);
+      if(rekey&&this.store.unfinished(b!.id).length)throw new Error('This coordinator is still running a request. Wait until it finishes, then choose it again.');
+      if(!rekey&&b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
       assertProviderSetup(this.store);this.setAside();
       if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
       this.stopWorker(b.id);this.store.set(`execution-mode:${b.id}`,mode);
-      this.connections.save(b,route);
+      this.connections.save(b,route);if(rekey)this.registry.rekey(b);
       if(mode==='cli'&&(provider==='codex'||portableAgents))this.store.set(`managed-${provider}:${b.id}`,'true');
       this.saveOperation({id:operationId,provider,executionMode:mode,selectedSessionId:session.id,bindingId:b.id,nativeId:b.native_id,cwd:b.cwd,status:'creating'});
       this.activate(b,operationId);this.store.set(`name:${b.id}`,session.name);
