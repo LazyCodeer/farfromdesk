@@ -13,6 +13,7 @@ import { parseRespondArgs } from './reply-args.js';
 import { runFfd } from './ffd.js';
 import {setupAgentReach} from './agent-reach-setup.js';
 import { installAllProviderHooks } from './provider-hooks.js';
+import { installWindowsStartup,openWindowsApp,resolveWindowsBin,stopWindowsService,systemHost } from './windows-service.js';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 const args=process.argv.slice(2);let command=args.shift();
@@ -29,7 +30,7 @@ function credentials(alias:string) {
 const xml=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const serviceFile=join(homedir(),'Library/LaunchAgents/com.sagar.whatsapp-session-bridge.plist');
 const target=`gui/${process.getuid?.()}/com.sagar.whatsapp-session-bridge`;
-function resolveBin(name:string){if(name.includes('/'))return name;return execFileSync('/usr/bin/which',[name],{encoding:'utf8'}).trim();}
+function resolveBin(name:string){if(process.platform==='win32')return resolveWindowsBin(name);if(name.includes('/'))return name;return execFileSync('/usr/bin/which',[name],{encoding:'utf8'}).trim();}
 async function main() {
   if(command==='setup-research') {
     if(process.env.FFD_ISOLATED_LOCAL!=='1'||!process.env.WSB_STATE_DIR||args.length)throw Error('Research setup is available only for FarFromDesk Local with an explicit state directory, without arguments.');
@@ -157,6 +158,7 @@ async function main() {
     const r=await fetch(baseUrl+path,{method:data?'POST':'GET',headers:{Authorization:`Bearer ${c.data.token}`,'X-Binding-Id':c.data.id,'Content-Type':'application/json'},body:data?JSON.stringify(data):undefined});
     const out=await r.json() as any;if(!r.ok)throw new Error(out.error);console.log(JSON.stringify(out,null,2));
   }
+  else if(command==='open'&&process.platform==='win32')console.log(openWindowsApp(root,systemHost()));
   else if(command==='open') {
     const app=[join(homedir(),'Applications/FarFromDesk.app'),'/Applications/FarFromDesk.app',join(homedir(),'Applications/Sidekick.app'),'/Applications/Sidekick.app',join(homedir(),'Applications/Session Bridge.app'),'/Applications/Session Bridge.app',join(root,'build/release-arm64/FarFromDesk.app'),join(root,'build/release-x86_64/FarFromDesk.app'),join(root,'build/Session Bridge.app')].find(existsSync);
     if(!app)throw new Error('Install FarFromDesk.app first. The browser dashboard has been retired.');
@@ -167,9 +169,10 @@ async function main() {
     const config=join(stateDir,'bindings',`${args[0]}.mcp.json`);
     writeFileSync(config,JSON.stringify({mcpServers:{'whatsapp-session':{command:process.execPath,args:[join(root,'dist/channel.js'),c.path],env:{WSB_STATE_DIR:stateDir,WSB_PORT:String(new URL(baseUrl).port)}}}},null,2),{mode:0o600});
     if(command==='channel-config'){console.log(config);return;}
-    const child=spawn(claudeBin,['--resume',c.data.nativeId,'--mcp-config',config,'--dangerously-load-development-channels','server:whatsapp-session'],{cwd:c.data.cwd,stdio:'inherit'});
+    const child=spawn(claudeBin,['--resume',c.data.nativeId,'--mcp-config',config,'--dangerously-load-development-channels','server:whatsapp-session'],{cwd:c.data.cwd,stdio:'inherit',windowsHide:true});
     child.on('exit',code=>process.exit(code??1));child.on('error',e=>{console.error(e.message);process.exit(1);});
   }
+  else if(command==='install'&&process.platform==='win32')console.log(installWindowsStartup(systemHost()));
   else if(command==='install') {
     if(process.platform!=='darwin')throw new Error('Install the FarFromDesk desktop app with the platform installer.');
     initializeState();mkdirSync(dirname(serviceFile),{recursive:true});mkdirSync(join(stateDir,'logs'),{recursive:true,mode:0o700});
@@ -181,6 +184,9 @@ async function main() {
     execFileSync('/bin/launchctl',['bootstrap',`gui/${process.getuid?.()}`,serviceFile],{stdio:'inherit'});
     console.log('Installed background service. Run npm run bridge -- open to pair WhatsApp.');
   }
+  else if(command==='stop-service'&&process.platform==='win32')
+    // Never create state or a token just to stop: no token means nothing of ours is running.
+    console.log(existsSync(join(stateDir,'admin-token'))?await stopWindowsService(()=>api('/api/shutdown',{})):'FarFromDesk is not set up on this PC. Nothing was stopped.');
   else if(command==='stop-service') {if(process.platform!=='darwin')throw new Error('Use FarFromDesk Settings to stop background operation.');execFileSync('/bin/launchctl',['bootout',target],{stdio:'inherit'});console.log('Stopped. Credentials and sessions are retained.');}
   else if(command==='install-skills') {
     for(const dir of [join(homedir(),'.codex/skills/whatsapp-session'),join(homedir(),'.claude/skills/whatsapp-session')]){
