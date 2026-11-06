@@ -128,7 +128,9 @@ export function runDsh(options:DshRunOptions):Promise<DshResult> {
       if(tail.startsWith('{')){try{onEvent(JSON.parse(tail));}catch{}}
       const detail=stderr.split('\n').map(line=>line.replace(/^dsh:\s*/,'').trim()).filter(Boolean).slice(-2).join(' ').slice(0,300);
       const reason=detail||streamError||'';
-      if(code!==0)fail(`DeepSeek Harness exited with code ${code ?? 'unknown'}${reason?`: ${reason}`:''} before completing the task.`);
+      // The DeepSeek Harness app (or another dsh run) holds this session open for writing.
+      if(code!==0&&/already owned by an active write handle/i.test(reason))fail('Nothing was done: this DeepSeek session is open in the DeepSeek Harness app on your PC (or another DeepSeek run), so it cannot take a second writer. Switch to another conversation in that app or close it, then send your task again. Or send /deepseek new to start a fresh session from your phone.');
+      else if(code!==0)fail(`DeepSeek Harness exited with code ${code ?? 'unknown'}${reason?`: ${reason}`:''} before completing the task.`);
       else {
         if(streamError&&!text)fail(streamError);
         else if(!text?.trim())fail('DeepSeek finished without any answer text. Check the session before retrying.');
