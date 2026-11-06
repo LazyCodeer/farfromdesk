@@ -15,6 +15,19 @@ const helper=fileURLToPath(new URL('../native/FarFromDesk Accessibility.app/Cont
 const errors=new Set(['APP_ACTIVATION_REFUSED','APP_ACTIVATION_TIMEOUT','WINDOW_RAISE_REFUSED','WINDOW_FOCUS_TIMEOUT','SCREEN_RECORDING_PERMISSION_REQUIRED','SCREENSHOT_UNSUPPORTED_OS','SCREENSHOT_FAILED','SCREENSHOT_TOO_LARGE','SCREENSHOT_TIMEOUT','CAPTURE_TARGET_AMBIGUOUS','APP_STALE','WINDOW_STALE','CONTROL_STALE','SENSITIVE_TARGET','SENSITIVE_ACTION','ACCESSIBILITY_PERMISSION_REQUIRED','AX_APP_UNRESPONSIVE','AX_WINDOWS_UNSUPPORTED','AX_WINDOWS_NO_VALUE','AX_WINDOW_QUERY_FAILED','AX_WINDOWS_INVALID_RESPONSE','WINDOW_UNAVAILABLE','TARGET_NOT_FRONTMOST','WINDOW_NOT_FOCUSED','UNSUPPORTED_ACTION','CONTROL_UNAVAILABLE','ACTION_UNSUPPORTED_BY_CONTROL','TEXT_INPUT_REFUSED','ACTION_OUTCOME_UNKNOWN']);
 export const macNative:MacNative=createMacNative(helper,errors);
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
+/**
+ * The macOS Accessibility helper has no Windows or Linux build. It is not routed to the Windows
+ * backend: master_desktop_control already runs there with the same steps (list_apps for discover,
+ * list_windows for windows, read_window for read, then click, type_text or scroll on a controlId),
+ * and a second vocabulary over the same helper would only give coordinators two routes to keep in
+ * step. So off macOS the tool is not advertised (master-channel.ts, master-policy.ts, ffd.ts), and a
+ * caller that still uses it is pointed at the route that works.
+ */
+export function macControlUnsupported(platform:NodeJS.Platform=process.platform){
+  return platform==='win32'||platform==='linux'
+    ?`MAC_CONTROL_UNSUPPORTED: Mac Accessibility control is supported on macOS only. On this ${platform==='win32'?'PC':'computer'} use master_desktop_control (ffd desktop REQ) instead: list_apps, list_windows with the appRef, read_window, then click, type_text or scroll with a controlId from that read.`
+    :'Mac Accessibility control is supported on macOS only.';
+}
 type App={pid:number;bundleId:string;name:string;launched:number};
 type Window={index:number;title:string;identifier:string;frame:number[];windowHash:string;nativeWindowId?:string;role?:string;subrole?:string};
 type Control={path:number[];controlHash:string;nativeControlId?:string;role:string;label:string;value:string;enabled:boolean;protected:boolean;actions:string[];frame:number[]};
@@ -64,7 +77,7 @@ export class MacControl {
   }
   configure(enabled:boolean){this.prefs.set('mac-control-enabled',String(enabled));if(!enabled)this.stop();return this.view();}
   async capturePermissionRequest(){
-    if(this.platform!=='darwin')throw new Error('Mac control is available on macOS only.');
+    if(this.platform!=='darwin')throw new Error(macControlUnsupported(this.platform));
     await this.native({action:'requestScreenRecording'});this.nextCaptureProbeAt=0;return this.status();
   }
   stop(){this.generation++;this.refs.clear();this.pending?.abort();this.native.stop?.();return {stopped:true,next:'Any interaction already delivered may have taken effect. Inspect before retrying.'};}
@@ -75,7 +88,7 @@ export class MacControl {
     for(const key of Object.keys(q))if(key!=='action'&&!fields[q.action].includes(key))throw new Error('Unexpected parameter for this Mac control action.');
     if(q.action==='stop')return this.stop();
     if(q.action==='status')return this.status();
-    if(this.platform!=='darwin')throw new Error('Mac Accessibility control is supported on macOS only.');
+    if(this.platform!=='darwin')throw new Error(macControlUnsupported(this.platform));
     if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Check Accessibility permission in Settings > Remote control.');
     if(this.pending)throw new Error('A Mac operation is in progress. Wait for its result or stop it.');
     const controller=new AbortController(),generation=this.generation;this.pending=controller;

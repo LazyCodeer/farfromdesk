@@ -12,7 +12,8 @@ import { windowsPowerShell } from './power.js';
  * refusal wording (brain-device.ts) applies unchanged.
  */
 export type PortableWindow={app:string;title:string;pid:number;id:string;active:boolean;process?:string};
-export type PortableAction='list'|'read'|'click'|'type'|'key'|'screenshot';
+/** Linux answers list, read, click, type, key and screenshot; the rest are Windows only (desktop-windows.ps1). */
+export type PortableAction='list'|'read'|'click'|'type'|'key'|'screenshot'|'act'|'pointer'|'pick'|'apps'|'launch'|'front';
 export type PortableExec=(file:string,args:string[],options:{timeout:number;maxBuffer:number;signal?:AbortSignal;windowsHide:boolean})=>Promise<string>;
 
 const execText:PortableExec=(file,args,options)=>new Promise((resolve,reject)=>{
@@ -29,8 +30,10 @@ export function portableLimits(platform:NodeJS.Platform,env:NodeJS.ProcessEnv=pr
   if(platform==='win32')return [
     'Windows does not let FarFromDesk drive apps running as administrator.',
     'Store (packaged) apps may publish few controls to UI Automation.',
+    'Clicks by pixel, drags, scrolls and keystrokes bring the window to the front and use the real pointer and keyboard; Windows has no background delivery for them.',
+    'Nothing can be clicked or typed while the PC is locked.',
     'Browser tabs work in Chrome, Edge, Brave and Comet. Only the selected tab in each window shows its address, and an open tab cannot be sent to a new address (a new tab can). Firefox tabs are not supported.',
-    'App tools and pixel clicks are macOS only for now.',
+    'App tools are macOS only for now.',
   ];
   if(platform!=='linux')return [];
   const wayland=env.XDG_SESSION_TYPE==='wayland'||(!!env.WAYLAND_DISPLAY&&!env.DISPLAY);
@@ -54,7 +57,7 @@ export class PortableDesktop {
       ?[windowsPowerShell(),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script('desktop-windows.ps1'),action,payload]]
       :['python3',['-I',script('desktop-linux.py'),action,payload]];
     let raw:string;
-    try{raw=await this.exec(file,argv,{timeout:action==='screenshot'?75000:20000,maxBuffer:64*1024*1024,signal,windowsHide:true});}
+    try{raw=await this.exec(file,argv,{timeout:action==='screenshot'?75000:action==='pick'||action==='apps'?30000:20000,maxBuffer:64*1024*1024,signal,windowsHide:true});}
     catch(e){
       if(signal?.aborted)throw new Error('DESKTOP_STOPPED');
       const message=String((e as Error)?.message??e);
