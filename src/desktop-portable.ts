@@ -33,7 +33,7 @@ export function portableLimits(platform:NodeJS.Platform,env:NodeJS.ProcessEnv=pr
     'Clicks by pixel, drags, scrolls and keystrokes bring the window to the front and use the real pointer and keyboard; Windows has no background delivery for them.',
     'Nothing can be clicked or typed while the PC is locked.',
     'Browser tabs work in Chrome, Edge, Brave and Comet. Only the selected tab in each window shows its address, and an open tab cannot be sent to a new address (a new tab can). Firefox tabs are not supported.',
-    'App tools are macOS only for now.',
+    'App tools use classic Outlook (calendar, mail, tasks), OneNote for Windows, your folders and the media controls.',
   ];
   if(platform!=='linux')return [];
   const wayland=env.XDG_SESSION_TYPE==='wayland'||(!!env.WAYLAND_DISPLAY&&!env.DISPLAY);

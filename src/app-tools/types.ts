@@ -35,7 +35,24 @@ export type AppToolPlan =
       timeoutMs?: number;
       outputChars?: number;
       format?: (raw: string) => string;
-    };
+    }
+  /**
+   * Windows: one operation of the bundled `native/app-tools-windows.ps1`, which reaches Outlook
+   * and OneNote over COM and the system media controls over WinRT. The payload is JSON, passed
+   * as base64 so no shell or quoting ever sees owner text. `format` works as it does for `cli`.
+   */
+  | {
+      kind: 'windows';
+      op: string;
+      payload: Record<string, unknown>;
+      timeoutMs?: number;
+      outputChars?: number;
+      format?: (raw: string) => string;
+    }
+  /** Work done in this process (file listings over Node's fs). Never spawns a shell. */
+  | { kind: 'local'; run: (signal: AbortSignal) => Promise<string>; outputChars?: number }
+  /** A sentence and nothing else: a refusal decided before any app is touched. */
+  | { kind: 'text'; text: string };
 
 export interface AppToolArg {
   name: string;

@@ -8,7 +8,7 @@ import {createServer} from 'node:net';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 
 const repo=resolve(fileURLToPath(new URL('..',import.meta.url)));
-const portable=['test/portable.test.ts','test/local-email-windows.test.ts','test/local-email-runtime.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts','test/server-mode-portable.test.ts','test/platform-desktop.test.ts','test/remote-windows.test.ts','test/agent-reach.test.ts','test/agent-reach-setup.test.ts','test/windows-service.test.ts','test/browser-windows.test.ts','test/brain-tabs-honest.test.ts','test/desktop-windows-actions.test.ts','test/desktop-sessions-windows.test.ts'];
+const portable=['test/portable.test.ts','test/local-email-windows.test.ts','test/local-email-runtime.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts','test/server-mode-portable.test.ts','test/platform-desktop.test.ts','test/remote-windows.test.ts','test/agent-reach.test.ts','test/agent-reach-setup.test.ts','test/windows-service.test.ts','test/browser-windows.test.ts','test/brain-tabs-honest.test.ts','test/desktop-windows-actions.test.ts','test/desktop-sessions-windows.test.ts','test/app-tools-windows.test.ts','test/direct-mac.test.ts'];
 // Keep inherited environment narrow: credentials can appear under arbitrary
 // names such as DATABASE_URL or GH_CONFIG_DIR, not only KEY/TOKEN/SECRET.
 // These explicit test flags opt into local fixtures and never carry credentials.
@@ -20,7 +20,7 @@ const inheritedNames=new Set([
   'LC_ADDRESS','LC_TELEPHONE','LC_MEASUREMENT','LC_IDENTIFICATION','TZ',
   'TERM','COLORTERM','NO_COLOR','FORCE_COLOR','CI','GITHUB_ACTIONS',
   'WSB_AUDIO_TEST_FFMPEG','WSB_AUDIO_TEST_WHISPER','WSB_AUDIO_TEST_MODEL',
-  'WSB_AUDIO_TEST_SAMPLE','FFD_LARGE_DOCUMENT_PROBE','FFD_LIVE_DESKTOP','FFD_LIVE_MAIL_HELPERS','FFD_LIVE_MAIL_DIALOG',
+  'WSB_AUDIO_TEST_SAMPLE','FFD_LARGE_DOCUMENT_PROBE','FFD_LIVE_DESKTOP','FFD_LIVE_MAIL_HELPERS','FFD_LIVE_MAIL_DIALOG','FFD_LIVE_APP_TOOLS',
   'ISOLATION_SENTINEL','ISOLATION_PROBE_FAIL','ISOLATION_EXPECT_AUDIO',
 ]);
 

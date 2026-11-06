@@ -29,6 +29,7 @@ import {museDataHome} from './muse-paths.js';
 import {sessionSpecialty} from './session-specialty.js';
 import {dshSessionsDir} from './dsh-paths.js';
 import {cursorSessions} from './cursor-desktop.js';
+import {bridgeCurl,ownerAppsPhrase,writeAuthHeader,WINDOWS_PIPE_NOTE} from './direct-mac.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
@@ -372,14 +373,23 @@ export class NativeAgents {
     // curl reads the token from this binding's own credential file when it runs: the token is
     // never in the prompt or the transcript.
     const credential=join(stateDir,'bindings',`${b.alias}.json`).replaceAll("'","'\\''");
-    const curl=(path:string,secs=70)=>`curl -s --max-time ${secs} -X POST 'http://127.0.0.1:${new URL(baseUrl).port}${path}' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
+    // Windows has no plutil and no shell substitution every CLI agrees on (the token arrived empty
+    // and every call got a 401), so curl there reads the Authorization header from a file written
+    // next to this binding's credential, refreshed on every turn (see bridgeCurl in direct-mac.ts).
+    const windows=process.platform==='win32';
+    const headerFile=join(stateDir,'bindings',`${b.alias}.auth-header`);
+    const headless=b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor';
+    if(windows&&headless&&managed){try{const token=JSON.parse(readFileSync(join(stateDir,'bindings',`${b.alias}.json`),'utf8'))?.token;if(typeof token==='string'&&token)writeAuthHeader(headerFile,token);}catch{}}
+    const curl=(path:string,secs=70)=>windows
+      ?bridgeCurl('win32',`http://127.0.0.1:${new URL(baseUrl).port}${path}`,['Content-Type: application/json',`X-Binding-Id: ${b.id}`],{headerFile},secs)
+      :`curl -s --max-time ${secs} -X POST 'http://127.0.0.1:${new URL(baseUrl).port}${path}' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
     const post=curl('/api/master/desktop-control');
     // The same gap for Social: FFD social-save and friends do not exist in a headless session, so it
     // reported that drafts could not be saved and no image preview followed (live, 5 Nov 2026).
     const headlessSocial=(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor')&&sessionSpecialty(this.store,jobId)?.kind==='social'
       ?{socialTools:`FFD is not installed here. In place of FFD social-creative, social-save, social-render and social-image, pipe JSON to these commands. Skill and schema: echo '{"requestId":"${jobId}"}' | ${curl('/api/session/social-creative')} . Save drafts: {"requestId":"${jobId}","eventId":"<new id of 8+ letters or digits>","drafts":[...]} | ${curl('/api/session/social-drafts')} . Render: {"requestId":"${jobId}","draftId":"<id>","revision":<n>,"plan":{...}} | ${curl('/api/session/social-render',180)} . Meta image: {"requestId":"${jobId}","draftId":"<id>"} | ${curl('/api/session/social-image',180)} .`}:{};
     const headlessApps=(b.provider==='muse'||b.provider==='deepseek')&&roleConfig(this.store,b).kind==='master'
-      ?{macApps:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
+      ?{macApps:windows?`For the content of ${ownerAppsPhrase('win32')}, never read windows or write scripts. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.${WINDOWS_PIPE_NOTE}`:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
     const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer',...headlessApps,...headlessSocial}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;

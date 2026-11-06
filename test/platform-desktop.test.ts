@@ -51,13 +51,15 @@ test('Windows and Linux report support and their limits honestly, Wayland includ
     const view = control(platform).view();
     assert.equal(view.supported, true);
     assert.equal(view.driverVersion, null, 'the macOS driver is not what runs here');
-    assert.ok(view.limits.some(l => /macOS only/.test(l)));
+    // Linux still has macOS-only parts; Windows has its own ports of all of them now.
+    assert.equal(view.limits.some(l => /macOS only/.test(l)), platform === 'linux');
     // Windows also acts (test/desktop-windows-actions.test.ts) and reads the owner's open Chromium tabs (browser-windows.ts); Linux reads.
     if (platform === 'linux') assert.deepEqual([...view.actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'stop']);
     else for (const action of ['click', 'open_app', 'list_browsers', 'list_tabs', 'new_tab', 'focus_tab', 'close_tab', 'read_tab']) assert.ok(view.actions.includes(action as never), action);
   }
   assert.ok(portableLimits('win32').some(l => /Browser tabs work in Chrome, Edge, Brave and Comet/.test(l)));
   assert.ok(portableLimits('win32').some(l => /administrator/.test(l)));
+  assert.ok(portableLimits('win32').some(l => /App tools use classic Outlook/.test(l)));
   assert.ok(portableLimits('linux', { XDG_SESSION_TYPE: 'wayland' }).some(l => /Wayland/.test(l)));
   assert.ok(!portableLimits('linux', { DISPLAY: ':0' }).some(l => /Wayland/.test(l)));
   assert.equal(control('freebsd').view().supported, false);

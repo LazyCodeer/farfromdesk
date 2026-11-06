@@ -1,5 +1,5 @@
 import type { AppTool } from './types.js';
-import { allPackTools } from './packs.js';
+import { allPackTools, platformTools } from './packs.js';
 import { embedExtras } from './embed.js';
 
 /**
@@ -98,6 +98,14 @@ export function buildIndex(tools: AppTool[] = allPackTools()): ToolIndex {
   const idf = new Map<string, number>();
   for (const [word, count] of df) idf.set(word, Math.log(1 + tools.length / count));
   return { tools, idf, tokens };
+}
+
+/** The index over one platform's tools, built once: the Windows packs differ from the macOS ones. */
+const platformIndexes = new Map<string, ToolIndex>();
+export function indexFor(platform: NodeJS.Platform = process.platform): ToolIndex {
+  let index = platformIndexes.get(platform);
+  if (!index) platformIndexes.set(platform, index = buildIndex(platformTools(platform)));
+  return index;
 }
 
 /**

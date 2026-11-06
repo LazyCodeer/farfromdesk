@@ -7,8 +7,10 @@ import { EmbeddedDesktopDriver,type DesktopDriver } from './desktop-driver.js';
 import { PortableDesktop,portableLimits,type PortableWindow } from './desktop-portable.js';
 import { windowsBrowsers,windowsDesktopBrowser } from './browser-windows.js';
 import { computerName } from './platform.js';
-import { allPackTools, toolByName } from './app-tools/packs.js';
-import { shortlistTools } from './app-tools/retrieve.js';
+import { platformTools, platformToolByName } from './app-tools/packs.js';
+import { indexFor, shortlistTools } from './app-tools/retrieve.js';
+import { WINDOWS_HELPER, windowsToolApp } from './app-tools/windows/plans.js';
+import { windowsPowerShell } from './power.js';
 import type { AppTool, AppToolPlan } from './app-tools/types.js';
 
 export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','stop'] as const;
@@ -53,7 +55,7 @@ export type AssistPlan={action:'open_app'|'read_window'|'click'|'type'|'press_ke
 type Activator=(app:string,bundleId:string|undefined)=>Promise<unknown>;
 type Prefs={get(key:string):string|undefined;set(key:string,value:string):void};
 export type BrowserCall=(q:Record<string,unknown>,signal?:AbortSignal)=>Promise<any>;
-type Executor=(file:string,args:string[],options:{timeout?:number;signal?:AbortSignal;maxBuffer?:number})=>Promise<{stdout:string;stderr:string}>;
+type Executor=(file:string,args:string[],options:{timeout?:number;signal?:AbortSignal;maxBuffer?:number;windowsHide?:boolean})=>Promise<{stdout:string;stderr:string}>;
 const execute:Executor=promisify(execFile) as unknown as Executor;
 /**
  * Accessibility plumbing out, content in.
@@ -134,7 +136,7 @@ const windowsBrowserActions=['list_browsers','list_tabs','new_tab','focus_tab','
 /**
  * Windows also acts, through native/desktop-windows.ps1: UI Automation patterns on a control
  * from a fresh read (Invoke, Toggle, Value, Scroll), and SendInput for pixels, keys and controls
- * that publish no pattern. Browser tabs are windowsBrowserActions above; app tools are not here yet.
+ * that publish no pattern. Browser tabs are windowsBrowserActions above; app tools run through packTool (src/app-tools/windows).
  */
 const windowsActions=['status','check_permissions','list_apps','list_windows','read_window','open_app','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','stop'] as const;
 /** Chat recipes off macOS, by process name. Claude's Windows app is the same Electron page, so the same labels. */
@@ -381,9 +383,10 @@ export class DesktopControl {
    * first run's Automation permission prompt and nothing else.
    */
   async packTool(scope:string,name:string,args:Record<string,string>,authorize:()=>void=()=>{}):Promise<any>{
+    if(this.platform==='win32')return this.windowsPackTool(name,args,authorize);
     if(this.platform!=='darwin')throw new Error('DESKTOP_MACOS_ONLY');
     if(this.pending)throw new Error('DESKTOP_BUSY');
-    const tool=toolByName(name);
+    const tool=platformToolByName(name,this.platform);
     if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+name+' is not an app tool I have.');
     if(sensitiveName(tool.app))throw new Error('SENSITIVE_TARGET: System Settings, keychain and password apps are excluded from desktop control.');
     for(const arg of tool.args)if(arg.required&&!String(args[arg.name]??'').trim())throw new Error('APP_TOOL_ARGUMENT_MISSING: '+tool.name+' needs '+arg.name+'.');
@@ -455,11 +458,83 @@ export class DesktopControl {
           throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+text.replace(/\s+/g,' ').slice(0,300));
         }
       }
+      if(plan.kind!=='steps')throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: it has no macOS version.');
       const target=await this.resolve(tool.app);
       if(!target?.window_id)throw new Error('DESKTOP_APP_NOT_RUNNING: '+tool.app+' has no open window to act on.');
       const result=await this.driver.call('run_steps',{pid:target.pid,window_id:target.window_id,app:tool.app,delivery_mode:'background',steps:plan.steps,observe:{}} as Record<string,unknown>,controller.signal);
       const ok=result?.ok===true;
       return {action:'app_tool',tool:tool.name,app:tool.app,ok,window:result?.window_title??null,observation:ok?null:result?.observation?.summary??result?.observation?.message??null};
+    }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
+  }
+  /**
+   * Windows: the reviewed app tools over Outlook, OneNote, the file system and the system media
+   * controls (src/app-tools/windows). Same gates as macOS: one action at a time, the Settings
+   * switch, the sensitive-app exclusion, required arguments, and the plan's own argument checks.
+   *
+   * A `windows` plan runs native/app-tools-windows.ps1 once per call. A long-lived helper would
+   * save about half a second of PowerShell start-up, but it would keep Outlook and OneNote running
+   * in the background for as long as it lived (both stay up while a COM client holds them), and one
+   * COM call that hangs would wedge every later call. One process per call ends with the call: the
+   * timeout and the Stop button kill it, and Outlook is free to exit when the owner closes it.
+   */
+  private async windowsPackTool(name:string,args:Record<string,string>,authorize:()=>void):Promise<any>{
+    if(this.pending)throw new Error('DESKTOP_BUSY');
+    const tool=platformToolByName(name,'win32');
+    if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+name+' is not an app tool I have on this PC.');
+    if(sensitiveName(tool.app))throw new Error('SENSITIVE_TARGET: System Settings, keychain and password apps are excluded from desktop control.');
+    for(const arg of tool.args)if(arg.required&&!String(args[arg.name]??'').trim())throw new Error('APP_TOOL_ARGUMENT_MISSING: '+tool.name+' needs '+arg.name+'.');
+    if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Turn on Remote control in Settings, then try again.');
+    const controller=new AbortController(),generation=this.generation;this.pending=controller;
+    try{
+      authorize();
+      let plan:AppToolPlan;
+      try{plan=tool.plan(args);}catch(error){throw new Error('APP_TOOL_ARGUMENT_INVALID: '+String((error as Error)?.message??error));}
+      // The same output rules as macOS: a status line by default, document text when the plan asks.
+      const finish=(text:string,parsed:boolean,outputChars?:number)=>{
+        const cap=Math.max(200,Math.min(outputChars??(parsed?8000:600),120000));
+        return {action:'app_tool',tool:tool.name,app:tool.app,ok:true,output:(parsed||cap>600?text:text.replace(/\s*\n\s*/g,' | ')).slice(0,cap),window:null};
+      };
+      if(plan.kind==='text')return finish(plan.text,false);
+      if(plan.kind==='local'){
+        let text:string;
+        try{text=await plan.run(controller.signal);}
+        catch(e){if(controller.signal.aborted)throw new Error('DESKTOP_STOPPED');throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+String((e as Error)?.message??e).replace(/\s+/g,' ').slice(0,300));}
+        return finish(text,false,plan.outputChars??4000);
+      }
+      if(plan.kind!=='windows')throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: it has no Windows version.');
+      const script=fileURLToPath(new URL('../native/'+WINDOWS_HELPER,import.meta.url));
+      // Owner text travels as base64 JSON, so no quoting rule of PowerShell or the command line ever applies to it.
+      const payload=Buffer.from(JSON.stringify(plan.payload),'utf8').toString('base64');
+      let stdout='';
+      try{
+        stdout=String((await this.exec(windowsPowerShell(),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,plan.op,payload],{timeout:plan.timeoutMs??45000,signal:controller.signal,maxBuffer:8*1024*1024,windowsHide:true})).stdout??'');
+      }catch(e){
+        if(controller.signal.aborted)throw new Error('DESKTOP_STOPPED');
+        // The helper answers on stdout even when PowerShell exits nonzero; only no answer is a failure.
+        stdout=String((e as {stdout?:string}).stdout??'');
+        if(!stdout.trim()){
+          const killed=(e as {killed?:boolean}).killed===true||/ETIMEDOUT|timed out/i.test(String((e as Error).message));
+          // Measured live on this PC: Outlook started in the background by a call can open a sign-in
+          // window and wait there, and every COM call waits with it. The owner is the only one who can
+          // answer it, so the sentence says where to look rather than calling it a fault.
+          if(killed&&(tool.app==='Outlook'||tool.app==='OneNote'))throw new Error(`APP_TOOL_REFUSED: ${tool.app} did not answer in time. It may be waiting for you on this PC, for example to sign in to an account; open ${tool.app}, deal with what it shows, then ask me again.${tool.writes?' I cannot tell whether the change was made, so check before asking for it again.':''}`);
+          throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+(killed?`${tool.app} did not answer in time`:String((e as Error).message??e).replace(/\s+/g,' ').slice(0,300)));
+        }
+      }
+      let answer:any;
+      try{answer=JSON.parse(stdout.trim());}catch{throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: the Windows helper gave an unreadable answer.');}
+      if(answer?.ok!==true){
+        const said=String(answer?.error??'').trim();
+        const code=/^([A-Z_]+):\s*/.exec(said);
+        const sentence=code?said.slice(code[0].length):said;
+        // The helper's sentences (no Outlook account, no such event, more than one match) are written
+        // for the owner and arrive as they are; an internal failure keeps the generic wording.
+        if(code&&code[1]!=='INTERNAL'&&sentence)throw new Error('APP_TOOL_REFUSED: '+sentence.slice(0,400));
+        throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+(sentence||'no answer').slice(0,300));
+      }
+      const raw=answer.data!==undefined?JSON.stringify(answer.data):String(answer.text??'');
+      const text=plan.format?plan.format(raw):raw;
+      return finish(text,Boolean(plan.format),plan.outputChars);
     }finally{if(this.pending===controller)this.pending=undefined;if(generation!==this.generation)this.stop();}
   }
   /**
@@ -550,6 +625,7 @@ export class DesktopControl {
    * apps the owner actually names.
    */
   async activeApp():Promise<string|undefined>{
+    if(this.platform==='win32'){const front=(await this.portable.windows().catch(()=>[])).find(w=>w.active);return front?windowsToolApp(front.app,front.process):undefined;}
     if(this.platform!=='darwin')return (await this.portable.windows().catch(()=>[])).find(w=>w.active)?.app||undefined;
     try{
       const result=await this.driver.call('list_apps',{});
@@ -848,12 +924,12 @@ export class DesktopControl {
     if(q.action==='app_tools'){
       // The whole catalog, so the session decides, the way an MCP client lists every tool of a server.
       // The matcher only marks likely ones; it never hides the rest (it used to return its top five).
-      const likely=q.text?.trim()?(await shortlistTools(q.text,{app:await this.activeApp()})).map(entry=>entry.tool.name):[];
-      return {tools:allPackTools().map(tool=>({name:tool.name,app:tool.app,writes:tool.writes,description:tool.description,args:tool.args.map(arg=>({name:arg.name,required:Boolean(arg.required),description:arg.description}))})),likely,
+      const likely=q.text?.trim()?(await shortlistTools(q.text,{app:await this.activeApp(),index:indexFor(this.platform)})).map(entry=>entry.tool.name):[];
+      return {tools:platformTools(this.platform).map(tool=>({name:tool.name,app:tool.app,writes:tool.writes,description:tool.description,args:tool.args.map(arg=>({name:arg.name,required:Boolean(arg.required),description:arg.description}))})),likely,
         next:'Choose the tools this request needs and run each with action app_tool, tool and args. Call several when needed (find, then read, then act). A tool that writes needs a new UUID actionId.'};
     }
     if(q.action==='app_tool'){
-      const tool=toolByName(q.tool??'');
+      const tool=platformToolByName(q.tool??'',this.platform);
       if(!tool)throw new Error('APP_TOOL_UNKNOWN: '+(q.tool??'')+' is not an app tool I have. Use app_tools first.');
       if(tool.writes)this.reserve(scope,q);
       return await this.packTool(scope,tool.name,q.args??{},authorize);

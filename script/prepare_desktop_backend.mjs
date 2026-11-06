@@ -31,6 +31,8 @@ if(process.platform==='darwin') {
   if(process.platform==='win32'&&process.env.FFD_LOCAL_BUILD==='1')for(const helper of ['local-mail-credentials.ps1','local-mail-approval.ps1'])copyFileSync(join(root,'native',helper),join(target,'native',helper));
   // Windows Claude Desktop and Codex Desktop sessions: desktop-sync runs these under Python (src/desktop-apps.ts).
   if(process.platform==='win32')for(const file of ['desktop_sync.py','codex_delivery.py'])copyFileSync(join(root,'native',file),join(target,'native',file));
+  // Windows app tools: Outlook, OneNote and the media controls (src/app-tools/windows).
+  if(process.platform==='win32')copyFileSync(join(root,'native','app-tools-windows.ps1'),join(target,'native','app-tools-windows.ps1'));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
