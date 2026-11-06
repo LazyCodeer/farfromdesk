@@ -3,6 +3,9 @@ import type { Binding } from './store.js';
 import { Store } from './store.js';
 import { briefTargetIdentity } from './brief-dispatch-guard.js';
 import { blockCard, recordDecision, recordHandover, takeoverGuide, type HandoverReason } from './companion.js';
+import { computerName } from './platform.js';
+/** What the owner calls this computer in messages: Mac, PC or computer. */
+const PC=computerName();
 
 /** allow, deny, or hand the prompt back to the app so the owner does it there. */
 export type Decision='approve'|'deny'|'native';
@@ -106,7 +109,7 @@ export class Approvals {
     if(!code&&quotedId)return; // A reply to ordinary work must never answer a different permission.
     if(!code){
       const approvals=[...this.pending.entries()].filter(([,p])=>p.kind==='approval'&&Date.now()<=p.expires);
-      if(approvals.length!==1||this.pending.size!==1)throw new Error('Please reply to the specific permission message with 1 to allow, 2 to deny or 3 to do it on the Mac, so I know which action you mean.');
+      if(approvals.length!==1||this.pending.size!==1)throw new Error(`Please reply to the specific permission message with 1 to allow, 2 to deny or 3 to do it on the ${PC}, so I know which action you mean.`);
       [selected,pending]=approvals[0];
       const sent=this.store.db.prepare("SELECT 1 FROM outbox WHERE source LIKE ? AND status='sent'").get(`permission:${selected}:%`);
       if(!sent)throw new Error('Wait for the permission message, then reply to it with your decision.');
@@ -116,9 +119,9 @@ export class Approvals {
     if(quoted&&quoted.status!=='sent')throw new Error('Wait for the permission message, then reply to it with your decision.');
     if(!this.store.binding(pending.binding.id)?.enabled)throw new Error('That session is paused. Resume it in the app before answering.');
     if(source==='voice')throw new Error('Please type your permission decision or answer; voice transcription may mishear it.');
-    if(pending.kind==='approval'&&!decision)throw new Error('Reply to this permission message with 1 to allow, 2 to deny, or 3 to do it on the Mac.');
+    if(pending.kind==='approval'&&!decision)throw new Error(`Reply to this permission message with 1 to allow, 2 to deny, or 3 to do it on the ${PC}.`);
     this.answer(selected,pending.kind==='approval'?decision!:trimmed,pending.kind);
-    return {binding:pending.binding,message:pending.kind==='question'?'Your answer was sent.':decision==='approve'?'Allowed. I sent your decision to the session, and I will tell you if it still does not move.':decision==='deny'?'Denied. That action was not approved.':'Taking over. Nothing was approved, and I sent you the steps for the Mac.'};
+    return {binding:pending.binding,message:pending.kind==='question'?'Your answer was sent.':decision==='approve'?'Allowed. I sent your decision to the session, and I will tell you if it still does not move.':decision==='deny'?'Denied. That action was not approved.':`Taking over. Nothing was approved, and I sent you the steps for the ${PC}.`};
   }
   cancel(bindingId?:string) {for(const p of this.pending.values())if(!bindingId||p.binding.id===bindingId)p.settle('deny');}
   view(){return [...this.pending.entries()].map(([code,p])=>({code,alias:p.binding.alias,question:p.question,kind:p.kind,expires:p.expires}));}

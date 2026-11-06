@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { stateDir } from './config.js';
 import type { Store } from './store.js';
 import { windowsPowerShell } from './power.js';
+import { computerName } from './platform.js';
 
 // One-time privileged helper that decides whether system sleep may stay disabled
 // while the owner works with the lid closed. See native/server-mode/helper.sh for
@@ -188,7 +189,7 @@ export class ServerMode {
     if(this.enabled)this.writeState();
     await this.refresh();
     const pct=this.batteryPercent===null?'':` (battery ${this.batteryPercent}%)`;
-    return ok?`Keeping the Mac awake with the lid closed until 5% battery${pct}.`:`Normal sleep will return on battery${pct}. Plug in to keep working with the lid closed.`;
+    return ok?`Keeping the ${computerName()} awake with the lid closed until 5% battery${pct}.`:`Normal sleep will return on battery${pct}. Plug in to keep working with the lid closed.`;
   }
 
   view():ServerModeView{

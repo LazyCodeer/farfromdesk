@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { stateDir } from './config.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { userInfo } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import {captureGuidedResearchRequest} from './agent-reach-request.js';
@@ -24,6 +22,8 @@ import { platformTools, platformToolByName } from './app-tools/packs.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
+import { computerName } from './platform.js';
+import { absoluteOwnerPath, openOwnerFile, ownerFolderList, ownerFolderPath, ownerRoot } from './open-file.js';
 
 /** How long a driver report stays usable as the fact behind a later question about the same app. */
 const DEVICE_FACT_MS=10*60_000;
@@ -412,7 +412,7 @@ export class MetaBrain {
    */
   private async runDevice(router:Router,m:Incoming,decision:Interpretation,policy:BrainPolicy){
     const plan=decision.device;
-    if(!plan){this.stop(m.id,'Tell me the one thing to do on your Mac, like "open Comet" or "press escape".','clarification');return true;}
+    if(!plan){this.stop(m.id,`Tell me the one thing to do on your ${computerName()}, like "open ${process.platform==='win32'?'Chrome':'Comet'}" or "press escape".`,'clarification');return true;}
     return await this.executeDevice(router,m,plan,policy);
   }
   /**
@@ -474,12 +474,12 @@ export class MetaBrain {
    * never a link that leads outside them, at most 50 MB ("Send me 3.jpg from downloads", live).
    */
   private sendFileFor(m:Incoming,raw:string):string{
-    const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
-    const asked=raw.trim().replace(/^~(?=\/|$)/,home);
-    const path=asked.startsWith('/')?asked:join(home,'Downloads',asked);
-    let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}. Use the Finder tools to find its exact path.`;}
-    const root=roots.find(r=>real.startsWith(r+sep));
-    if(!root||real.slice(root.length).split(sep).some(part=>part.startsWith('.')))return 'I can send files only from Downloads, Desktop, Documents, Pictures, Movies or Music, and never hidden ones.';
+    const home=userInfo().homedir;
+    const asked=raw.trim().replace(process.platform==='win32'?/^~(?=[\\/]|$)/:/^~(?=\/|$)/,home);
+    const path=absoluteOwnerPath(asked)?asked:join(home,'Downloads',asked);
+    let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}. ${process.platform==='win32'?'Use the file tools':'Use the Finder tools'} to find its exact path.`;}
+    const root=ownerRoot(real,home);
+    if(!root||real.slice(root.length).split(sep).some(part=>part.startsWith('.')))return `I can send files only from ${ownerFolderList()}, and never hidden ones.`;
     const st=lstatSync(real);if(!st.isFile())return `${basename(real)} is a folder, not a file.`;
     if(st.size>50_000_000)return `${basename(real)} is over 50 MB, which is more than the chat accepts.`;
     const list=this.files.get(m.id)??[];if(list.length>=5)return 'At most five files per message.';
@@ -508,12 +508,7 @@ export class MetaBrain {
   }
   /** The owner's folders the brain may put or open files in: never hidden ones, never Library. */
   private ownerPath(raw:string,base:'Downloads'|'Documents'='Downloads'):string|undefined{
-    const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
-    const asked=raw.trim().replace(/^~(?=\/|$)/,home),path=asked.startsWith('/')?asked:/^(Downloads|Desktop|Documents|Pictures|Movies|Music)\//.test(asked)?join(home,asked):join(home,base,asked);
-    const root=roots.find(r=>path.startsWith(r+sep));
-    // After the root's own separator, so the first part is the file or folder, not an empty string (which refused every path).
-    if(!root||path.slice(root.length+1).split(sep).some(part=>!part||part.startsWith('.')||part==='..'))return undefined;
-    return path;
+    return ownerFolderPath(raw,base,userInfo().homedir);
   }
   /**
    * write_file: a new file the owner asked for (a sheet as CSV, notes, a list) in Downloads or
@@ -530,11 +525,10 @@ export class MetaBrain {
   }
   /** open_file: open a file from the owner's folders, in a named app if given (Numbers for a CSV). */
   private async openFileFor(raw:string,app?:string):Promise<string>{
-    const path=this.ownerPath(raw);if(!path)return 'I can open files only from Downloads, Desktop, Documents, Pictures, Movies or Music.';
+    const path=this.ownerPath(raw);if(!path)return `I can open files only from ${ownerFolderList()}.`;
     let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}.`;}
     if(!this.ownerPath(real))return 'That file is outside your folders.';
-    try{await promisify(execFile)('/usr/bin/open',[...(app?['-a',app]:[]),real],{timeout:15000});return `Opened ${basename(real)}${app?` in ${app}`:''}. Read the window to check it.`;}
-    catch{return app?`${app} could not open ${basename(real)}. Is ${app} installed?`:`${basename(real)} could not be opened.`;}
+    return openOwnerFile(real,app);
   }
   /**
    * The browser tab this request chose to work in. read_tab switches back to whichever tab was
@@ -611,7 +605,7 @@ export class MetaBrain {
     const asked=this.wanted.delete(m.id),original=this.original.delete(m.id);
     // Live on build 2421 the model wrote "screenshot follows" and no image existed. A screenshot
     // that was asked for and not taken is said plainly, with the permission that blocks it.
-    if(asked&&!list?.length){try{this.store.output(undefined,'I could not take the screenshot this time. If it keeps failing, check that Screen Recording is on for FarFromDesk Local in System Settings > Privacy & Security. The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
+    if(asked&&!list?.length){try{this.store.output(undefined,process.platform==='win32'?'I could not take the screenshot this time. If it keeps failing, check that the PC is unlocked and FarFromDesk is running in your signed-in session. The text above is what I could read.':'I could not take the screenshot this time. If it keeps failing, check that Screen Recording is on for FarFromDesk Local in System Settings > Privacy & Security. The text above is what I could read.',`brain-shot-missing:${m.id}`,this.store.destination(),{kind:'system',origin:'system',plain:true});}catch{}return;}
     // Trimmed off the reply path; the photo rows follow the reply in order.
     void (async()=>{for(const [i,png] of (list??[]).entries()){try{
       // Only the full-quality file: Telegram recompresses a photo, and the owner got a blurry copy and a sharp
@@ -746,15 +740,15 @@ export class MetaBrain {
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.armed.delete(m.id);if(shot==='file')this.original.add(m.id);this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,!!shot);},
         readWindow:(app,shot)=>{if(shot==='file')this.original.add(m.id);this.ack(m,app);return this.readWindowFor(m,app,!!shot);},
-        findApp:async query=>{const control=this.desktop();if(!control.run)return 'Not available in this build.';try{const apps=(await control.run(`brain:${m.id}`,{action:'list_apps',query:query.slice(0,80)}))?.apps??[];return apps.length?JSON.stringify(apps.slice(0,10).map((a:any)=>({name:String(a.name).replace(/[\u200e\u200f]/g,''),running:a.running===true}))):`${query} is not installed on this Mac. Use its web version in the owner's browser if it has one.`;}catch(e){return `Refused: ${deviceRefusal(e)}`;}},
-        writeFile:(name,content)=>{this.ack(m,'Finder');return Promise.resolve(this.writeFileFor(name,content));},
-        openFile:(path,app)=>{this.ack(m,app??'Finder');return this.openFileFor(path,app);},
-        sendFile:path=>{this.ack(m,'Finder');return Promise.resolve(this.sendFileFor(m,path));},
+        findApp:async query=>{const control=this.desktop();if(!control.run)return 'Not available in this build.';try{const apps=(await control.run(`brain:${m.id}`,{action:'list_apps',query:query.slice(0,80)}))?.apps??[];return apps.length?JSON.stringify(apps.slice(0,10).map((a:any)=>({name:String(a.name).replace(/[\u200e\u200f]/g,''),running:a.running===true}))):`${query} is not installed on this ${computerName()}. Use its web version in the owner's browser if it has one.`;}catch(e){return `Refused: ${deviceRefusal(e)}`;}},
+        writeFile:(name,content)=>{this.ack(m,FILES_LABEL);return Promise.resolve(this.writeFileFor(name,content));},
+        openFile:(path,app)=>{this.ack(m,app??FILES_LABEL);return this.openFileFor(path,app);},
+        sendFile:path=>{this.ack(m,FILES_LABEL);return Promise.resolve(this.sendFileFor(m,path));},
         socialDrafts:()=>this.socialDraftsFor(),
         // Click, type and key presses inside the loop, so "send hi to Riya" can type, press return
         // and read the chat back. As a one-shot decision it typed "hi" and could not send it (live).
         act:async plan=>{
-          if(plan.action==='pick_file'){const asked=(plan.text||plan.name||'').trim(),path=this.ownerPath(asked);if(!path||!existsSync(path)){try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} pick_file refused path ${JSON.stringify(asked)} -> ${path}\n`);}catch{}return `Refused: no file at ${asked||'(no path given)'} in Downloads, Desktop, Documents, Pictures, Movies or Music. Put the full path in text, such as ~/Downloads/report.pdf.`;}plan={...plan,text:path,name:undefined};}
+          if(plan.action==='pick_file'){const asked=(plan.text||plan.name||'').trim(),path=this.ownerPath(asked);if(!path||!existsSync(path)){try{appendFileSync(join(stateDir,'logs','brain-act.log'),`${new Date().toISOString()} pick_file refused path ${JSON.stringify(asked)} -> ${path}\n`);}catch{}return `Refused: no file at ${asked||'(no path given)'} in ${ownerFolderList()}. Put the full path in text, such as ${process.platform==='win32'?'C:\\Users\\you\\Downloads\\report.pdf':'~/Downloads/report.pdf'}.`;}plan={...plan,text:path,name:undefined};}
           const browser=/\b(comet|chrome|edge|brave|safari|arc|firefox)\b/i.test(plan.app);
           if(browser&&!this.focused.has(m.id))return 'Refused: first call focus_tab (or open_page) for the tab you mean to work in, so the input reaches that page and not the owner\'s own tab.';
           if(browser&&plan.action==='type'&&!plan.name&&!plan.role&&!this.armed.has(m.id))return 'Refused: click where the text should go first (in a sheet: click the Name box, type the cell such as A1, press return), after the last tab switch or read. Keystrokes sent without that land nowhere.';
@@ -937,7 +931,10 @@ export class MetaBrain {
 export const TAB_COMMAND=/\b(close|open (?:a |the )?(?:new )?tabs?|new tab|go to|navigate|switch to)\b/i;
 
 /** How a reviewed tool's raw result becomes the owner's reply. Facts only come from the result. */
-export const DEVICE_ANSWER_PROMPT=`You are Atlas, the owner's companion on their Mac, replying in a phone chat. You get the owner's request and the raw result a reviewed tool read from one of their apps (or their browser tabs). Write the reply.
+/** What the brain calls the owner's file browser in its progress notes. */
+const FILES_LABEL=process.platform==='win32'?'your files':'Finder';
+
+export const DEVICE_ANSWER_PROMPT=`You are Atlas, the owner's companion on their ${computerName()}, replying in a phone chat. You get the owner's request and the raw result a reviewed tool read from one of their apps (or their browser tabs). Write the reply.
 - First line: the direct answer, with counts (for example "You have 7 notes; the newest is from today." or "12 tabs open in Comet across 2 windows.").
 - Then at most 8 short lines starting with "- ", the items that matter, newest or most relevant first. Summarise each in a few words; never paste long text. Collapse repeats ("5 near-identical test notes named x").
 - Dates short and human: "today 11:25", "yesterday", "Wed 2 Sep".

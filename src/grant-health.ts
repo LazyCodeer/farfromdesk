@@ -55,6 +55,8 @@ export function diagnoseGrant(signature:AppSignature|null,works:boolean|null,cap
   return {kind:stale?'stale':'unconfirmed',bundleId,app,summary,steps,resetServices:captureTrusted===true?['Accessibility']:['Accessibility','ScreenCapture']};
 }
 
+export const NO_RESET='There is no permission to reset on this computer: only macOS keeps a per-app grant that can go stale.';
+
 export class GrantHealth {
   private signature?:Promise<AppSignature|null>;
   private last:GrantDiagnosis|null=null;
@@ -69,6 +71,8 @@ export class GrantHealth {
   view(){return this.last;}
   /** Owner-initiated only: clears this app's own stale rows so macOS can ask again. */
   async reset(){
+    // Only macOS keeps per-app privacy grants that can go stale; Windows and Linux have none to clear.
+    if(this.platform!=='darwin')throw new Error(NO_RESET);
     const diagnosis=this.last;
     if(!diagnosis)throw new Error('Nothing to reset: FarFromDesk has no stale permission to clear.');
     for(const service of diagnosis.resetServices)await this.exec('/usr/bin/tccutil',['reset',service,diagnosis.bundleId]);

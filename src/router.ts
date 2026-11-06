@@ -36,6 +36,7 @@ import {GuidedModes} from './guided-modes.js';
 import {socialSpecialty} from './social-agent.js';
 import {prepareSpecialties,specialtyEpoch,specialtyIdentity,markPendingSpecialty,pendingSpecialty,hasPendingSpecialty,bindSessionSpecialty,hasSessionSpecialty,sessionSpecialty,specialtyNoticeDestination,type PendingSpecialty} from './session-specialty.js';
 import {prepareAttachmentTargetEpochs,attachmentTargetEpoch} from './attachment-target-epoch.js';
+import { computerName } from './platform.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -196,7 +197,7 @@ export class Router {
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>`Screen control could not start. Check FarFromDesk on your ${computerName()}.`);if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     let ownerReply=false;
     try {

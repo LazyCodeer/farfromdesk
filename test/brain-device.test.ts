@@ -117,7 +117,7 @@ test('a failed action reports a sentence and a code, never the driver raw', () =
   assert.equal(deviceFailureCode(new Error('ACCESSIBILITY_PERMISSION_REQUIRED: x')), 'permission_required');
   assert.equal(deviceFailureCode(new Error('who knows')), 'unknown');
   // No doubled full stop from a message that already ends in one.
-  assert.equal(deviceRefusal(new Error('DESKTOP_TARGET_STALE: Discover targets for this request again.')), 'I could not do that on your Mac: the helper could not complete it.');
+  assert.equal(deviceRefusal(new Error('DESKTOP_TARGET_STALE: Discover targets for this request again.'), 'darwin'), 'I could not do that on your Mac: the helper could not complete it.');
 });
 
 test('a device failure is recorded as a code, never as the driver words', () => {
