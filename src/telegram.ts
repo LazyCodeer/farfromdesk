@@ -1,4 +1,5 @@
 import {socialPreviewDeliveryState} from './social-preview.js';
+import {attachmentRefusal} from './attachment-errors.js';
 import { TELEGRAM_COMMANDS, telegramCommand } from './owner-commands.js';
 import { optionsMarkup } from './message-options.js';
 import { scheduleDeliveryState } from './schedules.js';
@@ -268,8 +269,7 @@ export class Telegram {
       this.store.db.prepare(`UPDATE ${table} SET status='processed' WHERE id=?`).run(incoming.id);
     }catch(e){
       if(!this.closed&&this.store.incomingOwnerCurrent()){
-        const review='Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.';
-        const message=e instanceof Error&&e.message===review?review:'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.';
+        const message=attachmentRefusal(e)??'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.';
         this.store.output(undefined,message,`telegram-media-error:${incoming.id}`,destination);this.store.remember(incoming.id);this.store.db.prepare(`UPDATE ${table} SET status='failed' WHERE id=?`).run(incoming.id);
       }
     }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare(`UPDATE ${table} SET status='interrupted' WHERE id=? AND status='processing'`).run(incoming.id);downloaded?.dispose();}
