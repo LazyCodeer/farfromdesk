@@ -212,7 +212,7 @@ export class Coordinator {
         const managed=!!b&&this.store.get(`execution-mode:${b.id}`)!=='desktop'&&(this.store.get(`managed-codex:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true'||this.store.get(`managed-worker:${b.id}`)==='true');
         if(managed&&!reviewAccounts)throw new Error('Review this existing CLI connection using Home → Connected sessions before reconnecting it. Its historical account is not verified.');
         if(b&&this.router.busy.has(b.id)&&reviewAccounts)throw new Error('This session is processing a request. Wait until it finishes.');
-        const next=await this.native.connections.prepare(s,s.executionMode??'cli',managed||portableAgents||(s.executionMode==='cli'&&(s.provider==='codex'||s.activation==='cli-resume')),s.accountScope);
+        const next=await this.native.connections.prepare(s,s.executionMode??'cli',managed||(portableAgents&&(s.executionMode??'cli')==='cli')||(s.executionMode==='cli'&&(s.provider==='codex'||s.activation==='cli-resume')),s.accountScope);
         const preference=JSON.parse(this.store.get(`platform-preference:${s.provider}`)??'null');
         if(next.transport==='managed-cli'&&preference?.executionMode==='cli'&&(preference.route?.accountKey!==next.accountKey||preference.route?.profileId!==next.profileId))throw new Error('Preferred CLI account changed. Review Coding platforms before connecting this session.');
         routes.set(targetOf(s),next);

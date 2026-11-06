@@ -15,6 +15,7 @@ import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-p
 import type { Binding, Provider, Store } from './store.js';
 import type { ExecutionMode } from './desktop-claude.js';
 import { codexProfileHome } from './codex-profile.js';
+import { claudeDesktopDataDir } from './desktop-apps.js';
 
 const exec=promisify(execFile);
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -26,7 +27,7 @@ export const usableCLIConnection = (connection: Pick<Connection,'state'>) => con
 export type SessionRoute={provider:Provider;executionMode:ExecutionMode;transport:'managed-cli'|'native-session';profileId:string;accountKey?:string;accountScope?:string;label:string};
 export function connectionProfile(provider:Provider,mode:ExecutionMode,env=process.env) {
   const home=homedir();
-  const root=mode==='desktop'&&provider==='claude'?join(home,'Library/Application Support/Claude'):
+  const root=mode==='desktop'&&provider==='claude'?claudeDesktopDataDir(home):
     provider==='codex'?codexProfileHome(env):provider==='muse'?museConfigDir(env):provider==='deepseek'?dshHome(env):provider==='cursor'?cursorDataDir(env):(env.CLAUDE_CONFIG_DIR??join(home,'.claude'));
   return `${provider}:${mode}:${digest(canonical(root)).slice(0,20)}`;
 }
