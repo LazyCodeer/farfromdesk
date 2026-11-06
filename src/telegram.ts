@@ -20,6 +20,8 @@ export const TELEGRAM_DOWNLOAD_BYTES=20_000_000, TELEGRAM_DOCUMENT_BYTES=50_000_
 const validId=(id:unknown):id is number=>Number.isSafeInteger(id)&&Number(id)>0;
 export const telegramDestination=(bot:number,user:number)=>`tg:${bot}:${user}`;
 export const telegramMessageId=(bot:number,chat:number,message:number)=>`tg:${bot}:${chat}:${message}`;
+/** Telegram videos often come without a file name; name them by their type. */
+const videoName=(mime:unknown)=>mime==='video/quicktime'?'video.mov':mime==='video/webm'?'video.webm':'video.mp4';
 export class TelegramError extends Error {
   constructor(public code:number,public retryAfter=0){super(code===401?'Telegram rejected this bot token. Get a valid token from BotFather.':code===409?'This bot is already receiving updates elsewhere. Use a dedicated bot for FarFromDesk.':code===429?'Telegram rate limit reached. Waiting before retrying.':code===403?'Telegram cannot send to this account. Unblock the bot in Telegram.':'Telegram could not complete the request. Check your connection and try again.');}
 }
@@ -190,7 +192,7 @@ export class Telegram {
     const m=update?.message;
     if(this.closed||!this.bot||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(m.from?.id)||m.from.is_bot||m.chat.id!==m.from.id||!validId(m.message_id))return;
     let text=typeof m.text==='string'?m.text:'';
-    const ownerIntent=!m.reply_to_message&&!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.quote&&!m.via_bot&&!m.document&&!m.photo;
+    const ownerIntent=!m.reply_to_message&&!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.quote&&!m.via_bot&&!m.document&&!m.photo&&!m.video;
     const ownerCommand=ownerIntent&&!m.voice;
     const id=telegramMessageId(this.bot.id,m.chat.id,m.message_id);
     if(this.store.seen(id))return;
@@ -216,7 +218,7 @@ export class Telegram {
     if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
     const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice,activityScope:{destination,owner:destination}};
     await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,async()=>{
-      const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
+      const file=m.voice??m.document??m.video??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
         const table=m.voice?'audio_inbox':'media_inbox';
         if(this.store.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(id))return;
@@ -226,7 +228,7 @@ export class Telegram {
         const controller=new AbortController();this.media.add(controller);
         void this.processMedia(m,incoming,file,destination,controller.signal).catch(()=>{}).finally(()=>this.media.delete(controller));return;
       }
-      if(!text){this.store.output(undefined,'Send text, a voice note, an image or a document to control your sessions.',`telegram-unsupported:${id}`,destination);this.store.remember(id);return;}
+      if(!text){this.store.output(undefined,'Send text, a voice note, an image, a video or a document to control your sessions.',`telegram-unsupported:${id}`,destination);this.store.remember(id);return;}
       // The typing indicator from the moment the message arrives, until the router is done with it,
       // so the owner sees at once that the request was picked up. Telegram clears it after 5 s, so
       // it is renewed; failures are ignored because it is only a hint.
@@ -261,11 +263,11 @@ export class Telegram {
         incoming={...incoming,text:typeof m.caption==='string'?m.caption:''};
       }
       const target=voice?undefined:this.router.attachmentTarget(incoming);
-      if(!voice)downloaded=await this.download(file,m.document?.file_name??'image.jpg',signal);
+      if(!voice)downloaded=await this.download(file,m.document?.file_name??(m.video?m.video.file_name??videoName(m.video.mime_type):'image.jpg'),signal);
       signal.throwIfAborted();
       if(this.closed||this.router.stopped||!this.store.incomingOwnerCurrent()||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner'))throw new Error('Connection changed. Resend from the intended chat.');
       if(voice)await this.router.receive(incoming);
-      else this.router.receiveAttachment(incoming,{kind:m.document?'document':'image',filename:downloaded!.filename,sha256:downloaded!.sha256,download:downloaded!},target!);
+      else this.router.receiveAttachment(incoming,{kind:m.document||m.video?'document':'image',filename:downloaded!.filename,sha256:downloaded!.sha256,download:downloaded!},target!);
       this.store.db.prepare(`UPDATE ${table} SET status='processed' WHERE id=?`).run(incoming.id);
     }catch(e){
       if(!this.closed&&this.store.incomingOwnerCurrent()){

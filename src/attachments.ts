@@ -15,7 +15,9 @@ const imageExtensions:Record<string,string>={'image/jpeg':'jpg','image/png':'png
 export function incomingMetadata(media:any,kind:AttachmentKind) {
   const mime=String(media?.mimetype??'').split(';')[0].trim().toLowerCase();
   if(kind==='image'&&!imageExtensions[mime])throw new Error('Unsupported image type. Send JPEG, PNG, WebP or GIF as a document.');
-  const filename=kind==='image'?`image.${imageExtensions[mime]}`:safeFilename(media?.fileName);
+  const videoExtensions:Record<string,string>={'video/mp4':'mp4','video/quicktime':'mov','video/webm':'webm','video/3gpp':'3gp'};
+  // A WhatsApp video arrives without a file name; name it by its type.
+  const filename=kind==='image'?`image.${imageExtensions[mime]}`:media?.fileName?safeFilename(media.fileName):videoExtensions[mime]?`video.${videoExtensions[mime]}`:safeFilename(media?.fileName);
   // An incoming image has already passed WhatsApp's per-type runtime gate.
   // Do not pretend the document ceiling or our model's image-input budget is its limit.
   const max=kind==='document'?MAX_FILE_BYTES:Number.MAX_SAFE_INTEGER,size=Number(media?.fileLength??0);

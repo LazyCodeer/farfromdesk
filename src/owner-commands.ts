@@ -1,7 +1,8 @@
 import { cursorRunning } from './cursor-paths.js';
 import { computerName } from './platform.js';
-import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { safeFilename } from './file-types.js';
 import { homedir } from 'node:os';
 import { createOptions, selectOption } from './message-options.js';
 import { hash, type Binding } from './store.js';
@@ -436,6 +437,36 @@ export function specialtyTarget(r:Router,m:Incoming):Binding {
   return session(r,{kind:'session',id:b.id,identity:identity(r,b)});
 }
 
+/** The tool (DeepSeek, Muse, Cursor) the owner's chat is pointed at, when a file arrives there. */
+export function ownerAttachmentTool(r:Router,m:Incoming):Tool|undefined {
+  if(!authenticatedOwner(r,m)||m.quotedId)return;
+  const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;
+  return target?.kind==='tool'?target.tool:undefined;
+}
+export function toolName(tool:Tool){return TOOL_NAMES[tool];}
+const TOOL_FILE_DAYS=7;
+/**
+ * Keeps a file for a tool run. The CLIs read files by path, so the file is copied out of the
+ * download scratch folder into the bridge's own state folder, where it stays for a week.
+ */
+export function keepToolAttachment(requestId:string,file:{filename:string;data?:Buffer;download?:{path:string}}):string {
+  const root=join(currentStateDir(),'tool-attachments');mkdirSync(root,{recursive:true});
+  for(const entry of readdirSync(root)){try{const at=join(root,entry);if(Date.now()-statSync(at).mtimeMs>TOOL_FILE_DAYS*86400000)rmSync(at,{recursive:true,force:true});}catch{}}
+  const dir=join(root,requestId.replace(/[^A-Za-z0-9_-]/g,'-'));mkdirSync(dir,{recursive:true});
+  const path=join(dir,safeFilename(file.filename));
+  if(file.download)copyFileSync(file.download.path,path);else writeFileSync(path,file.data!);
+  return path;
+}
+/** One tool turn about an attached file; the reply goes to the owner like a typed /deepseek. */
+export async function runToolAttachment(r:Router,m:Incoming,tool:Tool,caption:string,file:{kind:string;filename:string;path:string}) {
+  const what=file.kind==='image'?'an image':'a file';
+  // Starts with "[" so a caption such as "status" is never read as a /deepseek subcommand.
+  const prompt=`[FarFromDesk] The owner sent ${what} named ${file.filename}. It is saved at ${file.path}. Open it from that path to answer.
+
+${caption.trim()||'The owner sent no caption. Say what the file is and ask what they want done with it.'}`;
+  const reply=await runTool(r,m,tool,prompt);
+  r.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});
+}
 export function ownerAttachmentTarget(r:Router,m:Incoming):Binding|undefined {
   if(!authenticatedOwner(r,m)||m.quotedId)return;
   const target=JSON.parse(r.store.get(routeKey(r))??'null') as Target|null;

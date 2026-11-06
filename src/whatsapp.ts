@@ -235,7 +235,7 @@ export class WhatsApp {
     const group=m.key.remoteJid===destination&&destination?.endsWith('@g.us');
     if((!self&&!group)||this.store.seen(id)||this.receiving.has(id))return;
     const msg=normalizeMessageContent(m.message),audio=msg?.audioMessage;
-    const media=msg?.imageMessage??msg?.documentMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
+    const media=msg?.imageMessage??msg?.documentMessage??msg?.videoMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
     let text=msg?.conversation??msg?.extendedTextMessage?.text;
     if(!text&&!audio&&!media&&!msg?.pollUpdateMessage)return;
     // With a group selected, the self chat only accepts the /self escape back to it.

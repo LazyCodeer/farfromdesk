@@ -2,7 +2,7 @@ import {prepareSocialPreviews,queueSocialPreviews, withoutPreviewCaptions} from 
 import {asksForSocialCreation} from './social-intent.js';
 import {requestedSocialImageProvider} from './social-image-provider.js';
 import { DesktopReadinessError } from './session-activation.js';
-import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected, toolSelected } from './owner-commands.js';
+import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, ownerAttachmentTool, keepToolAttachment, runToolAttachment, toolName, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected, toolSelected } from './owner-commands.js';
 import { selectOption, previewOption, parseMessageOptions, createOptions, markActionOption, optionAction } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { MetaModel } from './meta-model.js';
@@ -104,12 +104,20 @@ export class Router {
     } else if(m.quotedId) {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
       this.checkQuotedPlatform(text,b);
-    } else b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
+    } else {
+      const tool=ownerAttachmentTool(this,m);
+      if(tool){
+        if(this.schedules.isScheduleLike(text))throw new Error('Send schedules as a new text message in your own chat. Attachments cannot schedule or immediately send future actions.');
+        if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
+        return {tool,binding:undefined as unknown as Binding,text,identity:JSON.stringify(['tool',tool,this.store.get(`owner-target:${this.store.destination()}`),this.store.ownerFor(this.store.destination()),this.store.get('incoming-owner-generation')])};
+      }
+      b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
+    }
     if(this.schedules.isScheduleLike(text))throw new Error('Send schedules as a new text message in your own chat. Attachments cannot schedule or immediately send future actions.');
     if(!b)throw new Error('Choose an exact session before sending an attachment.');
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
-    return {binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
+    return {tool:undefined as undefined|ReturnType<typeof ownerAttachmentTool>,binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
       identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,b.provider,b.mode,this.store.get(`execution-mode:${b.id}`),this.store.get(`session-route:${b.id}`),this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel(),this.store.get('incoming-owner-generation'),this.store.get(`owner-target:${this.store.destination()}`),attachmentTargetEpoch(this.store,b.id),...(selectedRoute?[specialtyEpoch(this.store)]:[])])};
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
@@ -117,6 +125,16 @@ export class Router {
     // Attachment captions use a separate synchronous path; do not let them bypass task review.
     if(this.contracts.enabled()&&m.text.trim())throw new Error('Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.');
     if(this.attachmentTarget(m).identity!==target.identity)throw new Error('The intended session changed during download. Please resend to the intended session.');
+    if(target.tool){
+      const tool=target.tool,path=keepToolAttachment(m.id,file);
+      this.store.remember(m.id);this.store.db.prepare("UPDATE media_inbox SET status='processed' WHERE id=?").run(m.id);
+      const destination=this.store.destination();
+      if(destination)this.store.output(undefined,`File received. I’m passing it to ${toolName(tool)}.`,`tool-attachment:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
+      void runToolAttachment(this,m,tool,m.text,{kind:file.kind,filename:file.filename,path}).catch(e=>{
+        this.store.output(undefined,`${toolName(tool)} could not finish with that file: ${String((e as Error)?.message??e).slice(0,300)}`,`command:${m.id}`,undefined,{plain:true});
+      });
+      return;
+    }
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
       if(this.store.job(m.id))throw new Error('This attachment request already exists. Check its status before resending.');
