@@ -191,6 +191,13 @@ export class DesktopControl {
    * forever, because nothing else ever asks. Never probes while an action is in
    * flight, so this can never interleave with real work.
    */
+  /** The whole screen (every monitor) as a PNG, for the owner's own chat. Windows and Linux. */
+  async captureScreen(signal?:AbortSignal):Promise<{pngBase64:string;width:number;height:number}>{
+    if(this.platform==='darwin')throw new Error('DESKTOP_PLATFORM_UNSUPPORTED: Use read_window with screenshot:true on a Mac.');
+    const r=await this.portable.call('screenshot',{},signal);
+    if(typeof r?.pngBase64!=='string'||!r.pngBase64)throw new Error('SCREENSHOT_FAILED: The screen could not be captured.');
+    return {pngBase64:r.pngBase64,width:Number(r.width)||0,height:Number(r.height)||0};
+  }
   async permissionReport(maxAgeMs=0){
     if(maxAgeMs>0&&this.permission&&this.now()-this.permission.checkedAt<maxAgeMs)return this.permission;
     if(this.pending)return this.permission;

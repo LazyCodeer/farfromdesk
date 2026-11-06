@@ -480,11 +480,16 @@ export class Store {
   outputBrainPhoto(requestId:string,png:Buffer,caption:string) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
     if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    return this.outputOwnerPhoto(requestId,task.destination,png,caption);
+  }
+  /** A screenshot for the owner's own chat, answering one of their recorded requests (brain or coordinator). */
+  outputOwnerPhoto(requestId:string,destination:string|null,png:Buffer,caption:string) {
+    if(!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
     if(!png.length||png.length>10_000_000)return false;
     const sha=createHash('sha256').update(png).digest('hex'),source=`brain-photo:${requestId}:${sha.slice(0,16)}`;
     mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
     const path=join(this.mediaDir,`${sha}.png`);writeFileSync(path,png,{mode:0o600});
-    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||'Screenshot',source,task.destination);
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||'Screenshot',source,destination);
     if(!queued)return false;
     const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
     if(!row)return false;

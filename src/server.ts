@@ -353,6 +353,20 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
             store.set(counter,String(sent+1));store.audit('desktop-control-action',binding.id,'send_file');
             json(res,200,{ok:true,queued:file.name,bytes:file.size,next:'The file is on its way to the owner chat. Say in your reply that it follows; do not say you cannot attach files.'});return;
           }
+          // The whole screen as a photo in the owner chat. Window screenshots were only prepared for
+          // the coordinator's own look, so it told the owner it could not (Windows test, 6 Nov 2026).
+          if(input.action==='send_screenshot'){
+            const parent=router.coordinator!.ownerRequest(requestId);
+            const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen('read_window');if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');
+            if(!store.ownerInputId(requestId)){json(res,200,{ok:false,error:'Screenshots can only answer a message the owner sent.'});return;}
+            const counter=`master-shots:${requestId}`,taken=Number(store.get(counter)??0);
+            if(taken>=3){json(res,200,{ok:false,error:'At most three screenshots per request.'});return;}
+            const shot=await desktopControl.captureScreen();
+            const caption=typeof input.caption==='string'&&input.caption.trim()?input.caption:'Your screen';
+            if(!store.outputOwnerPhoto(requestId,parent.destination??store.get('whatsapp-owner')??null,Buffer.from(shot.pngBase64,'base64'),caption)){json(res,200,{ok:false,error:'The screenshot is too large or could not be queued.'});return;}
+            store.set(counter,String(taken+1));store.audit('desktop-control-action',binding.id,'send_screenshot');
+            json(res,200,{ok:true,queued:'screenshot',width:shot.width,height:shot.height,next:'The screenshot is on its way to the owner chat. Say in your reply that it follows.'});return;
+          }
           if(input.action==='status'){syncMacPermission(await macControl.status());router.coordinator!.ownerRequest(requestId);}
           if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{

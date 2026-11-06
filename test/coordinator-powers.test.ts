@@ -24,7 +24,7 @@ test('persistent sessions are told once when the role changes; Telegram button t
 test('the coordinator can send the owner a file from their folders, under the same limits as the brain',()=>{
   const channel=readFileSync(new URL('../src/master-channel.ts',import.meta.url),'utf8');
   const server=readFileSync(new URL('../src/server.ts',import.meta.url),'utf8');
-  assert.match(channel,/enum:\[\.\.\.desktopActions,'send_file'\]/);
+  assert.match(channel,/enum:\[\.\.\.desktopActions,'send_file'/);
   assert.match(channel,/Never say you cannot attach or send files/);
   const route=server.slice(server.indexOf("path==='/api/master/desktop-control'"));
   const handler=route.slice(route.indexOf("input.action==='send_file'"),route.indexOf("if(input.action==='status')"));
@@ -33,4 +33,16 @@ test('the coordinator can send the owner a file from their folders, under the sa
   assert.match(handler,/ownerFileToSend\(/);
   assert.match(handler,/sent>=5/);
   assert.match(handler,/outputOwnerFile\(requestId,parent\.destination/);
+});
+
+test('the coordinator can send the owner a picture of their whole screen',()=>{
+  const channel=readFileSync(new URL('../src/master-channel.ts',import.meta.url),'utf8');
+  const server=readFileSync(new URL('../src/server.ts',import.meta.url),'utf8');
+  assert.match(channel,/'send_screenshot'\]/);
+  const route=server.slice(server.indexOf("path==='/api/master/desktop-control'"));
+  const handler=route.slice(route.indexOf("input.action==='send_screenshot'"),route.indexOf("if(input.action==='status')"));
+  assert.match(handler,/requireUnlockedScreen/);
+  assert.match(handler,/taken>=3/);
+  assert.match(handler,/captureScreen\(\)/);
+  assert.match(handler,/outputOwnerPhoto\(requestId,parent\.destination/);
 });
