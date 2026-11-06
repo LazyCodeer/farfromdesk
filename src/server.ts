@@ -333,6 +333,17 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
             store.db.exec('RELEASE scoped_item_add');json(res,200,result);return;
           }catch(e){store.db.exec('ROLLBACK TO scoped_item_add; RELEASE scoped_item_add');throw e;}
         }
+        // Coordinator reminders go through the bridge scheduler like the brain's. Left to itself the
+        // coordinator set a timer inside its own Claude session, which never fired (Windows test,
+        // 6 Nov 2026).
+        if(path==='/api/master/reminder'&&req.method==='POST') {
+          const {requestId,...input}=await body(req);
+          router.coordinator!.ownerRequest(requestId);
+          if(!store.ownerInputId(requestId)){json(res,200,{ok:false,error:'Reminders can only answer a message the owner sent.'});return;}
+          const reply=input.action==='list'?router.schedules.brainList():input.action==='cancel'?router.schedules.brainCancel(String(input.id??'')):input.action==='create'?router.schedules.brainCreate(router,{id:requestId} as any,{text:String(input.text??''),at:String(input.at??''),repeat:typeof input.repeat==='string'?input.repeat:undefined}):'Unknown action. Use create, list or cancel.';
+          store.audit('master-reminder',binding.id,String(input.action));
+          json(res,200,{ok:true,reply});return;
+        }
         if(path==='/api/master/desktop-control'&&req.method==='POST') {
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);

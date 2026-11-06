@@ -46,7 +46,7 @@ import { computerName } from './platform.js';
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
 /** The coordinator's own bridge tools: pre-allowed on the CLI route (--allowedTools) and the SDK route alike. */
-export const coordinatorBridgeTools=['session_research','master_reach','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`);
+export const coordinatorBridgeTools=['session_research','master_reach','master_reminder','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`);
 // Muse has one connection kind and no app, so a requested Desktop mode is refused rather than coerced.
 const masterMode=(provider:Provider,value:unknown):ExecutionMode=>{
   if(provider==='muse'){if(value!==undefined&&value!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');return 'cli';}

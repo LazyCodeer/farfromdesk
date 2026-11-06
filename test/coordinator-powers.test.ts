@@ -46,3 +46,18 @@ test('the coordinator can send the owner a picture of their whole screen',()=>{
   assert.match(handler,/captureScreen\(\)/);
   assert.match(handler,/outputOwnerPhoto\(requestId,parent\.destination/);
 });
+
+test('coordinator reminders go through the bridge scheduler, not a timer in its own session',()=>{
+  const channel=readFileSync(new URL('../src/master-channel.ts',import.meta.url),'utf8');
+  const server=readFileSync(new URL('../src/server.ts',import.meta.url),'utf8');
+  const policy=readFileSync(new URL('../src/master-policy.ts',import.meta.url),'utf8');
+  const masters=readFileSync(new URL('../src/masters.ts',import.meta.url),'utf8');
+  assert.match(channel,/name:'master_reminder'/);
+  assert.match(channel,/name==='master_reminder'\?'\/api\/master\/reminder'/);
+  assert.match(masters,/coordinatorBridgeTools=\[[^\]]*'master_reminder'/);
+  const route=server.slice(server.indexOf("path==='/api/master/reminder'"),server.indexOf("path==='/api/master/desktop-control'"));
+  assert.match(route,/ownerRequest\(requestId\)/);
+  assert.match(route,/ownerInputId\(requestId\)/);
+  assert.match(route,/schedules\.brainCreate\(/);
+  assert.match(policy,/master_reminder action create/);
+});
