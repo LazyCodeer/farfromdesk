@@ -44,6 +44,8 @@ export class Telegram {
   private flushing=false; private configuring=false; private generation=0;
   private media=new Set<AbortController>();
   private receiving=0;
+  /** True while the FarFromDesk cloud owns the bot through its webhook; polling waits. */
+  paused=false; cloudBase?:string;
   hasPendingIngress(){return this.receiving>0||this.media.size>0;}
   readonly artifacts:Artifacts;
   transcribe=transcribeAudio;
@@ -103,7 +105,9 @@ export class Telegram {
       if(!token||!/^\d{5,20}:[A-Za-z0-9_-]{30,80}$/.test(token))throw new Error('Paste a valid Telegram bot token from BotFather.');
       const bot=await this.call('getMe',{},undefined,token),hook=await this.call('getWebhookInfo',{},undefined,token);
       if(!validId(bot?.id)||bot.is_bot!==true||typeof bot.username!=='string'||!/^\w{5,32}$/.test(bot.username))throw new Error('Telegram returned an invalid bot identity.');
-      if(hook?.url)throw new Error('This bot has a webhook configured. Use a dedicated bot for FarFromDesk.');
+      const cloudHook=!!this.cloudBase&&typeof hook?.url==='string'&&hook.url.startsWith(`${this.cloudBase}/tg/`);
+      if(hook?.url&&!cloudHook)throw new Error('This bot has a webhook configured. Use a dedicated bot for FarFromDesk.');
+      this.paused=cloudHook;
       const old=this.store.get('telegram-bot-id');if(old&&old!==String(bot.id))throw new Error('Disconnect the existing bot before choosing another bot.');
       if(generation!==this.generation)return;
       this.saveToken(token);this.token=token;this.bot={id:bot.id,username:bot.username};
@@ -157,6 +161,7 @@ export class Telegram {
   private async poll(signal:AbortSignal) {
     let failures=0;
     while(!signal.aborted&&!this.closed) {
+      if(this.paused){await delay(5000,undefined,{signal}).catch(()=>{});continue;}
       try {
         const key=`telegram-offset:${this.bot!.id}`,offset=Number(this.store.get(key)??0);
         const updates=await this.call('getUpdates',{offset,timeout:25,limit:20,allowed_updates:['message','callback_query']},signal);
@@ -165,10 +170,22 @@ export class Telegram {
         for(const update of updates){if(signal.aborted||this.closed)return;if(!Number.isSafeInteger(update.update_id)||update.update_id<offset)continue;await this.receive(update);this.store.set(key,String(update.update_id+1));}
         failures=0;this.error=undefined;if(this.store.get('telegram-owner'))this.status='connected';
       }catch(e){if(signal.aborted||this.closed)return;this.error=e instanceof TelegramError?e.message:'Telegram update processing failed. Check Activity.';
+        // The cloud took the bot while this laptop slept. The next cloud heartbeat hands it back.
+        if(e instanceof TelegramError&&e.code===409&&this.cloudBase&&this.store.get('cloud-account')){this.paused=true;continue;}
         if(e instanceof TelegramError&&[401,409].includes(e.code)){this.close();this.status='disconnected';return;}
         await delay(e instanceof TelegramError&&e.code===429?e.retryAfter*1000:Math.min(30000,1000*2**Math.min(++failures,5)),undefined,{signal}).catch(()=>{});
       }
     }
+  }
+  cloudIdentity() {
+    const owner=Number(this.store.get('telegram-user-id'));
+    return this.token&&this.bot&&validId(owner)?{botToken:this.token,ownerChatId:owner}:undefined;
+  }
+  /** Runs a message the cloud saved while this laptop slept, as the owner's original Telegram message. */
+  replay(q:{messageId:number;at:number;text:string}) {
+    const owner=Number(this.store.get('telegram-user-id'));
+    if(!validId(owner)||!validId(q.messageId)||typeof q.text!=='string')return Promise.resolve();
+    return this.receive({message:{message_id:q.messageId,date:Math.floor(q.at/1000),chat:{id:owner,type:'private'},from:{id:owner,is_bot:false},text:q.text}});
   }
   async receive(update:any) {
     this.receiving++;

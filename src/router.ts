@@ -59,6 +59,7 @@ export class Router {
   coordinator?:Coordinator;
   /** Server mode's low battery answer, set by main. */
   serverMode?:{setLowBatteryOk(ok:boolean):Promise<string>};
+  cloud?:{command(on:boolean):Promise<string>;forward?(name:string,text:string,messageId:number):Promise<string>;laptopList?():string;relay?():Promise<{urls:string[];username?:string;credential?:string}[]>;reminder?(occurrence:string,dueAt:number):'send'|'hold'|'fired';backupView?():unknown;enableBackup?(passphrase:unknown):unknown;disableBackup?():unknown;restoreBackup?(passphrase:unknown,code?:unknown):Promise<unknown>;authenticator?(action:unknown,code?:unknown):Promise<unknown>};
   brain:MetaBrain;
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
@@ -313,6 +314,19 @@ export class Router {
       if(this.serverMode&&authenticatedOwner(this,m)&&!m.quotedId&&m.ownerCommand===true&&/^\/(?:keepawake|letsleep)\s*$/i.test(text)){
         const message=await this.serverMode.setLowBatteryOk(/keepawake/i.test(text));
         this.store.output(undefined,message,`power:${m.id}`,undefined,{plain:true});this.store.remember(m.id);
+        return {status:'handled',requestId:m.id};
+      }
+      // /laptops lists the laptops on this bot; /on <name> <text> sends text to one of them.
+      const onLaptop=/^\/on\s+(\S+)\s+([\s\S]+)$/i.exec(text.trim());
+      if(this.cloud?.forward&&authenticatedOwner(this,m)&&!m.quotedId&&m.ownerCommand===true&&(onLaptop||/^\/laptops\s*$/i.test(text))){
+        const message=onLaptop?await this.cloud.forward(onLaptop[1],onLaptop[2].trim(),Number(m.id.split(':').at(-1))||0):this.cloud.laptopList!();
+        this.store.output(undefined,message,`laptops:${m.id}`,undefined,{plain:true});this.store.remember(m.id);
+        return {status:'handled',requestId:m.id};
+      }
+      // /cloud hands this bot to the FarFromDesk cloud; /laptop takes it back.
+      if(this.cloud&&authenticatedOwner(this,m)&&!m.quotedId&&m.ownerCommand===true&&/^\/(?:cloud|laptop)\s*$/i.test(text)){
+        const message=await this.cloud.command(/cloud/i.test(text));
+        this.store.output(undefined,message,`cloud:${m.id}`,undefined,{plain:true});this.store.remember(m.id);
         return {status:'handled',requestId:m.id};
       }
       // Never reinterpret a pending contract answer as a new mode selection.

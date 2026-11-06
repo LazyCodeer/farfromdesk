@@ -7,6 +7,7 @@ import {hash,type Binding,type Store} from './store.js';
 import type {Incoming,Router} from './router.js';
 import type {ContractSchedule} from './task-contracts.js';
 import {metaObserver} from './meta-timeline.js';
+import {afterQuiet,readPriorities,statedUrgent} from './priorities.js';
 
 type Action='message'|'brief'|'session';
 type Row={id:string;owner:string;destination:string;channel:string;action:Action;text:string;binding_id:string|null;binding_identity:string|null;date:string;time:string;zone:string;repeat:Recurrence;next_at:number;status:string;created_at:number};
@@ -386,6 +387,19 @@ export class Schedules {
     this.store.db.prepare('UPDATE schedules SET status=?,next_at=? WHERE id=?').run(next===undefined?'done':'active',next??row.next_at,row.id);
     if(row.action==='session')this.store.db.prepare('UPDATE task_contract_schedules SET expected_next=? WHERE schedule_id=?').run(next??row.next_at,row.id);
   }
+  /** Plain reminders due in the next two days, so the cloud can send them while this laptop sleeps. */
+  upcoming(channel:string,horizonMs=48*3600_000):{id:string;at:number;text:string}[] {
+    const now=this.now(),until=now+horizonMs,out:{id:string;at:number;text:string}[]=[];
+    const rows=this.store.db.prepare("SELECT * FROM schedules WHERE status='active' AND action='message' AND channel=? AND next_at<=? ORDER BY next_at,id LIMIT 200").all(channel,until) as Row[];
+    const p=readPriorities(this.secret.root);
+    for(const row of rows){
+      for(let at:number|undefined=row.next_at,n=0;at!==undefined&&at<=until&&n<10;n++){
+        out.push({id:`schedule:${row.id}:${at}`,at:statedUrgent(row.text)?at:afterQuiet(p,at,row.zone),text:row.text});
+        at=row.repeat==='once'?undefined:nextOccurrence(localDate(at,row.zone),row.time,row.zone,row.repeat,at);
+      }
+    }
+    return out.slice(0,200);
+  }
   /** Serialize due claims. Occurrence + outbox/job are one transaction; uncertain network sends are never assumed delivered. */
   async tick(router:Router):Promise<void> {
     if(this.ticking||router.stopped)return;this.ticking=true;
@@ -427,8 +441,15 @@ export class Schedules {
           }
           const binding=row.action==='session'?sessionAvailable(router,row):undefined;
           if(row.action==='session'&&!binding){this.store.db.prepare("UPDATE schedules SET status='invalid' WHERE id=?").run(row.id);this.store.output(undefined,'A scheduled request was not sent because its session or Brain permissions changed.',`${occurrence}:unavailable`,row.destination,{plain:true});const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${occurrence}:unavailable:0`) as {id:string}|undefined;if(out)this.store.db.prepare('INSERT OR IGNORE INTO schedule_outbox VALUES(?,?,?,?,?)').run(out.id,occurrence,row.owner,row.destination,row.channel);this.store.db.exec('RELEASE schedule_fire');continue;}
-          this.store.db.prepare('INSERT OR IGNORE INTO schedule_occurrences VALUES(?,?,?,?,?,?,?)').run(occurrence,row.id,row.owner,row.destination,row.channel,row.next_at,'queued');
-          if(row.action==='message'){
+          // While the cloud holds the bot it sends plain reminders; skip the ones it sent, wait while unsure.
+          // Non-urgent reminders wait out the owner's quiet hours (memory/priorities.md).
+          const due=row.action==='message'&&!statedUrgent(row.text)?afterQuiet(readPriorities(this.secret.root),row.next_at,row.zone):row.next_at;
+          if(due>now){this.store.db.exec('RELEASE schedule_fire');continue;}
+          const cloud=row.action==='message'?router.cloud?.reminder?.(occurrence,due)??'send':'send';
+          if(cloud==='hold'){this.store.db.exec('RELEASE schedule_fire');continue;}
+          this.store.db.prepare('INSERT OR IGNORE INTO schedule_occurrences VALUES(?,?,?,?,?,?,?)').run(occurrence,row.id,row.owner,row.destination,row.channel,row.next_at,cloud==='fired'?'cloud':'queued');
+          if(cloud==='fired'){}
+          else if(row.action==='message'){
             this.store.output(undefined,`Reminder: ${row.text}`,occurrence,row.destination,{plain:true});
             const out=this.store.db.prepare('SELECT id FROM outbox WHERE source=?').get(`${occurrence}:0`) as {id:string}|undefined;
             if(!out)throw new Error('Reminder could not be queued.');
