@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { windowsBrowserNative } from './browser-windows.js';
 
 export const browserInput=z.object({
   action:z.enum(['discover','select','read','scroll','follow']),
@@ -46,10 +47,18 @@ function publicUrl(value:string){try{const u=webUrl(value);u.search='';u.hash=''
 export class BrowserTabs {
   private refs=new Map<string,Ref>();
   private busy=false;
-  constructor(private native:BrowserNative=browserNative,private platform=process.platform,private now=Date.now){}
+  private native:BrowserNative;
+  /**
+   * `enabled` is the Remote control switch. Windows asks for no permission to read a browser
+   * the way macOS Automation does, so on Windows the owner's switch is the opt-in.
+   */
+  constructor(native?:BrowserNative,private platform=process.platform,private now=Date.now,private enabled:()=>boolean=()=>true){
+    this.native=native??(platform==='win32'?windowsBrowserNative():browserNative);
+  }
   async run(scope:string,raw:unknown) {
     const q=browserInput.parse(raw);
-    if(this.platform!=='darwin')throw new Error('Existing-tab browser control is currently available on macOS only.');
+    if(this.platform!=='darwin'&&this.platform!=='win32')throw new Error('Existing-tab browser control is available on macOS and Windows only.');
+    if(this.platform==='win32'&&!this.enabled())throw new Error('MAC_CONTROL_DISABLED: Turn on Remote control in Settings, then try again.');
     if(this.busy)throw new Error('Another browser operation is in progress. Wait for its result.');
     this.busy=true;
     try {
@@ -69,7 +78,10 @@ export class BrowserTabs {
           if(!browser.supported){results.push({browser:browser.name,supported:false,error:'This browser has no supported existing-tab adapter yet.',tabs:[]});continue;}
           try {
             const tabs=await this.native({action:'tabs',browser:browser.id,pid:browser.pid}) as Tab[];
-            const matching=tabs.filter(t=>publicUrl(t.url)&&(!pageQuery||(`${t.title} ${publicUrl(t.url)}`).toLowerCase().includes(pageQuery.toLowerCase())));
+            // Windows knows the address of the selected tab in each window only; the others are
+            // listed by title with url null, and their address is checked once selected.
+            const listable=(t:Tab)=>publicUrl(t.url)||(this.platform==='win32'&&!t.url);
+            const matching=tabs.filter(t=>listable(t)&&(!pageQuery||(`${t.title} ${publicUrl(t.url)??''}`).toLowerCase().includes(pageQuery.toLowerCase())));
             const matches=matching.slice(0,100);
             const listed=matches.map(tab=>{
               while(this.refs.size>=1000)this.refs.delete(this.refs.keys().next().value!);
@@ -80,14 +92,20 @@ export class BrowserTabs {
           } catch(e){results.push({browser:browser.name,supported:true,tabs:[],error:(e as Error).message});}
         }
         const count=results.reduce((n,b)=>n+b.tabs.length,0);
-        return {browsers:results,matches:count,ambiguous:count>1,next:count>1?'Ask the owner to choose the exact page when the task does not distinguish these tabs.':count?'Select the returned tabRef before inspecting it.':'No matching tabs were returned. Check browser errors and filters; do not guess a target.',evidence:'Supported HTTP(S) tab titles and URLs only. Errors or truncation mean the inventory is incomplete. Page contents have not been read.'};
+        return {browsers:results,matches:count,ambiguous:count>1,next:count>1?'Ask the owner to choose the exact page when the task does not distinguish these tabs.':count?'Select the returned tabRef before inspecting it.':'No matching tabs were returned. Check browser errors and filters; do not guess a target.',evidence:(this.platform==='win32'?'On Windows only the selected tab of each window shows its URL; the others have url null until selected. ':'')+'Supported HTTP(S) tab titles and URLs only. Errors or truncation mean the inventory is incomplete. Page contents have not been read.'};
       }
       if(q.query||q.browser)throw new Error('Use browser and query filters only for discovery.');
       const ref=q.tabRef?this.refs.get(q.tabRef):undefined;
       if(!ref||ref.scope!==scope)throw new Error('TAB_STALE: Discover tabs for this exact request first.');
       const target={browser:ref.browser.id,pid:ref.browser.pid,windowId:ref.tab.windowId,tabId:ref.tab.tabId,expectedUrl:ref.tab.url};
       if(q.action==='select') {
-        await this.native({...target,action:'select'});ref.selected=true;ref.snapshot=undefined;
+        const result=await this.native({...target,action:'select'});
+        // Windows reports the address once the tab is selected; macOS already knew it.
+        if(typeof result?.url==='string'&&result.url!==ref.tab.url){
+          if(!publicUrl(result.url)){this.refs.delete(q.tabRef!);throw new Error('Only ordinary HTTP(S) pages are supported. That tab shows another kind of page.');}
+          ref.tab={...ref.tab,url:result.url};
+        }
+        ref.selected=true;ref.snapshot=undefined;
         return {selected:true,tabRef:q.tabRef,title:ref.tab.title,url:publicUrl(ref.tab.url),pageRead:false};
       }
       if(!ref.selected)throw new Error('Select the exact tab before reading or interacting.');

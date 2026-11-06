@@ -29,7 +29,8 @@ export function portableLimits(platform:NodeJS.Platform,env:NodeJS.ProcessEnv=pr
   if(platform==='win32')return [
     'Windows does not let FarFromDesk drive apps running as administrator.',
     'Store (packaged) apps may publish few controls to UI Automation.',
-    'Browser tabs, app tools and pixel clicks are macOS only for now.',
+    'Browser tabs work in Chrome, Edge, Brave and Comet. Only the selected tab in each window shows its address, and an open tab cannot be sent to a new address (a new tab can). Firefox tabs are not supported.',
+    'App tools and pixel clicks are macOS only for now.',
   ];
   if(platform!=='linux')return [];
   const wayland=env.XDG_SESSION_TYPE==='wayland'||(!!env.WAYLAND_DISPLAY&&!env.DISPLAY);

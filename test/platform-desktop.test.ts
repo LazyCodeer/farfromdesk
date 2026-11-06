@@ -52,8 +52,11 @@ test('Windows and Linux report support and their limits honestly, Wayland includ
     assert.equal(view.supported, true);
     assert.equal(view.driverVersion, null, 'the macOS driver is not what runs here');
     assert.ok(view.limits.some(l => /macOS only/.test(l)));
-    assert.deepEqual([...view.actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'stop']);
+    // Windows also reads the owner's open Chromium tabs (browser-windows.ts).
+    assert.deepEqual([...view.actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'stop',
+      ...(platform === 'win32' ? ['list_browsers', 'list_tabs', 'new_tab', 'focus_tab', 'close_tab', 'read_tab'] : [])]);
   }
+  assert.ok(portableLimits('win32').some(l => /Browser tabs work in Chrome, Edge, Brave and Comet/.test(l)));
   assert.ok(portableLimits('win32').some(l => /administrator/.test(l)));
   assert.ok(portableLimits('linux', { XDG_SESSION_TYPE: 'wayland' }).some(l => /Wayland/.test(l)));
   assert.ok(!portableLimits('linux', { DISPLAY: ':0' }).some(l => /Wayland/.test(l)));

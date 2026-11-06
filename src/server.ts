@@ -92,7 +92,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     return savedMode&&routeMode&&savedMode!==routeMode?null:savedMode??routeMode??null;
   };
   let voiceSettingsRevision=0;
-  const browser=services?.browser??new BrowserTabs();
+  // On Windows the Remote control switch gates browser reads; macOS has its Automation prompt.
+  const browser=services?.browser??new BrowserTabs(undefined,undefined,undefined,()=>desktopControl.view().enabled);
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
   const grantHealth=services?.grantHealth??new GrantHealth(store);

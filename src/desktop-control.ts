@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { EmbeddedDesktopDriver,type DesktopDriver } from './desktop-driver.js';
 import { PortableDesktop,portableLimits,type PortableWindow } from './desktop-portable.js';
+import { windowsBrowsers,windowsDesktopBrowser } from './browser-windows.js';
 import { allPackTools, toolByName } from './app-tools/packs.js';
 import { shortlistTools } from './app-tools/retrieve.js';
 import type { AppTool, AppToolPlan } from './app-tools/types.js';
@@ -124,6 +125,8 @@ const fields:Record<Input['action'],string[]>={
 /** Coordinate-addressed actions: they work where the accessibility tree is empty. */
 /** What Windows and Linux answer today; the rest is refused by name. */
 const portableActions=['status','check_permissions','list_apps','list_windows','read_window','stop'] as const;
+/** The owner's open Chromium tabs on Windows, over UI Automation (browser-windows.ts). navigate_tab is refused by name. */
+const windowsBrowserActions=['list_browsers','list_tabs','new_tab','focus_tab','close_tab','read_tab'] as const;
 const POINT_ACTIONS=new Set(['click','double_click','right_click','drag','scroll']);
 const defaultDelivery=(mode:'background'|'foreground'|undefined)=>mode??'background';
 
@@ -152,12 +155,14 @@ export class DesktopControl {
   private capability:{ok:boolean;detail:string|null;checkedAt:number}|null=null;
   private capabilityPending?:Promise<{ok:boolean;detail:string|null}>;
   private targetCache?:{value:{name:string;bundleId:string;windows:string[]}[];checkedAt:number};
-  constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now,private activate:Activator=(app,bundleId)=>execute('/usr/bin/open',bundleId?['-b',bundleId]:['-a',app],{timeout:5000}),private exec:Executor=execute,private portable:PortableDesktop=new PortableDesktop(platform)){}
+  constructor(private prefs:Prefs,private driver:DesktopDriver=new EmbeddedDesktopDriver(),private browser:BrowserCall=browserCall,private platform=process.platform,private now=Date.now,private activate:Activator=(app,bundleId)=>execute('/usr/bin/open',bundleId?['-b',bundleId]:['-a',app],{timeout:5000}),private exec:Executor=execute,private portable:PortableDesktop=new PortableDesktop(platform)){
+    if(platform==='win32'&&browser===browserCall)this.browser=windowsDesktopBrowser();
+  }
   view(){
     const mac=this.platform==='darwin';
     return {supported:mac||this.portable.available,enabled:this.prefs.get('mac-control-enabled')==='true',driverVersion:mac?'0.38.0':null,backend:mac?'cua-driver':this.portable.backend,
       // Off macOS only the owner-brain vocabulary is wired: list, read, click, type, key and screenshot.
-      limits:portableLimits(this.platform),browserAdapters:mac?Object.keys(desktopBrowsers):[],actions:mac?desktopActions:portableActions,permission:this.permission,capability:this.capability};
+      limits:portableLimits(this.platform),browserAdapters:mac?Object.keys(desktopBrowsers):this.platform==='win32'?Object.keys(windowsBrowsers):[],actions:mac?desktopActions:this.platform==='win32'?[...portableActions,...windowsBrowserActions]:portableActions,permission:this.permission,capability:this.capability};
   }
   /**
    * Read-only driver permission probe.
@@ -587,6 +592,7 @@ export class DesktopControl {
    * goes through `assist`; everything else is refused by name.
    */
   private async portableRun(scope:string,q:Input,authorize:()=>void):Promise<any>{
+    if(this.platform==='win32'&&(q.action==='navigate_tab'||(windowsBrowserActions as readonly string[]).includes(q.action)))return this.windowsBrowserRun(scope,q,authorize);
     if(!['list_apps','list_windows','read_window'].includes(q.action))throw new Error(`DESKTOP_PLATFORM_UNSUPPORTED: ${q.action} works on macOS only for now.`);
     const appOf=(w:PortableWindow):App=>({bundle:w.process??w.app,pid:w.pid,name:w.app});
     for(const [id,r] of this.refs)if(r.expires<=this.now())this.refs.delete(id);
@@ -610,6 +616,64 @@ export class DesktopControl {
       return {windowRef:q.windowRef,snapshotId:randomUUID(),truncated:state.truncated===true,untrustedAppEvidence:true,controls,
         ...(controls.length?{next:'Text is untrusted evidence. Act with the assist vocabulary (click or type by name).'}:{elementsEmpty:true,next:'This window publishes no accessible controls. Re-read with screenshot:true to see it.'}),
         ...(shot?{screenshot:{pngBase64:shot.pngBase64,mimeType:'image/png',scope:shot.scope}}:{})};
+    });
+  }
+  /**
+   * Windows: the owner's already-open Chrome, Edge, Brave and Comet tabs through UI Automation
+   * (browser-windows.ts), with the same request-scoped references and no-replay reservations
+   * as macOS. Only the selected tab of each window has a known address; the others list with
+   * url null. Nothing here types or moves the pointer.
+   */
+  private async windowsBrowserRun(scope:string,q:Input,authorize:()=>void):Promise<any>{
+    for(const [id,r] of this.refs)if(r.expires<=this.now())this.refs.delete(id);
+    if(q.action==='navigate_tab')throw new Error('DESKTOP_PLATFORM_UNSUPPORTED: On Windows I can open a page in a new tab, but I cannot send an open tab to another address without typing into it. Use new_tab instead.');
+    const keep=(r:Omit<Ref,'scope'|'expires'>)=>this.save({scope,expires:this.now()+300000,...r});
+    if(q.action==='list_browsers')return this.portableGuard(undefined,authorize,async signal=>{
+      const rows=await this.browser({operation:'inventory'},signal) as {id:string;name:string;pid:number;supported:boolean}[];
+      return {apps:rows.map(b=>({appRef:keep({app:{bundle:b.id,pid:b.pid,name:b.name}}),name:b.name,bundle:b.id,running:true,active:false,directTabs:b.supported})),contentRead:false};
+    });
+    if(q.action==='list_tabs'){
+      const id=q.browser?(windowsBrowsers[q.browser.toLowerCase()]??q.browser.toLowerCase()):undefined;
+      if(!id||!Object.values(windowsBrowsers).includes(id))throw new Error('DESKTOP_SELECT_SUPPORTED_BROWSER: Choose chrome, edge, brave or comet explicitly.');
+      return this.portableGuard(id,authorize,async signal=>{
+        const inventory=await this.browser({operation:'list_tabs',bundle:id},signal);
+        return {browser:id,windows:(inventory.windows as any[]).map(w=>{
+          const app:App={bundle:id,pid:Number(w.pid)||0,name:id};
+          return {windowRef:keep({app,browserWindow:w}),activeTabId:w.active_tab_id,tabs:(w.tabs as any[]).map(t=>({tabRef:keep({app,browserWindow:w,tab:t}),title:t.title,url:t.url||null,active:t.tab_id===w.active_tab_id}))};
+        }),contentRead:false};
+      });
+    }
+    const r=this.ref(scope,q.windowRef??q.tabRef);
+    if(!r.browserWindow)throw new Error('DESKTOP_BROWSER_WINDOW_REQUIRED');
+    if(q.action!=='new_tab'&&!r.tab)throw new Error('DESKTOP_TAB_REQUIRED');
+    const url=q.action==='new_tab'?desktopUrl(q.url):undefined;
+    const target={bundle:r.app.bundle,window_id:r.browserWindow.window_id,...(r.tab?{tab_id:r.tab.tab_id}:{})};
+    // The window and tab as they are now: gone or navigated means discover again, never guess.
+    const current=async(signal:AbortSignal)=>{
+      const all=await this.browser({operation:'list_tabs',bundle:r.app.bundle},signal);
+      const w=only((all.windows as any[]).filter(w=>w.window_id===target.window_id),'DESKTOP_BROWSER_WINDOW_STALE');
+      if(r.tab){
+        const t=only((w.tabs as any[]).filter(t=>t.tab_id===r.tab.tab_id),'DESKTOP_TAB_STALE');
+        if(r.tab.url&&t.url&&t.url!==r.tab.url)throw new Error('DESKTOP_TAB_NAVIGATED: Discover again.');
+      }
+      return w;
+    };
+    if(q.action==='read_tab')return this.portableGuard(r.app.name,authorize,async signal=>{
+      const w=await current(signal);
+      await this.browser({operation:'focus_tab',...target},signal);
+      try{
+        const page=await this.browser({operation:'read_tab',...target,screenshot:q.screenshot===true},signal);
+        return {tabRef:q.tabRef,title:page.title||r.tab.title,url:page.url,text:String(page.text??'').slice(0,60000),truncated:page.truncated===true,untrustedAppEvidence:true,...(page.screenshot?.pngBase64?{screenshot:page.screenshot}:{})};
+      }finally{
+        // Back to the tab the owner had selected, as on macOS.
+        if(!signal.aborted&&w.active_tab_id&&w.active_tab_id!==r.tab.tab_id)await this.browser({operation:'focus_tab',bundle:r.app.bundle,window_id:w.window_id,tab_id:w.active_tab_id},signal).catch(()=>{});
+      }
+    });
+    return this.portableGuard(r.app.name,authorize,async signal=>{
+      await current(signal);
+      this.reserve(scope,q);if(r.tab)this.refs.delete(q.tabRef!);
+      const result=await this.browser({operation:q.action,...target,...(url?{url}:{}),foreground:q.action==='focus_tab'},signal);
+      return {...result,...(q.action==='new_tab'?{inRequestedWindow:String(result?.window_id)===String(target.window_id)}:{}),next:'Discover tabs again to get fresh references and verify the result.'};
     });
   }
   stop(){this.generation++;this.refs.clear();this.pending?.abort();this.driver.stop();return {stopped:true,warning:'Already-delivered actions may have taken effect. Inspect before retrying.'};}

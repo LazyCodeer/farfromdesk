@@ -62,7 +62,7 @@ test('permissions and unsupported operating systems fail clearly with no private
   assert.match(browserFailure({stderr:'Not authorized -1743'}).message,/AUTOMATION_PERMISSION_REQUIRED/);
   assert.match(browserFailure({killed:true,stderr:'private URL'}).message,/BROWSER_TIMEOUT/);
   assert.doesNotMatch(browserFailure({stderr:'private URL'}).message,/private URL/);
-  let calls=0;await assert.rejects(new BrowserTabs(async()=>{calls++;},'win32').run('a',{action:'discover'}),/macOS only/);assert.equal(calls,0);
+  let calls=0;await assert.rejects(new BrowserTabs(async()=>{calls++;},'linux').run('a',{action:'discover'}),/macOS and Windows only/);assert.equal(calls,0);
   const f=fixture(),tabRef=await selected(f);f.fail('PAGE_PERMISSION_REQUIRED');
   await assert.rejects(f.service.run('owner:a',{action:'read',tabRef}),/PAGE_PERMISSION_REQUIRED/);
   assert.equal(f.calls.filter(c=>c.action==='read').length,1);
