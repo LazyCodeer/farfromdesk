@@ -225,7 +225,7 @@ test('command menu and bot suffixes preserve existing commands and reject other 
   const f=fixture();try{
     await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
     assert.deepEqual(menu.scope,{type:'all_private_chats'});
-    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','muse','deepseek','cursor','screen','back','help','sessions','status','social']);
+    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','cloud','muse','deepseek','cursor','screen','back','help','sessions','status','social']);
     await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
     await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);
@@ -553,4 +553,38 @@ test('resume stays quiet when no bot was ever saved', async () => {
     await tg.resume();
     assert.equal(calls,0);
   } finally { tg?.close(); store.close(); rmSync(root,{recursive:true,force:true}); }
+});
+test('cloud handover: /cloud needs Pro, cloud mode pauses polling, saved requests replay once and are acked',async()=>{
+  const { Cloud }=await import('../src/cloud.js');
+  const f=fixture();try{await f.pair();
+    const sent:{path:string;body:any;auth?:string}[]=[];let plan='free',mode='laptop';let queue:any[]=[];
+    const cloudFetch:typeof fetch=async(url,init)=>{
+      const path=new URL(String(url)).pathname,body=JSON.parse(String(init?.body));sent.push({path,body,auth:(init?.headers as any)?.Authorization});
+      if(path==='/v1/accounts')return Response.json({accountId:'b123456',deviceKey:'k1',plan});
+      if(path==='/v1/cloud'&&plan==='free')return Response.json({error:'pro',checkoutUrl:'https://buy.test/x'},{status:402});
+      if(path==='/v1/cloud')mode=body.on?'cloud':'laptop';
+      if(path==='/v1/heartbeat')queue=queue.filter(q=>!body.ack?.includes(q.id)); // like the server: acked items are gone
+      return Response.json({plan,mode,credits:{messages:500},queue});
+    };
+    const cloud=new Cloud(f.store,f.tg,()=>'Owner is Sagar.','https://cloud.test',cloudFetch);
+    assert.match(await cloud.command(true),/needs FarFromDesk Pro[\s\S]*https:\/\/buy\.test\/x/);
+    assert.equal(sent[0].body.botToken,token);assert.equal(sent[0].body.ownerChatId,owner);
+    assert.equal(f.store.get('cloud-key'),'k1');assert.equal(f.tg.paused,false,'a1');
+    plan='pro';
+    assert.match(await cloud.command(true),/Answering from the cloud now\. 500/);
+    assert.equal(f.tg.paused,true,'a2');assert.equal(sent.at(-1)!.auth,'Bearer b123456.k1');
+    // Memory goes up once per change, only on Pro.
+    await cloud.beat();await cloud.beat();
+    assert.equal(sent.filter(s=>s.path==='/v1/heartbeat'&&s.body.memory==='Owner is Sagar.').length,1);
+    mode='laptop';queue=[{id:'q1',at:Date.now(),text:'Check my project',messageId:60}];
+    await cloud.beat();
+    assert.equal(f.tg.paused,false,'a3');assert.equal(f.store.jobs().length,1);
+    await cloud.beat();
+    assert.deepEqual(sent.at(-1)!.body.ack,['q1']);assert.equal(f.store.jobs().length,1,'replayed message is not dispatched twice');
+    await cloud.beat();assert.deepEqual(sent.at(-1)!.body.ack,[]);
+    assert.match(await cloud.command(false),/from this laptop again/);
+    // A webhook the cloud set no longer blocks connecting.
+    f.tg.cloudBase='https://cloud.test';f.webhook('https://cloud.test/tg/b123456');
+    await f.tg.connect(token);assert.equal(f.tg.paused,true,'a4');
+  }finally{f.close();}
 });
