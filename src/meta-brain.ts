@@ -548,19 +548,31 @@ export class MetaBrain {
    * the owner was told all 11 rows were in (live, 4 November 2026).
    */
   private armed=new Set<string>();
+  /**
+   * The first open tab whose title or URL has every word of `match`, browser by browser.
+   * A browser that could not be read is said, never skipped: on Windows every list_tabs was
+   * refused and the owner was told "No open tab matches", as if the tab were not open.
+   */
+  private async findTab(m:Incoming,match:string):Promise<{browser:string;tab:any}|{miss:string}>{
+    const control=this.desktop();
+    const want=match.toLowerCase().split(/\s+/).filter(Boolean),failed=new Set<string>();let readAny=false;
+    for(const browser of ['comet','chrome','edge','brave']){
+      let listed:any;
+      try{listed=await control.run!(`brain:${m.id}`,{action:'list_tabs',browser});readAny=true;}
+      catch(e){if(!/^DESKTOP_BROWSER_NOT_RUNNING/.test(String((e as Error)?.message??e)))failed.add(deviceRefusal(e));continue;}
+      for(const w of listed?.windows??[])for(const t of w.tabs??[])if(want.every(word=>`${t.title??''} ${t.url??''}`.toLowerCase().includes(word)))return {browser,tab:t};
+    }
+    if(!failed.size)return {miss:`No open tab matches "${match}". Use list_tabs to see them.`};
+    if(!readAny)return {miss:`Refused: ${[...failed].join(' ')}`};
+    return {miss:`No open tab matches "${match}" in the browsers I could read. Some could not be read: ${[...failed].join(' ')}`};
+  }
   private async focusTabFor(m:Incoming,match:string):Promise<string>{
     const control=this.desktop();if(!control.run)return 'Not available in this build.';
-    const want=match.toLowerCase().split(/\s+/).filter(Boolean);
-    for(const browser of ['comet','chrome','edge','brave']){
-      let listed:any;try{listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});}catch{continue;}
-      for(const w of listed?.windows??[])for(const t of w.tabs??[]){
-        if(!want.every(word=>`${t.title??''} ${t.url??''}`.toLowerCase().includes(word)))continue;
-        try{await control.run(`brain:${m.id}`,{action:'focus_tab',tabRef:t.tabRef,actionId:randomUUID()});}catch(e){return `Refused: ${deviceRefusal(e)}`;}
-        this.focused.set(m.id,browser);
-        return JSON.stringify({focused:t.title,url:t.url,browser,next:'This tab now has focus. Click into it and type; read_tab keeps it in front.'});
-      }
-    }
-    return `No open tab matches "${match}". Use list_tabs to see them.`;
+    const found=await this.findTab(m,match);if('miss' in found)return found.miss;
+    const {browser,tab:t}=found;
+    try{await control.run(`brain:${m.id}`,{action:'focus_tab',tabRef:t.tabRef,actionId:randomUUID()});}catch(e){return `Refused: ${deviceRefusal(e)}`;}
+    this.focused.set(m.id,browser);
+    return JSON.stringify({focused:t.title,url:t.url,browser,next:'This tab now has focus. Click into it and type; read_tab keeps it in front.'});
   }
   private shots=new Map<string,Buffer[]>();
   /** Requests whose screenshots also go out as files: Telegram recompresses photos, never documents. */
@@ -611,29 +623,22 @@ export class MetaBrain {
   /** read_tab: the tab whose title or URL matches, read in place (the prior tab is restored). */
   private async readTabFor(m:Incoming,match:string,screenshot:boolean):Promise<string>{
     const control=this.desktop();if(!control.run)return 'Reading tabs is not available in this build.';
-    const want=match.toLowerCase().split(/\s+/).filter(Boolean);
-    for(const browser of ['comet','chrome','edge','brave']){
-      let listed:any;try{listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});}catch{continue;}
-      for(const w of listed?.windows??[])for(const t of w.tabs??[]){
-        const hay=`${t.title??''} ${t.url??''}`.toLowerCase();
-        if(!want.every(word=>hay.includes(word)))continue;
-        try{
-          const read=()=>control.run!(`brain:${m.id}`,{action:'read_tab',tabRef:t.tabRef,...(screenshot?{screenshot:true}:{})});
-          // A tab the loop opened a moment ago is still loading, and the driver drops that read
-          // (live, 4 November 2026: open_page then read_tab on Gmail). One retry after it settles.
-          const page=await read().catch(async e=>{if(!/lost the connection/.test(deviceRefusal(e)))throw e;await new Promise(r=>setTimeout(r,3000));return read();});
-          const sent=screenshot&&this.keepShot(m,page,'app:'+browser);
-          const {screenshot:_omit,...rest}=page??{};
-          // The whole page text the driver gives (24,000 characters). This was cut at 14,000, and on
-          // Gmail the sidebar comes first, so only five of the owner's messages today survived (live,
-          // 4 November 2026). A cut is said out loud so the model never presents part as all.
-          const out=JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})});
-          this.store.event(m.id,'device_action',{action:'read_tab',chars:out.length});
-          return out.length>64000?out.slice(0,64000)+' [cut here: the page has more than this]':out;
-        }catch(e){return `Refused: ${deviceRefusal(e)}`;}
-      }
-    }
-    return `No open tab matches "${match}". Use list_tabs to see them.`;
+    const found=await this.findTab(m,match);if('miss' in found)return found.miss;
+    const {browser,tab:t}=found;
+    try{
+      const read=()=>control.run!(`brain:${m.id}`,{action:'read_tab',tabRef:t.tabRef,...(screenshot?{screenshot:true}:{})});
+      // A tab the loop opened a moment ago is still loading, and the driver drops that read
+      // (live, 4 November 2026: open_page then read_tab on Gmail). One retry after it settles.
+      const page=await read().catch(async e=>{if(!/lost the connection/.test(deviceRefusal(e)))throw e;await new Promise(r=>setTimeout(r,3000));return read();});
+      const sent=screenshot&&this.keepShot(m,page,'app:'+browser);
+      const {screenshot:_omit,...rest}=page??{};
+      // The whole page text the driver gives (24,000 characters). This was cut at 14,000, and on
+      // Gmail the sidebar comes first, so only five of the owner's messages today survived (live,
+      // 4 November 2026). A cut is said out loud so the model never presents part as all.
+      const out=JSON.stringify({browser,...rest,...(screenshot?{screenshot:sent?'taken, sent to the owner after your reply':'not available (Screen Recording may not be allowed)'}:{})});
+      this.store.event(m.id,'device_action',{action:'read_tab',chars:out.length});
+      return out.length>64000?out.slice(0,64000)+' [cut here: the page has more than this]':out;
+    }catch(e){return `Refused: ${deviceRefusal(e)}`;}
   }
   /**
    * open_page: a new tab in the chosen browser, through the gated desktop route. Live on build
@@ -675,12 +680,15 @@ export class MetaBrain {
     const control=this.deviceControl() as DeviceControl&{run?:(scope:string,raw:unknown)=>Promise<any>;view?:()=>{enabled:boolean}};
     if(!control.run)return 'Tab listing is not available in this build.';
     if(control.view?.().enabled===false)return 'Desktop control is switched off in Settings. Turn on Remote control, then ask again.';
-    const browsers:unknown[]=[],unread:string[]=[];
+    const browsers:unknown[]=[],unread:string[]=[],reasons=new Set<string>();
     for(const browser of ['comet','chrome','edge','brave']){
       try{const listed=await control.run(`brain:${m.id}`,{action:'list_tabs',browser});browsers.push({browser,windows:(listed?.windows??[]).map((w:any)=>({tabs:(w.tabs??[]).map((t:any)=>({title:String(t.title??'').slice(0,160),url:String(t.url??'').slice(0,200)}))}))});}
-      catch(e){const said=String((e as Error)?.message??e);if(!/^DESKTOP_BROWSER_NOT_RUNNING/.test(said))unread.push(`${browser}: ${deviceRefusal(e)}`);}
+      catch(e){const said=String((e as Error)?.message??e);if(!/^DESKTOP_BROWSER_NOT_RUNNING/.test(said)){unread.push(`${browser}: ${deviceRefusal(e)}`);reasons.add(deviceRefusal(e));}}
     }
-    let safari='';try{safari=String((await control.packTool?.(`brain:${m.id}`,'safari_tabs',{}))?.output??'');}catch{}
+    // Safari exists on macOS only; elsewhere the call could only fail.
+    let safari='';if(process.platform==='darwin')try{safari=String((await control.packTool?.(`brain:${m.id}`,'safari_tabs',{}))?.output??'');}catch{}
+    // Every browser refused for the same reason (control switched off, or no tab support here): say it once, plainly.
+    if(!browsers.length&&!safari&&reasons.size===1&&unread.length>1)return `Refused: ${[...reasons][0]}`;
     return JSON.stringify({browsers,...(safari?{safari}:{}),...(unread.length?{couldNotRead:unread}:{})}).slice(0,14000);
   }
   async handle(router:Router,m:Incoming,strict=false):Promise<boolean> {
