@@ -8,7 +8,7 @@ import {createServer} from 'node:net';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 
 const repo=resolve(fileURLToPath(new URL('..',import.meta.url)));
-const portable=['test/portable.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts','test/server-mode-portable.test.ts','test/platform-desktop.test.ts','test/remote-windows.test.ts'];
+const portable=['test/portable.test.ts','test/coordinator.test.ts','test/speech-bundle.test.ts','test/server-mode-portable.test.ts','test/platform-desktop.test.ts','test/remote-windows.test.ts','test/open-file.test.ts'];
 // Keep inherited environment narrow: credentials can appear under arbitrary
 // names such as DATABASE_URL or GH_CONFIG_DIR, not only KEY/TOKEN/SECRET.
 // These explicit test flags opt into local fixtures and never carry credentials.
