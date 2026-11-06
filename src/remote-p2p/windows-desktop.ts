@@ -2,6 +2,7 @@ import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {windowsPowerShell} from '../power.js';
 import type {DesktopBackend,DesktopFrame,Input} from './protocol.js';
+import {ServicePipeHelper} from '../screen-service.js';
 
 /** One request to the Windows helper (native/remote-windows.ps1) and its one-line answer. */
 export type WindowsHelper={request(body:Record<string,unknown>,signal?:AbortSignal,timeoutMs?:number):Promise<any>;stop():void};
@@ -73,15 +74,44 @@ export function windowsKey(key:string,modifiers:string[]=[]):{vk:number;modifier
 }
 
 /**
+ * Picks the helper for one phone session: the FarFromDesk Screen Helper service when the owner
+ * turned it on (it can show and type on the lock screen), else the per-user PowerShell helper.
+ * Decided once, on the first request; a service that refuses (another user's console, say)
+ * falls back too, so the session still works on the unlocked desktop.
+ */
+export class AutoWindowsHelper implements WindowsHelper{
+ private chosen?:Promise<WindowsHelper>;private service=false;
+ constructor(private makeService:()=>{open(timeoutMs?:number):Promise<boolean>}&WindowsHelper=()=>new ServicePipeHelper(),private makeLocal:()=>WindowsHelper=()=>new PowerShellHelper(),private platform:NodeJS.Platform=process.platform){}
+ /** True once the service answered: the lock screen can be seen and typed on. */
+ get lockScreenInput(){return this.service;}
+ private pick(){
+  return this.chosen??=(async()=>{
+   if(this.platform==='win32'){
+    const s=this.makeService();
+    // A refusing service answers with an id-0 line and closes, so the first request fails.
+    try{if(await s.open()){await s.request({op:'state'},undefined,8000);this.service=true;return s as WindowsHelper;}}catch{}
+    s.stop();
+   }
+   return this.makeLocal();
+  })();
+ }
+ async request(body:Record<string,unknown>,signal?:AbortSignal,timeoutMs?:number){return (await this.pick()).request(body,signal,timeoutMs);}
+ stop(){void this.chosen?.then(h=>h.stop());this.chosen=undefined;this.service=false;}
+}
+
+/**
  * Full primary display on Windows: the screen absolute mouse input addresses. The phone's
  * x and y are fractions of that frame, so they map straight onto the screen at any scaling.
- * While Windows is locked the lock screen cannot be captured or typed into, so the phone sees
- * a placeholder and input is refused (PC_LOCKED) until someone unlocks it at the PC.
+ * Without the Screen Helper service the lock screen cannot be captured or typed into, so the
+ * phone sees a placeholder and input is refused (PC_LOCKED) until someone unlocks it at the PC.
+ * With it, the lock screen is shown and typed on like on a Mac.
  */
 export class WindowsDesktopBackend implements DesktopBackend{
  readonly os='windows' as const;
  private controller=new AbortController();private readyAt=0;private lastLocked=false;
- constructor(private helper:WindowsHelper=new PowerShellHelper()){}
+ constructor(private helper:WindowsHelper=new AutoWindowsHelper()){}
+ /** The phone may type the PC's PIN or password on the lock screen (the Screen Helper is on). */
+ get lockScreenInput(){return (this.helper as {lockScreenInput?:boolean}).lockScreenInput===true;}
  async ready(fresh=false){
   if(this.controller.signal.aborted)return false;
   if(!fresh&&Date.now()-this.readyAt<1000)return this.lastLocked?'locked' as const:true;

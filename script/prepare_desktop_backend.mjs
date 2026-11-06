@@ -27,6 +27,15 @@ if(process.platform==='darwin') {
   copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
   // Windows phone screen control: the capture and input helper (src/remote-p2p/windows-desktop.ts).
   if(process.platform==='win32')copyFileSync(join(root,'native','remote-windows.ps1'),join(target,'native','remote-windows.ps1'));
+  // Windows lock-screen unlocking from the phone: the opt-in FarFromDesk Screen Helper service,
+  // built with the C# 5 compiler every Windows has (.NET Framework 4.x), and its install script.
+  if(process.platform==='win32'){
+    const csc=join(process.env.WINDIR??'C:\\Windows','Microsoft.NET','Framework64','v4.0.30319','csc.exe');
+    const built=spawnSync(csc,['-nologo','-target:exe','-platform:anycpu','-optimize+','-warnaserror+',`-out:${join(target,'native','ffd-screen-service.exe')}`,
+      '-r:System.ServiceProcess.dll','-r:System.Drawing.dll','-r:System.Web.Extensions.dll','-r:System.Core.dll',join(root,'native','screen-service','FfdScreenService.cs')],{stdio:'inherit',windowsHide:true});
+    if(built.status!==0)throw new Error('Could not build the FarFromDesk Screen Helper (native/screen-service).');
+    copyFileSync(join(root,'native','screen-service-install.ps1'),join(target,'native','screen-service-install.ps1'));
+  }
   // Local email on Windows: the Credential Manager broker and the send approval prompt.
   if(process.platform==='win32'&&process.env.FFD_LOCAL_BUILD==='1')for(const helper of ['local-mail-credentials.ps1','local-mail-approval.ps1'])copyFileSync(join(root,'native',helper),join(target,'native',helper));
   // Windows Claude Desktop and Codex Desktop sessions: desktop-sync runs these under Python (src/desktop-apps.ts).

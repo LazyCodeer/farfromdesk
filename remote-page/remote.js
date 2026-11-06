@@ -6,7 +6,7 @@ const NEW_LINK="Send 'control my screen' to FarFromDesk for a new link.";
 const EXPIRED='This link has expired. '+NEW_LINK,EXPIRED_SUB="Links work for a few minutes. Send 'control my screen' to FarFromDesk for a new one.";
 // ---- Which computer this is. Neutral until login; auth-ok names it (an older host sends no os: a Mac).
 // The texts below say "Mac"; everything shown goes through named(), so a PC is called a PC.
-let HOST='computer',OS=null;
+let HOST='computer',OS=null,UNLOCK=false;
 const named=s=>typeof s!=='string'||HOST==='Mac'?s:s.replace(/\bMac\b/g,HOST);
 const ORIGINAL=new WeakMap();
 function renameStatic(){
@@ -14,7 +14,10 @@ function renameStatic(){
   for(let n;(n=walk.nextNode());){const o=ORIGINAL.get(n)??n.nodeValue;if(!/\bMac\b/.test(o))continue;ORIGINAL.set(n,o);n.nodeValue=named(o);}
   for(const el of document.querySelectorAll('[aria-label]')){const o=el.dataset.label??el.getAttribute('aria-label');if(!/\bMac\b/.test(o))continue;el.dataset.label=o;el.setAttribute('aria-label',named(o));}
 }
-function nameHost(os){OS=os==='windows'?'windows':'mac';HOST=OS==='windows'?'PC':'Mac';renameStatic();if(OS==='windows')windowsLabels();}
+// unlock: the PC runs the FarFromDesk Screen Helper, so its lock screen is shown and typed on like a Mac's.
+function nameHost(os,unlock){OS=os==='windows'?'windows':'mac';HOST=OS==='windows'?'PC':'Mac';UNLOCK=OS==='mac'||unlock===true;renameStatic();if(OS==='windows')windowsLabels();}
+// The PC's lock screen cannot be typed on from here: it is unlocked at the PC.
+const atThePc=()=>OS==='windows'&&!UNLOCK;
 // Windows: Ctrl and Alt shortcuts (the host maps the page's ⌘ to them), Task View, and a lock screen
 // that cannot be shown or typed into from here, so it is unlocked at the PC.
 function windowsLabels(){
@@ -24,8 +27,9 @@ function windowsLabels(){
     b.setAttribute('aria-label',k==='tab'?'Alt Tab':k==='space'?'Windows key':'Control '+k.toUpperCase());
   }
   const o=$('overview')?.querySelector('small');if(o)o.textContent='Opens Task View on your PC';
-  const s=$('lockbar')?.querySelector('small');if(s)s.textContent='Unlock it at the PC. This view comes back by itself.';
-  $('locktype').hidden=true;$('lockfact').hidden=true;
+  const s=$('lockbar')?.querySelector('small');
+  if(UNLOCK){if(s)s.textContent='Tap Type and enter your PC PIN or password.';$('locktype').hidden=false;$('lockfact').hidden=false;}
+  else{if(s)s.textContent='Unlock it at the PC. This view comes back by itself.';$('locktype').hidden=true;$('lockfact').hidden=true;}
 }
 const ERRORS={
   INCORRECT_PASSWORD:'That password is not right. Try again.',
@@ -205,7 +209,7 @@ $('cancel').onclick=()=>{send({t:'stop'});setTimeout(()=>end('You cancelled. '+N
 function onMessage(data){
   let m;try{m=JSON.parse(data);}catch{return;}
   if(m.t==='auth-ok'){
-    nameHost(m.os);
+    nameHost(m.os,m.unlock);
     authed=true;paused=false;store.drop(PAUSED);$('paused').hidden=true;$('session').classList.remove('paused');canList=m.desktops===true;setVoice(m.voice);idleMs=typeof m.idle==='number'?m.idle:0;showLocked(m.locked===true);
     if(typeof m.resume==='string')store.set(KEEP,{secret:m.resume,alive:Date.now()});
     goLive();
@@ -406,20 +410,20 @@ function toggle(button,sheet){
 $('kbd').onclick=()=>toggle($('kbd'),$('keyboard'));
 $('keysbtn').onclick=()=>toggle($('keysbtn'),$('shortcuts'));
 $('lock').onclick=()=>{viewOnly=!viewOnly;$('lock').setAttribute('aria-pressed',String(viewOnly));toast(viewOnly?'View only. Taps and swipes are not sent.':'Control is back on.');};
-$('typeform').onsubmit=e=>{e.preventDefault();const text=$('text').value;if(!text)return;$('text').value='';act({kind:'type',text}).then(a=>{if(a?.ok&&macLocked&&OS!=='windows')act({kind:'key',key:'return'});});};
+$('typeform').onsubmit=e=>{e.preventDefault();const text=$('text').value;if(!text)return;$('text').value='';act({kind:'type',text}).then(a=>{if(a?.ok&&macLocked&&!atThePc())act({kind:'key',key:'return'});});};
 // ---- Locked Mac. The lock screen stays live; the password goes in through Type like any other text.
 let macLocked=false;
 const MASKABLE=CSS.supports('-webkit-text-security','disc');
 function showLocked(on){
   if(on===macLocked)return;macLocked=on;$('lockbar').hidden=!on;
   // Windows: the lock screen is unlocked at the PC, so there is no password field here; voice stays off meanwhile.
-  if(OS==='windows'){if(on)stopVoice(true);showMic();if(!on)toast('Your PC is unlocked');return;}
+  if(atThePc()){if(on)stopVoice(true);showMic();if(!on)toast('Your PC is unlocked');return;}
   // Hidden as typed, and Return is sent after it, so one tap unlocks.
   // The mic goes away while locked: the Mac password is only ever typed, never spoken or sent to a transcriber.
   if(on)stopVoice(true);showMic();
   // Cleared both ways: half-typed text must not become a password, and a password must not stay in the field.
   // Masked with CSS rather than type=password, so the browser never offers to save the Mac password for this site.
-  const t=$('text');t.value='';t.classList.toggle('masked',on);if(!MASKABLE)t.type=on?'password':'text';t.placeholder=on?'Your Mac password':'Type into the field you tapped';t.enterKeyHint=on?'go':'send';
+  const t=$('text');t.value='';t.classList.toggle('masked',on);if(!MASKABLE)t.type=on?'password':'text';t.placeholder=on?(OS==='windows'?'Your PC PIN or password':'Your Mac password'):'Type into the field you tapped';t.enterKeyHint=on?'go':'send';
   if(!on){if(!$('keyboard').hidden)toggle($('kbd'),$('keyboard'));toast('Your Mac is unlocked');}
 }
 $('locktype').onclick=()=>{if($('keyboard').hidden)toggle($('kbd'),$('keyboard'));else $('text').focus();};
@@ -434,7 +438,7 @@ function setVoice(mode){
 function showMic(){$('mic').hidden=!voiceMode||macLocked;}
 function stopVoice(drop){if(!rec)return;discard=drop;clearTimeout(voiceTimer);try{rec.stop();}catch{}}
 function micState(listening,busy){$('mic').setAttribute('aria-pressed',String(listening));$('mic').disabled=busy;$('mic').setAttribute('aria-label',listening?'Stop and transcribe':'Speak');
-  $('text').placeholder=listening?'Listening… tap the mic to stop':busy?'Transcribing…':macLocked&&OS!=='windows'?'Your Mac password':'Type into the field you tapped';}
+  $('text').placeholder=listening?'Listening… tap the mic to stop':busy?'Transcribing…':macLocked&&!atThePc()?(OS==='windows'?'Your PC PIN or password':'Your Mac password'):'Type into the field you tapped';}
 $('mic').onclick=async()=>{
   if(rec){stopVoice(false);return;}
   if(macLocked)return;

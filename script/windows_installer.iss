@@ -36,7 +36,17 @@ Name: "{autodesktop}\FarFromDesk"; Filename: "{app}\farfromdesk.exe"; Tasks: des
 [Run]
 Filename: "{app}\farfromdesk.exe"; Description: "Open FarFromDesk"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+; The opt-in Screen Helper service (Settings > Remote control) lives in Program Files and runs as
+; LocalSystem, so removing it needs the admin prompt; it is only asked for when it is installed.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\backend\native\screen-service-install.ps1"" -Uninstall"; Verb: "runas"; Flags: shellexec runhidden waituntilterminated; Check: ScreenServiceInstalled; RunOnceId: "RemoveScreenHelper"
+
 [Code]
+function ScreenServiceInstalled(): Boolean;
+begin
+  Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\FarFromDeskScreen');
+end;
+
 // Background forwarding keeps node.exe running after the window closes, and
 // Restart Manager cannot close a windowless process. Stop only our own copy.
 function PrepareToInstall(var NeedsRestart: Boolean): String;

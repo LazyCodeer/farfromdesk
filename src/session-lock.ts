@@ -101,7 +101,9 @@ export const LINK_COOLDOWN_MS=60_000;
  * that will not start, a failed delivery: none of them is permission to act on a locked
  * screen, and the message says which of them happened so the coordinator can ask for the
  * right next step rather than inventing one. */
-export function screenLockGate(deps:{probe:LockProbe;link:()=>Promise<string|undefined>;notify:(text:string)=>void;now?:()=>number;cooldownMs?:number;platform?:NodeJS.Platform}){
+export function screenLockGate(deps:{probe:LockProbe;link:()=>Promise<string|undefined>;notify:(text:string)=>void;now?:()=>number;cooldownMs?:number;platform?:NodeJS.Platform;
+  /** Windows: the Screen Helper service is running, so the phone can show and type on the lock screen. */
+  lockScreenUnlockable?:()=>Promise<boolean>}){
   const now=deps.now??Date.now, cooldown=deps.cooldownMs??LINK_COOLDOWN_MS, platform=deps.platform??process.platform;
   let lastLinkAt=0;
   return async(action:string):Promise<void>=>{
@@ -109,9 +111,10 @@ export function screenLockGate(deps:{probe:LockProbe;link:()=>Promise<string|und
     if(platform==='win32'&&WINDOWS_OFF_SCREEN.has(action))return;
     if(await sessionLocked(deps.probe)!==true)return;
     // Windows keeps the lock screen on a secure desktop that no input from the user's session
-    // reaches, the phone's remote screen included (it shows "This PC is locked" instead). A
-    // link would be a promise it cannot keep, so the owner is told the honest next step.
-    if(platform==='win32'){
+    // reaches. With the Screen Helper service the phone can still unlock it, so the owner gets
+    // the same link as on a Mac; without it a link would be a promise it cannot keep, so the
+    // owner is told the honest next step.
+    if(platform==='win32'&&!await deps.lockScreenUnlockable?.().catch(()=>false)){
       if(now()-lastLinkAt>=cooldown){lastLinkAt=now();try{deps.notify(`Your PC is locked, so ${action} was not sent to the screen. Windows does not let remote input reach the lock screen, so it has to be unlocked at the PC itself. Ask again once it is unlocked.`);}catch{}}
       throw new Error('SESSION_LOCKED: the PC is locked, so a screen action would land on the Windows lock screen instead of your apps. Windows does not accept remote input there, so the owner has to unlock it at the PC; do not send a remote-control link. Then retry.');
     }

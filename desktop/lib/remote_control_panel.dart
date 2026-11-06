@@ -120,6 +120,38 @@ extension _RemoteControl on _DeskState {
     );
   }
 
+  /// Windows: the opt-in Screen Helper service, without which the phone cannot see or type on
+  /// the lock screen. Turning it on or off asks for admin approval on this PC.
+  Widget lockScreenCard() {
+    final lock = Map<String, dynamic>.from(
+      phoneRemote['lockScreen'] as Map? ?? const {},
+    );
+    final installed = lock['installed'] == true;
+    final running = lock['running'] == true;
+    return KeyedSubtree(
+      key: const Key('lock-screen-card'),
+      child: settingCard(
+        Icons.lock_open_rounded,
+        'Unlock this PC from your phone',
+        installed
+            ? running
+                  ? 'On. When the PC is locked, your phone shows the lock screen and you can type your PIN or password there. A Windows security prompt is never shown or touched.'
+                  : 'Installed but not running. Turn it off and on again, or restart the PC.'
+            : 'Windows keeps the lock screen out of reach of normal apps, so your phone shows "This PC is locked" until someone unlocks it here. Turn this on to install the FarFromDesk Screen Helper, a small Windows service. Windows asks for admin approval once.',
+        control: button(
+          installed ? 'Turn off' : 'Turn on',
+          () => remoteRun(
+            () => phoneCommand({'action': 'lock-screen', 'enable': !installed}),
+          ),
+          enabled: !remoteBusy && (installed || lock['bundled'] == true),
+          compact: true,
+          destructive: installed,
+          key: const Key('lock-screen-toggle'),
+        ),
+      ),
+    );
+  }
+
   List<Widget> remoteControlPanels() {
     final done = remoteSetupState();
     return [
@@ -166,6 +198,10 @@ extension _RemoteControl on _DeskState {
         macControlPanel(),
       ],
       if (remoteSupported) ...[gap(26), remoteColumns()],
+      if (remoteSupported && api.platform == 'windows') ...[
+        gap(16),
+        lockScreenCard(),
+      ],
       if (legacyRemote['enabled'] == true) ...[
         gap(16),
         settingCard(

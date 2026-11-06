@@ -27,6 +27,7 @@ import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
 import { directMacAllowed, directRunFileTarget, directRunFileSent } from './direct-mac.js';
 import { ownerFileToSend } from './open-file.js';
+import { screenServiceStatus } from './screen-service.js';
 import { MacControl } from './mac-control.js';
 import { GrantHealth, NO_RESET } from './grant-health.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
@@ -150,6 +151,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     probe:sessionProbe,
     link:()=>remoteControl.chat('control my screen'),
     notify:text=>{store.output(undefined,text,`remote-locked:${Date.now()}`,undefined,{plain:true});},
+    lockScreenUnlockable:()=>screenServiceStatus().then(s=>s.running),
   });
   const artifacts=new Artifacts(store),items=new Items(store,b=>router.coordinator?.name(b)??b.alias);
   // Social ships in every build (5 November 2026); it was Local-only while it was being built.
@@ -228,7 +230,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/phone-remote') {
         if(!isAdmin){json(res,403,{error:'Phone Remote settings require the app.'});return;}
-        if(req.method==='GET'){json(res,200,phoneRemote.status);return;}
+        if(req.method==='GET'){json(res,200,{...phoneRemote.status,lockScreen:await screenServiceStatus()});return;}
         if(req.method==='POST'){json(res,200,await phoneRemote.command(await body(req,4096)));return;}
       }
       if(path==='/api/remote-desktop') {
