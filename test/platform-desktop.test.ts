@@ -52,7 +52,9 @@ test('Windows and Linux report support and their limits honestly, Wayland includ
     assert.equal(view.supported, true);
     assert.equal(view.driverVersion, null, 'the macOS driver is not what runs here');
     assert.ok(view.limits.some(l => /macOS only/.test(l)));
-    assert.deepEqual([...view.actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'stop']);
+    // Windows also acts (test/desktop-windows-actions.test.ts); Linux reads.
+    if (platform === 'linux') assert.deepEqual([...view.actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'stop']);
+    else assert.ok(view.actions.includes('click' as never) && view.actions.includes('open_app' as never));
   }
   assert.ok(portableLimits('win32').some(l => /administrator/.test(l)));
   assert.ok(portableLimits('linux', { XDG_SESSION_TYPE: 'wayland' }).some(l => /Wayland/.test(l)));
@@ -76,9 +78,10 @@ test('the owner brain vocabulary reads, clicks, types and presses keys off macOS
     assert.deepEqual(calls.at(-1)!.args, { app: 'Notepad', key: 'c', modifiers: ['cmd'] });
     const opened = await c.assist('s', { action: 'open_app', app: 'notepad' });
     assert.equal(opened.app, 'Notepad');
-    await assert.rejects(c.assist('s', { action: 'open_app', app: 'Paint' }), /DESKTOP_APP_NOT_RUNNING/);
+    // Windows looks Paint up among installed apps (the fake helper has none to offer); Linux cannot open closed apps.
+    await assert.rejects(c.assist('s', { action: 'open_app', app: 'Paint' }), platform === 'linux' ? /DESKTOP_APP_NOT_RUNNING/ : /UNSUPPORTED_ACTION/);
     await assert.rejects(c.assist('s', { action: 'click', app: 'Notepad', name: 'Nope' }), err => deviceRefusal(err) === 'No control named "Nope" in that window.');
-    await assert.rejects(c.assist('s', { action: 'pick_file', app: 'Notepad', text: '/tmp/x' }), err => deviceRefusal(err) === 'That works on macOS only for now.');
+    if (platform === 'linux') await assert.rejects(c.assist('s', { action: 'pick_file', app: 'Notepad', text: '/tmp/x' }), err => /does not work on Linux yet/.test(deviceRefusal(err)));
   }
 });
 
