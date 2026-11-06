@@ -8,6 +8,7 @@ import { authenticatedOwner } from './owner-commands.js';
 import { briefDestinationValid,briefTargetIdentity } from './brief-dispatch-guard.js';
 import type { Store,IncomingOwner } from './store.js';
 import { metaObserver,type MetaObserver } from './meta-timeline.js';
+import { priorityRank,readPriorities } from './priorities.js';
 
 type Entry={kind:'item'|'approval'|'pr'|'info';id:number|string;title:string;status:string;reason:string;section:'done'|'needs'|'today';binding?:string|null;target?:string;identity?:string;category?:string;urgency?:string;ageHours?:number;idleHours?:number;sessionState?:string};
 type BriefInput={entries:Entry[];date:string};
@@ -191,17 +192,21 @@ export class MorningBrief {
       // A pending permission or task may have changed while the model was thinking.
       // Build both the displayed lines and their numbered targets from fresh local state.
       entries=this.snapshot(destination,owner,local.date,this.clock());entries.push(...prs.entries.slice(0,3));
+      const owned=readPriorities(this.router.brain.secret.root);
       const priorities=[...new Set(result.priorities)].filter(id=>entries.some(e=>e.section==='today'&&e.kind==='item'&&e.id===id));
       const ordered=(['done','needs','today'] as const).flatMap(section=>{
         const rows=entries.filter(e=>e.section===section);
-        if(section==='today')rows.sort((a,b)=>{const rank=(e:Entry)=>{const i=priorities.indexOf(Number(e.id));return i<0?999:i;};return rank(a)-rank(b);});
+        // The owner's own priorities (memory/priorities.md, matched here so names never leave the machine) come before the model's suggestions.
+        const mine=(e:Entry)=>{const i=priorityRank(owned,e.title);return i<0?999:i;};
+        if(section==='today')rows.sort((a,b)=>{const rank=(e:Entry)=>{const i=priorities.indexOf(Number(e.id));return i<0?999:i;};return mine(a)-mine(b)||rank(a)-rank(b);});
+        else rows.sort((a,b)=>mine(a)-mine(b));
         return rows;
       });
       const render=()=>{const lines=[short(result.opening,200),''];let number=0;
         for(const [section,title] of [['done','Done since yesterday'],['needs','Needs you'],['today','Today']] as const){
           lines.push(title+':');const rows=ordered.filter(e=>e.section===section);
           if(!rows.length)lines.push('None recorded.');
-          for(const row of rows){number++;lines.push(`${number}. ${row.title}${row.reason?`: ${row.reason}`:''}${row.kind==='item'&&priorities.includes(Number(row.id))?' (suggested)':''}`);}
+          for(const row of rows){number++;lines.push(`${number}. ${row.title}${row.reason?`: ${row.reason}`:''}${priorityRank(owned,row.title)>=0?' (your priority)':row.kind==='item'&&priorities.includes(Number(row.id))?' (suggested)':''}`);}
           lines.push('');
         }
         lines.push(['Showing recent items for this chat; other local items may be in the app.',prs.notice,'Reply go, pause, or later with an item number. Change time with /brief time 08:00; change time zone with /brief timezone Asia/Kolkata.'].filter(Boolean).join(' '));return lines.join('\n').trim();};
