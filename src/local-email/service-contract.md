@@ -16,7 +16,7 @@ are stored only via the injected Keychain adapter, under opaque random keys, not
 in SQLite, settings, events or error messages. The host must never log request
 bodies, credentials, provider exceptions, inbox content or protocol traffic.
 
-`MailSecretStore` is `{kind:'macos-keychain', available():boolean,
+`MailSecretStore` is `{kind:'macos-keychain'|'windows-credential-manager', available():boolean,
 read(key):Promise<string|undefined>, save(key,password):Promise<void>,
 remove(key):Promise<void>}`. Use `macKeychainStore(vault, available)` in `keychain-adapter.ts` with the
 shared `MailboxCredentialVault` (`read`, `write`, `remove`); secret slots are
@@ -37,8 +37,9 @@ imap:{host,port,username},smtp:{host,port,username},status,generation,
 credentialsCleanupPending,credentialsRecoveryRequired}`; they contain no passwords. `state` is one of
 `unavailable`, `attention`, `updating`, `configured`, `not_configured`.
 Per-account status is `configured`, `updating`, or `setup_failed`. `configured`
-is explicitly unverified. `credentialStorage` is `macos-keychain` or
-`unavailable`. Surface both flags; recovery-required means cleanup must wait for a verified
+is explicitly unverified. `credentialStorage` is `macos-keychain`,
+`windows-credential-manager` (via `windowsCredentialStore` and
+`native/local-mail-credentials.ps1`) or `unavailable`. Surface both flags; recovery-required means cleanup must wait for a verified
 exclusive restart and cannot be resolved by ordinary cleanup.
 
 `configure({address,imap:{host,port,username,password},smtp:{host,port,

@@ -6,7 +6,8 @@ import {composeMail,readAccountInbox,sendAccountMail,type MailDraft,type MailEnd
 export type MailOwner={id:string;generation:string};
 export type SendApprovalScope={owner:MailOwner;accountId:string;accountGeneration:string;draftId:string;draftRevision:string;digest:string;approvalRef:string};
 export type HostMailAuthority={capture():MailOwner;isCurrent(owner:MailOwner):boolean;verifyExplicitSend(scope:SendApprovalScope):{eventId:string};approvalCurrent(scope:SendApprovalScope,eventId:string):boolean;assertExclusiveRecovery():boolean;recoveryBootId?():string|undefined};
-export type MailSecretStore={kind:'macos-keychain';available():boolean;read(key:string):Promise<string|undefined>;save(key:string,password:string):Promise<void>;remove(key:string):Promise<void>};
+/** macOS Keychain, or Windows Credential Manager (per-user, this PC only). */
+export type MailSecretStore={kind:'macos-keychain'|'windows-credential-manager';available():boolean;read(key:string):Promise<string|undefined>;save(key:string,password:string):Promise<void>;remove(key:string):Promise<void>};
 export type MailConfigureInput={address:string;imap:MailEndpoint&{password:string};smtp:MailEndpoint&{password:string}};
 export type MailAccountInput={label:string;address:string;imap:MailEndpoint;smtp:MailEndpoint};
 export type MailAccountView={id:string;label:string;address:string;imap:MailEndpoint;smtp:MailEndpoint;status:'ready'|'updating'|'setup_failed';generation:string};
@@ -57,11 +58,11 @@ export class LocalMailService {
   listAccounts():MailAccountView[]{const owner=this.capture();return (this.db.prepare("SELECT * FROM local_mail_accounts WHERE owner=? AND status!='removed' ORDER BY id").all(owner.id) as AccountRow[]).map(a=>this.view(a));}
   private bootId(){try{const id=this.authority.recoveryBootId?.();return typeof id==='string'&&/^[A-Za-z0-9-]{1,100}$/.test(id)?id:undefined;}catch{return undefined;}}
   private queueKey(key:string|null|undefined,owner:string,accountId:string,staged=false){if(key)this.db.prepare('INSERT OR IGNORE INTO local_mail_secret_cleanup(secret_key,owner,account_id,staged,boot_id) VALUES(?,?,?,?,?)').run(key,owner,accountId,staged?1:0,staged?this.bootId()??null:null);}
-  private storageAvailable(){try{return this.secrets.kind==='macos-keychain'&&this.secrets.available()===true;}catch{return false;}}
+  private storageAvailable(){try{return (this.secrets.kind==='macos-keychain'||this.secrets.kind==='windows-credential-manager')&&this.secrets.available()===true;}catch{return false;}}
   status(){
     const accounts=this.listAccounts(),available=this.storageAvailable();
     const state=!available?'unavailable':accounts.some(a=>a.status==='setup_failed')?'attention':accounts.some(a=>a.status==='updating')?'updating':accounts.some(a=>a.status==='ready')?'configured':'not_configured';
-    return {available,state,credentialStorage:available?'macos-keychain':'unavailable',credentialsCleanupPending:this.cleanupPending()>0,credentialsRecoveryRequired:this.recoveryRequired(),accounts:accounts.map(a=>({id:a.id,address:a.address,imap:a.imap,smtp:a.smtp,status:a.status==='ready'?'configured':a.status,generation:a.generation,credentialsCleanupPending:this.cleanupPending(a.id)>0,credentialsRecoveryRequired:this.recoveryRequired(a.id)}))};
+    return {available,state,credentialStorage:available?this.secrets.kind:'unavailable',credentialsCleanupPending:this.cleanupPending()>0,credentialsRecoveryRequired:this.recoveryRequired(),accounts:accounts.map(a=>({id:a.id,address:a.address,imap:a.imap,smtp:a.smtp,status:a.status==='ready'?'configured':a.status,generation:a.generation,credentialsCleanupPending:this.cleanupPending(a.id)>0,credentialsRecoveryRequired:this.recoveryRequired(a.id)}))};
   }
   async configure(input:MailConfigureInput,id?:string){if(!input||!input.imap||!input.smtp)throw failure();return this.configureAccount(id,{label:input.address,address:input.address,imap:input.imap,smtp:input.smtp},{imapPassword:input.imap.password,smtpPassword:input.smtp.password});}
   disconnect(id:string){return this.removeAccount(id);}
