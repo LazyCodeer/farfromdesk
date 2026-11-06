@@ -219,4 +219,25 @@ void main() {
     expect(find.text('Copy caption'), findsOneWidget);
     expect(find.byKey(const Key('social-export-post')), findsOneWidget);
   });
+
+  testWidgets('Windows names its Share window; a Mac keeps its share sheet', (
+    tester,
+  ) async {
+    final windows = WindowsShareGateway();
+    await show(tester, windows);
+    expect(find.text('Windows share'), findsOneWidget);
+    expect(find.text('macOS share sheet'), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('social-native-share')));
+    await tester.tap(find.byKey(const Key('social-native-share')));
+    await tester.pumpAndSettle();
+    expect(windows.shared!.images.length, 2);
+    expect(find.textContaining('Share window opened.'), findsOneWidget);
+    await show(tester, ShareGateway());
+    expect(find.text('macOS share sheet'), findsOneWidget);
+  });
+}
+
+class WindowsShareGateway extends ShareGateway {
+  @override
+  String get platform => 'windows';
 }

@@ -50,6 +50,9 @@ class _SocialShareDialogState extends State<SocialShareDialog> {
         ? null
         : socialShareTarget(platform, widget.post.caption);
     final imageCount = widget.post.images.length;
+    // Windows calls it the Share window; a Mac has a share sheet.
+    final windowsShare = widget.gateway.platform == 'windows';
+    final shareName = windowsShare ? 'Share window' : 'Share sheet';
     return PopScope(
       canPop: !busy,
       child: AlertDialog(
@@ -133,11 +136,15 @@ class _SocialShareDialogState extends State<SocialShareDialog> {
                                 final opened = await widget.gateway
                                     .shareSocialPost(widget.post);
                                 return opened
-                                    ? 'Share sheet opened. Available apps decide which text and images they accept; check the destination before sending.'
-                                    : 'Share sheet unavailable. Export the post instead.';
+                                    ? '$shareName opened. Available apps decide which text and images they accept; check the destination before sending.'
+                                    : '$shareName unavailable. Export the post instead.';
                               }),
-                        icon: const Icon(Icons.ios_share),
-                        label: const Text('macOS share sheet'),
+                        icon: Icon(
+                          windowsShare ? Icons.share_outlined : Icons.ios_share,
+                        ),
+                        label: Text(
+                          windowsShare ? 'Windows share' : 'macOS share sheet',
+                        ),
                       ),
                     if (target != null)
                       FilledButton.icon(

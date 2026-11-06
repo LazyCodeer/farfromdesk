@@ -27,6 +27,8 @@ if(process.platform==='darwin') {
   copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
   // Windows phone screen control: the capture and input helper (src/remote-p2p/windows-desktop.ts).
   if(process.platform==='win32')copyFileSync(join(root,'native','remote-windows.ps1'),join(target,'native','remote-windows.ps1'));
+  // Local email on Windows: the Credential Manager broker and the send approval prompt.
+  if(process.platform==='win32'&&process.env.FFD_LOCAL_BUILD==='1')for(const helper of ['local-mail-credentials.ps1','local-mail-approval.ps1'])copyFileSync(join(root,'native',helper),join(target,'native',helper));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
