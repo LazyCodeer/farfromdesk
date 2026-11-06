@@ -338,6 +338,21 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
           router.coordinator!.ownerRequest(requestId);
           if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
           if(input.action==='stop'){macAccessEpoch++;macControl.stop();}
+          // A file from the owner's own folders to their own chat, answering this request. The
+          // coordinator found files but had no way to send one (Windows test, 6 Nov 2026). Same
+          // folders and limits as the brain's send_file, five per request.
+          if(input.action==='send_file'){
+            const parent=router.coordinator!.ownerRequest(requestId);
+            await requireDesktopPermission();
+            if(!store.ownerInputId(requestId)){json(res,200,{ok:false,error:'Files can only answer a message the owner sent.'});return;}
+            const counter=`master-files:${requestId}`,sent=Number(store.get(counter)??0);
+            if(sent>=5){json(res,200,{ok:false,error:'At most five files per request.'});return;}
+            const file=ownerFileToSend(String(input.path??input.text??''),homedir());
+            if('error' in file){json(res,200,{ok:false,error:file.error});return;}
+            if(!store.outputOwnerFile(requestId,parent.destination??store.get('whatsapp-owner')??null,readFileSync(file.path),file.name,typeof input.caption==='string'&&input.caption.trim()?input.caption:file.name)){json(res,200,{ok:false,error:'The file could not be queued for the chat.'});return;}
+            store.set(counter,String(sent+1));store.audit('desktop-control-action',binding.id,'send_file');
+            json(res,200,{ok:true,queued:file.name,bytes:file.size,next:'The file is on its way to the owner chat. Say in your reply that it follows; do not say you cannot attach files.'});return;
+          }
           if(input.action==='status'){syncMacPermission(await macControl.status());router.coordinator!.ownerRequest(requestId);}
           if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{
