@@ -40,6 +40,7 @@ import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, rea
 import { dshHome } from './dsh-paths.js';
 import { runCursorTurn, findCursorCli, CURSOR_CLI_MISSING } from './cursor-desktop.js';
 import { cursorAppBinary } from './cursor-paths.js';
+import { computerName } from './platform.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
@@ -194,7 +195,7 @@ export class Masters {
   private async deepseekPlatform() {
     const platform:any={provider:'deepseek',executionMode:'cli',label:'DeepSeek Harness',available:false};
     if(this.router.native.discoveryBlocked?.('deepseek'))return this.platforms.find(p=>p.provider==='deepseek')??{...platform,reason:'File access denied · click Detect apps to retry'};
-    try {const command=nativeCommand(dshBinary(),['--version']);await exec(command.binary,command.args,{timeout:15000,maxBuffer:10000,windowsHide:true});platform.available=true;}
+    try {const command=nativeCommand(dshBinary(),['--version'],process.platform,process.env,undefined,true);await exec(command.binary,command.args,{timeout:15000,maxBuffer:10000,windowsHide:true,...(command.env?{env:{...process.env,...command.env}}:{})});platform.available=true;}
     catch{platform.reason='DeepSeek Harness CLI unavailable. Install it, then try again.';}
     return platform;
   }
@@ -538,7 +539,7 @@ export class Masters {
     // owner chose a real project and kept trust on. The private coordinator folder has none to load.
     if(provider==='muse')this.store.set(`muse-trust:${b.id}`,this.operation()?.trustWorkspace===true?'true':'false');
     // Muse runs headless with no bridge tools, so its finished answer is the reply the bridge delivers.
-    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run, except the Mac app command each request envelope gives under macApps.':'Use the session_bridge MCP tools for coordination and replies.';
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?`Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run, except the ${computerName()} app command each request envelope gives under macApps.`:'Use the session_bridge MCP tools for coordination and replies.';
     // Support files are written once and may be auto-loaded beside the provider instructions,
     // so they point to the versioned role instead of carrying a copy that would go stale.
     // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
@@ -575,7 +576,7 @@ export class Masters {
       const cli=findCursorCli();
       if(!cli)throw new Error(CURSOR_CLI_MISSING+'.');
       const ready=await runCursorTurn({prompt:`${instruction}\n\nReturn exactly READY without using tools. Wait for the owner's first message.`,timeoutMs:cursorTurnTimeoutMs,cli,cwd});
-      if(!ready.sessionId)throw new Error('Cursor did not return a chat id. Check that cursor-agent works in Terminal, then create the coordinator again.');
+      if(!ready.sessionId)throw new Error(`Cursor did not return a chat id. Check that cursor-agent works in ${process.platform==='win32'?'a terminal':'Terminal'}, then create the coordinator again.`);
       this.store.set(`cursor-chat:${b.id}`,ready.sessionId);
       this.saveOperation({...this.operation(),nativeId:b.native_id,stage:'Ready for the first request'});
     } else if(provider==='muse'||provider==='deepseek') {

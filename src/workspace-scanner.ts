@@ -7,9 +7,21 @@ export type ResolvedWorkspaces=Map<string,{sessionCwd:string;cwd:string}>&{denie
 export const SCAN_TIMEOUT_MS=15000;
 export const scanTimeoutMessage='Workspace discovery took longer than 15 seconds. A session folder may be on a slow or disconnected drive. Click Detect apps to try again.';
 
-/** Short folder names for the owner: ~/Documents, iCloud Drive, /Volumes/USB. */
-export function deniedFolders(paths:string[],home=homedir()) {
+/** Short folder names for the owner: ~/Documents, iCloud Drive, /Volumes/USB; on Windows OneDrive, ~\Documents, D:\. */
+export function deniedFolders(paths:string[],home=homedir(),platform:NodeJS.Platform=process.platform) {
   const names=new Set<string>();
+  if(platform==='win32'){
+    const lower=home.toLowerCase();
+    for(const path of paths){
+      const under=path.toLowerCase().startsWith(`${lower}\\`)?path.slice(home.length+1).split(/[\\/]/)[0]:undefined;
+      // OneDrive's folder is "OneDrive" for a personal account and "OneDrive - <organisation>" for work.
+      if(under&&/^onedrive(?:$| - )/i.test(under))names.add(under.length>8?under:'OneDrive');
+      else if(under)names.add(`~\\${under}`);
+      else if(/^[A-Za-z]:[\\/]/.test(path))names.add(`${path.slice(0,2).toUpperCase()}\\${path.slice(3).split(/[\\/]/)[0]??''}`.replace(/\\$/,'\\'));
+      else names.add(path);
+    }
+    return [...names];
+  }
   for(const path of paths){
     if(path.startsWith(`${home}/Library/Mobile Documents`))names.add('iCloud Drive');
     else if(path.startsWith(`${home}/`))names.add(`~/${path.slice(home.length+1).split('/')[0]}`);
@@ -19,8 +31,11 @@ export function deniedFolders(paths:string[],home=homedir()) {
   return [...names];
 }
 
-export function deniedMessage(paths:string[],home=homedir()) {
-  const names=deniedFolders(paths,home),shown=names.slice(0,3).join(', ')+(names.length>3?` and ${names.length-3} more`:'');
+export function deniedMessage(paths:string[],home=homedir(),platform:NodeJS.Platform=process.platform) {
+  const names=deniedFolders(paths,home,platform),shown=names.slice(0,3).join(', ')+(names.length>3?` and ${names.length-3} more`:'');
+  // Windows has no per-app folder grant to switch on: a refusal comes from the folder's own
+  // permissions, a disconnected drive, or OneDrive not being signed in.
+  if(platform==='win32')return `FarFromDesk can't read ${shown}. Check that your Windows account can open that folder in File Explorer, that its drive is connected, and for OneDrive that OneDrive is running and signed in. Then click Detect apps.`;
   return `FarFromDesk can't read ${shown}. Allow it in System Settings > Privacy & Security > Files and Folders > FarFromDesk, or Full Disk Access if FarFromDesk isn't listed. Then click Detect apps.`;
 }
 
