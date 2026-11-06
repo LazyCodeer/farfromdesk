@@ -134,6 +134,9 @@ test('the helper\'s own sentences reach the owner; a hang is reported as a hang'
   await assert.rejects(internal.packTool('s', 'mail_recent', {}), /APP_TOOL_FAILED: mail_recent did not run/);
   const slow = recording(async () => { throw Object.assign(new Error('Command failed'), { killed: true, stdout: '' }); }).control;
   await assert.rejects(slow.packTool('s', 'music_current', {}), /APP_TOOL_FAILED: music_current did not run: Media did not answer in time/);
+  const stuck = recording(async () => { throw Object.assign(new Error('Command failed'), { killed: true, stdout: '' }); }).control;
+  await assert.rejects(stuck.packTool('s', 'calendar_list_events', {}), /APP_TOOL_REFUSED: Outlook did not answer in time\. It may be waiting for you on this PC, for example to sign in/);
+  await assert.rejects(stuck.packTool('s', 'reminders_add', { title: 'x' }), /I cannot tell whether the change was made/);
   const garbled = recording(async () => ({ stdout: 'not json', stderr: '' })).control;
   await assert.rejects(garbled.packTool('s', 'music_current', {}), /unreadable answer/);
 });
@@ -328,4 +331,23 @@ test('tool ranking on Windows: a trigram stand-in for the Mac embedding helper, 
   assert.equal(windowsToolApp('Windows Explorer', 'explorer'), 'File Explorer');
   assert.equal(windowsToolApp('Spotify', 'Spotify'), 'Media');
   assert.equal(windowsToolApp('Comet', 'comet'), 'Comet');
+});
+
+// Opt-in, read-only, against the real Outlook, OneNote and media controls of this PC: set
+// FFD_LIVE_APP_TOOLS=1. It never writes, and it asserts only on shape, so nothing the tools read
+// is printed or kept. Outlook, if it is closed, starts in the background, and it can open a
+// sign-in window for an account that needs one: run this only while you are at the PC.
+test('live, read-only: the real Outlook, OneNote and media controls answer', { skip: !onWindows || process.env.FFD_LIVE_APP_TOOLS !== '1', timeout: 180000 }, async () => {
+  const control = new DesktopControl(prefs as any, driver as any, undefined as any, 'win32');
+  for (const [tool, args, shape] of [
+    ['calendar_list_events', { days: '7' }, /^(\d+ event\(s\):|There is nothing on your calendar)/],
+    ['reminders_list', {}, /^(- |There are no)/],
+    ['mail_find', { query: 'zzzz-no-such-subject-zzzz' }, /^No message in Inbox had/],
+    ['notes_find', { query: 'zzzz-no-such-note-zzzz' }, /^No note in OneNote mentions/],
+    ['music_current', {}, /(player state:|Nothing is playing)/],
+  ] as const) {
+    const result = await control.packTool('live', tool, args as Record<string, string>);
+    assert.equal(result.ok, true, tool);
+    assert.match(String(result.output), shape, `${tool} answered in an unexpected shape`);
+  }
 });

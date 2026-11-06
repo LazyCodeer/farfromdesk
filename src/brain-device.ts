@@ -56,8 +56,9 @@ export function devicePlanIssue(plan: DevicePlan): string | null {
  * there. Keeping both paths means the general promise ("write this down where I am") does
  * not silently become Notes-only.
  */
-export function notesWritePlan(app: string, body: string): DevicePlan {
-  const tool = toolByName('notes_create_note');
+export function notesWritePlan(app: string, body: string, platform: NodeJS.Platform = process.platform): DevicePlan {
+  // The Notes tool of this computer: Apple Notes on a Mac, OneNote on Windows.
+  const tool = toolByName('notes_create_note', platform);
   if (tool && app.toLowerCase() === tool.app.toLowerCase()) return { action: 'app_tool', tool: tool.name, app, args: { body } };
   return { action: 'type', app, text: body };
 }

@@ -496,6 +496,10 @@ export class DesktopControl {
         stdout=String((e as {stdout?:string}).stdout??'');
         if(!stdout.trim()){
           const killed=(e as {killed?:boolean}).killed===true||/ETIMEDOUT|timed out/i.test(String((e as Error).message));
+          // Measured live on this PC: Outlook started in the background by a call can open a sign-in
+          // window and wait there, and every COM call waits with it. The owner is the only one who can
+          // answer it, so the sentence says where to look rather than calling it a fault.
+          if(killed&&(tool.app==='Outlook'||tool.app==='OneNote'))throw new Error(`APP_TOOL_REFUSED: ${tool.app} did not answer in time. It may be waiting for you on this PC, for example to sign in to an account; open ${tool.app}, deal with what it shows, then ask me again.${tool.writes?' I cannot tell whether the change was made, so check before asking for it again.':''}`);
           throw new Error('APP_TOOL_FAILED: '+tool.name+' did not run: '+(killed?`${tool.app} did not answer in time`:String((e as Error).message??e).replace(/\s+/g,' ').slice(0,300)));
         }
       }

@@ -377,10 +377,13 @@ test('a bare write keeps the owner words verbatim and drops only the filler', ()
 test('a bare write in Notes runs the reviewed Notes tool, not a blind type', () => {
   // Measured live: the blind type landed in the Notes search field while the owner was told
   // it had been written down. The pack is what makes the claim match the driver's report.
-  assert.deepEqual(notesWritePlan('Notes', 'tomorrow meeting at 10pm'), { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'tomorrow meeting at 10pm' } });
-  assert.deepEqual(notesWritePlan('notes', 'buy milk').action, 'app_tool');
+  assert.deepEqual(notesWritePlan('Notes', 'tomorrow meeting at 10pm', 'darwin'), { action: 'app_tool', tool: 'notes_create_note', app: 'Notes', args: { body: 'tomorrow meeting at 10pm' } });
+  assert.deepEqual(notesWritePlan('notes', 'buy milk', 'darwin').action, 'app_tool');
   // Any other app keeps the general promise: the owner's own words, typed where they are.
-  assert.deepEqual(notesWritePlan('TextEdit', 'buy milk'), { action: 'type', app: 'TextEdit', text: 'buy milk' });
+  assert.deepEqual(notesWritePlan('TextEdit', 'buy milk', 'darwin'), { action: 'type', app: 'TextEdit', text: 'buy milk' });
+  // On Windows the reviewed Notes tool writes a OneNote page.
+  assert.deepEqual(notesWritePlan('OneNote', 'buy milk', 'win32'), { action: 'app_tool', tool: 'notes_create_note', app: 'OneNote', args: { body: 'buy milk' } });
+  assert.deepEqual(notesWritePlan('Notepad', 'buy milk', 'win32'), { action: 'type', app: 'Notepad', text: 'buy milk' });
 });
 
 test('an app tool plan is validated and reported like any other plan', async () => {
