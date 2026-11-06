@@ -45,6 +45,24 @@ public static class FfdUser32 {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+  delegate bool EnumProc(IntPtr h, IntPtr lp);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lp);
+  // Visible, titled, unowned top-level windows that the shell cloaks because they sit on another
+  // virtual desktop. UI Automation leaves these out of its root list, so a browser on desktop 2
+  // otherwise looks closed.
+  public static IntPtr[] OtherDesktopWindows() {
+    var found = new System.Collections.Generic.List<IntPtr>();
+    EnumWindows(delegate (IntPtr h, IntPtr lp) {
+      int cloaked = 0;
+      if (IsWindowVisible(h) && GetWindow(h, 4) == IntPtr.Zero && GetWindowTextLength(h) > 0
+        && DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked == 2) found.Add(h);
+      return true;
+    }, IntPtr.Zero);
+    return found.ToArray();
+  }
   [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -207,7 +225,13 @@ function Get-Windows {
   $rows = @()
   $active = [System.Windows.Automation.AutomationElement]::FocusedElement
   $activePid = if ($active) { $active.Current.ProcessId } else { -1 }
-  foreach ($w in $AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+  $tops = @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition))
+  $seen = @{}; foreach ($w in $tops) { try { $seen[[string]$w.Current.NativeWindowHandle] = $true } catch {} }
+  foreach ($h in [FfdUser32]::OtherDesktopWindows()) {
+    if ($seen[[string]$h.ToInt64()]) { continue }
+    try { $e = $AE::FromHandle($h); $pn = (Get-Process -Id $e.Current.ProcessId -ErrorAction Stop).ProcessName; if (@("TextInputHost","ShellExperienceHost","SearchHost","StartMenuExperienceHost","LockApp") -notcontains $pn) { $tops += $e } } catch {}
+  }
+  foreach ($w in $tops) {
     try {
       $title = $w.Current.Name; $procId = $w.Current.ProcessId
       if (-not $title) { continue }

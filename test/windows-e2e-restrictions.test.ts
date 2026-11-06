@@ -119,3 +119,20 @@ test('the Windows browser helper never brings an app-launch page (t.me) to the f
   for (const t of ['Telegram: Launch @farfromhomelocaltestingbot', 'Telegram: Contact @someone', 'Launch Meeting - Zoom']) assert.ok(re.test(t), t);
   for (const t of ['Inbox (3) - Gmail', 'Telegram Web', 'GitHub - ranxianglei/billion-context']) assert.ok(!re.test(t), t);
 });
+
+test('the Windows coordinator is told the new_tab fields the schema accepts', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/master-channel.ts', import.meta.url), 'utf8');
+  const fields = readFileSync(new URL('../src/desktop-control.ts', import.meta.url), 'utf8');
+  assert.match(fields, /new_tab:\['windowRef','url','actionId'\]/);
+  assert.match(src, /new_tab with a windowRef from list_tabs and url/);
+  assert.doesNotMatch(src, /new_tab with browser/);
+});
+
+test('the Windows desktop helper lists windows on other virtual desktops', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../native/desktop-windows.ps1', import.meta.url), 'utf8');
+  assert.match(src, /public static IntPtr\[\] OtherDesktopWindows\(\)/);
+  assert.match(src, /cloaked == 2/, 'only windows the shell cloaks for another desktop');
+  assert.match(src, /foreach \(\$h in \[FfdUser32\]::OtherDesktopWindows\(\)\)/);
+});
