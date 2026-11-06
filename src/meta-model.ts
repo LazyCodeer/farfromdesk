@@ -7,6 +7,20 @@ import { PACKS } from './app-tools/packs.js';
 import type { MetaObserver } from './meta-timeline.js';
 export const Interpretation=z.object({intent:z.enum(['task','status','update','clarify','manage','chat','device']),normalized:z.string().min(1).max(32000),provider:z.enum(['codex','claude','muse','deepseek','cursor','unspecified']),taskIds:z.array(z.string().max(1000)).max(20),operation:z.enum(['none','add_todo','set_todo','pause_session','resume_session','undo_memory','watch','stop_watching','restart','recent_sessions','list_items']).optional(),hours:z.number().int().min(1).max(168).optional(),sessionId:z.string().max(100).optional(),title:z.string().max(200).optional(),itemStatus:z.enum(['unchanged','not started','in progress','waiting on owner','blocked','done']).optional(),reply:z.string().max(3800).optional(),device:DevicePlan.optional()}).strict();
 export type Interpretation=z.infer<typeof Interpretation>;
+/**
+ * Browser tool wording for this computer. On Windows the tabs are read through UI Automation
+ * (browser-windows.ts): Chrome, Edge, Brave and Comet, no Safari, and only the selected tab of
+ * each window has a known address.
+ */
+export function browserToolText(platform:NodeJS.Platform=process.platform){
+  const win=platform==='win32',here=win?' On this PC that works in Chrome, Edge, Brave and Comet.':'';
+  return {
+    listTabs:win?'List the open tabs in every running browser on this PC (Chrome, Edge, Brave, Comet). Only the selected tab of each window shows its URL; the others show their title (url null). Firefox tabs cannot be read.':'List the open tabs in every running browser (Comet, Chrome, Edge, Brave, Safari).',
+    readTab:'Read what is on one open browser tab (its page text and structure). match is words from the tab title or URL, e.g. "github" or "PR 49". Set screenshot true when the owner wants to see the page; the image is sent to them. Set full_quality true as well when they ask for full quality, the original or to zoom in: the image is also sent as an uncompressed file.'+here,
+    focusTab:'Bring one open browser tab to the front so you can click and type in it. match is words from its title or URL. Required before any act in a browser.'+here,
+    openPage:win?'Open a web page in a new tab of the owner\'s browser on this PC. url must be a full https address you work out from the request ("gmail" is https://mail.google.com). browser is chrome, edge, brave or comet: the one preferences.md names for this site, or the one the owner chose. If neither says and more than one browser is running, ask the owner first. The tab opens in that browser\'s most recently used window.':'Open a web page in a new tab of the owner\'s browser. url must be a full https address you work out from the request ("gmail" is https://mail.google.com). browser is comet, chrome, edge or brave: the one preferences.md names for this site, or the one the owner chose. If neither says and more than one browser is running, ask the owner first.',
+  };
+}
 // Tuned against 24 owner-message cases (scratch eval, 2026-10-28): 24/24 intents at low effort, median 2.6s.
 export const BRAIN_PROMPT=`You are the FarFromDesk brain. The owner sends short phone messages (often typed fast or dictated, so expect typos) to control coding sessions on their computer. You read one message and decide what it means. You never do the work yourself: code outside you acts on your JSON. When you have decided, call the decide tool with your answer.
 
@@ -144,8 +158,8 @@ export class MetaModel {
           // decides. No pre-picked shortlist and no phrase rules choose for it.
           ...(apps?{
             app_tool:tool({description:'Run one reviewed tool from appTools on the owner\'s Mac with its arguments, and get back what it read or did, or why it refused. Call it as many times as the request needs.',inputSchema:z.object({tool:z.string().max(80),args:z.record(z.string(),z.union([z.string(),z.number(),z.boolean()])).optional()}),execute:async(i)=>{authorize?.();return apps.run(i.tool,Object.fromEntries(Object.entries(i.args??{}).map(([k,v])=>[k,String(v)])));}}),
-            list_tabs:tool({description:'List the open tabs in every running browser (Comet, Chrome, Edge, Brave, Safari).',inputSchema:z.object({}),execute:async()=>{authorize?.();return apps.tabs();}}),
-            read_tab:tool({description:'Read what is on one open browser tab (its page text and structure). match is words from the tab title or URL, e.g. "github" or "PR 49". Set screenshot true when the owner wants to see the page; the image is sent to them. Set full_quality true as well when they ask for full quality, the original or to zoom in: the image is also sent as an uncompressed file.',inputSchema:z.object({match:z.string().min(1).max(160),screenshot:z.boolean().optional(),full_quality:z.boolean().optional()}),execute:async(i)=>{authorize?.();return apps.readTab(i.match,i.full_quality?'file':i.screenshot===true);}}),
+            list_tabs:tool({description:browserToolText().listTabs,inputSchema:z.object({}),execute:async()=>{authorize?.();return apps.tabs();}}),
+            read_tab:tool({description:browserToolText().readTab,inputSchema:z.object({match:z.string().min(1).max(160),screenshot:z.boolean().optional(),full_quality:z.boolean().optional()}),execute:async(i)=>{authorize?.();return apps.readTab(i.match,i.full_quality?'file':i.screenshot===true);}}),
             ...(apps.reminders?{
               // A reminder is a message the app sends the owner later, the way OpenClaw's agent uses
               // its own cron tool. Apple Reminders is a separate app tool; use it when they name it.
@@ -154,8 +168,8 @@ export class MetaModel {
               reminder_list:tool({description:'List the owner\'s active reminders with their ids.',inputSchema:z.object({}),execute:async()=>{authorize?.();return apps.reminders!.list();}}),
               reminder_cancel:tool({description:'Cancel one active reminder by the id reminder_list gave.',inputSchema:z.object({id:z.string().min(4).max(40)}),execute:async(i)=>{authorize?.();return apps.reminders!.cancel(i.id);}}),
             }:{}),
-            focus_tab:tool({description:'Bring one open browser tab to the front so you can click and type in it. match is words from its title or URL. Required before any act in a browser.',inputSchema:z.object({match:z.string().min(1).max(160)}),execute:async(i)=>{authorize?.();return apps.focusTab(i.match);}}),
-            open_page:tool({description:'Open a web page in a new tab of the owner\'s browser. url must be a full https address you work out from the request ("gmail" is https://mail.google.com). browser is comet, chrome, edge or brave: the one preferences.md names for this site, or the one the owner chose. If neither says and more than one browser is running, ask the owner first.',inputSchema:z.object({url:z.string().min(8).max(2000),browser:z.string().min(2).max(20)}),execute:async(i)=>{authorize?.();return apps.openPage(i.url,i.browser);}}),
+            focus_tab:tool({description:browserToolText().focusTab,inputSchema:z.object({match:z.string().min(1).max(160)}),execute:async(i)=>{authorize?.();return apps.focusTab(i.match);}}),
+            open_page:tool({description:browserToolText().openPage,inputSchema:z.object({url:z.string().min(8).max(2000),browser:z.string().min(2).max(20)}),execute:async(i)=>{authorize?.();return apps.openPage(i.url,i.browser);}}),
             find_app:tool({description:'Whether an app is installed on this Mac, and whether it is running. Check before opening an app the owner names.',inputSchema:z.object({query:z.string().min(1).max(80)}),execute:async(i)=>{authorize?.();return apps.findApp(i.query);}}),
             write_file:tool({description:'Write a new text file the owner asked for (for a sheet, a .csv with a header row) in Downloads, or "Documents/<name>". Never overwrites. Returns the full path.',inputSchema:z.object({name:z.string().min(3).max(200),content:z.string().max(2_000_000)}),execute:async(i)=>{authorize?.();return apps.writeFile(i.name,i.content);}}),
             open_file:tool({description:'Open a file from the owner\'s folders, optionally in a named app (a .csv in Numbers).',inputSchema:z.object({path:z.string().min(1).max(1000),app:z.string().max(80).optional()}),execute:async(i)=>{authorize?.();return apps.openFile(i.path,i.app);}}),
