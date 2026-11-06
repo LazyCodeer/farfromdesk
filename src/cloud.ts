@@ -1,15 +1,19 @@
 // FarFromDesk Pro cloud: while the laptop sleeps the cloud answers the same Telegram bot,
 // queues work that needs this computer and hands it back here when the laptop wakes.
+import { hostname } from 'node:os';
 import type { Store } from './store.js';
 import type { Telegram } from './telegram.js';
-import { apply as applyBackup,bundleHash,collect,isRecoveryCode,newKeys,recoveryProof,seal,unseal,type Keys } from './settings-backup.js';
+import { memoryHashes,mergeMemory,readMemory,writeMemory,type MemFiles } from './memory-sync.js';
+import { openWith,sealWith,apply as applyBackup,bundleHash,collect,isRecoveryCode,newKeys,recoveryProof,seal,unseal,type Keys } from './settings-backup.js';
 
 export const CLOUD_URL=(process.env.FFD_CLOUD_URL??'https://cloud.farfromdesk.com').replace(/\/+$/,'');
-type Status={fired?:string[];plan?:string;credits?:{messages?:number};mode?:string;queue?:{id:string;at:number;text:string;messageId:number}[];checkoutUrl?:string};
+type Status={fired?:string[];plan?:string;credits?:{messages?:number};mode?:string;queue?:{id:string;at:number;text:string;messageId:number}[];checkoutUrl?:string;holder?:boolean;laptops?:{name:string;awake:boolean;holder:boolean;me?:boolean}[]};
 
 export class Cloud {
   private beating?:Promise<void>; private acked:string[]=[]; private sentMemory?:string; private pro=false;
   private sentReminders?:string; private fired=new Set<string>(); private lastOk=0;
+  /** Laptops on this bot, from the last heartbeat. */
+  laptops:NonNullable<Status['laptops']>=[];
   /** Upcoming plain reminders, set by main. */
   reminders:()=>{id:string;at:number;text:string}[]=()=>[];
   /** The private state folder that settings backups read and restore. Set by main. */
@@ -24,11 +28,11 @@ export class Cloud {
   private async register() {
     const who=this.telegram.cloudIdentity();
     if(!who)throw new Error('connect Telegram first');
-    const r=await this.post('/v1/accounts',who);
+    const r=await this.post('/v1/accounts',{...who,name:this.store.get('laptop-name')??hostname().replace(/\.local$/,'')});
     if(r.status!==200||typeof r.body.accountId!=='string'||typeof r.body.deviceKey!=='string')throw new Error(r.body.error??`cloud ${r.status}`);
     this.store.set('cloud-account',r.body.accountId);this.store.set('cloud-key',r.body.deviceKey);this.sentMemory=undefined;
   }
-  private apply(s:Status) {this.pro=s.plan==='pro';this.telegram.paused=s.mode==='cloud';if(Array.isArray(s.fired))this.fired=new Set(s.fired);}
+  private apply(s:Status) {this.pro=s.plan==='pro';this.telegram.paused=s.mode==='cloud'||s.holder===false;if(Array.isArray(s.laptops))this.laptops=s.laptops;if(Array.isArray(s.fired))this.fired=new Set(s.fired);}
 
   backupView(){const on=!!this.keys();return {enabled:on,lastBackupAt:Number(this.store.get('backup-at'))||undefined,needsPro:on&&this.lastOk>0&&!this.pro,authenticator:on&&this.store.get('backup-totp')==='on'};}
   private keys():Keys|undefined{try{const k=JSON.parse(this.store.get('backup-keys')||'null');return k?.key?k:undefined;}catch{return undefined;}}
@@ -110,8 +114,50 @@ export class Cloud {
     }catch(e){return `The cloud could not be reached (${e instanceof Error?e.message:'unknown error'}). This laptop keeps answering.`;}
   }
 
+  private memorySynced=0;
+  /** With 2+ laptops on Pro and settings backup on, memory files are merged through the cloud, sealed with the backup key. */
+  async syncMemory(force=false) {
+    const keys=this.keys(),root=this.backupRoot;
+    if(!keys||!root||!this.pro||this.laptops.length<2||(!force&&Date.now()-this.memorySynced<60_000))return;
+    this.memorySynced=Date.now();
+    const base=JSON.parse(this.store.get('memory-sync-base')||'{"rev":0,"files":{}}') as {rev:number;files:Record<string,string>};
+    const local=readMemory(root),localHash=JSON.stringify(memoryHashes(local));
+    let r=await this.authed('/v1/memory/get',{});
+    for(let i=0;i<3&&r.status===200;i++){
+      const rev=Number(r.body.rev)||0;
+      if(rev===base.rev&&localHash===JSON.stringify(base.files))return;
+      const remote=(r.body.blob?openWith(r.body.blob,keys):{}) as MemFiles;
+      const merged=mergeMemory(rev===0?{}:base.files,local,remote);
+      const put=JSON.stringify(memoryHashes(merged))===JSON.stringify(memoryHashes(remote))?{status:200,body:{rev}}:await this.authed('/v1/memory/put',{base:rev,blob:sealWith(merged,keys)});
+      if(put.status===409){r={status:200,body:put.body};continue;}
+      if(put.status!==200)return;
+      writeMemory(root,local,merged);
+      this.store.set('memory-sync-base',JSON.stringify({rev:Number(put.body.rev)||rev,files:memoryHashes(merged)}));
+      return;
+    }
+  }
+
+  /** /laptops: which laptops share this bot and which one answers. */
+  laptopList():string {
+    if(this.laptops.length<2)return 'Only this laptop is connected. Install FarFromDesk on another laptop with the same Telegram bot to add it (needs Pro).';
+    return 'Your laptops:\n'+this.laptops.map(l=>`- ${l.name}${l.me?' (this one)':''}: ${l.holder?'answering':l.awake?'awake':'asleep'}`).join('\n')+'\nSend /on <name> <message> to pick one.';
+  }
+
+  /** /on <name> <text>: send a message to another laptop through the cloud. */
+  async forward(name:string,text:string,messageId:number):Promise<string> {
+    try {
+      const r=await this.authed('/v1/forward',{to:name,text,messageId});
+      if(r.status===404)return `No laptop called "${name}". Yours: ${(r.body.laptops??[]).map((l:any)=>l.name).join(', ')||'none'}.`;
+      if(r.status===429)return "That laptop's queue is full.";
+      if(r.status!==200)throw new Error(r.body.error??`cloud ${r.status}`);
+      return r.body.awake?`Sent to ${r.body.name}.`:`${r.body.name} is asleep. It gets this when it wakes.`;
+    }catch(e){return `The cloud could not be reached (${e instanceof Error?e.message:'unknown error'}).`;}
+  }
+
   /** Every 30s once registered: keeps the cloud from taking over, picks up work saved while asleep. */
-  beat():Promise<void> {
+  beat(force=true):Promise<void> {
+    // Main calls every 10s; with one laptop every 30s is enough.
+    if(!force&&this.laptops.length<2&&Date.now()-this.lastOk<25_000)return Promise.resolve();
     // One heartbeat at a time; a caller during one waits for it.
     if(!this.beating)this.beating=this.beatOnce().finally(()=>{this.beating=undefined;});
     return this.beating;
@@ -126,6 +172,8 @@ export class Cloud {
       const rem=this.pro?this.reminders():undefined,remJson=rem&&JSON.stringify(rem);
       if(rem&&remJson!==this.sentReminders)body.reminders=rem;
       const r=await this.post('/v1/heartbeat',body,auth);
+      // This laptop was dropped from the account (pruned or replaced): join again.
+      if(r.status===401){await this.register();return;}
       if(r.status!==200)return;
       if(body.memory!==undefined)this.sentMemory=body.memory;
       if(body.reminders!==undefined)this.sentReminders=remJson;
@@ -133,6 +181,7 @@ export class Cloud {
       this.acked=this.acked.filter(id=>!body.ack.includes(id));
       this.apply(r.body);
       await this.backupIfChanged(auth).catch(()=>{});
+      await this.syncMemory().catch(()=>{});
       // Replay saved requests as the original Telegram messages, so dedup still holds. Acked on the next beat.
       if(this.telegram.closed)return;
       for(const q of r.body.queue??[]){

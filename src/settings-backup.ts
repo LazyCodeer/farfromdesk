@@ -60,6 +60,10 @@ export function newKeys(passphrase:string):Keys&{recoveryCode:string;proof:strin
   return {key:key.toString('base64'),wraps:{pass:wrap(passphrase,key),code:wrap(raw,key)},recoveryCode,proof:recoveryProof(raw)};
 }
 
+/** Memory sync: sealed with the backup key only, so any laptop holding it can read it. */
+export const sealWith=(v:unknown,keys:Keys)=>JSON.stringify(lock(Buffer.from(keys.key,'base64'),Buffer.from(JSON.stringify(v),'utf8')));
+export const openWith=(blob:string,keys:Keys):unknown=>JSON.parse(unlock(Buffer.from(keys.key,'base64'),JSON.parse(blob)).toString('utf8'));
+export {safePath};
 export function seal(b:Bundle,keys:Keys):string {
   return JSON.stringify({v:2,wraps:keys.wraps,...lock(Buffer.from(keys.key,'base64'),Buffer.from(JSON.stringify(b),'utf8'))});
 }

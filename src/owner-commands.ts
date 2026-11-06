@@ -22,6 +22,7 @@ export const TELEGRAM_COMMANDS=[
   {command:'codex',description:'Talk to your Codex coordinator'},
   {command:'brain',description:'Use the Meta brain, without fallback'},
   {command:'cloud',description:'Answer from the cloud while your laptop sleeps (Pro)'},
+  {command:'laptops',description:'List your laptops; /on <name> <message> sends to one (Pro)'},
   {command:'muse',description:'Run Muse Code on this project'},
   {command:'deepseek',description:'Run DeepSeek Harness on this project'},
   {command:'cursor',description:'Run Cursor on this project'},
