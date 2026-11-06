@@ -2,6 +2,7 @@
 // queues work that needs this computer and hands it back here when the laptop wakes.
 import type { Store } from './store.js';
 import type { Telegram } from './telegram.js';
+import { apply as applyBackup,bundleHash,collect,newKey,seal,unseal } from './settings-backup.js';
 
 export const CLOUD_URL=(process.env.FFD_CLOUD_URL??'https://cloud.farfromdesk.com').replace(/\/+$/,'');
 type Status={fired?:string[];plan?:string;credits?:{messages?:number};mode?:string;queue?:{id:string;at:number;text:string;messageId:number}[];checkoutUrl?:string};
@@ -11,6 +12,8 @@ export class Cloud {
   private sentReminders?:string; private fired=new Set<string>(); private lastOk=0;
   /** Upcoming plain reminders, set by main. */
   reminders:()=>{id:string;at:number;text:string}[]=()=>[];
+  /** The private state folder that settings backups read and restore. Set by main. */
+  backupRoot?:string; private backupChecked=0;
   constructor(private store:Store,private telegram:Telegram,private memory:()=>string,private base=CLOUD_URL,private fetcher:typeof fetch=fetch) {}
   get registered(){return !!this.auth();}
   private auth(){const id=this.store.get('cloud-account'),key=this.store.get('cloud-key');return id&&key?`Bearer ${id}.${key}`:undefined;}
@@ -26,6 +29,42 @@ export class Cloud {
     this.store.set('cloud-account',r.body.accountId);this.store.set('cloud-key',r.body.deviceKey);this.sentMemory=undefined;
   }
   private apply(s:Status) {this.pro=s.plan==='pro';this.telegram.paused=s.mode==='cloud';if(Array.isArray(s.fired))this.fired=new Set(s.fired);}
+
+  backupView(){return {enabled:!!this.store.get('backup-key'),lastBackupAt:Number(this.store.get('backup-at'))||undefined,needsPro:!!this.store.get('backup-key')&&this.lastOk>0&&!this.pro};}
+  /** Start backing up this computer's settings, sealed with the owner's passphrase. */
+  enableBackup(passphrase:unknown){
+    if(typeof passphrase!=='string'||passphrase.length<8)throw new Error('Use a passphrase of at least 8 characters.');
+    const {key,salt}=newKey(passphrase);
+    this.store.set('backup-key',key);this.store.set('backup-salt',salt);this.store.set('backup-hash','');this.backupChecked=0;
+    void this.beat();
+    return this.backupView();
+  }
+  disableBackup(){for(const k of ['backup-key','backup-salt','backup-hash'])this.store.set(k,'');return this.backupView();}
+  /** Bring back the settings saved from another computer on the same bot. */
+  async restoreBackup(passphrase:unknown){
+    if(typeof passphrase!=='string'||!passphrase)throw new Error('Enter your backup passphrase.');
+    if(!this.backupRoot)throw new Error('Settings backup is not available here.');
+    if(!this.auth())await this.register();
+    let r=await this.post('/v1/backup/get',{},this.auth());
+    if(r.status===401){await this.register();r=await this.post('/v1/backup/get',{},this.auth());}
+    if(r.status===404)throw new Error('There is no settings backup for this Telegram bot yet.');
+    if(r.status!==200||typeof r.body.blob!=='string')throw new Error(r.body.error??`cloud ${r.status}`);
+    let opened;
+    try{opened=unseal(r.body.blob,passphrase);}catch{throw new Error("That passphrase doesn't open this backup.");}
+    applyBackup(this.store,this.backupRoot,opened.bundle);
+    // Keep backing up with the same passphrase from this computer.
+    this.store.set('backup-key',opened.key);this.store.set('backup-salt',opened.salt);this.store.set('backup-hash','');this.backupChecked=0;
+    return this.backupView();
+  }
+  private async backupIfChanged(auth:string){
+    const key=this.store.get('backup-key'),salt=this.store.get('backup-salt');
+    if(!this.pro||!key||!salt||!this.backupRoot||Date.now()-this.backupChecked<5*60_000)return;
+    this.backupChecked=Date.now();
+    const bundle=collect(this.store,this.backupRoot),hash=bundleHash(bundle);
+    if(hash===this.store.get('backup-hash'))return;
+    const r=await this.post('/v1/backup',{blob:seal(bundle,key,salt)},auth);
+    if(r.status===200){this.store.set('backup-hash',hash);this.store.set('backup-at',String(r.body.at??Date.now()));}
+  }
 
   /** Should this laptop send a due plain reminder? The cloud sends them while it holds the bot. */
   reminder(occurrence:string,dueAt:number,now=Date.now()):'send'|'hold'|'fired' {
@@ -72,6 +111,7 @@ export class Cloud {
       this.lastOk=Date.now();
       this.acked=this.acked.filter(id=>!body.ack.includes(id));
       this.apply(r.body);
+      await this.backupIfChanged(auth).catch(()=>{});
       // Replay saved requests as the original Telegram messages, so dedup still holds. Acked on the next beat.
       if(this.telegram.closed)return;
       for(const q of r.body.queue??[]){

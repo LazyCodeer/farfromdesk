@@ -59,7 +59,7 @@ export class Router {
   coordinator?:Coordinator;
   /** Server mode's low battery answer, set by main. */
   serverMode?:{setLowBatteryOk(ok:boolean):Promise<string>};
-  cloud?:{command(on:boolean):Promise<string>;reminder?(occurrence:string,dueAt:number):'send'|'hold'|'fired'};
+  cloud?:{command(on:boolean):Promise<string>;reminder?(occurrence:string,dueAt:number):'send'|'hold'|'fired';backupView?():unknown;enableBackup?(passphrase:unknown):unknown;disableBackup?():unknown;restoreBackup?(passphrase:unknown):Promise<unknown>};
   brain:MetaBrain;
   schedules:Schedules;
   scheduledBrief?:(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean)=>Promise<'queued'|'already-queued'|'retry'|'invalid'>;
