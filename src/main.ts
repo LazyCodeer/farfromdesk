@@ -25,6 +25,7 @@ import { Workers } from './workers.js';
 import { PortableNative } from './portable-native.js';
 import { portableAgents } from './platform.js';
 import { acquireServiceLock } from './service-lock.js';
+import { PrWatch } from './pr-watch.js';
 import { MorningBrief } from './morning-brief.js';
 import { ProofScopeFence } from './proof-contract-scope.js';
 import { StuckDetection } from './stuck-detection.js';
@@ -45,6 +46,7 @@ const approvals=new Approvals(store),native=portableAgents?new PortableNative(st
 // as observations and cannot establish a task verdict.
 try{new ProofScopeFence(store);}catch{console.error('Owner proof bindings are unavailable.');}
 router.morningBrief=new MorningBrief(store,router);
+const prWatch=new PrWatch(store);
 router.stuckDetection=new StuckDetection(store,router);
 router.stuckCiWatch=new StuckCiWatch(store,router);
 router.stuckDetection.recoverInputs();
@@ -121,7 +123,7 @@ router.probeApps();
 // A paused bridge must not keep touching protected provider folders.
 const discovery=setInterval(()=>{if(power.enabled){void coordinator.refresh();void masters.discover();}},30000);
 const setupRecovery=setInterval(()=>{if(power.enabled){void masters.reconcileDesktopSetup();workers.reconcileDesktop();}},5000);
-const maintenance=setInterval(()=>{power.apply();router.probeApps();router.autoCloseStale();if(power.enabled){router.morningBrief?.tick();void router.stuckDetection?.tick().catch(()=>console.error('Stuck tasks could not be checked.'));void router.stuckCiWatch?.tick().catch(()=>console.error('CI watches could not be checked.'));}void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));if(wa.status==='connected'||telegram.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
+const maintenance=setInterval(()=>{power.apply();router.probeApps();router.autoCloseStale();if(power.enabled){router.morningBrief?.tick();void prWatch.tick().catch(()=>console.error('PR watches could not be checked.'));void router.stuckDetection?.tick().catch(()=>console.error('Stuck tasks could not be checked.'));void router.stuckCiWatch?.tick().catch(()=>console.error('CI watches could not be checked.'));}void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));if(wa.status==='connected'||telegram.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
 // Lid-closed status is read from the system, not assumed, while it is on.
 const cloudBeat=setInterval(()=>{if(store.controlChannel()==='telegram')void cloud.beat();},30000);cloudBeat.unref();
 const serverModePoll=setInterval(()=>{if(power.lidClosedEnabled)void power.refreshServerMode();},5000);
