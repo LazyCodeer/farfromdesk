@@ -13,7 +13,7 @@ import { WINDOWS_HELPER, windowsToolApp } from './app-tools/windows/plans.js';
 import { windowsPowerShell } from './power.js';
 import type { AppTool, AppToolPlan } from './app-tools/types.js';
 
-export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','app_tools','app_tool','stop'] as const;
+export const desktopActions=['status','check_permissions','list_apps','list_browsers','open_app','list_tabs','new_tab','focus_tab','navigate_tab','close_tab','list_windows','read_window','read_tab','click','double_click','right_click','drag','scroll','type_text','press_key','pick_file','chat_controls','chat_action','app_tools','app_tool','stop'] as const;
 /**
  * Coordinates are window-local pixels of the get_window_state screenshot, which is
  * the only addressing that works on a canvas: Flutter, WebGL and any custom-drawn
@@ -27,7 +27,8 @@ export const desktopInput=z.object({
   appRef:z.string().uuid().optional(),windowRef:z.string().uuid().optional(),tabRef:z.string().uuid().optional(),
   snapshotId:z.string().uuid().optional(),controlId:z.string().uuid().optional(),actionId:z.string().uuid().optional(),
   url:z.string().max(4096).optional(),text:z.string().max(8000).optional(),expectedDraft:z.string().max(8000).optional(),
-  key:z.enum(['return','tab','escape','up','down','left','right']).optional(),
+  // A letter or digit is a shortcut (ctrl+s) and needs a modifier; checked in act.
+  key:z.union([z.enum(['return','tab','escape','up','down','left','right']),z.string().regex(/^[a-z0-9]$/)]).optional(),
   chatAction:z.enum(['new','draft','send']).optional(),
   x:pixel.optional(),y:pixel.optional(),toX:pixel.optional(),toY:pixel.optional(),
   amount:z.number().int().min(1).max(50).optional(),
@@ -122,7 +123,9 @@ const fields:Record<Input['action'],string[]>={
   right_click:['windowRef','snapshotId','controlId','actionId','x','y','modifier','button','deliveryMode'],
   drag:['windowRef','actionId','x','y','toX','toY','modifier','button','deliveryMode'],
   scroll:['windowRef','snapshotId','controlId','x','y','amount','direction','actionId','deliveryMode'],
-  type_text:['windowRef','snapshotId','controlId','text','actionId','deliveryMode'],press_key:['windowRef','snapshotId','controlId','key','actionId','deliveryMode'],
+  type_text:['windowRef','snapshotId','controlId','text','actionId','deliveryMode'],press_key:['windowRef','snapshotId','controlId','key','modifier','actionId','deliveryMode'],
+  // A file picker (Open, Save as, upload): text is the full path, set in its File name box.
+  pick_file:['windowRef','text','actionId'],
   chat_action:['windowRef','chatAction','text','expectedDraft','actionId'],
   // The reviewed per-app tools, so a coordinator session reads Notes, Calendar or Mail content
   // instead of window chrome. app_tools takes the owner's words; app_tool runs one by name.
@@ -139,7 +142,7 @@ const windowsBrowserActions=['list_browsers','list_tabs','new_tab','focus_tab','
  * from a fresh read (Invoke, Toggle, Value, Scroll), and SendInput for pixels, keys and controls
  * that publish no pattern. Browser tabs are windowsBrowserActions above; app tools run through packTool (src/app-tools/windows).
  */
-const windowsActions=['status','check_permissions','list_apps','list_windows','read_window','open_app','click','double_click','right_click','drag','scroll','type_text','press_key','chat_controls','chat_action','stop'] as const;
+const windowsActions=['status','check_permissions','list_apps','list_windows','read_window','open_app','click','double_click','right_click','drag','scroll','type_text','press_key','pick_file','chat_controls','chat_action','stop'] as const;
 /** Chat recipes off macOS, by process name. Claude's Windows app is the same Electron page, so the same labels. */
 const portableRecipes:Record<string,{composer:string;new:string;send?:string}>={claude:recipes['com.anthropic.claudefordesktop']!};
 const CONTROL_OPS:Record<string,string>={click:'click',double_click:'double',right_click:'right',scroll:'scroll',type_text:'type',press_key:'key'};
@@ -712,6 +715,7 @@ export class DesktopControl {
         // The Windows file dialog keeps a File name box (automation id 1148) and an Open
         // button, so the path is set and the button pressed through UI Automation: no keys.
         const r=await this.portable.call('pick',{...target,path:plan.text},signal);
+        if(r.exists===true)return {action:plan.action,ok:false,observation:String(r.message||'That file already exists. Nothing was replaced.'),changes:null};
         return r.closed===true
           ?{action:plan.action,ok:true,observation:null,changes:'Not confirmed: read the page to check the file name shows next to the upload button.'}
           :{action:plan.action,ok:false,observation:'The file picker is still open after choosing the file, so Windows may be showing a message about it. Read the window to see why.',changes:null};
@@ -783,6 +787,13 @@ export class DesktopControl {
       const elements=(state.elements as any[]).filter(e=>e.password!==true);
       return {state,elements};
     };
+    if(q.action==='pick_file')return this.portableGuard(r.app.name,authorize,async signal=>{
+      if(!q.text)throw new Error('DESKTOP_TEXT_REQUIRED: Give the full path of the file, such as C:\Users\name\Documents\notes.txt.');
+      this.reserve(scope,q);r.snapshot=undefined;
+      const res=await this.portable.call('pick',{...target,app:r.app.name,path:q.text},signal);
+      if(res?.exists===true)return {dispatch:res,closed:false,verified:true,exists:true,next:`${res.message||'That file already exists.'} The Save dialog is still open. Ask the owner whether to replace it or use another name.`};
+      return {dispatch:res,closed:res?.closed===true,verified:false,next:res?.closed===true?'The picker closed with that path. Check the result (finder_find for a saved file, or read the page for an upload).':'The picker is still open, so Windows may be showing a message (for example replace the file?). Read the window to see it.'};
+    });
     if(q.action==='read_window'||q.action==='chat_controls')return this.portableGuard(r.app.name,authorize,async signal=>{
       r.snapshot=undefined;
       const {state,elements}=await readControls(signal);
@@ -835,10 +846,23 @@ export class DesktopControl {
       });
     }
     if(q.action==='drag')throw new Error('DESKTOP_POINT_INCOMPLETE: drag needs x, y, toX and toY in window-local screenshot pixels.');
-    if(!snap||snap.id!==q.snapshotId||!control)throw new Error('DESKTOP_CONTROL_STALE');
+    // A key or shortcut needs no control: it goes to the window (live, 6 Nov 2026: ctrl+shift+s
+    // for Save as was refused as stale five times because no control was named).
+    if(q.action==='press_key'&&q.snapshotId===undefined&&q.controlId===undefined){
+      if(!q.key)throw new Error('DESKTOP_KEY_REQUIRED');
+      if(/^[a-z0-9]$/.test(q.key)&&!q.modifier?.length)throw new Error('DESKTOP_KEY_NEEDS_MODIFIER: A letter or digit is pressed only as a shortcut, with modifier such as ["ctrl"]. Use type_text to type text.');
+      return this.portableGuard(r.app.name,authorize,async signal=>{
+        this.reserve(scope,q);r.snapshot=undefined;
+        const dispatch=await this.portable.call('key',{...target,key:q.key,modifiers:q.modifier??[]},signal);
+        return {dispatch,verified:false,deliveryMode:'foreground',note:foreground,next:'Read the window again to see what the key did. Never replay an uncertain action.'};
+      });
+    }
+    if(q.snapshotId===undefined||q.controlId===undefined)throw new Error('DESKTOP_CONTROL_REQUIRED: Pass both snapshotId and controlId from the latest read_window of this window (or x and y from its screenshot).');
+    if(!snap||snap.id!==q.snapshotId||!control)throw new Error('DESKTOP_CONTROL_STALE: That snapshot is not the latest for this window. Call read_window again and use its snapshotId and controlId.');
     if(control.enabled===false)throw new Error('DESKTOP_CONTROL_DISABLED');
     if(q.action==='type_text'&&!q.text)throw new Error('DESKTOP_TEXT_REQUIRED');
     if(q.action==='press_key'&&!q.key)throw new Error('DESKTOP_KEY_REQUIRED');
+    if(q.action==='press_key'&&/^[a-z0-9]$/.test(q.key!)&&!q.modifier?.length)throw new Error('DESKTOP_KEY_NEEDS_MODIFIER: A letter or digit is pressed only as a shortcut, with modifier such as ["ctrl"]. Use type_text to type text.');
     if(q.action==='scroll'&&!q.direction)throw new Error('DESKTOP_SCROLL_DIRECTION_REQUIRED: Give direction up or down.');
     return this.portableGuard(r.app.name,authorize,async signal=>{
       this.reserve(scope,q);r.snapshot=undefined;
@@ -951,6 +975,7 @@ export class DesktopControl {
           next:'Grant what is missing in macOS System Settings > Privacy & Security, then run status again.'};
       }
     if(this.platform!=='darwin')return this.portableRun(scope,q,authorize);
+    if(q.action==='pick_file')throw new Error('DESKTOP_PLATFORM_UNSUPPORTED: pick_file works on Windows only for now.');
     if(!this.view().enabled)throw new Error('MAC_CONTROL_DISABLED: Check Accessibility permission in Settings > Remote control.');
     if(this.pending)throw new Error('DESKTOP_BUSY');
     const abort=new AbortController(),generation=this.generation;this.pending=abort;

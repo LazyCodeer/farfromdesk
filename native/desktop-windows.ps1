@@ -93,6 +93,17 @@ public static class FfdUser32 {
 
   /// WM_SETTEXT, which Windows copies across processes; bounded so a hung window cannot hold the helper.
   public static bool SetText(IntPtr h, string text) { IntPtr r; return SendMessageTimeout(h, 0x000C, IntPtr.Zero, text, 0x0002, 3000, out r) != IntPtr.Zero; }
+  [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+  // Types into an edit with WM_CHAR, one character at a time, so the edit raises the same change
+  // notifications real typing does. Needs no focus and no foreground.
+  public static bool TypeChars(IntPtr h, string text) {
+    IntPtr r;
+    if (SendMessageTimeout(h, 0x000C, IntPtr.Zero, "", 0x0002, 3000, out r) == IntPtr.Zero) return false;
+    foreach (char c in text) { if (SendMessageTimeout(h, 0x0102, new IntPtr(c), new IntPtr(1), 0x0002, 3000, out r) == IntPtr.Zero) return false; }
+    return true;
+  }
+  // Presses a button of a task dialog (TDM_CLICK_BUTTON), such as No (7) on Confirm Save As.
+  public static bool TaskDialogButton(IntPtr h, int id) { IntPtr r; return SendMessageTimeout(h, 0x0466, new IntPtr(id), IntPtr.Zero, 0x0002, 3000, out r) != IntPtr.Zero; }
   /// WM_COMMAND as a button sends it to its dialog (BN_CLICKED is 0, so wParam is the control id).
   public static bool Command(IntPtr dialog, int id, IntPtr control) { return PostMessage(dialog, 0x0111, new IntPtr(id), control); }
 
@@ -497,14 +508,16 @@ function Pick-File {
     }
   }
   if ($null -eq $edit) { Fail 'DESKTOP_CONTROL_NOT_FOUND' 'The file picker has no File name box I can fill.' }
-  $p = $null; $filled = $false
-  # The Value pattern, when there is one, can still refuse ("not enabled") on a dialog that is
-  # not the active window, so WM_SETTEXT is the fallback either way.
-  try { if ($edit.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$p) -and -not $p.Current.IsReadOnly) { $p.SetValue($path); $filled = $true } } catch {}
+  # Measured on Windows 11 Notepad (6 Nov 2026): text put in the box by the Value pattern or
+  # WM_SETTEXT shows on screen, but the dialog keeps and saves under its old name, because it
+  # only follows the edit's change notifications. WM_CHAR typing raises them, without focus.
+  $editHwnd = [IntPtr][long]$edit.Current.NativeWindowHandle
+  $filled = $editHwnd -ne [IntPtr]::Zero -and [FfdUser32]::TypeChars($editHwnd, $path)
   if (-not $filled) {
-    $editHwnd = [IntPtr][long]$edit.Current.NativeWindowHandle
-    if ($editHwnd -eq [IntPtr]::Zero -or -not [FfdUser32]::SetText($editHwnd, $path)) { Fail 'DESKTOP_CONTROL_NOT_FOUND' 'The File name box in the file picker cannot be filled.' }
+    $p = $null
+    try { if ($edit.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$p) -and -not $p.Current.IsReadOnly) { $p.SetValue($path); $filled = $true } } catch {}
   }
+  if (-not $filled) { Fail 'DESKTOP_CONTROL_NOT_FOUND' 'The File name box in the file picker cannot be filled.' }
   # The default button (Open or Save) is control id 1, IDOK. Invoked through its pattern when it
   # has one, else the dialog gets the same command the button sends: no keys, no pointer.
   $button = $null
@@ -523,6 +536,24 @@ function Pick-File {
   for ($i = 0; $i -lt 20 -and -not $closed; $i++) {
     Start-Sleep -Milliseconds 150
     if (-not [FfdUser32]::IsWindow($dialogHwnd) -or -not [FfdUser32]::IsWindowVisible($dialogHwnd)) { $closed = $true }
+  }
+  if (-not $closed) {
+    # A Save dialog asks before it replaces a file. FarFromDesk never answers Yes for the owner:
+    # it presses No and says so, and the owner decides.
+    # The prompt shows up as a child of the Save dialog or as its own top-level window.
+    $confirmCond = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')
+    $cands = @()
+    try { $cands += @($dialog.FindAll([System.Windows.Automation.TreeScope]::Children, $confirmCond)) } catch {}
+    $cands += @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $confirmCond))
+    foreach ($w in $cands) {
+      try {
+        if ($w.Current.ProcessId -ne $dialog.Current.ProcessId -or $w.Current.Name -notmatch '^Confirm') { continue }
+        $text = @($w.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text))) | ForEach-Object { $_.Current.Name }) -join ' '
+        $null = [FfdUser32]::TaskDialogButton([IntPtr][long]$w.Current.NativeWindowHandle, 7)
+        Send @{ ok = $true; closed = $false; mode = $mode; exists = $true; message = "$($text -replace '\s+', ' ')".Trim() + ' Nothing was replaced. Ask the owner before saving over it.' }
+        return
+      } catch {}
+    }
   }
   Send @{ ok = $true; closed = $closed; mode = $mode }
 }

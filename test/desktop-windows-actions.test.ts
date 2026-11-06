@@ -65,7 +65,7 @@ const acts = (calls: Call[]) => calls.filter(c => !['list', 'read', 'apps', 'scr
 
 test('Windows advertises the actions it now answers, and its limits say what is still impossible', () => {
   const { control } = world();
-  assert.deepEqual([...control.view().actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'open_app', 'click', 'double_click', 'right_click', 'drag', 'scroll', 'type_text', 'press_key', 'chat_controls', 'chat_action', 'stop',
+  assert.deepEqual([...control.view().actions], ['status', 'check_permissions', 'list_apps', 'list_windows', 'read_window', 'open_app', 'click', 'double_click', 'right_click', 'drag', 'scroll', 'type_text', 'press_key', 'pick_file', 'chat_controls', 'chat_action', 'stop',
     // Browser tabs (browser-windows.ts).
     'list_browsers', 'list_tabs', 'new_tab', 'focus_tab', 'close_tab', 'read_tab']);
   const limits = portableLimits('win32').join(' ');
