@@ -787,7 +787,9 @@ export class Masters {
       // asking the owner for these blocked the first step of every request (live, 6 Nov 2026:
       // "check my browser" stopped at a prompt to read the role file, then at master_browser).
       if(this.store.get(`managed-worker:${b.id}`)!=='true'&&coordinatorBridgeTools.includes(tool))return true;
-      if(tool==='Read'&&ownInstructionFile(b,(input as {file_path?:unknown}|undefined)?.file_path))return true;
+      // Grep over its own role file too (live, 6 Nov 2026: a "/help" question stopped at a
+      // permission prompt to grep the role file).
+      if((tool==='Read'||tool==='Grep')&&ownInstructionFile(b,(input as {file_path?:unknown,path?:unknown}|undefined)?.[tool==='Read'?'file_path':'path']))return true;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
     },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b),

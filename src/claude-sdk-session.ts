@@ -1,3 +1,4 @@
+import { stateDir } from './config.js';
 import { query, type Query, type McpServerConfig, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { nativeCommand } from './platform.js';
 
@@ -48,7 +49,7 @@ export class ClaudeSDKSession {
     return {cwd:this.cwd,pathToClaudeCodeExecutable:command.binary,
       // Inherit the same provider/model environment used by connection discovery.
       // Claude itself applies user/project/local settings; never invoke shell aliases.
-      env:{...process.env},
+      env:{...process.env,FFD_SDK_DRIVER:stateDir},
       ...(this.resume?{resume:this.id}:{sessionId:this.id}),forkSession:false,persistSession:true,
       permissionMode:'default' as const,settingSources:['user' as const,'project' as const,'local' as const],mcpServers:this.mcpServers,
       ...(this.opts.lean?{strictMcpConfig:true,disallowedTools:['Task','Agent'],skills:[] as string[]}:{}),
