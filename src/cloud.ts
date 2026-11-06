@@ -2,7 +2,7 @@
 // queues work that needs this computer and hands it back here when the laptop wakes.
 import type { Store } from './store.js';
 import type { Telegram } from './telegram.js';
-import { apply as applyBackup,bundleHash,collect,newKey,seal,unseal } from './settings-backup.js';
+import { apply as applyBackup,bundleHash,collect,isRecoveryCode,newKeys,recoveryProof,seal,unseal,type Keys } from './settings-backup.js';
 
 export const CLOUD_URL=(process.env.FFD_CLOUD_URL??'https://cloud.farfromdesk.com').replace(/\/+$/,'');
 type Status={fired?:string[];plan?:string;credits?:{messages?:number};mode?:string;queue?:{id:string;at:number;text:string;messageId:number}[];checkoutUrl?:string};
@@ -30,39 +30,60 @@ export class Cloud {
   }
   private apply(s:Status) {this.pro=s.plan==='pro';this.telegram.paused=s.mode==='cloud';if(Array.isArray(s.fired))this.fired=new Set(s.fired);}
 
-  backupView(){return {enabled:!!this.store.get('backup-key'),lastBackupAt:Number(this.store.get('backup-at'))||undefined,needsPro:!!this.store.get('backup-key')&&this.lastOk>0&&!this.pro};}
-  /** Start backing up this computer's settings, sealed with the owner's passphrase. */
+  backupView(){const on=!!this.keys();return {enabled:on,lastBackupAt:Number(this.store.get('backup-at'))||undefined,needsPro:on&&this.lastOk>0&&!this.pro,authenticator:on&&this.store.get('backup-totp')==='on'};}
+  private keys():Keys|undefined{try{const k=JSON.parse(this.store.get('backup-keys')||'null');return k?.key?k:undefined;}catch{return undefined;}}
+  private keep(keys:Keys,proof=''){this.store.set('backup-keys',JSON.stringify(keys));if(proof)this.store.set('backup-proof',proof);this.store.set('backup-hash','');this.backupChecked=0;}
+  /** Start backing up this computer's settings. Returns the recovery code once; it is never stored here. */
   enableBackup(passphrase:unknown){
     if(typeof passphrase!=='string'||passphrase.length<8)throw new Error('Use a passphrase of at least 8 characters.');
-    const {key,salt}=newKey(passphrase);
-    this.store.set('backup-key',key);this.store.set('backup-salt',salt);this.store.set('backup-hash','');this.backupChecked=0;
+    const {recoveryCode,proof,...keys}=newKeys(passphrase);
+    this.keep(keys,proof);this.store.set('backup-totp','');
     void this.beat();
-    return this.backupView();
+    return {...this.backupView(),recoveryCode};
   }
-  disableBackup(){for(const k of ['backup-key','backup-salt','backup-hash'])this.store.set(k,'');return this.backupView();}
-  /** Bring back the settings saved from another computer on the same bot. */
-  async restoreBackup(passphrase:unknown){
-    if(typeof passphrase!=='string'||!passphrase)throw new Error('Enter your backup passphrase.');
+  disableBackup(){for(const k of ['backup-keys','backup-proof','backup-hash','backup-totp'])this.store.set(k,'');return this.backupView();}
+  /** Bring back the settings saved from another computer on the same bot, with the passphrase or the recovery code. */
+  async restoreBackup(secret:unknown,code?:unknown){
+    if(typeof secret!=='string'||!secret)throw new Error('Enter your backup passphrase or recovery code.');
     if(!this.backupRoot)throw new Error('Settings backup is not available here.');
-    if(!this.auth())await this.register();
-    let r=await this.post('/v1/backup/get',{},this.auth());
-    if(r.status===401){await this.register();r=await this.post('/v1/backup/get',{},this.auth());}
+    const ask={...(typeof code==='string'&&code.trim()?{code:code.trim()}:{}),...(isRecoveryCode(secret)?{recoveryProof:recoveryProof(secret)}:{})};
+    const r=await this.authed('/v1/backup/get',ask);
     if(r.status===404)throw new Error('There is no settings backup for this Telegram bot yet.');
+    if(r.status===403&&r.body.needs==='authenticator')throw Object.assign(new Error(r.body.error),{needsAuthenticator:true});
     if(r.status!==200||typeof r.body.blob!=='string')throw new Error(r.body.error??`cloud ${r.status}`);
     let opened;
-    try{opened=unseal(r.body.blob,passphrase);}catch{throw new Error("That passphrase doesn't open this backup.");}
+    try{opened=unseal(r.body.blob,secret);}catch{throw new Error("That passphrase or recovery code doesn't open this backup.");}
     applyBackup(this.store,this.backupRoot,opened.bundle);
-    // Keep backing up with the same passphrase from this computer.
-    this.store.set('backup-key',opened.key);this.store.set('backup-salt',opened.salt);this.store.set('backup-hash','');this.backupChecked=0;
+    // Keep backing up with the same keys from this computer. The proof is only known when the code was typed.
+    this.keep(opened.keys,isRecoveryCode(secret)?recoveryProof(secret):'');
+    this.store.set('backup-totp',typeof code==='string'&&code.trim()?'on':'');
+    return this.backupView();
+  }
+  /** Posts with this computer's key, registering first or again when another computer took the bot over. */
+  private async authed(path:string,body:object){
+    if(!this.auth())await this.register();
+    const r=await this.post(path,body,this.auth());
+    if(r.status!==401)return r;
+    await this.register();return this.post(path,body,this.auth());
+  }
+  /** Optional second lock: the cloud hands the sealed backup only to someone with this authenticator. */
+  async authenticator(action:unknown,code?:unknown){
+    if(action!=='setup'&&action!=='confirm'&&action!=='off')throw new Error('Choose setup, confirm or off.');
+    if(!this.keys())throw new Error('Turn on settings backup first.');
+    const r=await this.authed('/v1/backup/authenticator',{action,code});
+    if(r.status===402)throw new Error('The authenticator lock is part of FarFromDesk Pro.');
+    if(r.status!==200)throw new Error(r.body.error??`cloud ${r.status}`);
+    if(action==='setup')return {secret:r.body.secret as string,uri:r.body.uri as string};
+    this.store.set('backup-totp',action==='confirm'?'on':'');
     return this.backupView();
   }
   private async backupIfChanged(auth:string){
-    const key=this.store.get('backup-key'),salt=this.store.get('backup-salt');
-    if(!this.pro||!key||!salt||!this.backupRoot||Date.now()-this.backupChecked<5*60_000)return;
+    const keys=this.keys();
+    if(!this.pro||!keys||!this.backupRoot||Date.now()-this.backupChecked<5*60_000)return;
     this.backupChecked=Date.now();
     const bundle=collect(this.store,this.backupRoot),hash=bundleHash(bundle);
     if(hash===this.store.get('backup-hash'))return;
-    const r=await this.post('/v1/backup',{blob:seal(bundle,key,salt)},auth);
+    const r=await this.post('/v1/backup',{blob:seal(bundle,keys),...(this.store.get('backup-proof')?{recoveryProof:this.store.get('backup-proof')}:{})},auth);
     if(r.status===200){this.store.set('backup-hash',hash);this.store.set('backup-at',String(r.body.at??Date.now()));}
   }
 

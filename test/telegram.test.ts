@@ -615,15 +615,20 @@ test('cloud reminders: Pro uploads upcoming reminders, holds them while the clou
   }finally{f.close();}
 });
 
-test('settings backup: Pro seals settings with the passphrase, another computer on the same bot restores them',async()=>{
+test('settings backup: sealed with a passphrase or recovery code, another computer on the same bot restores them',async()=>{
   const { Cloud }=await import('../src/cloud.js');
   const a=fixture(),b=fixture();try{await a.pair();await b.pair();
-    let stored:string|undefined;const uploads:string[]=[];
+    let stored:string|undefined,proof:string|undefined,locked=false;const uploads:string[]=[];
     const cloudFetch:typeof fetch=async(url,init)=>{
       const path=new URL(String(url)).pathname,body=JSON.parse(String(init?.body));
       if(path==='/v1/accounts')return Response.json({accountId:'b1',deviceKey:'k',plan:'pro'});
-      if(path==='/v1/backup'){stored=body.blob;uploads.push(body.blob);return Response.json({at:5});}
-      if(path==='/v1/backup/get')return stored?Response.json({blob:stored,at:5}):Response.json({error:'none'},{status:404});
+      if(path==='/v1/backup'){stored=body.blob;proof=body.recoveryProof;uploads.push(body.blob);return Response.json({at:5});}
+      if(path==='/v1/backup/get'){
+        if(!stored)return Response.json({error:'none'},{status:404});
+        if(locked&&body.code!=='123456'&&body.recoveryProof!==proof)return Response.json({error:'Enter the code from your authenticator app.',needs:'authenticator'},{status:403});
+        return Response.json({blob:stored,at:5});
+      }
+      if(path==='/v1/backup/authenticator'){if(body.action==='confirm')locked=true;return Response.json(body.action==='setup'?{secret:'S',uri:'otpauth://totp/x'}:{});}
       return Response.json({plan:'pro',mode:'laptop',queue:[]});
     };
     const rootA=mkdtempSync(join(tmpdir(),'ffd-backup-a-')),rootB=mkdtempSync(join(tmpdir(),'ffd-backup-b-'));
@@ -633,7 +638,10 @@ test('settings backup: Pro seals settings with the passphrase, another computer 
     const laptopA=new Cloud(a.store,a.tg,()=>'','https://cloud.test',cloudFetch);laptopA.backupRoot=rootA;
     await assert.rejects(laptopA.restoreBackup('whatever'),/no settings backup/);
     assert.throws(()=>laptopA.enableBackup('short'),/at least 8/);
-    laptopA.enableBackup('correct horse battery');await laptopA.beat();
+    const {recoveryCode}=laptopA.enableBackup('correct horse battery') as any;
+    assert.match(recoveryCode,/^([A-Z2-9]{4}-){5}[A-Z2-9]{4}$/);
+    assert.equal(JSON.stringify(a.store.db.prepare('select * from settings').all()).includes(recoveryCode),false,'the recovery code is never stored');
+    await laptopA.beat();
     assert.equal(uploads.length,1);assert.doesNotMatch(uploads[0],/Sagar|k-123|deepgram/,'only ciphertext leaves the laptop');
     await laptopA.beat();assert.equal(uploads.length,1,'unchanged settings are not re-sent');
     const laptopB=new Cloud(b.store,b.tg,()=>'','https://cloud.test',cloudFetch);laptopB.backupRoot=rootB;
@@ -643,5 +651,15 @@ test('settings backup: Pro seals settings with the passphrase, another computer 
     assert.match(readFileSync(join(rootB,'voice-api-key'),'utf8'),/k-123/);
     assert.equal(b.store.get('voice-engine'),'deepgram');
     assert.throws(()=>readFileSync(join(rootB,'telegram-token')),'device files stay on their computer');
+    // Authenticator lock: the passphrase alone no longer downloads it; a code or the recovery code does.
+    await laptopA.authenticator('setup');assert.equal((await laptopA.authenticator('confirm','123456') as any).authenticator,true);
+    const c=fixture();try{await c.pair();
+      const laptopC=new Cloud(c.store,c.tg,()=>'','https://cloud.test',cloudFetch);laptopC.backupRoot=mkdtempSync(join(tmpdir(),'ffd-backup-c-'));
+      await assert.rejects(laptopC.restoreBackup('correct horse battery'),(e:any)=>e.needsAuthenticator===true);
+      assert.equal((await laptopC.restoreBackup('correct horse battery','123456') as any).authenticator,true);
+      laptopC.disableBackup();
+      assert.equal((await laptopC.restoreBackup(recoveryCode.toLowerCase().replaceAll('-',' ')) as any).enabled,true,'a hand-typed recovery code gets past the lock and opens it');
+      assert.equal(readFileSync(join(laptopC.backupRoot!,'memory','about-me.md'),'utf8'),'Owner is Sagar.');
+    }finally{c.close();}
   }finally{a.close();b.close();}
 });

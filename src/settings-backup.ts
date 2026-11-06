@@ -1,6 +1,6 @@
 // FarFromDesk Pro settings backup. Sealed here with a key derived from the owner's passphrase,
-// so the cloud only ever holds ciphertext. Losing the passphrase loses the backup.
-import {createCipheriv,createDecipheriv,createHash,randomBytes,scryptSync} from 'node:crypto';
+// so the cloud only ever holds ciphertext. Losing both the passphrase and the recovery code loses the backup.
+import {createCipheriv,createDecipheriv,createHash,createHmac,randomBytes,scryptSync} from 'node:crypto';
 import {mkdirSync,readdirSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import type {Store} from './store.js';
@@ -37,21 +37,42 @@ export function apply(store:Store,root:string,b:Bundle) {
   for(const r of b.reminders??[])if(r?.action==='message')try{insert.run(...cols.map(c=>(r as any)[c]??null));}catch{}
 }
 
-export const newKey=(passphrase:string)=>{const salt=randomBytes(16);return {salt:salt.toString('base64'),key:scryptSync(passphrase,salt,32,SCRYPT).toString('base64')};};
 export const bundleHash=(b:Bundle)=>createHash('sha256').update(JSON.stringify(b)).digest('hex');
 
-export function seal(b:Bundle,key:string,salt:string):string {
-  const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',Buffer.from(key,'base64'),iv);
-  const data=Buffer.concat([c.update(JSON.stringify(b),'utf8'),c.final()]);
-  return JSON.stringify({v:1,salt,iv:iv.toString('base64'),tag:c.getAuthTag().toString('base64'),data:data.toString('base64')});
+// The settings are sealed with a random data key. That key is wrapped twice: once by the
+// passphrase and once by a recovery code shown to the owner once. Either one opens the backup.
+type Box={iv:string;tag:string;data:string};
+type Wrap=Box&{salt:string};
+export type Keys={key:string;wraps:{pass:Wrap;code:Wrap}};
+const B32='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const lock=(key:Buffer,plain:Buffer):Box=>{const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([c.update(plain),c.final()]);return {iv:iv.toString('base64'),tag:c.getAuthTag().toString('base64'),data:data.toString('base64')};};
+const unlock=(key:Buffer,b:Box)=>{const d=createDecipheriv('aes-256-gcm',key,Buffer.from(b.iv,'base64'));d.setAuthTag(Buffer.from(b.tag,'base64'));return Buffer.concat([d.update(Buffer.from(b.data,'base64')),d.final()]);};
+const wrap=(secret:string,key:Buffer):Wrap=>{const salt=randomBytes(16);return {salt:salt.toString('base64'),...lock(scryptSync(secret,salt,32,SCRYPT),key)};};
+/** Recovery codes ignore case, spaces and dashes so a hand-typed copy still works. */
+export const normalCode=(code:string)=>code.toUpperCase().replace(/[^A-Z0-9]/g,'');
+export const isRecoveryCode=(text:string)=>{const n=normalCode(text);return n.length===24&&[...n].every(ch=>B32.includes(ch));};
+/** What the cloud stores (hashed) so a recovery code can get past the authenticator lock. It can't open the backup. */
+export const recoveryProof=(code:string)=>createHmac('sha256',normalCode(code)).update('ffd-recovery-proof').digest('hex');
+
+export function newKeys(passphrase:string):Keys&{recoveryCode:string;proof:string} {
+  const bytes=randomBytes(24),raw=[...bytes].map(x=>B32[x%32]).join('');
+  const recoveryCode=raw.match(/.{4}/g)!.join('-'),key=randomBytes(32);
+  return {key:key.toString('base64'),wraps:{pass:wrap(passphrase,key),code:wrap(raw,key)},recoveryCode,proof:recoveryProof(raw)};
 }
 
-/** Throws 'wrong passphrase' when the passphrase doesn't open this backup. */
-export function unseal(blob:string,passphrase:string):{bundle:Bundle;key:string;salt:string} {
-  const box=JSON.parse(blob),key=scryptSync(passphrase,Buffer.from(box.salt,'base64'),32,SCRYPT);
-  try{
-    const d=createDecipheriv('aes-256-gcm',key,Buffer.from(box.iv,'base64'));d.setAuthTag(Buffer.from(box.tag,'base64'));
-    const bundle=JSON.parse(Buffer.concat([d.update(Buffer.from(box.data,'base64')),d.final()]).toString('utf8'));
-    return {bundle,key:key.toString('base64'),salt:box.salt};
-  }catch{throw new Error('wrong passphrase');}
+export function seal(b:Bundle,keys:Keys):string {
+  return JSON.stringify({v:2,wraps:keys.wraps,...lock(Buffer.from(keys.key,'base64'),Buffer.from(JSON.stringify(b),'utf8'))});
+}
+
+/** Opens with the passphrase or the recovery code. Throws 'wrong passphrase' when neither fits. */
+export function unseal(blob:string,secret:string):{bundle:Bundle;keys:Keys} {
+  const box=JSON.parse(blob),wraps=box.wraps;
+  for(const [w,s] of [[wraps?.pass,secret],[wraps?.code,normalCode(secret)]] as const){
+    if(!w||!s)continue;
+    try{
+      const key=unlock(scryptSync(s,Buffer.from(w.salt,'base64'),32,SCRYPT),w);
+      return {bundle:JSON.parse(unlock(key,box).toString('utf8')),keys:{key:key.toString('base64'),wraps}};
+    }catch{}
+  }
+  throw new Error('wrong passphrase');
 }

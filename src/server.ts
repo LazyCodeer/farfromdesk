@@ -448,13 +448,18 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       if(path==='/api/meta-brain'&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Settings.');const d=await body(req);let view:any=saveBrainConfig(store,router.brain.secret,d);if(d?.key){try{await fetchMetaModels(store,router.brain.secret);view=router.brain.view();}catch{view={...view,modelsError:'Key saved, but Meta did not list its models. The usual models are shown.'};}}json(res,200,view);return;}
       if(path==='/api/cloud-backup'&&(req.method==='GET'||req.method==='POST')) {
         // Pro settings backup, sealed with the owner's passphrase before it leaves this computer.
-        const c=router.cloud;if(!c?.backupView||!c.enableBackup||!c.disableBackup||!c.restoreBackup)throw new Error('Settings backup is not available.');
+        const c=router.cloud;if(!c?.backupView||!c.enableBackup||!c.disableBackup||!c.restoreBackup||!c.authenticator)throw new Error('Settings backup is not available.');
         if(req.method==='GET'){json(res,200,c.backupView());return;}
         const d=await body(req);
         if(d.action==='enable'){json(res,200,c.enableBackup(d.passphrase));return;}
-        if(d.action==='restore'){json(res,200,await c.restoreBackup(d.passphrase));return;}
+        if(d.action==='restore'){
+          try{json(res,200,await c.restoreBackup(d.passphrase,d.code));}
+          catch(e){if(!(e as {needsAuthenticator?:boolean}).needsAuthenticator)throw e;json(res,200,{...(c.backupView() as object),needsAuthenticator:true,error:(e as Error).message});}
+          return;
+        }
+        if(d.action==='authenticator'){json(res,200,await c.authenticator!(d.step,d.code));return;}
         if(d.action==='disable'){json(res,200,c.disableBackup());return;}
-        throw new Error('Choose enable, restore or disable.');
+        throw new Error('Choose enable, restore, authenticator or disable.');
       }
       if(path==='/api/memory'&&req.method==='GET'){json(res,200,router.brain.owner.view());return;}
       if(path.startsWith('/api/memory')&&req.method==='POST'){
