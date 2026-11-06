@@ -63,6 +63,45 @@ export function embedBinaryPath(): string {
   return process.env.FFD_TOOL_EMBED ?? fileURLToPath(new URL('../../native/tool-embed', import.meta.url));
 }
 
+/**
+ * The stand-in for NLEmbedding off macOS: character trigrams, compared by cosine.
+ *
+ * Windows has no on-device sentence embedding FarFromDesk can call without shipping a model, and
+ * the Swift helper exists only on a Mac. Trigrams are what makes a misspelt or reworded request
+ * ("whats playng", "my upcomming meetings") still land near the example it resembles, which is
+ * the gap the embeddings fill on the paraphrase set. It is used exactly where embeddings are: to
+ * append tools of the app in front, never to reorder the lexical shortlist. A weak resemblance
+ * adds nothing.
+ */
+const LEXICAL_FLOOR = 0.5;
+const LEXICAL_SKIP = new Set(['the', 'and', 'for', 'you', 'your', 'this', 'that', 'with', 'about', 'from']);
+function trigrams(text: string): Map<string, number> {
+  const grams = new Map<string, number>();
+  for (const word of String(text ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length > 2 && !LEXICAL_SKIP.has(word))) {
+    const padded = ` ${word} `;
+    for (let index = 0; index + 3 <= padded.length; index += 1) {
+      const gram = padded.slice(index, index + 3);
+      grams.set(gram, (grams.get(gram) ?? 0) + 1);
+    }
+  }
+  return grams;
+}
+function cosine(a: Map<string, number>, b: Map<string, number>): number {
+  let dotProduct = 0, left = 0, right = 0;
+  for (const [gram, count] of a) { left += count * count; dotProduct += count * (b.get(gram) ?? 0); }
+  for (const count of b.values()) right += count * count;
+  return left && right ? dotProduct / Math.sqrt(left * right) : 0;
+}
+export function lexicalRank(query: string, docs: { id: string; text: string }[], k = 3): EmbedHit[] {
+  const wanted = trigrams(query);
+  const best = new Map<string, number>();
+  for (const doc of docs) {
+    const score = cosine(wanted, trigrams(doc.text));
+    if (score >= LEXICAL_FLOOR && score > (best.get(doc.id) ?? 0)) best.set(doc.id, score);
+  }
+  return [...best.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([id, score]) => ({ id, score }));
+}
+
 /** Answers once per process whether the helper can actually embed on this machine. */
 let available: Promise<boolean> | undefined;
 export async function embeddingsAvailable(): Promise<boolean> {
@@ -228,10 +267,12 @@ export async function embedRank(query: string, docs: { id: string; text: string 
  * vectors are cached under it, so later turns on the same tool set embed only the owner's own
  * words: measured here, a turn went from embedding 32 doc lines to embedding 1 query.
  */
-export async function embedExtras(text: string, tools: AppTool[], options: { app?: string; k?: number; already?: string[]; signature?: string } = {}): Promise<string[]> {
+export async function embedExtras(text: string, tools: AppTool[], options: { app?: string; k?: number; already?: string[]; signature?: string; platform?: NodeJS.Platform } = {}): Promise<string[]> {
   const app = options.app?.trim().toLowerCase();
   if (!app) return [];
-  const ranked = await embedRank(text, embedDocs(tools), options.k ?? 3, options.signature);
+  // Windows has no embedding helper, so the trigram ranking answers there and nothing is spawned.
+  // macOS (and Linux, which has no app tools) keep the helper as the only source.
+  const ranked = (options.platform ?? process.platform) === 'win32' ? lexicalRank(text, embedDocs(tools), options.k ?? 3) : await embedRank(text, embedDocs(tools), options.k ?? 3, options.signature);
   if (!ranked?.length) return [];
   const already = new Set(options.already ?? []);
   const extras: string[] = [];

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AssistPlan } from './desktop-control.js';
-import { toolByName } from './app-tools/packs.js';
+import { platformToolByName as toolByName } from './app-tools/packs.js';
 
 /**
  * The owner brain's device vocabulary.

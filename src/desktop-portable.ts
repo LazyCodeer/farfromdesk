@@ -29,7 +29,8 @@ export function portableLimits(platform:NodeJS.Platform,env:NodeJS.ProcessEnv=pr
   if(platform==='win32')return [
     'Windows does not let FarFromDesk drive apps running as administrator.',
     'Store (packaged) apps may publish few controls to UI Automation.',
-    'Browser tabs, app tools and pixel clicks are macOS only for now.',
+    'App tools use classic Outlook (calendar, mail, tasks), OneNote for Windows, your folders and the media controls.',
+    'Browser tabs and pixel clicks are macOS only for now.',
   ];
   if(platform!=='linux')return [];
   const wayland=env.XDG_SESSION_TYPE==='wayland'||(!!env.WAYLAND_DISPLAY&&!env.DISPLAY);

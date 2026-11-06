@@ -19,8 +19,8 @@ import { runDevicePlan, deviceRefusal, deviceTargets, detectDevicePlan, deviceVe
 import { DesktopControl } from './desktop-control.js';
 import { mentionedItems } from './owner-routing.js';
 import { brainSelected } from './owner-commands.js';
-import { overviewTool, selectTools, shortlistTools } from './app-tools/retrieve.js';
-import { allPackTools, toolByName } from './app-tools/packs.js';
+import { indexFor, overviewTool, selectTools, shortlistTools } from './app-tools/retrieve.js';
+import { platformTools, platformToolByName } from './app-tools/packs.js';
 import { OwnerMemory } from './owner-memory.js';
 import { errorCode } from './request-events.js';
 import { metaObserver } from './meta-timeline.js';
@@ -375,9 +375,10 @@ export class MetaBrain {
   private async reviewedTools(text:string):Promise<{name:string;app:string;writes:boolean;summary:string;args:{name:string;description:string;required:boolean}[]}[]|undefined>{
     try{
       const front=await this.deviceControl().activeApp?.();
-      const rank=(await shortlistTools(text,{app:front})).map(entry=>entry.tool.name);
+      const rank=(await shortlistTools(text,{app:front,index:indexFor()})).map(entry=>entry.tool.name);
       const at=(name:string)=>{const i=rank.indexOf(name);return i<0?rank.length:i;};
-      const all=allPackTools().sort((x,y)=>at(x.name)-at(y.name));
+      // Only the tools this computer can run: Windows has no Safari or Messages tools to offer.
+      const all=platformTools().sort((x,y)=>at(x.name)-at(y.name));
       return all.map(tool=>({name:tool.name,app:tool.app,writes:tool.writes,summary:tool.description.split('. ')[0].slice(0,220),args:tool.args.map(arg=>({name:arg.name,description:arg.description.slice(0,140),required:Boolean(arg.required)}))}));
     }catch{return undefined;}
   }
@@ -733,7 +734,7 @@ export class MetaBrain {
       decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
         // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
         // model can say why and what to switch on, instead of the loop failing.
-        run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
+        run:async(tool,args)=>{const found=platformToolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
         tabs:()=>{this.ack(m,'your browser tabs');return this.tabsData(m);},
         readTab:(match,shot)=>{this.armed.delete(m.id);if(shot==='file')this.original.add(m.id);this.ack(m,`the ${match} tab`);return this.readTabFor(m,match,!!shot);},
         readWindow:(app,shot)=>{if(shot==='file')this.original.add(m.id);this.ack(m,app);return this.readWindowFor(m,app,!!shot);},

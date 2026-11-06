@@ -27,6 +27,8 @@ if(process.platform==='darwin') {
   copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
   // Windows phone screen control: the capture and input helper (src/remote-p2p/windows-desktop.ts).
   if(process.platform==='win32')copyFileSync(join(root,'native','remote-windows.ps1'),join(target,'native','remote-windows.ps1'));
+  // Windows app tools: Outlook, OneNote and the media controls (src/app-tools/windows).
+  if(process.platform==='win32')copyFileSync(join(root,'native','app-tools-windows.ps1'),join(target,'native','app-tools-windows.ps1'));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
