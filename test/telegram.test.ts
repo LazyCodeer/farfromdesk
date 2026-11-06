@@ -588,3 +588,29 @@ test('cloud handover: /cloud needs Pro, cloud mode pauses polling, saved request
     await f.tg.connect(token);assert.equal(f.tg.paused,true,'a4');
   }finally{f.close();}
 });
+
+test('cloud reminders: Pro uploads upcoming reminders, holds them while the cloud has the bot, skips ones the cloud sent',async()=>{
+  const { Cloud }=await import('../src/cloud.js');
+  const f=fixture();try{await f.pair();
+    const beats:any[]=[];let mode='laptop',fired:string[]=[];
+    const cloudFetch:typeof fetch=async(url,init)=>{
+      const path=new URL(String(url)).pathname,body=JSON.parse(String(init?.body));
+      if(path==='/v1/accounts')return Response.json({accountId:'b1',deviceKey:'k'});
+      if(path==='/v1/heartbeat')beats.push(body);
+      return Response.json({plan:'pro',mode,credits:{messages:500},queue:[],fired});
+    };
+    const cloud=new Cloud(f.store,f.tg,()=>'','https://cloud.test',cloudFetch);
+    const list=[{id:'schedule:a:1000',at:1000,text:'call mum'}];
+    cloud.reminders=()=>list;
+    assert.equal(cloud.reminder('schedule:a:1000',1000),'send','not registered: laptop sends');
+    await cloud.command(false);f.store.set('cloud-account','b1');f.store.set('cloud-key','k');
+    await cloud.beat();await cloud.beat();
+    assert.equal(beats.filter(b=>b.reminders).length,1,'sent once per change, only once Pro is known');
+    assert.equal(cloud.reminder('schedule:a:1000',Date.now()),'send','laptop holds the bot: send');
+    mode='cloud';await cloud.beat();
+    assert.equal(cloud.reminder('schedule:a:1000',Date.now()),'hold','cloud holds the bot: wait');
+    fired=['schedule:a:1000'];mode='laptop';await cloud.beat();
+    assert.equal(cloud.reminder('schedule:a:1000',Date.now()),'fired');
+    assert.equal(cloud.reminder('schedule:b:1',Date.now()-20*60_000),'send','long overdue and unsure: send late rather than never');
+  }finally{f.close();}
+});
