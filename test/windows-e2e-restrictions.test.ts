@@ -73,3 +73,49 @@ test('a headless run sends a file only from the owner\'s folders, only for an ow
     assert.match((directRunFileTarget(store, 'deepseek:tg:1:42') as { error: string }).error, /no pass|ended/, 'closed runs send nothing');
   } finally { store.close(); rmSync(home, { recursive: true, force: true }); rmSync(state, { recursive: true, force: true }); }
 });
+
+test('a warm coordinator keeps one Claude process across turns, lean, and starts a fresh resume after a failure', async () => {
+  const { ClaudeSDKSession } = await import('../src/claude-sdk-session.js');
+  const calls: any[] = []; let closed = 0, fail = false;
+  const query: any = (input: any) => {
+    calls.push(input);
+    const it = (async function* () {
+      for await (const m of input.prompt) {
+        const text = m.message.content[0].text;
+        if (fail) { fail = false; yield { type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 'exact' }; continue; }
+        yield { type: 'assistant', session_id: 'exact' };
+        yield { type: 'result', subtype: 'success', is_error: false, session_id: 'exact', result: `done: ${text}` };
+      }
+    })();
+    return Object.assign(it, { close() { closed++; } });
+  };
+  const s = new ClaudeSDKSession(process.execPath, '/project', 'exact', false, async () => true, {}, query, '', { warm: true, lean: true });
+  try {
+    assert.equal(await s.run('one'), 'done: one');
+    assert.equal(await s.run('two'), 'done: two');
+    assert.equal(calls.length, 1, 'one process for both turns');
+    assert.equal(calls[0].options.sessionId, 'exact');
+    assert.equal(calls[0].options.strictMcpConfig, true);
+    assert.deepEqual(calls[0].options.disallowedTools, ['Task', 'Agent']);
+    assert.deepEqual(calls[0].options.skills, []);
+    assert.deepEqual(calls[0].options.settingSources, ['user', 'project', 'local'], 'owner permissions and env still load');
+    fail = true;
+    await assert.rejects(s.run('three'), /could not complete this turn/);
+    assert.equal(closed, 1, 'a failed turn ends the warm process');
+    assert.equal(await s.run('four'), 'done: four');
+    assert.equal(calls.length, 2); assert.equal(calls[1].options.resume, 'exact', 'the next turn resumes the same session');
+  } finally { s.close(); }
+  assert.equal(closed, 2);
+  const plain = new ClaudeSDKSession(process.execPath, '/project', 'exact', false, async () => true, {}, ((i: any) => { calls.push(i); return Object.assign((async function* () { yield { type: 'result', subtype: 'success', is_error: false, session_id: 'exact', result: 'ok' }; })(), { close() {} }); }) as any);
+  await plain.run('x'); assert.equal(calls.at(-1).options.strictMcpConfig, undefined, 'other sessions are unchanged'); plain.close();
+});
+
+test('the Windows browser helper never brings an app-launch page (t.me) to the front', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../native/browser-windows.ps1', import.meta.url), 'utf8');
+  const m = /-match '([^']+)'\) \{\s*Fail 'BROWSER_LAUNCH_PAGE'/.exec(src);
+  assert.ok(m, 'the guard is in Select-Tab');
+  const re = new RegExp(m![1].replace(/\(\?i\)/, ''), 'i');
+  for (const t of ['Telegram: Launch @farfromhomelocaltestingbot', 'Telegram: Contact @someone', 'Launch Meeting - Zoom']) assert.ok(re.test(t), t);
+  for (const t of ['Inbox (3) - Gmail', 'Telegram Web', 'GitHub - ranxianglei/billion-context']) assert.ok(!re.test(t), t);
+});

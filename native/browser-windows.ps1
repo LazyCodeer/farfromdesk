@@ -222,6 +222,13 @@ function Check-Expected($row, $tab) {
 function Select-Tab($row, $tab) {
   $p = $null
   if (-not $tab.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$p)) { Fail 'BROWSER_HELPER_FAILED' 'This tab cannot be selected through UI Automation.' }
+  # A page that hands off to a desktop app (t.me "Telegram: Launch", meeting launchers) runs that
+  # hand-off again when its tab comes to the front, often after a reload of a discarded tab. Reading
+  # the owner's tabs once sent "/start" to their Telegram bot twice (live, 6 Nov 2026), so such a
+  # background tab is listed by title but never brought to the front by FarFromDesk.
+  if (-not $p.Current.IsSelected -and "$($tab.Current.Name)" -match '^Telegram: (Launch|Contact|Join|Open)|^Launch Meeting|^Join (Zoom|Microsoft Teams|Teams)|Open (in|with) (the )?(app|desktop)|^WhatsApp: Open|^Opening .* app') {
+    Fail 'BROWSER_LAUNCH_PAGE' 'That tab only opens an app (for example Telegram) when it is shown, and showing it again would repeat that. I left it in the background; its title is all there is to read.'
+  }
   if (-not $p.Current.IsSelected) { $p.Select() }
   for ($i = 0; $i -lt 20 -and -not (Is-Selected $tab); $i++) { Start-Sleep -Milliseconds 50 }
   if (-not (Is-Selected $tab)) { Fail 'BROWSER_FOCUS_UNVERIFIED' 'The tab did not come to the front. List the tabs again before trying anything else.' }

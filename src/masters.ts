@@ -786,7 +786,9 @@ export class Masters {
       if(tool==='Read'&&ownInstructionFile(b,(input as {file_path?:unknown}|undefined)?.file_path))return true;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b));
+    },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b),
+    // Windows: one warm, lean process for the coordinator (each turn took about a minute, live 6 Nov 2026).
+    process.platform==='win32'&&this.store.get(`managed-worker:${b.id}`)!=='true'?{warm:true,lean:true}:{});
     return new ClaudeSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
