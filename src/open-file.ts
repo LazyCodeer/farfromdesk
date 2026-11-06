@@ -125,6 +125,17 @@ export function windowsOpenCommand(path:string,app:string|undefined,env:NodeJS.P
   return {file:windowsPowerShell(),args:['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(SCRIPT,'utf16le').toString('base64')],env:childEnv};
 }
 
+/**
+ * ShellExecute one path or URL on Windows (what double-clicking it does), from a hidden PowerShell.
+ * The launched app gets a normal window; a hidden spawn of the app itself would pass SW_HIDE on to it.
+ * Rejects with Windows' own reason when nothing handles it.
+ */
+export async function windowsShellOpen(target:string,run:OpenRunner=execRunner):Promise<void>{
+  const c=windowsOpenCommand(target,undefined);
+  const result=JSON.parse((await run(c.file,c.args,{env:c.env,timeout:30000,windowsHide:true})).stdout||'{}') as {ok?:boolean;detail?:string};
+  if(!result.ok)throw new Error(result.detail||'Windows could not open it.');
+}
+
 /** Which program a named app resolves to on this PC, without opening anything. */
 export async function resolveWindowsApp(app:string,run:OpenRunner=execRunner):Promise<{ok:boolean;exe?:string;error?:string;name?:string}>{
   const c=windowsOpenCommand('',app,process.env,true);

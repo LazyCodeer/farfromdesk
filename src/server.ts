@@ -21,13 +21,13 @@ import { BrowserTabs } from './browser-tabs.js';
 import {PhoneRemoteService} from './remote-desktop/phone-service.js';
 import {RemoteDesktopService} from './remote-desktop/service.js';
 import {RemoteControlService,voiceTranscriber} from './remote-p2p/service.js';
-import {screenLockGate,sessionProbePath} from './session-lock.js';
+import {screenLockGate,sessionProbe} from './session-lock.js';
 import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
 import { directMacAllowed } from './direct-mac.js';
 import { MacControl } from './mac-control.js';
-import { GrantHealth } from './grant-health.js';
+import { GrantHealth, NO_RESET } from './grant-health.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
@@ -144,7 +144,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   // screen action is refused and the owner is handed the link the "control my screen"
   // command sends. See src/session-lock.ts for why that is the whole point.
   const requireUnlockedScreen=screenLockGate({
-    probe:sessionProbePath,
+    probe:sessionProbe,
     link:()=>remoteControl.chat('control my screen'),
     notify:text=>{store.output(undefined,text,`remote-locked:${Date.now()}`,undefined,{plain:true});},
   });
@@ -528,6 +528,9 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // Clearing a stale grant is the owner's own click in the app, never a phone or session request.
         if(d.action==='reset-permission'){
           if(!isAdmin){json(res,403,{error:'Resetting a macOS permission requires the FarFromDesk app.'});return;}
+          // The app shows the reset button on macOS only. Elsewhere there is nothing to clear, and
+          // stopping control for a no-op would only interrupt the owner.
+          if(process.platform!=='darwin'){json(res,400,{error:NO_RESET});return;}
           macAccessEpoch++;desktopControl.stop();macControl.stop();
           const reset=await grantHealth.reset();
           json(res,200,{...syncMacPermission(await macControl.status(true)),reset});return;

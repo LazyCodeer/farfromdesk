@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { codexProfileHome } from './codex-profile.js';
+import { computerName } from './platform.js';
 
 /**
  * The bridge hears a native permission prompt only through the provider's own
@@ -16,7 +17,7 @@ export type ProviderHookState = 'current' | 'installed' | 'repaired' | 'unreadab
 export type ProviderHookReport = { provider:ProviderName; file:string; state:ProviderHookState; detail?:string; backup?:string; stateDir?:string };
 
 export type ProviderName = 'codex' | 'claude';
-export type HookTarget = { provider:ProviderName; node:string; cli:string; stateDir:string; port:number; home?:string; env?:NodeJS.ProcessEnv; takeOver?:boolean };
+export type HookTarget = { provider:ProviderName; node:string; cli:string; stateDir:string; port:number; home?:string; env?:NodeJS.ProcessEnv; takeOver?:boolean; platform?:NodeJS.Platform };
 
 const EVENTS = ['Stop','PermissionRequest'] as const;
 const PERMISSION_TIMEOUT_SECONDS = 920; // Just past the bridge's own 15 minute approval window.
@@ -69,15 +70,50 @@ const quote = (value:string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** The command carries this app's own state directory and port, so an installed
  * Local build never posts a prompt to the production bridge. */
-export function providerHookCommand(o:{node:string;cli:string;stateDir:string;port:number;provider:ProviderName}) {
-  return [`WSB_STATE_DIR=${quote(o.stateDir)}`,`WSB_PORT=${String(o.port)}`,quote(o.node),quote(o.cli),'hook',o.provider].join(' ');
+export function providerHookCommand(o:{node:string;cli:string;stateDir:string;port:number;provider:ProviderName},platform:NodeJS.Platform=process.platform) {
+  return hookEntryText(providerHookEntry(o,platform));
 }
-/** Matches any bridge hook, including the older command that baked in no state. */
+type HookOptions={node:string;cli:string;stateDir:string;port:number;provider:ProviderName};
+/** The command fields of one installed hook handler. `args` means exec form: no shell at all. */
+export type HookEntry={command:string;args?:string[]};
+/**
+ * The hook handler for this platform. A POSIX `NAME=value cmd` prefix only means something to a
+ * POSIX shell, and on Windows neither provider runs one by default:
+ * - Codex runs a hook as `%COMSPEC% /C "<command>"` (codex-rs hooks/src/engine/command_runner.rs),
+ *   so the state and port are set with cmd's own `set "NAME=value"`.
+ * - Claude Code runs a shell-form hook in Git Bash when it finds one and in PowerShell otherwise, and
+ *   PowerShell does not hand the hook's stdin to a native child. Its exec form (`args`) spawns the
+ *   program directly with stdin attached in every case, so node is started directly and sets the two
+ *   variables itself before loading the CLI. Measured with Claude Code 2.1.318 on Windows 11: the exec
+ *   form and the Git Bash form delivered the hook JSON (UTF-8 intact); the PowerShell shell form
+ *   started node but never delivered stdin.
+ */
+export function providerHookEntry(o:HookOptions,platform:NodeJS.Platform=process.platform):HookEntry {
+  if(platform!=='win32')return {command:[`WSB_STATE_DIR=${quote(o.stateDir)}`,`WSB_PORT=${String(o.port)}`,quote(o.node),quote(o.cli),'hook',o.provider].join(' ')};
+  if(o.provider==='codex'){
+    // cmd expands %NAME% even inside quotes and no Windows path can hold a double quote; refuse
+    // rather than write a hook that would post to the wrong place.
+    if([o.stateDir,o.node,o.cli].some(v=>/[%"\r\n]/.test(v)))throw new Error('A path for the Codex hook contains a character cmd.exe cannot carry (%, " or a line break).');
+    return {command:`set "WSB_STATE_DIR=${o.stateDir}"&& set "WSB_PORT=${String(o.port)}"&& "${o.node}" "${o.cli}" hook codex`};
+  }
+  const boot=`process.env.WSB_STATE_DIR=${JSON.stringify(o.stateDir)};process.env.WSB_PORT=${JSON.stringify(String(o.port))};process.argv.splice(1,0,${JSON.stringify(o.cli)});import(require("node:url").pathToFileURL(process.argv[1]).href)`;
+  return {command:o.node,args:['-e',boot,'hook',o.provider]};
+}
+/** One comparable string for a handler, whichever form it uses. */
+export function hookEntryText(h:{command?:unknown;args?:unknown}):string {
+  const command=String(h?.command??'');
+  return Array.isArray(h?.args)?[command,...h.args.map(String)].join('\n'):command;
+}
+/** Matches any bridge hook, including the older command that baked in no state and the Windows forms. */
 export function isBridgeHookCommand(command:string) {
-  return /(?:^|[\s'"/])cli\.js['"]?\s+hook\s+(?:codex|claude)\b/.test(command);
+  return /(?:^|[\s'"/\\])cli\.js['"]?\s+hook\s+(?:codex|claude)\b/.test(command)||/cli\.js[\s\S]*\nhook\n(?:codex|claude)$/.test(command);
 }
 /** The state directory a bridge hook posts to; undefined for a legacy unpinned command. */
 export function hookStateDir(command:string) {
+  const js=/process\.env\.WSB_STATE_DIR=("(?:[^"\\]|\\.)*")/.exec(command);
+  if(js)try{return JSON.parse(js[1]) as string;}catch{}
+  const cmd=/set "WSB_STATE_DIR=([^"]*)"/.exec(command);
+  if(cmd)return cmd[1];
   const match=/WSB_STATE_DIR=(?:'((?:[^']|'\\'')*)'|"([^"]*)"|(\S+))/.exec(command);
   return match?.[1]?.replaceAll("'\\''","'")??match?.[2]??match?.[3];
 }
@@ -126,7 +162,8 @@ function groupsFor(config:any):any[] {
 export function providerHookState(o:HookTarget):ProviderHookReport {
   const env=o.env??process.env,file=providerHookPath(o.provider,o.home,env),parsed=readConfig(file);
   if('state' in parsed)return {provider:o.provider,file,state:parsed.state,detail:parsed.detail};
-  const wanted=providerHookCommand(o),commands:any[]=groupsFor(parsed.config).flatMap((g:any)=>Array.isArray(g?.hooks)?g.hooks.map((h:any)=>String(h?.command??'')):[]);
+  let wanted:string;try{wanted=providerHookCommand(o,o.platform);}catch(e){return {provider:o.provider,file,state:'unavailable',detail:e instanceof Error?e.message:String(e)};}
+  const commands:any[]=groupsFor(parsed.config).flatMap((g:any)=>Array.isArray(g?.hooks)?g.hooks.map((h:any)=>hookEntryText(h)):[]);
   const mine=commands.filter(isBridgeHookCommand),foreign=mine.find(command=>hookStateDir(command)!==o.stateDir);
   // Another FarFromDesk install (the production app, or an older unpinned hook)
   // owns this provider's prompts. Report it; never silently take the hook away.
@@ -149,8 +186,8 @@ export function installProviderHooks(o:HookTarget):ProviderHookReport {
   if(env.NODE_TEST_CONTEXT||scratchState(o.stateDir))return {provider:o.provider,file,state:'unavailable',detail:'this run uses a temporary state directory or a test context, so the owner profile was left untouched'};
   const parsed=readConfig(file);
   if('state' in parsed)return {provider:o.provider,file,state:parsed.state,detail:parsed.detail};
-  const config=parsed.config,wanted=providerHookCommand(o);
-  const before=groupsFor(config).flatMap((g:any)=>Array.isArray(g?.hooks)?g.hooks.map((h:any)=>String(h?.command??'')):[]);
+  const config=parsed.config,entry=providerHookEntry(o,o.platform),wanted=hookEntryText(entry);
+  const before=groupsFor(config).flatMap((g:any)=>Array.isArray(g?.hooks)?g.hooks.map((h:any)=>hookEntryText(h)):[]);
   const bridge=before.filter(isBridgeHookCommand),foreign=bridge.find(command=>hookStateDir(command)!==o.stateDir);
   // Two FarFromDesk installs share one provider config file. The one that does not
   // own it must not overwrite the other's hook: that would silently take the
@@ -159,8 +196,8 @@ export function installProviderHooks(o:HookTarget):ProviderHookReport {
   const existed=bridge.length>0;
   config.hooks=config.hooks&&typeof config.hooks==='object'?config.hooks:{};
   for(const event of EVENTS) {
-    const group={hooks:[{type:'command',command:wanted,timeout:event==='PermissionRequest'?PERMISSION_TIMEOUT_SECONDS:8}]};
-    const existing=Array.isArray(config.hooks[event])?config.hooks[event].filter((g:any)=>!Array.isArray(g?.hooks)||!g.hooks.some((h:any)=>isBridgeHookCommand(String(h?.command??'')))):[];
+    const group={hooks:[{type:'command',...entry,timeout:event==='PermissionRequest'?PERMISSION_TIMEOUT_SECONDS:8}]};
+    const existing=Array.isArray(config.hooks[event])?config.hooks[event].filter((g:any)=>!Array.isArray(g?.hooks)||!g.hooks.some((h:any)=>isBridgeHookCommand(hookEntryText(h)))):[];
     config.hooks[event]=[...existing,group];
   }
   const next=JSON.stringify(config,null,2)+'\n';
@@ -189,5 +226,5 @@ export function hookTroubleLine(reports:ProviderHookReport[]|undefined) {
   const broken=(reports??[]).filter(r=>r.state!=='current');
   if(!broken.length)return;
   const names=broken.map(r=>r.provider==='claude'?'Claude':r.provider==='codex'?'Codex':'the coding app');
-  return `FarFromDesk cannot see ${[...new Set(names)].join(' or ')} permission prompts on this Mac yet (${broken[0].detail??broken[0].state}). Prompts will appear in the app only.`;
+  return `FarFromDesk cannot see ${[...new Set(names)].join(' or ')} permission prompts on this ${computerName()} yet (${broken[0].detail??broken[0].state}). Prompts will appear in the app only.`;
 }

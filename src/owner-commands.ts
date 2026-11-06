@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { cursorRunning } from './cursor-paths.js';
+import { computerName } from './platform.js';
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -42,7 +43,7 @@ type Target={kind:'session';id:string;identity:string}|{kind:'brain'}|{kind:'too
 const TOOL_NAMES:Record<Tool,string>={muse:'Muse',deepseek:'DeepSeek',cursor:'Cursor'};
 const runTool=(r:Router,m:Incoming,tool:Tool,arg:string)=>tool==='muse'?museCommand(r,m,arg):tool==='deepseek'?deepseekCommand(r,m,arg):cursorCommand(r,m,arg);
 /** Cursor's own app process, so a bare /cursor can say whether a run could start right now. */
-function cursorOpen(){try{execFileSync('/usr/bin/pgrep',['-xq','Cursor']);return true;}catch{return false;}}
+function cursorOpen(){return cursorRunning();}
 type Choice={provider:string;targets:Extract<Target,{kind:'session'}>[];expires:number;requestId:string;names:string[]};
 const routeKey=(r:Router)=>`owner-target:${r.store.destination()}`;
 const choiceKey=(r:Router)=>`owner-target-choice:${r.store.destination()}`;
@@ -274,7 +275,7 @@ async function deepseekCommand(r:Router,m:Incoming,arg:string) {
  * Cursor window is silently ignored. The returned chat id is display-only.
  */
 async function cursorCommand(r:Router,m:Incoming,arg:string) {
-  if(!arg)return findCursorCli()?'Cursor is ready. It runs by command on your Mac, no window needed.':`Cursor is ready.${cursorOpen()?'':' It is closed now; I open it when you send something.'} Each message starts a new Cursor chat. To run it without the app window, sign in its command-line agent once: run cursor-agent login in Terminal.`;
+  if(!arg)return findCursorCli()?`Cursor is ready. It runs by command on your ${computerName()}, no window needed.`:`Cursor is ready.${cursorOpen()?'':' It is closed now; I open it when you send something.'} Each message starts a new Cursor chat. To run it without the app window, sign in its command-line agent once: run cursor-agent login in ${process.platform==='win32'?'a terminal':'Terminal'}.`;
   const destination=r.store.destination();
   if(destination)r.store.output(undefined,'🖱️ Cursor is working.','cursor-progress:'+m.id,destination,{kind:'system',origin:'system',plain:true});
   const mac=openDirectMac(r.store,stateDir,new URL(baseUrl).port,`cursor:${m.id}`);
