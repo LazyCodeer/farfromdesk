@@ -36,6 +36,17 @@ export function sessionMeta(store:Store,b:Binding) {
   return {provider:sessionShortName(store,b),name,icon:providerIcon(b.provider)};
 }
 
+/**
+ * Whether this connection waits on a desktop app that is closed. Off macOS a CLI connection runs
+ * without the desktop app, so a closed Codex or Claude window must not read as "closed" for it;
+ * macOS keeps its established rule.
+ */
+export function appClosedFor(store:Store,b:Binding,platform:NodeJS.Platform=process.platform) {
+  if(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor')return false;
+  if(platform!=='darwin'&&store.get(`execution-mode:${b.id}`)!=='desktop')return false;
+  return store.get(`app-running:${b.provider}`)==='false';
+}
+
 // A transport receipt is not an agent answer and never resolves a request.
 export function queueOwnerReceipt(store:Store, requestId:string, binding?:Binding, browsing=false) {
   if(!/^(wa|tg):/.test(requestId))return false;
@@ -43,7 +54,7 @@ export function queueOwnerReceipt(store:Store, requestId:string, binding?:Bindin
   const job=store.job(requestId);
   const name=sessionShortName(store,binding);
   // Liveness is probed once a minute on the maintenance tick, so this stays synchronous and cheap.
-  const closed=!!binding&&store.get(`app-running:${binding.provider}`)==='false';
+  const closed=!!binding&&appClosedFor(store,binding);
   const text=browsing?'🔎 Checking your sessions…':closed?closedReceiptText(name):`⏳ Queued for ${name||'the session'}. Waiting for it to start.`;
   return store.output(binding,text,
     `owner-receipt:${requestId}`,job?.destination??store.destination(),

@@ -26,7 +26,8 @@ import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { masterPolicy } from './master-policy.js';
 import { roleConfig, rolePointer, coordinatorRoleStatus } from './roles.js';
 import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
-import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
+import { portableAgents, desktopSessions, requirePortableCLI, nativeCommand } from './platform.js';
+import { windowsClaudeDesktop, windowsCodexDesktop } from './desktop-apps.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections, usableCLIConnection } from './connections.js';
 import { WorkspaceScanner,deniedMessage,type ResolvedWorkspaces } from './workspace-scanner.js';
@@ -55,10 +56,12 @@ const museTurnTimeoutMs=20*60*1000;
 const deepseekTurnTimeoutMs=20*60*1000;
 const cursorTurnTimeoutMs=10*60*1000;
 const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
-export function codexDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
+export function codexDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync,platform:NodeJS.Platform=process.platform) {
+  if(platform==='win32')return windowsCodexDesktop()!==undefined;
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
 }
-export function claudeDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
+export function claudeDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync,platform:NodeJS.Platform=process.platform) {
+  if(platform==='win32')return windowsClaudeDesktop()!==undefined;
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Claude.app')));
 }
 export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
@@ -241,7 +244,7 @@ export class Masters {
     for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):platform.provider==='muse'?muse:platform.provider==='deepseek'?deepseek:platform.provider==='cursor'?cursor:codex);
     platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claudeDesktopInstalled()||claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'New coordinators open directly in Claude Desktop. Existing chats still require verified session discovery.'});
     platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
-    if(portableAgents)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
+    if(!desktopSessions)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
     await Promise.all(platforms.map(async platform=>{
       const {accountKey,...connection}=await this.connections.read(platform.provider,platform.executionMode,fresh);
       platform.connection=connection;

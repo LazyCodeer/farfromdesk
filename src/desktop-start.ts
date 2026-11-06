@@ -1,20 +1,23 @@
 import { CoordinatorRegistry } from './coordinator-registry.js';
 import { randomUUID } from 'node:crypto';
-import { constants,openSync,closeSync,fstatSync,readFileSync,writeFileSync,realpathSync } from 'node:fs';
+import { constants,openSync,closeSync,fstatSync,lstatSync,readFileSync,writeFileSync,realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store,Binding } from './store.js';
 import { sameProject, type Session } from './session-catalog.js';
 import type { NativeAgents } from './native.js';
 import { openClaudeNewSession } from './session-activation.js';
+import { ownedByCurrentUser } from './desktop-apps.js';
 import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
 
 type Start={supportDir?:string;stage?:string;requireDetached?:boolean;accountScope?:string;createdId?:string;detachSubmitted?:boolean;proposalId?:string;bindingId:string;parentId:string;cwd:string;nonce:string;status:'prepared'|'submitted'|'uncertain'|'ready'|'needs_action';nativeId?:string};
 export function readStartReceipt(path:string):any {
   let fd:number;
+  // Windows has no O_NOFOLLOW, so a link is refused before opening instead.
+  if(process.platform==='win32')try{if(lstatSync(path).isSymbolicLink())throw new Error('Desktop setup receipt is not a regular local file.');}catch(e:any){if(e.code==='ENOENT')return null;throw e;}
   try{fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);}catch(e:any){if(e.code==='ENOENT')return null;throw new Error('Desktop setup receipt is not a regular local file.');}
   try {
     const st=fstatSync(fd);
-    if(!st.isFile()||st.uid!==process.getuid?.()||st.size>4096||st.nlink!==1)throw new Error('Desktop setup receipt is invalid.');
+    if(!st.isFile()||!ownedByCurrentUser(st)||st.size>4096||st.nlink!==1)throw new Error('Desktop setup receipt is invalid.');
     return JSON.parse(readFileSync(fd,'utf8'));
   }finally{closeSync(fd);}
 }

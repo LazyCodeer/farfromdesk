@@ -1,6 +1,7 @@
 import { readdir, open, lstat } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
-import { basename, join, isAbsolute } from 'node:path';
+import { basename, join, isAbsolute, sep } from 'node:path';
+import { ownedByCurrentUser } from './desktop-apps.js';
 import type { Provider } from './store.js';
 import { createHash } from 'node:crypto';
 
@@ -91,19 +92,19 @@ export async function claudeDesktopHistory(root:string):Promise<Session[]> {
         const cached=desktopCache.get(path);
         if(cached?.signature===signature(info)){if(cached.session)result.push({...cached.session});continue;}
         handle=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
-        const st=await handle.stat();if(!st.isFile()||st.uid!==process.getuid?.()||st.size>2*1024*1024)continue;
+        const st=await handle.stat();if(!st.isFile()||!ownedByCurrentUser(st)||st.size>2*1024*1024)continue;
         const row=JSON.parse(await handle.readFile('utf8'));
         if(row.sessionId!==file.name.slice(0,-5)||typeof row.cwd!=='string'||!isAbsolute(row.cwd))continue;
         const nativeId=typeof row.cliSessionId==='string'&&uuid.test(row.cliSessionId)?row.cliSessionId:undefined;
         const session:Session={id:nativeId??row.sessionId,desktopId:row.sessionId,detached:row.lineageDetached===true,provider:'claude',executionMode:'desktop',accountScope:createHash('sha256').update(account.name+'\0'+org.name).digest('hex').slice(0,20),
           name:typeof row.title==='string'&&row.title.trim()?row.title.slice(0,160):`${basename(row.cwd)} · ${row.sessionId.slice(-8)}`,
-          cwd:typeof row.worktreePath==='string'&&row.worktreePath.startsWith('/')?row.worktreePath:row.cwd,
+          cwd:typeof row.worktreePath==='string'&&(process.platform==='win32'?isAbsolute(row.worktreePath):row.worktreePath.startsWith('/'))?row.worktreePath:row.cwd,
           live:false,activation:nativeId&&row.isArchived!==true?'desktop-open':undefined,available:false,status:row.isArchived===true?'Archived in Claude Desktop':nativeId?'Saved in Claude Desktop · open in its account to connect':'Not initialized in Claude Desktop',
           updatedAt:activityTime(row.lastActivityAt)??activityTime(row.createdAt)};
         desktopCache.set(path,{signature:signature(st),session});result.push({...session});
       }catch(e){denied(e);/* Unreadable records do not hide other sessions. */}finally{await handle?.close();}
     }
   }
-  for(const path of desktopCache.keys())if(path.startsWith(root+'/')&&!seen.has(path))desktopCache.delete(path);
+  for(const path of desktopCache.keys())if(path.startsWith(root+sep)&&!seen.has(path))desktopCache.delete(path);
   return result.sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)||a.id.localeCompare(b.id));
 }

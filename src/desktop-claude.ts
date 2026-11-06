@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { accessSync, constants, readFileSync, lstatSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, isAbsolute, basename } from 'node:path';
+import { claudeDesktopDataDir, claudeConfigHome, isBundledClaudeCode, isClaudeDesktopExecutable, desktopOwnedRows, windowsProcesses, windowsClaudeInbox } from './desktop-apps.js';
 
 const exec=promisify(execFile);
 const executable=(path:string)=>{try{accessSync(path,constants.X_OK);return true;}catch{return false;}};
@@ -19,7 +20,11 @@ export function selectClaudeDiscovery(options:{override?:string;running:string[]
 export async function claudeDiscoveryBinary(fallback:string) {
   const root=join(homedir(),'Library/Application Support/Claude/claude-code')+'/';
   let running:string[]=[];
-  try {
+  if(process.platform==='win32') {
+    const data=claudeDesktopDataDir();
+    try{running=(await windowsProcesses()).map(r=>r.path).filter(path=>isBundledClaudeCode(path,data));}
+    catch{/* Use the configured desktop helper if process listing is unavailable. */}
+  } else try {
     const {stdout}=await exec('/bin/ps',['-axo','pid=,comm='],{timeout:5000,maxBuffer:2*1024*1024});
     running=stdout.split('\n').map(line=>line.trim().replace(/^\d+\s+/,''))
       .filter(path=>path.startsWith(root)&&path.endsWith('/claude.app/Contents/MacOS/claude'));
@@ -35,6 +40,7 @@ export function inboxPaths(output:string,pid:number) {
 /** Readiness only. desktop-sync independently validates ownership and identity before sending. */
 export async function hasClaudeInbox(pid:unknown) {
   if(typeof pid!=='number'||!Number.isSafeInteger(pid)||pid<=0)return false;
+  if(process.platform==='win32')return windowsClaudeInbox(pid)!==undefined;
   try {
     const {stdout}=await exec('/usr/sbin/lsof',['-a','-p',String(pid),'-U','-Fn'],{timeout:5000,maxBuffer:1024*1024});
     const paths=inboxPaths(stdout,pid);if(paths.length!==1)return false;
@@ -51,9 +57,11 @@ export function inboxesByPid(output:string,requested:Set<number>) {
   }
   return new Map([...sections].map(([pid,lines])=>[pid,inboxPaths(lines.join('\n'),pid)]));
 }
-export async function hasClaudeInboxes(values:unknown[]) {
+export async function hasClaudeInboxes(values:unknown[],configHome?:string) {
   const pids=new Set(values.filter((pid):pid is number=>typeof pid==='number'&&Number.isSafeInteger(pid)&&pid>0).slice(0,4096));
   const ready=new Set<number>();if(!pids.size)return ready;
+  // Windows: a named pipe per session, published with its peer key in the Claude config folder.
+  if(process.platform==='win32'){for(const pid of pids)if(windowsClaudeInbox(pid,configHome??claudeConfigHome()))ready.add(pid);return ready;}
   try {
     const {stdout}=await exec('/usr/sbin/lsof',['-a','-p',[...pids].join(','),'-U','-Fpn'],{timeout:3000,maxBuffer:4*1024*1024});
     for(const [pid,paths] of inboxesByPid(stdout,pids))if(paths.length===1) {
@@ -80,6 +88,7 @@ export function desktopOwnedPids(output:string) {
   }));
 }
 export async function claudeDesktopProcesses() {
+  if(process.platform==='win32')return desktopOwnedRows(await windowsProcesses(),path=>isClaudeDesktopExecutable(path,'win32'));
   const {stdout}=await exec('/bin/ps',['-axo','pid=,ppid=,comm='],{timeout:5000,maxBuffer:2*1024*1024});
   return desktopOwnedPids(stdout);
 }

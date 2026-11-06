@@ -11,7 +11,7 @@ import { DeliveryChoiceHold, deliveryAlternatives, heldCard, escalatedCard, read
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { TaskContracts } from './task-contracts.js';
 import { queueReportedProof } from './proof-report.js';
-import { closedAfterQueueText, queueOwnerReceipt, sessionShortName } from './coordinator-experience.js';
+import { appClosedFor, closedAfterQueueText, queueOwnerReceipt, sessionShortName } from './coordinator-experience.js';
 import { hash, Store, type Binding, type Provider } from './store.js';
 import type { NativeAgents } from './native.js';
 import { probeDesktopApps, probeDesktopAppsNow } from './app-liveness.js';
@@ -723,7 +723,7 @@ export class Router {
     if(!hold||!alternative)throw new Error('that session is no longer offered');
     const target=this.store.binding(alternative.bindingId);
     if(!target||!target.enabled)throw new Error('that session is no longer connected');
-    if(target.provider!=='muse'&&target.provider!=='deepseek'&&target.provider!=='cursor'&&!this.appOnline(target.provider))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
+    if(target.provider!=='muse'&&target.provider!=='deepseek'&&target.provider!=='cursor'&&(process.platform==='darwin'?!this.appOnline(target.provider):appClosedFor(this.store,target)))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
     say(`➡️ Sending this to ${alternative.label}…`,'delivery-move');
     // The held copy was never submitted, so closing it cannot leave the task running twice.
     this.store.jobState(hold.requestId,'replaced','You moved this message to another session before it was sent.');
@@ -746,6 +746,8 @@ export class Router {
         if(readDeliveryHold(this.store,id))continue;
         const binding=this.store.binding(job.binding_id);
         if(!binding||binding.provider!==provider)continue;
+        // Off macOS a CLI connection does not wait on the desktop app.
+        if(process.platform!=='darwin'&&!appClosedFor(this.store,binding))continue;
         if(this.store.db.prepare('SELECT 1 FROM reply_receipts WHERE source=?').get(`closed:${id}`))continue;
         this.store.output(binding,closedAfterQueueText(sessionShortName(this.store,binding)),`closed:${id}`,
           job.destination??this.store.destination(),{kind:'system',origin:'system',plain:true,requestId:id});
@@ -768,7 +770,7 @@ export class Router {
         this.silenceTimers.delete(id);
         const job=this.store.job(id);
         if(this.paused||!job||job.first_reply_at||!['dispatched','submitted','queued'].includes(job.status))return;
-        const closed=!this.appOnline(b.provider);
+        const closed=process.platform==='darwin'?!this.appOnline(b.provider):appClosedFor(this.store,b);
         this.store.event(id,stage===1?'silence_notice':'silence_escalated',{stage,appRunning:!closed});
         const minutes=Math.max(1,Math.round((Date.now()-job.created_at)/60000));
         const target=destination??this.store.get('whatsapp-owner')??null;

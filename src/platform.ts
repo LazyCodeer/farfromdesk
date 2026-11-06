@@ -1,8 +1,20 @@
 import { existsSync, statSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32, posix } from 'node:path';
+import { windowsCodexCli } from './desktop-apps.js';
 
 export const portableAgents = process.platform !== 'darwin' || process.env.FFD_PORTABLE_AGENTS === '1';
+/**
+ * Whether Claude Desktop and Codex Desktop sessions can be discovered and delivered to. macOS has
+ * always had them unless the portable adapter is forced; Windows reaches the same apps through
+ * their named-pipe inbox and URL handlers (src/desktop-apps.ts). FFD_DESKTOP_SESSIONS=0 turns
+ * them off on Windows.
+ */
+export function desktopSessionsSupported(platform: NodeJS.Platform = process.platform, env = process.env) {
+  if (platform === 'darwin') return env.FFD_PORTABLE_AGENTS !== '1';
+  return platform === 'win32' && env.FFD_DESKTOP_SESSIONS !== '0';
+}
+export const desktopSessions = desktopSessionsSupported();
 export function defaultStateDirectory(platform = process.platform, home = homedir(), env = process.env) {
   // Preserve the established Mac installation's identity and pairing.
   if (platform === 'darwin') return posix.join(home, 'Library/Application Support/WhatsApp Session Bridge');
@@ -41,10 +53,15 @@ export function nativeCommand(binary: string, args: string[], platform = process
       if (exists(script)) return { binary: process.execPath, args: [script, ...args] };
     }
   }
+  // Codex Desktop carries its own CLI, as the Mac app bundle does (see above).
+  if (!absolute && /^codex(?:\.exe)?$/i.test(binary)) {
+    const bundled = windowsCodexCli(env, undefined, exists);
+    if (bundled) return { binary: bundled, args };
+  }
   throw new Error(`Native ${win32.basename(binary)} executable unavailable. Install its Windows CLI and sign in there, then restart FarFromDesk.`);
 }
 export function requirePortableCLI(mode: unknown) {
-  if (portableAgents && mode === 'desktop') throw new Error('Desktop session delivery is not supported by this platform adapter. Choose an exact saved CLI session.');
+  if (!desktopSessions && mode === 'desktop') throw new Error('Desktop session delivery is not supported by this platform adapter. Choose an exact saved CLI session.');
 }
 
 /** What the owner calls this computer in messages and the app: Mac, PC, or computer elsewhere. */
