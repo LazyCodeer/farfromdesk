@@ -6,7 +6,8 @@ import {fileURLToPath} from 'node:url';
 import type {RemotePasswordAccess} from '../remote-desktop/access.js';
 import {P2PHost} from './host.js';
 import {NativeDesktopBackend} from './desktop.js';
-import {SIGNAL_PREFIX,type Transcriber} from './protocol.js';
+import {WindowsDesktopBackend} from './windows-desktop.js';
+import {SIGNAL_PREFIX,type DesktopBackend,type Transcriber} from './protocol.js';
 import {transcribeAudio} from '../audio.js';
 import {voiceEngine} from '../voice-cloud.js';
 import type {Store} from '../store.js';
@@ -30,10 +31,16 @@ export function voiceTranscriber(store:Store):Transcriber{
  };
 }
 
+/** Phone screen control runs on macOS (the native driver) and Windows (native/remote-windows.ps1). */
+export const remoteControlSupported=(platform:NodeJS.Platform=process.platform)=>platform==='darwin'||platform==='win32';
+export function desktopBackend(platform:NodeJS.Platform=process.platform):DesktopBackend{
+ return platform==='win32'?new WindowsDesktopBackend():new NativeDesktopBackend(join(nativeRoot,'session-state'));
+}
+
 /** Owner chat is the signaling path: the link goes out and the phone's code comes back here. */
 export class RemoteControlService {
  private host?:P2PHost;
- constructor(private access:RemotePasswordAccess,private make=(access:RemotePasswordAccess,onReconnect?:(link:string,password:boolean)=>void)=>new P2PHost({access,onReconnect,backend:()=>new NativeDesktopBackend(join(nativeRoot,'session-state')),transcriber:this.transcriber}),private notify?:(text:string)=>void,private transcriber?:Transcriber){}
+ constructor(private access:RemotePasswordAccess,private make=(access:RemotePasswordAccess,onReconnect?:(link:string,password:boolean)=>void)=>new P2PHost({access,onReconnect,backend:()=>desktopBackend(),transcriber:this.transcriber}),private notify?:(text:string)=>void,private transcriber?:Transcriber,private platform:NodeJS.Platform=process.platform){}
  /** Returns the reply for a remote-control chat message, or undefined for any other message. */
  async chat(text:string):Promise<string|undefined>{
   const code=answer.exec(text)?.[1];
@@ -43,8 +50,8 @@ export class RemoteControlService {
    return 'Code received. Your phone is connecting. Enter your remote password there.';
   }
   if(!command.test(text))return;
-  if(process.platform!=='darwin')return 'Screen control works on a Mac for now.';
-  if(!this.access.status.passwordSet)return 'Set a remote password first. On your Mac, open FarFromDesk, then Settings > Remote control, and set your remote password.';
+  if(!remoteControlSupported(this.platform))return 'Screen control works on Mac and Windows for now. Linux is next.';
+  if(!this.access.status.passwordSet)return `Set a remote password first. On your ${this.platform==='win32'?'PC':'Mac'}, open FarFromDesk, then Settings > Remote control, and set your remote password.`;
   // One host for the whole time, so a login kept after a dropped connection survives a new link.
   this.access.enable(true);this.host??=this.make(this.access,(link,password)=>this.notify?.(`Your phone lost the connection. Open this link in the next 5 minutes to continue, ${password?'then enter your remote password':'no password needed'}:\n${link}\n\nThen send back the code it shows.`));
   const offer=await this.host.createOffer();

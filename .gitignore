@@ -45,3 +45,6 @@ __pycache__/
 # Pinned driver is downloaded and verified during macOS packaging.
 native/cua-driver/cua-driver
 native/tool-embed
+
+# Windows PowerShell writes its module cache here when tests run without LOCALAPPDATA.
+/Microsoft/Windows/PowerShell/

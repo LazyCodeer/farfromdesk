@@ -31,6 +31,8 @@ export async function repairProviderHooks(options: {
         timeout: options.timeoutMs ?? 15_000,
         // A process waiting on a stalled disk ignores a polite signal.
         killSignal: 'SIGKILL',
+        // The app starts this backend without a console; a visible one would flash.
+        windowsHide: true,
         maxBuffer: 4 * 1024 * 1024,
         env: options.env ?? process.env,
       },

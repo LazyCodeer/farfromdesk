@@ -808,6 +808,9 @@ extension _BridgeScreens on _DeskState {
   ];
 
   Widget macControlOverview() {
+    if (api.platform == 'windows' || api.platform == 'linux') {
+      return portableControlOverview();
+    }
     final info = status['macControl'] ?? {};
     final trusted = info['trusted'];
     final failed = info['error'] != null;
@@ -858,6 +861,49 @@ extension _BridgeScreens on _DeskState {
           : trusted == false
           ? tag('Needs permission', tint: warning)
           : tag('Checking…'),
+    );
+  }
+
+  /// Windows and Linux have no Accessibility or Screen Recording grant, so the
+  /// card reports the owner's own switch instead of macOS permissions.
+  Widget portableControlOverview() {
+    final info = status['macControl'] ?? {};
+    final enabled = info['enabled'] == true;
+    return panel(
+      '$computer app control',
+      Row(
+        children: [
+          const Icon(Icons.desktop_windows_outlined, color: accent),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  enabled
+                      ? 'FarFromDesk can use apps here'
+                      : 'Off until you allow it',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                gap(3),
+                small(
+                  enabled
+                      ? 'It can list windows, read them, click named buttons, type and take screenshots when you ask.'
+                      : 'Turn on "Let FarFromDesk control apps" in Settings. No system permission is needed.',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          button('View settings', () {
+            changeView(() {
+              section = 4;
+              settingsTab = 'remote';
+            });
+          }, compact: true),
+        ],
+      ),
+      trailing: enabled ? tag('Allowed', good: true) : tag('Off'),
     );
   }
 

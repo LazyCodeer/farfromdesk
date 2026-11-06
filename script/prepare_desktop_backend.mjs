@@ -25,6 +25,8 @@ if(process.platform==='darwin') {
   // Windows and Linux desktop control: one script each over the OS accessibility layer.
   mkdirSync(join(target,'native'));
   copyFileSync(join(root,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'),join(target,'native',process.platform==='win32'?'desktop-windows.ps1':'desktop-linux.py'));
+  // Windows phone screen control: the capture and input helper (src/remote-p2p/windows-desktop.ts).
+  if(process.platform==='win32')copyFileSync(join(root,'native','remote-windows.ps1'),join(target,'native','remote-windows.ps1'));
 }
 cpSync(join(root,'skills'),join(target,'skills'),{recursive:true});
 // npm's CLI JavaScript is available beside npm on official Node installations.
@@ -47,9 +49,15 @@ writeFileSync(join(target,'runtime','Node-LICENSE.txt'),licenseText);
 console.log('Prepared backend and native Node runtime for '+process.platform+'/'+process.arch);
 
 const speechSource=join(root,'build',process.arch==='arm64'?'speech-runtime':'speech-runtime-x86_64');
-if(!existsSync(join(speechSource,'manifest.json')))throw new Error('Build the bundled speech runtime before packaging the desktop backend.');
-rmSync(join(root,'build','speech'),{recursive:true,force:true});
-cpSync(speechSource,join(root,'build','speech'),{recursive:true});
+// A development build (flutter run against build/desktop-backend) does not need the
+// speech runtime, which takes a long native build. Packaging still refuses to run
+// without build/speech, so this cannot ship an installer that lacks voice notes.
+const devWithoutSpeech=process.env.FFD_DESKTOP_NO_SPEECH==='1';
+if(existsSync(join(speechSource,'manifest.json'))){
+  rmSync(join(root,'build','speech'),{recursive:true,force:true});
+  cpSync(speechSource,join(root,'build','speech'),{recursive:true});
+}else if(devWithoutSpeech)console.warn('FFD_DESKTOP_NO_SPEECH=1: development backend without the bundled speech runtime. Voice notes stay unavailable, and packaging will refuse until it is built.');
+else throw new Error('Build the bundled speech runtime (python script/build_speech_runtime.py) before packaging the desktop backend, or set FFD_DESKTOP_NO_SPEECH=1 for a development build without voice notes.');
 
 const revision=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'});
 if(revision.status!==0)throw new Error('A committed source revision is required.');

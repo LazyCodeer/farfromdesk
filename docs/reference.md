@@ -26,7 +26,7 @@ The desktop transport reuses the installed `desktop-session-sync` skill and `~/.
 
 ## Run
 
-Requires macOS, Node 22.13+, the installed desktop-sync helper, and the native apps already signed in. The WhatsApp bridge never reads or copies their model credentials.
+Requires macOS, Node 22.15+, the installed desktop-sync helper, and the native apps already signed in. The WhatsApp bridge never reads or copies their model credentials.
 
 ```sh
 npm ci

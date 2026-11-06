@@ -41,6 +41,7 @@ function run(argv){
 const spaces=async(args:string[],signal:AbortSignal)=>JSON.parse((await exec('/usr/bin/osascript',['-l','JavaScript','-e',SPACES,...args],{timeout:10_000,signal})).stdout) as {count:number;current:number};
 /** Full primary display. scope:'desktop' without pid sends input to whatever is frontmost, as a person at the Mac would. */
 export class NativeDesktopBackend implements DesktopBackend {
+  readonly os='mac' as const;
   private driver:DesktopDriver;
   private controller=new AbortController();
   private readyAt=0;

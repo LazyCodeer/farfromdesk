@@ -4,6 +4,21 @@ import 'package:farfromdesk/local_state_guard.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
+/// Windows lets only administrators, or accounts with Developer Mode, create
+/// links. Those cases are left out there, and the run says why.
+final String? noLinks = () {
+  if (!Platform.isWindows) return null;
+  final dir = Directory.systemTemp.createTempSync('ffd-link-probe-');
+  try {
+    Link(p.join(dir.path, 'probe')).createSync(dir.path);
+    return null;
+  } on FileSystemException {
+    return 'this Windows account cannot create symlinks';
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+}();
+
 void main() {
   late Directory root, state, production, runtimes;
 
@@ -42,7 +57,7 @@ void main() {
       p.join(root.path, 'target-that-was-removed'),
     );
     await check();
-  });
+  }, skip: noLinks);
 
   test('a link into protected data is refused and named', () async {
     final dir = Directory(p.join(state.path, 'home'))..createSync();
@@ -60,12 +75,16 @@ void main() {
             ),
       ),
     );
-  });
+  }, skip: noLinks);
 
   test('a link out of Local to an unpermitted file is refused and named', () async {
     final dir = Directory(p.join(state.path, 'home'))..createSync();
     final link = p.join(dir.path, 'to-shell');
-    Link(link).createSync('/bin/sh');
+    // A real file outside every permitted root. `/bin/sh` does not exist on
+    // Windows, and a link to nothing is allowed on purpose (see above).
+    final outside = File(p.join(root.path, 'elsewhere', 'sh'))
+      ..createSync(recursive: true);
+    Link(link).createSync(outside.path);
     await expectLater(
       check(),
       throwsA(
@@ -76,13 +95,13 @@ void main() {
         ),
       ),
     );
-  });
+  }, skip: noLinks);
 
   test('a link that stays inside Local is allowed', () async {
     final inside = File(p.join(state.path, 'real.txt'))..writeAsStringSync('x');
     Link(p.join(state.path, 'alias.txt')).createSync(inside.path);
     await check();
-  });
+  }, skip: noLinks);
 
   test('relative paths are still refused before anything is touched', () async {
     await expectLater(
@@ -154,5 +173,5 @@ void main() {
         ),
       );
     });
-  });
+  }, skip: Platform.isWindows ? 'Local runs on macOS only; these are POSIX account homes' : false);
 }

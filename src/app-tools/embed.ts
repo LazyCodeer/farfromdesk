@@ -29,7 +29,7 @@ const EMBED_MAX_OUTPUT = 4 * 1024 * 1024;
 /** One request in, one answer out. `execFile` has no stdin, so this spawns directly. */
 function runWithInput(binary: string, input: string, timeoutMs = EMBED_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     let out = '';
     let settled = false;
     const finish = (error: Error | null, value = '') => {

@@ -71,11 +71,19 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_source_symlinks_and_external_assets_are_rejected(self):
         outside = self.root / 'outside';outside.write_text('synthetic-only')
-        (self.source / 'link').symlink_to(outside)
-        subprocess.run(['git', '-C', str(self.source), 'add', 'link'], check=True)
-        with self.assertRaisesRegex(ValueError, 'Symlink'):
-            module.prepare(self.source, self.destination)
-        (self.source / 'link').unlink()
+        try:
+            (self.source / 'link').symlink_to(outside)
+            linked = True
+        except OSError as e:
+            # WinError 1314: only administrators or Developer Mode can create links.
+            if getattr(e, 'winerror', None) != 1314:
+                raise
+            linked = False
+        if linked:
+            subprocess.run(['git', '-C', str(self.source), 'add', 'link'], check=True)
+            with self.assertRaisesRegex(ValueError, 'Symlink'):
+                module.prepare(self.source, self.destination)
+            (self.source / 'link').unlink()
         self.write('pubspec.yaml', 'flutter:\n  assets:\n    - ../outside\n')
         with self.assertRaisesRegex(ValueError, 'inside'):
             module.prepare(self.source, self.destination)

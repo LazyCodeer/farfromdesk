@@ -79,11 +79,12 @@ extension _RemoteControl on _DeskState {
         'SELECT_LOCAL_NETWORK': 'Pick the Wi-Fi network your phone is on.',
         'START_IN_PROGRESS': 'Already starting. Give it a moment.',
         'START_CANCELLED': 'Start was cancelled.',
-        'MAC_ONLY': 'Phone access works on a Mac for now.',
+        'MAC_ONLY': 'This needs a Mac for now.',
+        'UNSUPPORTED_PLATFORM': 'Phone screen control works on Mac and Windows for now.',
         'STOPPED': 'You stopped it.',
         'NEW_LINK': 'A newer link replaced it.',
         'REPLACED': 'A newer connection replaced it.',
-        'LOCKED': 'This Mac was locked.',
+        'LOCKED': 'This computer was locked.',
       }[code] ??
       code;
 
@@ -137,18 +138,34 @@ extension _RemoteControl on _DeskState {
         ),
         gap(12),
       ],
-      remoteSetupCard(done),
+      // Phone screen control needs the macOS capture and input helpers. Offering
+      // its password and connect steps elsewhere only led to a Set password
+      // button that the backend refuses (MAC_ONLY).
+      if (remoteSupported)
+        remoteSetupCard(done)
+      else
+        KeyedSubtree(
+          key: const Key('remote-unavailable'),
+          child: settingCard(
+            Icons.phonelink_off_outlined,
+            'Phone screen control works on Mac and Windows today',
+            'Linux is next. Until then there is no remote password to set on '
+                'this computer. The switch below still lets FarFromDesk read and '
+                'use apps here when you ask from your phone.',
+          ),
+        ),
       if (status['macControl']?['supported'] == true) ...[
         gap(24),
         settingsSubheading(
           'Permissions',
-          'Required to allow remote access and screen control.',
+          remoteSupported
+              ? 'Required to allow remote access and screen control.'
+              : 'Required for FarFromDesk to use apps on this computer.',
         ),
         gap(12),
         macControlPanel(),
       ],
-      gap(26),
-      remoteColumns(),
+      if (remoteSupported) ...[gap(26), remoteColumns()],
       if (legacyRemote['enabled'] == true) ...[
         gap(16),
         settingCard(
@@ -454,6 +471,16 @@ extension _RemoteControl on _DeskState {
                 ),
             ],
           ),
+          // The panel-wide banner sits above the stepper, out of view by the
+          // time the owner reaches this button, so a refusal also shows here.
+          if (remoteError != null) ...[
+            gap(10),
+            Text(
+              remoteError!,
+              key: const Key('remote-password-error'),
+              style: const TextStyle(fontSize: 12.5, color: Color(0xffff9d92)),
+            ),
+          ],
         ] else ...[
           remotePasswordStoredRow(),
           gap(10),

@@ -24,7 +24,7 @@ export const TELEGRAM_COMMANDS=[
   {command:'muse',description:'Run Muse Code on this project'},
   {command:'deepseek',description:'Run DeepSeek Harness on this project'},
   {command:'cursor',description:'Run Cursor on this project'},
-  {command:'screen',description:'Open the password-protected Mac viewer'},
+  {command:'screen',description:`Control your ${process.platform==='win32'?'PC':'Mac'} screen from your phone, password protected`},
   {command:'back',description:'Return to normal routing'},
   {command:'help',description:'Commands and current target'},
   {command:'sessions',description:'Show your sessions'},
@@ -318,7 +318,7 @@ export async function ownerCommand(r:Router,m:Incoming):Promise<string|undefined
     return 'Back to normal routing. Your next messages use the configured brain/proxy.';
   }
   if(cmd==='brain'){brain(r);clear(r);r.store.set(routeKey(r),JSON.stringify({kind:'brain'}));return 'Now using the Meta brain. If it is unavailable, you will get an error, not a fallback session. Use /back to leave.';}
-  if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Settings > Remote control in FarFromDesk.':'Screen viewing is unavailable in this build. Open Settings > Remote control in FarFromDesk on your Mac.';
+  if(cmd==='screen')return r.remoteControl?await r.remoteControl('/remote')??'Screen viewing is unavailable. Check Settings > Remote control in FarFromDesk.':'Screen viewing is unavailable in this build. Open Settings > Remote control in FarFromDesk on your computer.';
   const provider=cmd==='codex'?'codex':'claude';if(!enabled(r,provider))throw Error(`${provider==='claude'?'Claude':'Codex'} is disabled. Enable it in Coding platforms first.`);
   if(!arg){const b=defaultSession(r,provider);return activateTarget(r,{kind:'session',id:b.id,identity:identity(r,b)},true);}
   if(arg.toLowerCase()!=='list')return pickOwnerTarget(r,m,provider)??`Send /${cmd} list for a fresh list, then choose a session.`;

@@ -67,7 +67,7 @@ export function runDsh(options:DshRunOptions):Promise<DshResult> {
   return new Promise((resolve,reject)=>{
     let settled=false,bytes=0,stderr='',pending='',text:string|null=null,streamError:string|null=null;
     let sessionId:string|null=options.sessionId??null;
-    const child=spawn(binary,args,{cwd:options.cwd,env,stdio:['pipe','pipe','pipe'],detached:process.platform!=='win32'});
+    const child=spawn(binary,args,{cwd:options.cwd,env,stdio:['pipe','pipe','pipe'],detached:process.platform!=='win32',windowsHide:true});
     const finish=(error?:Error,result?:DshResult)=>{
       if(settled)return;
       settled=true;

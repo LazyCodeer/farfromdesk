@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
-import { ServerMode, linuxOnAcPower, windowsLidAction, WINDOWS_LID_GUIDANCE } from '../src/server-mode.js';
+import { ServerMode, execRun, linuxOnAcPower, readWindowsLidAction, windowsLidAction, WINDOWS_LID_GUIDANCE } from '../src/server-mode.js';
+import { repairProviderHooks } from '../src/hook-install.js';
 
 // Runs on every OS: the Windows and Linux paths are driven through injected commands,
 // so nothing here touches the real power policy.
@@ -137,4 +138,59 @@ test('Windows server mode claims nothing when powercfg cannot be read', async ()
     assert.equal(view.onAcPower, null);
     assert.equal(view.active, false);
   } finally { mode.close(); f.done(); }
+});
+
+// Shape of the same query on an OEM plan that marks LIDACTION hidden: /query prints the scheme only.
+const hiddenQuery = 'Power Scheme GUID: 6fecc5ae-f350-48a5-b669-b472cb895ccf  (Performance)\r\n';
+
+test('Windows server mode reads a hidden lid action through /qh and still names the fix', async () => {
+  const f = fixture();
+  const flags: string[] = [];
+  const mode = new ServerMode(f.store, {
+    platform: 'win32', stateFile: join(f.dir, 's.json'),
+    run: async (file, args) => {
+      if (!/powercfg/i.test(file)) return 'Online\r\n';
+      flags.push(args[0]!);
+      return args[0] === '/qh' ? powercfg(1, 1) : hiddenQuery;
+    },
+  });
+  try {
+    await mode.setEnabled(true);
+    const view = mode.view();
+    assert.equal(view.lidSleepDisabled, false, 'a hidden Sleep is read, not reported as unknown');
+    assert.equal(view.guidance, WINDOWS_LID_GUIDANCE);
+    assert.deepEqual([...new Set(flags)], ['/qh'], 'one powercfg per poll when /qh answers');
+  } finally { mode.close(); f.done(); }
+});
+
+test('the lid query falls back to /query when /qh is refused, and claims nothing when both fail', async () => {
+  const seen: string[] = [];
+  const parsed = await readWindowsLidAction(async (_file, args) => {
+    seen.push(args[0]!);
+    if (args[0] === '/qh') throw new Error('Invalid Parameters');
+    return powercfg(0, 1);
+  }, 'powercfg.exe');
+  assert.deepEqual(parsed, { ac: 0, dc: 1 });
+  assert.deepEqual(seen, ['/qh', '/query']);
+  assert.equal(await readWindowsLidAction(async () => hiddenQuery, 'powercfg.exe'), null);
+});
+
+// The app starts the backend detached, with no console. Any console child that is not
+// created hidden then opens its own terminal window: the server-mode flashing bug.
+async function spawnOptions(start: () => Promise<unknown>) {
+  const proto = ChildProcess.prototype as unknown as { spawn: (o: { windowsHide?: boolean; file: string }) => unknown };
+  const original = proto.spawn;
+  const seen: { file: string; windowsHide: boolean }[] = [];
+  proto.spawn = function (this: unknown, o) { seen.push({ file: o.file, windowsHide: !!o.windowsHide }); return original.call(this, o); };
+  try { await start(); } finally { proto.spawn = original; }
+  return seen;
+}
+
+test('server-mode probes and the startup hook repair start their children hidden', async () => {
+  const probes = await spawnOptions(() => execRun(process.execPath, ['-e', 'process.stdout.write("ok")']));
+  assert.equal(probes.length, 1);
+  assert.equal(probes[0]!.windowsHide, true);
+  const hooks = await spawnOptions(() => repairProviderHooks({ node: process.execPath, cli: '-e', timeoutMs: 5000 }).catch(() => null));
+  assert.equal(hooks.length, 1);
+  assert.equal(hooks[0]!.windowsHide, true);
 });

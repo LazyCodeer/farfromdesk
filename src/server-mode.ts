@@ -61,6 +61,19 @@ export function windowsLidAction(output:string):{ac:number;dc:number}|null{
   return values.length>=2?{ac:values.at(-2)!,dc:values.at(-1)!}:null;
 }
 
+/**
+ * Reads the lid-close action. Many OEM power plans mark LIDACTION hidden, and
+ * `/query` then prints only the scheme line, so the action was never known and the
+ * "set it to Do nothing" guidance never showed. `/qh` includes hidden settings;
+ * `/query` stays as the fallback for a powercfg that refuses `/qh`.
+ */
+export async function readWindowsLidAction(run:Run,powercfg:string):Promise<{ac:number;dc:number}|null>{
+  for(const flag of ['/qh','/query']){
+    try{const parsed=windowsLidAction(await run(powercfg,[flag,'SCHEME_CURRENT','SUB_BUTTONS','LIDACTION']));if(parsed)return parsed;}catch{}
+  }
+  return null;
+}
+
 /** Mains online, or no battery at all (a desktop). Null when it cannot be read. */
 export function linuxOnAcPower(dir:string):boolean|null{
   try{
@@ -100,7 +113,7 @@ function commandFailure(file:string,error:Error,stderr:string|Buffer){
 
 export function execRun(file:string,args:string[]):Promise<string>{
   return new Promise((resolve,reject)=>{
-    execFile(file,args,{timeout:300_000,maxBuffer:1024*1024,encoding:'utf8'},(error,stdout,stderr)=>{
+    execFile(file,args,{timeout:300_000,maxBuffer:1024*1024,encoding:'utf8',windowsHide:true},(error,stdout,stderr)=>{
       if(error)reject(commandFailure(file,error,stderr));else resolve(String(stdout));
     });
   });
@@ -237,10 +250,10 @@ export class ServerMode {
     }else{
       const root=process.env.SystemRoot??'C:\\Windows';
       const [action,line]=await Promise.allSettled([
-        this.deps.run(join(root,'System32','powercfg.exe'),['/query','SCHEME_CURRENT','SUB_BUTTONS','LIDACTION']),
+        readWindowsLidAction(this.deps.run,join(root,'System32','powercfg.exe')),
         this.deps.run(windowsPowerShell(),['-NoLogo','-NoProfile','-NonInteractive','-Command','Add-Type -AssemblyName System.Windows.Forms;[System.Windows.Forms.SystemInformation]::PowerStatus.PowerLineStatus']),
       ]);
-      const parsed=action.status==='fulfilled'?windowsLidAction(action.value):null;
+      const parsed=action.status==='fulfilled'?action.value:null;
       lid=parsed?parsed.ac===0:null;
       if(lid===false)guidance=WINDOWS_LID_GUIDANCE;
       if(line.status==='fulfilled')ac=/Online/.test(line.value)?true:/Offline/.test(line.value)?false:null;

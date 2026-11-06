@@ -24,7 +24,7 @@ The older `macos/` Swift client and `native/` Mac transport are retained as inte
 
 ## Development
 
-Install Flutter 3.47.7, a supported Node 22 release (minimum 22.13 for `node:sqlite`) and the native build tools:
+Install Flutter 3.47.7, a supported Node 22 release (minimum 22.15, for `node:sqlite` and `zlib` zstd) and the native build tools:
 
 - macOS: full Xcode, accepted license, CocoaPods where required by Flutter plugins.
 - Windows: Visual Studio 2022 desktop C++ workload and Windows SDK.
@@ -38,6 +38,10 @@ npm run check
 npm test
 npm run desktop:backend
 ```
+
+`desktop:backend` copies the bundled speech runtime (`python script/build_speech_runtime.py`). For a development build without voice notes, set `FFD_DESKTOP_NO_SPEECH=1` (PowerShell: `$env:FFD_DESKTOP_NO_SPEECH = "1"`). Packaging still requires the speech runtime.
+
+On Windows the full Node suite needs macOS tools; run `npm run test:portable`, the subset Windows CI runs. Tests that create symlinks skip that step when the account cannot create links (Windows allows it only for administrators or with Developer Mode on).
 
 For native development, launch Flutter with **isolated state and port values** and absolute paths to this snapshot and the local Node executable. Do not start it against the active macOS bridge:
 

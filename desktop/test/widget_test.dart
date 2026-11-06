@@ -189,6 +189,30 @@ void main() {
   );
 
   testWidgets(
+    'Overview on Windows reports the control switch, not macOS permissions',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway(screen: 'overview', fixture: 'connected')
+        ..host = 'windows'
+        ..trusted = true
+        ..captureTrusted = true;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      expect(find.text('PC app control'), findsOneWidget);
+      expect(find.text('Off until you allow it'), findsOneWidget);
+      expect(find.text('Mac app control'), findsNothing);
+      expect(find.textContaining('Accessibility'), findsNothing);
+      expect(find.textContaining('Screen Recording'), findsNothing);
+      api.enabled = true;
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      expect(find.text('FarFromDesk can use apps here'), findsOneWidget);
+      expect(find.text('Allowed'), findsWidgets);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'Overview shows Mac permission changes and opens Remote control settings',
     (tester) async {
       size(tester);
@@ -264,6 +288,25 @@ void main() {
     expect(stop, findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'Remote control where the backend has no phone control (Linux) offers no password',
+    (tester) async {
+      size(tester);
+      final api = MacControlGateway()..phoneSupported = false;
+      await tester.pumpWidget(FarFromDeskApp(gateway: api));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      await openSettingsTab(tester, 'remote');
+      expect(find.byKey(const Key('remote-unavailable')), findsOneWidget);
+      expect(find.textContaining('works on Mac and Windows today'), findsOneWidget);
+      expect(find.byKey(const Key('remote-password')), findsNothing);
+      expect(find.byKey(const Key('remote-password-save')), findsNothing);
+      expect(api.remoteActions, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   testWidgets(
     "Remote control lists the driver's grants in the one Permissions list",
@@ -2302,6 +2345,10 @@ class VoiceGateway extends ConnectionGateway {
 
 class MacControlGateway extends PreviewGateway {
   MacControlGateway({super.screen = 'settings', super.fixture = 'onboarding'});
+  /// Null keeps the preview's sample platform.
+  String? host;
+  @override
+  String get platform => host ?? super.platform;
   final macActions = <String>[];
   bool enabled = false;
   bool? trusted;
@@ -2331,6 +2378,8 @@ class MacControlGateway extends PreviewGateway {
   }
 
   bool remotePasswordSet = false;
+  /// False on Windows and Linux, where the backend refuses phone screen control.
+  bool phoneSupported = true;
   String linkState = 'idle';
   final remoteActions = <String>[];
   @override
@@ -2338,7 +2387,7 @@ class MacControlGateway extends PreviewGateway {
     if (path == '/api/remote-control') return {'state': linkState};
     if (path == '/api/phone-remote') {
       return {
-        'supported': true,
+        'supported': phoneSupported,
         'passwordSet': remotePasswordSet,
         'running': false,
         'addresses': [],

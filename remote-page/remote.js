@@ -4,6 +4,29 @@ import {SIGNAL_PREFIX,STUN_URLS,CONTROL_CHANNEL,FRAME_CHANNEL,FrameAssembler} fr
 const $=id=>document.getElementById(id);
 const NEW_LINK="Send 'control my screen' to FarFromDesk for a new link.";
 const EXPIRED='This link has expired. '+NEW_LINK,EXPIRED_SUB="Links work for a few minutes. Send 'control my screen' to FarFromDesk for a new one.";
+// ---- Which computer this is. Neutral until login; auth-ok names it (an older host sends no os: a Mac).
+// The texts below say "Mac"; everything shown goes through named(), so a PC is called a PC.
+let HOST='computer',OS=null;
+const named=s=>typeof s!=='string'||HOST==='Mac'?s:s.replace(/\bMac\b/g,HOST);
+const ORIGINAL=new WeakMap();
+function renameStatic(){
+  const walk=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  for(let n;(n=walk.nextNode());){const o=ORIGINAL.get(n)??n.nodeValue;if(!/\bMac\b/.test(o))continue;ORIGINAL.set(n,o);n.nodeValue=named(o);}
+  for(const el of document.querySelectorAll('[aria-label]')){const o=el.dataset.label??el.getAttribute('aria-label');if(!/\bMac\b/.test(o))continue;el.dataset.label=o;el.setAttribute('aria-label',named(o));}
+}
+function nameHost(os){OS=os==='windows'?'windows':'mac';HOST=OS==='windows'?'PC':'Mac';renameStatic();if(OS==='windows')windowsLabels();}
+// Windows: Ctrl and Alt shortcuts (the host maps the page's ⌘ to them), Task View, and a lock screen
+// that cannot be shown or typed into from here, so it is unlocked at the PC.
+function windowsLabels(){
+  for(const b of document.querySelectorAll('[data-mod="cmd"]')){
+    const k=b.dataset.key;
+    b.textContent=k==='tab'?'Alt+Tab':k==='space'?'Start':'Ctrl+'+k.toUpperCase();
+    b.setAttribute('aria-label',k==='tab'?'Alt Tab':k==='space'?'Windows key':'Control '+k.toUpperCase());
+  }
+  const o=$('overview')?.querySelector('small');if(o)o.textContent='Opens Task View on your PC';
+  const s=$('lockbar')?.querySelector('small');if(s)s.textContent='Unlock it at the PC. This view comes back by itself.';
+  $('locktype').hidden=true;$('lockfact').hidden=true;
+}
 const ERRORS={
   INCORRECT_PASSWORD:'That password is not right. Try again.',
   WAIT_BEFORE_RETRY:'Too many tries. Wait a minute, then try again.',
@@ -12,7 +35,7 @@ const ERRORS={
   ACTION_REFUSED:"Your Mac didn't do that. Nothing changed, try again.",
   NO_REPLY:'Your Mac did not reply. Check the screen before trying again.',
 };
-const explain=code=>ERRORS[code]||`Your Mac said: ${code}`;
+const explain=code=>named(ERRORS[code]||`Your Mac said: ${code}`);
 const ENDS={
   STOPPED_BY_PHONE:'You ended the session. Anything already sent may have happened, so check your Mac when you are back.',
   STOPPED:'Your Mac ended the session. '+NEW_LINK,
@@ -51,13 +74,13 @@ function paint({scene,kicker='',title,sub='',done=0,show=null,acts=null,center=f
   $('badge').setAttribute('href','#b-'+badge);$('art').dataset.link=link;
   const c=$('content');c.dataset.tone=tone;c.classList.toggle('center',center);
   $('progress').hidden=!done;$('progress').dataset.done=done;
-  $('kicker').textContent=kicker;$('kicker').hidden=!kicker;
-  $('title').textContent=title;$('sub').textContent=sub;$('sub').hidden=!sub;
+  $('kicker').textContent=named(kicker);$('kicker').hidden=!kicker;
+  $('title').textContent=named(title);$('sub').textContent=named(sub);$('sub').hidden=!sub;
   for(const s of ['answer','login','nextsteps'])$(s).hidden=s!==show;
   for(const a of ['sendacts','connect','openacts'])$(a).hidden=a!==acts;
   $('status').hidden=true;
 }
-function say(text,tone='wait'){$('statustext').textContent=text;$('status').dataset.tone=tone;$('status').hidden=false;}
+function say(text,tone='wait'){$('statustext').textContent=named(text);$('status').dataset.tone=tone;$('status').hidden=false;}
 // Screens with nothing left to do here: the next step happens in the chat.
 function finish(kind,message){
   stopVoice(true);
@@ -69,7 +92,7 @@ function finish(kind,message){
   else if(kind==='used')paint({scene:'used',kicker:'Link already used',title:'Open the newest link',sub:message,...open});
   else paint({scene:'failed',kicker:'Disconnected',title:'The session stopped',sub:message,...open});
 }
-paint({scene:'code',done:1,title:'Control your Mac'});say('Getting ready…');
+renameStatic();paint({scene:'code',done:1,title:'Control your Mac'});say('Getting ready…');
 
 // epoch: bumped on every pause, so a decode, tap or ack from before it can't land after it.
 let pc=null,control=null,ended=false,authed=false,live=false,paused=false,epoch=0,offerId=null,aliveTimer=null,wake=null;
@@ -182,6 +205,7 @@ $('cancel').onclick=()=>{send({t:'stop'});setTimeout(()=>end('You cancelled. '+N
 function onMessage(data){
   let m;try{m=JSON.parse(data);}catch{return;}
   if(m.t==='auth-ok'){
+    nameHost(m.os);
     authed=true;paused=false;store.drop(PAUSED);$('paused').hidden=true;$('session').classList.remove('paused');canList=m.desktops===true;setVoice(m.voice);idleMs=typeof m.idle==='number'?m.idle:0;showLocked(m.locked===true);
     if(typeof m.resume==='string')store.set(KEEP,{secret:m.resume,alive:Date.now()});
     goLive();
@@ -200,7 +224,7 @@ function onMessage(data){
   else if(m.t==='ended'){
     if(m.reason!=='CONNECTION_LOST'){store.drop(KEEP);store.drop(PAUSED);}
     const r=m.reason;
-    end(r==='OFFER_EXPIRED'?EXPIRED_SUB:ENDS[r]??'Your Mac ended the session. '+NEW_LINK,
+    end(r==='OFFER_EXPIRED'?EXPIRED_SUB:r==='DESKTOP_UNAVAILABLE'&&OS==='windows'?"FarFromDesk could not read your PC's screen. "+NEW_LINK:ENDS[r]??'Your Mac ended the session. '+NEW_LINK,
       r==='STOPPED_BY_PHONE'||r==='IDLE_TIMEOUT'?'ended':r==='OFFER_EXPIRED'?'expired':/REPLACED|NEW_LINK/.test(r)?'used':'failed');
   }
 }
@@ -247,7 +271,7 @@ addEventListener('beforeunload',e=>{if(live){e.preventDefault();e.returnValue=''
 addEventListener('pagehide',()=>pause());
 
 let toastTimer=null;
-function toast(text){const t=$('toast');t.textContent=text;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{t.hidden=true;},3500);}
+function toast(text){const t=$('toast');t.textContent=named(text);t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{t.hidden=true;},3500);}
 
 // Frames are drawn on a canvas (the CSP blocks blob: images). Pull based: ask for the next one once this is on screen.
 const assembler=new FrameAssembler(),canvas=$('screen'),viewport=$('viewport'),stage=$('stage');
@@ -382,12 +406,14 @@ function toggle(button,sheet){
 $('kbd').onclick=()=>toggle($('kbd'),$('keyboard'));
 $('keysbtn').onclick=()=>toggle($('keysbtn'),$('shortcuts'));
 $('lock').onclick=()=>{viewOnly=!viewOnly;$('lock').setAttribute('aria-pressed',String(viewOnly));toast(viewOnly?'View only. Taps and swipes are not sent.':'Control is back on.');};
-$('typeform').onsubmit=e=>{e.preventDefault();const text=$('text').value;if(!text)return;$('text').value='';act({kind:'type',text}).then(a=>{if(a?.ok&&macLocked)act({kind:'key',key:'return'});});};
+$('typeform').onsubmit=e=>{e.preventDefault();const text=$('text').value;if(!text)return;$('text').value='';act({kind:'type',text}).then(a=>{if(a?.ok&&macLocked&&OS!=='windows')act({kind:'key',key:'return'});});};
 // ---- Locked Mac. The lock screen stays live; the password goes in through Type like any other text.
 let macLocked=false;
 const MASKABLE=CSS.supports('-webkit-text-security','disc');
 function showLocked(on){
   if(on===macLocked)return;macLocked=on;$('lockbar').hidden=!on;
+  // Windows: the lock screen is unlocked at the PC, so there is no password field here; voice stays off meanwhile.
+  if(OS==='windows'){if(on)stopVoice(true);showMic();if(!on)toast('Your PC is unlocked');return;}
   // Hidden as typed, and Return is sent after it, so one tap unlocks.
   // The mic goes away while locked: the Mac password is only ever typed, never spoken or sent to a transcriber.
   if(on)stopVoice(true);showMic();
@@ -408,7 +434,7 @@ function setVoice(mode){
 function showMic(){$('mic').hidden=!voiceMode||macLocked;}
 function stopVoice(drop){if(!rec)return;discard=drop;clearTimeout(voiceTimer);try{rec.stop();}catch{}}
 function micState(listening,busy){$('mic').setAttribute('aria-pressed',String(listening));$('mic').disabled=busy;$('mic').setAttribute('aria-label',listening?'Stop and transcribe':'Speak');
-  $('text').placeholder=listening?'Listening… tap the mic to stop':busy?'Transcribing…':macLocked?'Your Mac password':'Type into the field you tapped';}
+  $('text').placeholder=listening?'Listening… tap the mic to stop':busy?'Transcribing…':macLocked&&OS!=='windows'?'Your Mac password':'Type into the field you tapped';}
 $('mic').onclick=async()=>{
   if(rec){stopVoice(false);return;}
   if(macLocked)return;

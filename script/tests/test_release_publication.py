@@ -67,7 +67,14 @@ class ReleaseValidationTests(unittest.TestCase):
 
     def test_symlink_is_rejected(self):
         p = next((self.root / 'arm64').glob('*.zip'))
-        copy = self.root / 'outside.zip'; copy.write_bytes(p.read_bytes()); p.unlink(); p.symlink_to(copy)
+        copy = self.root / 'outside.zip'; copy.write_bytes(p.read_bytes()); p.unlink()
+        try:
+            p.symlink_to(copy)
+        except OSError as e:
+            # WinError 1314: only administrators or Developer Mode can create links.
+            if getattr(e, 'winerror', None) != 1314:
+                raise
+            self.skipTest('this Windows account cannot create symlinks')
         with self.assertRaisesRegex(ValueError, 'Invalid release file'):
             validate_assets(self.root, TAG, COMMIT)
 

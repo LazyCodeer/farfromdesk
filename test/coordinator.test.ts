@@ -136,7 +136,7 @@ test('router recognizes older history and name search while ordinary requests go
   }finally{f.router.stopped=true;f.close();}
 });
 
-test('Claude saved-session metadata exposes history and timestamps, not transcript contents or symlinks',async()=>{
+test('Claude saved-session metadata exposes history and timestamps, not transcript contents or symlinks',async t=>{
   const root=mkdtempSync(join(tmpdir(),'wsb-history-')),dir=join(root,'project');mkdirSync(dir);
   try {
     writeFileSync(join(dir,uuid(1)+'.jsonl'),[
@@ -144,7 +144,10 @@ test('Claude saved-session metadata exposes history and timestamps, not transcri
       {type:'custom-title',sessionId:uuid(1),customTitle:'Website work'},
       {sessionId:uuid(1),timestamp:'2026-10-25T10:05:00Z'}
     ].map(r=>JSON.stringify(r)).join('\n'));
-    symlinkSync(join(dir,uuid(1)+'.jsonl'),join(dir,uuid(2)+'.jsonl'));
+    // Windows lets only administrators, or accounts with Developer Mode, create links.
+    // The rest of this test still runs there; only the symlink case is left out.
+    try{symlinkSync(join(dir,uuid(1)+'.jsonl'),join(dir,uuid(2)+'.jsonl'));}
+    catch(e){if(process.platform!=='win32'||(e as NodeJS.ErrnoException).code!=='EPERM')throw e;t.diagnostic('symlink case not run: this Windows account cannot create symlinks');}
     writeFileSync(join(dir,uuid(3)+'.jsonl'),JSON.stringify({sessionId:uuid(3),cwd:'/tmp/side',isSidechain:true}));
     const rows=await claudeHistory(root);assert.equal(rows.length,1);assert.equal(rows[0].name,'Website work');assert.equal(rows[0].available,false);
     assert.equal(rows[0].updatedAt,Date.parse('2026-10-25T10:05:00Z'));assert.doesNotMatch(JSON.stringify(rows),/PRIVATE CONTENT|message/);
