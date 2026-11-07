@@ -243,6 +243,8 @@ test('model may not invent reminder contents, target, or timezone',async()=>{
   const f=fixture();try{
     f.setDecision({text:'send money'});await assert.rejects(f.send('1','Remind me at 6 PM to call the bank'),/exact reminder/);
     f.setDecision({text:'call the bank',zone:'America/New_York'});await assert.rejects(f.send('2','Remind me at 6 PM to call the bank'),/time zone explicitly/);
+    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('3','Remind me at 6 PM New York time to call the bank');assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,1);
+    f.store.db.prepare('DELETE FROM schedules').run();
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
   }finally{f.close();}
 });

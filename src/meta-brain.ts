@@ -958,7 +958,7 @@ export class MetaBrain {
       // No exact title hit: the one session whose distinctive title words the owner used most wins (sim, 7 Nov 2026).
       // ponytail: plain word overlap, no stemming or fuzzy spelling; add when typos in names show up in the sim.
       // "Start with the deploy checks, keep Acme queued" names Acme only to put it off; that is not where this goes (sim, 7 Nov 2026).
-      const dropDeferred=()=>{const clauses=said.split(/[.,;!?\n。，；！？—–]+/),deferred=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b/i;
+      const dropDeferred=()=>{const clauses=said.split(/[.,;!?\n。，；！？—–]+/),deferred=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b|\bcan wait\b|\b(?:once|until|till)\b.*\b(?:back on|turned on|is on|on again)\b/i;
        const named=(b:Binding,c:string)=>[this.label(b),b.alias,...norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w))].map(norm).some(n=>n&&hit.call(null,n)&&norm(c).includes(n));
        const kept=mentioned.filter(b=>!clauses.filter(c=>named(b,c)).every(c=>deferred.test(c))||!clauses.some(c=>named(b,c)));
        if(kept.length<mentioned.length){mentioned.length=0;mentioned.push(...kept);}};
@@ -1003,7 +1003,7 @@ export class MetaBrain {
         const live=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&norm(this.label(b)).length>=4);
         // The owner's own words now come first ("the cloud session"), minus clauses that defer ("keep Acme queued for after"),
         // which the priorities sim tripped on (7 Nov 2026).
-        const defer=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back|after)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b/i;
+        const defer=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back|after)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b|\bcan wait\b|\b(?:once|until|till)\b.*\b(?:back on|turned on|is on|on again)\b/i;
         const nowWords=new Set(said.split(/[.,;!?\n。，；！？—–]+/).filter(c=>!defer.test(c)).join(' ').toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u));
         const nowHit=live.filter(b=>distinct(b).some(w=>nowWords.has(w)));
         let again:Binding[]=nowHit.length===1?nowHit:[];

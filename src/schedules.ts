@@ -270,7 +270,7 @@ export class Schedules {
     if(action==='session'){
       if(decision.target){
         // The owner says the name they see ("ask the FarFromDesk cloud server session to"), not the alias (sim, 7 Nov 2026).
-        const norm=(v:string)=>v.trim().toLowerCase();
+        const norm=(v:string)=>v.trim().toLowerCase().replace(/^the\s+/,'').replace(/\s+session$/,'');
         // The model may hand back the display name or alias instead of the id.
         const exact=this.store.binding(decision.target)??this.store.bindings().find(b=>norm(b.alias)===norm(decision.target)||norm(this.store.get(`name:${b.id}`)??'')===norm(decision.target));
         // "the cloud server session" names part of "FarFromDesk cloud server"; take it only when one session matches (sim, 7 Nov 2026).
@@ -291,7 +291,7 @@ export class Schedules {
     }
     const zoneNames=[...timingText.matchAll(/\b[A-Za-z_]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?\b/g)].map(m=>m[0]);
     if(!zoneNames.length&&/\b(?:IST|PST|PDT|CST|CDT|EST|EDT|MST|MDT|UTC|GMT)\b/i.test(timingText))throw new Error('Please specify the time zone using an IANA name such as Asia/Kolkata.');
-    if(zoneNames.length>1||zoneNames.length===1&&decision.zone!==zoneNames[0]||zoneNames.length===0&&decision.zone!==zone)throw new Error('Please name the time zone explicitly in the time directive.');
+    if(zoneNames.length>1||zoneNames.length===1&&decision.zone!==zoneNames[0]||zoneNames.length===0&&decision.zone!==zone&&!(decision.zone?.includes('/')&&new RegExp(`\\b${decision.zone.split('/').pop()!.replace(/_/g,' ')}\\s+time\\b`,'i').test(text)))throw new Error('Please name the time zone explicitly in the time directive.');
     if(!validZone(decision.zone))throw new Error('Please choose a valid time zone.');
     const now=this.now(),{date,time,repeat,next}=checkedTiming(timingText,decision,now,decision.zone);
     if(repeat==='once'&&!localInstants(date,time,decision.zone).length)throw new Error('That local time does not exist. Please choose another time.');
@@ -388,7 +388,7 @@ export class Schedules {
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:t.zone,dateStyle:'medium',timeStyle:'short'}).format(t.next);
     // The name the owner sees in the app, not the internal alias (live: "selected-master-04a13fbb").
     const name=(this.store.get(`name:${binding.id}`)??binding.alias).replace(/\s+/g,' ').slice(0,60);
-    return `Saved. ${when}${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${name} to: ${text}.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
+    return `Saved. ${when}${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${name} to: ${text.replace(/[.!?]+$/,'')}.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
   }
   /**
    * The brain's reminder tools. The brain decides that a message is a reminder and works out
