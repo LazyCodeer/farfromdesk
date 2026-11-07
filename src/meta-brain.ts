@@ -197,8 +197,8 @@ export class MetaBrain {
     const c=router.coordinator;if(!c)return answer('Connect a proxy in Coding platforms before asking for updates.');
     let target:Binding|undefined;
     try{target=this.memory.owner(item,router);}catch(e){return answer(`#${item.id} ${item.title}: ${(e as Error).message}`);}
-    if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider)||(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id)))
-      return answer(`#${item.id} ${item.title}: its session isn't connected, so I can't ask it. Connect it in the app, or send the task again.`);
+    if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))
+      return answer(`#${item.id} ${item.title}: its session is paused or its platform is off, so I can't ask it. Turn it back on in the app, or send the task again.`);
     // A platform the brain carried over from an earlier turn ("ask claude", then "1") constrains it too.
     const named=[...new Set([...namedPlatforms(original),...(provider&&provider!=='unspecified'?[provider]:[])])];
     if(named.length>1||(named.length===1&&named[0]!==target.provider))return answer('This item belongs to another platform. Please clarify which owning session you want to ask. Nothing was sent.');
@@ -290,9 +290,10 @@ export class MetaBrain {
     if(!policy.allowStatus){this.stop(m.id,'Status summaries and follow-up notifications are disabled in Meta Settings.');return true;}
     if(op==='recent_sessions'){
       const provider=decision.provider==='unspecified'?undefined:decision.provider,hours=decision.hours??24;
-      if(!provider)return answer('Which coding platform should I list sessions for?');
-      if(!policy.providers.includes(provider)||!router.coordinator?.enabled().includes(provider))return answer('That coding platform is disabled in Settings.');
-      try{return answer(await router.coordinator.recentSessions(provider,Date.now()-hours*3600000));}
+      // No platform named means all of them: "which platform?" after "all of them" was a dead end (sim, 7 Nov 2026).
+      const providers=provider?[provider]:policy.providers.filter(p=>router.coordinator?.enabled().includes(p));
+      if(!providers.length||(provider&&(!policy.providers.includes(provider)||!router.coordinator?.enabled().includes(provider))))return answer('That coding platform is disabled in Settings.');
+      try{return answer((await Promise.all(providers.map(p=>router.coordinator!.recentSessions(p,Date.now()-hours*3600000)))).join('\n\n'));}
       catch{return answer('Session discovery is unavailable. Nothing was dispatched; check the native app connection.');}
     }
     // The coded list (P1, D2) the owner reads is what later "update on P1" resolves against.
@@ -732,7 +733,7 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),now:localStamp(),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),now:localStamp(),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.introOnce()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
         // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
         // model can say why and what to switch on, instead of the loop failing.
         run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
@@ -842,7 +843,7 @@ export class MetaBrain {
         const child=t.evidence.children.map(c=>`${this.store.binding(String(c.binding_id))?.alias??'a saved session'} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
         return `- ${title}${title.length>=100?'...':''} · ${t.status}${alias?` · ${alias}`:''}${child?` · delegated to ${child}`:''}`;
       });
-      this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):'No matching tracked tasks.');return true;
+      this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;
     }
     if(!policy.allowRouting){this.stop(m.id,'Routing is disabled by your Meta brain policy.');return true;}
     const c=router.coordinator;if(!c){this.stop(m.id,'Connect an existing coordinator in Coding platforms first.');return true;}
@@ -907,6 +908,10 @@ export class MetaBrain {
     if(this.send(router,m.id,m.text,target,coordinator,topic,m))this.store.output(undefined,`✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${m.id}`,this.store.job(m.id)?.destination??this.store.destination());
     return true;
   }
+  // The intro asked "What should I call you?" on every message until the owner answered (sim, 7 Nov 2026). Once per chat.
+  private introOnce(){const k=`intro-shown:${this.store.destination()}`;if(!this.owner.introNeeded()||this.store.get(k))return false;this.store.set(k,'1');return true;}
+  // "Status of my sessions" with nothing tracked yet answered "No matching tracked tasks." and never named a session (sim, 7 Nov 2026).
+  private noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?['No tracked work yet. Your sessions:',...names,'Ask any of them for an update by name.'].join('\n'):'No tracked work and no sessions connected yet.';}
   private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}
   private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming) {
     this.store.db.exec('SAVEPOINT brain_dispatch');

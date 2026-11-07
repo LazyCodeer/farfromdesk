@@ -107,9 +107,13 @@ test('a proxy that owns its item is asked; ambiguous, undispatched and unconnect
     f.store.db.prepare('INSERT INTO brain_item_routes VALUES(?,?)').run(3,f.store.destination());
     await f.send('tg:6','ask for an update on #3',update(['item:3']));
     assert.match(f.last(),/hasn't been sent to a session yet/);assert.equal(f.store.job('tg:6'),undefined);
+    // An empty selection no longer blocks a status question to the owning session (prod has none selected); a paused one does.
     f.store.set('selected','[]');
     await f.send('tg:7','check with it for an update on #2',update(['item:2']));
-    assert.match(f.last(),/isn't connected/);assert.equal(f.store.job('tg:7'),undefined);
+    assert.ok(f.store.job('tg:7'));
+    f.store.enable(f.worker.id,false);
+    await f.send('tg:8','check with it for an update on #2',update(['item:2']));
+    assert.match(f.last(),/is paused/);assert.equal(f.store.job('tg:8'),undefined);
   }finally{f.close();}
 });
 

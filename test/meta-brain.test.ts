@@ -94,7 +94,7 @@ test('task, transport evidence and owner verification persist through restart',a
 });
 test('status selects saved evidence, ignores fabricated task IDs and scopes recipient routes',async()=>{
   const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/\*#1 Fix it\*[^"]*- Session: codex-proxy[^"]*- State: in progress, queued/);
-    await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task)/);
+    await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task|tracked work)/);
   }finally{f.close();}
 });
 test('direct worker replies, quoted follow-ups and report updates do not loop through Meta',async()=>{

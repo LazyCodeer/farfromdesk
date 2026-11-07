@@ -122,11 +122,14 @@ export class BrainMemory {
       return `#${item.id}: ${d.itemStatus}. Saved as your board update; execution evidence is unchanged.`;
     }
     if(d.operation==='pause_session'||d.operation==='resume_session') {
-      const match=/^(?:please\s+)?(pause|disconnect|resume|reconnect|connect) (?:the )?(?:session )?(.+?)(?: session)?[.!]?$/i.exec(m.text.trim());
-      const resume=d.operation==='resume_session';
-      if(!match||resume!==/^(resume|reconnect|connect)$/i.test(match[1]))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
-      const matches=this.candidates(router).filter(b=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].some(n=>n.toLowerCase()===match[2].toLowerCase()));
-      if(matches.length!==1||matches[0].id!==d.sessionId)throw new Error('Please use the exact name of one session already associated with this chat.');
+      // Owners say "pause the Acme one" or "Client: Acme storefront ko pause karo". The model picks the session;
+      // code only checks the verb matches and the owner's words name that session (sim, 7 Nov 2026).
+      const said=m.text.toLowerCase(),resume=d.operation==='resume_session';
+      const verb=/\b(resume|reconnect|connect|unpause|start again)\b/.test(said)?'resume':/\b(pause|disconnect|stop|hold)\b/.test(said)?'pause':undefined;
+      if(verb!==(resume?'resume':'pause'))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
+      const words=(b:Binding)=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].flatMap(n=>[n.toLowerCase(),...n.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4)]);
+      const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
+      if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
       if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error('This platform is disabled or denied by your policy.');
       const coordinator=router.coordinator.registry.bindingFor(b);
