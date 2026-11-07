@@ -1,3 +1,4 @@
+import {generateMetaImage} from './social-meta-image.js';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -475,6 +476,12 @@ export class MetaBrain {
    * Downloads, Desktop, Documents, Pictures, Movies and Music; never hidden folders or Library,
    * never a link that leads outside them, at most 50 MB ("Send me 3.jpg from downloads", live).
    */
+  private async makeImageFor(m:Incoming,key:string,prompt:string):Promise<string>{
+    const list=this.files.get(m.id)??[];if(list.length>=3)return 'At most three pictures per message.';
+    try{const image=await generateMetaImage({prompt,apiKey:key},fetch);list.push({bytes:Buffer.from(image.bytes),name:'image.jpg'});this.files.set(m.id,list);}
+    catch(e){return `The picture could not be made: ${(e as Error).message} Say so plainly.`;}
+    return JSON.stringify({queued:'image.jpg',note:'It is sent to the owner right after your reply. Say it follows.'});
+  }
   private sendFileFor(m:Incoming,raw:string):string{
     const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
     const asked=raw.trim().replace(/^~(?=\/|$)/,home);
@@ -757,7 +764,10 @@ export class MetaBrain {
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:async(url,browser)=>{this.ack(m,browser);this.armed.delete(m.id);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
         focusTab:match=>{this.ack(m,`the ${match} tab`);this.armed.delete(m.id);return this.focusTabFor(m,match);},
-      }:undefined,{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)}));
+      }:undefined,{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},mode?.kind==='social'?undefined:prompt=>this.makeImageFor(m,key,prompt),policy.allowManagement?{
+        add:t=>{const i=this.memory.add(`${m.id}#${t.slice(0,40)}`,t);return `Saved #${i.id}: ${i.title}`;},
+        set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
+        list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;

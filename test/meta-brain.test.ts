@@ -145,6 +145,14 @@ test('Meta reads memory through the tool before deciding',async()=>{
   const r=await model.interpret('k',DEFAULT_BRAIN,{original:'read ATC',source:'text',tasks:[]},i=>`${i.command} ${i.path}: ATC means air traffic`);
   assert.equal(n,2);assert.match(seen[0],/view words\.md: ATC means air traffic/);assert.deepEqual(r,decision());
 });
+// Sim, 7 Nov 2026: "add X, mark #1 done and show my list" did only the first change.
+test('several to-do changes in one message all run before the answer',async()=>{
+  const steps=[call('todo_add',{title:'book flights'},'t1'),call('todo_set',{id:1,status:'done'},'t2'),call('todo_list',{},'t3'),call('decide',{...decision(),intent:'chat',reply:'Done.'},'d1')];let n=0;const log:string[]=[];
+  const model=new MetaModel((async()=>steps[n++]) as typeof fetch);
+  await model.interpret('k',DEFAULT_BRAIN,{original:'add book flights, mark 1 done, show list',source:'text',tasks:[]},undefined,undefined,undefined,undefined,undefined,undefined,
+    {add:t=>{log.push('add '+t);return 'ok';},set:(id,st)=>{log.push(`set ${id} ${st}`);return 'ok';},list:()=>{log.push('list');return '';}});
+  assert.deepEqual(log,['add book flights','set 1 done','list']);
+});
 test('Meta timeout, malformed output, extra authority fields and HTTP errors redact raw content',async()=>{
   for(const kind of ['timeout','malformed','authority','http']) {
     const model=new MetaModel((async(_url,init)=>{
