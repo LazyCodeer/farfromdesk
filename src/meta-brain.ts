@@ -943,7 +943,9 @@ export class MetaBrain {
   private refuse(router:Router,policy:BrainPolicy,d:Interpretation):string|undefined {
     const c=router.coordinator;
     // An update with no tracked item is sent to a session as a task, so it needs a session too (sim, 7 Nov 2026).
-    if(!(d.intent==='task'||d.intent==='update')||d.taskIds.length||!c||this.decidesContracts(router)&&this.pendingContract(router))return;
+    // An update's taskIds that match no tracked item are dropped before sending, so they don't pick a session (sim, 7 Nov 2026).
+    const tracked=d.intent==='update'?d.taskIds.length===1&&this.memory.board().some(i=>i.ref===d.taskIds[0]||this.store.itemOf(d.taskIds[0])===i.id):d.taskIds.length>0;
+    if(!(d.intent==='task'||d.intent==='update')||tracked||!c||this.decidesContracts(router)&&this.pendingContract(router))return;
     const sessions=this.memory.candidates(router).filter(b=>!c.isCoordinator(b.id));
     const ok=(b:Binding)=>!!b.enabled&&policy.providers.includes(b.provider)&&c.enabled().includes(b.provider);
     const list=()=>sessions.map(b=>`${b.id} (${this.label(b)}${ok(b)?'':', off'})`).join('; ');

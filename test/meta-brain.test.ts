@@ -637,3 +637,14 @@ test('a refused decision goes back to the model, which fixes it',async()=>{
     d=>d.sessionId==='s2'?undefined:'sessionId nope is not one of the sessions: s2 (Cloud).');
   assert.equal(r.sessionId,'s2');assert.match(seen[0],/^Error: sessionId nope is not one of the sessions.*\n Please fix your mistakes\.$/s);
 });
+// Sim, 7 Nov 2026: "ask the cloud server session for an update" looped on "Which session should do this?".
+test('an update about something untracked asks the model for a session, not the owner',()=>{
+  const f=fixture();try{
+    f.store.register('web','claude','33333333-3333-4333-8333-333333333333',process.cwd());f.store.register('api','claude','44444444-4444-4444-8444-444444444444',process.cwd());
+    const brain=(f.router as any).brain,policy=brainPolicy(f.store);
+    const sessions=brain.memory.candidates(f.router).filter((b:any)=>!f.router.coordinator!.isCoordinator(b.id));
+    assert.ok(sessions.length>1,'fixture has two plain sessions');
+    assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:['cloud-server']})),/Set sessionId/);
+    assert.equal(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:[],sessionId:sessions[0].id}),undefined);
+  }finally{f.close();}
+});
