@@ -523,7 +523,7 @@ test('brain reminder tools create, list, cancel, and fire like any reminder',asy
     assert.equal(listed.length,1);assert.equal(listed[0].what,'the hackathon');
     f.setNow(Date.parse('2026-10-30T04:31:00Z'));await f.schedules.tick(f.router);
     assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE body LIKE '%Reminder: the hackathon%'").get()?.n,1);
-    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b4'} as any,{text:'stand up',at:'2026-10-31 09:00',repeat:'weekdays'}),/weekdays/);
+    assert.match(f.schedules.brainCreate(f.router,{id:'wa:b4'} as any,{text:'stand up',at:'2026-10-31 09:00',repeat:'weekdays'}),/Every weekday at 9:00 am, starting/);
     const id=JSON.parse(f.schedules.brainList())[0].id;
     assert.equal(f.schedules.brainCancel(id),'Cancelled.');
     assert.equal(f.schedules.brainList(),'No active reminders.');

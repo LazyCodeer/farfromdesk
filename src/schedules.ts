@@ -405,7 +405,10 @@ export class Schedules {
     if(this.store.db.prepare('SELECT 1 FROM schedules WHERE origin_id=?').get(m.id))return 'This message already created a reminder.';
     this.store.db.prepare("INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(randomUUID(),m.id,owner,destination,channel,kind,kind==='brief'?'':text,null,null,date,time,zone,repeat,next,'active',now);
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:zone,dateStyle:'medium',timeStyle:'short'}).format(next);
-    return `Saved. I will remind you ${when}${repeat==='once'?'':` (${repeat})`}: ${kind==='brief'?'send your brief':text}.`;
+    // "9 Nov 2026, 8:00 am (weekdays)" read like a one-off on an invented date (sim, 7 Nov 2026).
+    const clock=new Intl.DateTimeFormat('en-IN',{timeZone:zone,timeStyle:'short'}).format(next),first=new Intl.DateTimeFormat('en-IN',{timeZone:zone,weekday:'short',day:'numeric',month:'short'}).format(next);
+    const what=kind==='brief'?'send your brief':text;
+    return repeat==='once'?`Saved. I will remind you ${when}: ${what}.`:`Saved. Every ${repeat==='daily'?'day':'weekday'} at ${clock}, starting ${first}, I will ${kind==='brief'?'send your brief':`remind you: ${text}`}.`;
   }
   brainList():string {
     const destination=this.store.destination(),owner=destination?this.owner(destination):'';

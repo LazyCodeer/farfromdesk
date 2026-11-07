@@ -814,6 +814,12 @@ export class MetaBrain {
       if(decision.intent==='task'&&!decision.taskIds.length&&(here||generic&&!namedPlatforms(m.text).length&&(ownTurn||mode?.kind!=='social'&&/\b(?:image|picture|photo|poster|logo|draft|rewrite|reword|punchier|shorter|caption|post|tweet|email|explain|what is|how do|remind|reminder|link|links|sources?|story|look up|research|last (?:did|active|activity)|each (?:of )?(?:my )?sessions?|all (?:of )?(?:my )?sessions|what time|time (?:is it|in))\b/i.test(m.text))&&(ownTurn&&!/\b(?:write|fix|run|change|edit|add|implement|refactor|commit|push|merge)\b/i.test(m.text)||!/\b(?:repo|code|bug|test|build|deploy|commit|branch|file|function)\b/i.test(m.text)))){
         const again=await ask(`${m.text}\n\n(${here||ownTurn&&!/\b(?:write|fix|run|change|edit|add|implement|refactor|commit|push|merge|check|look at|review|status)\b/i.test(m.text)?'The owner wants you to answer this yourself in chat. Use intent chat.':(ownTurn?'You answered the last messages here yourself, not a session; this follows up on your own answer, so carry on with your own tools. ':'')+'Before sending this to a coding session: if you can do it yourself here (an answer, writing or rewriting, a picture with make_image, a reminder, a to-do, PR status), do it and use intent chat. Use task only when it needs the owner\'s code, files or a project session.'})`).catch(()=>undefined);
         if(again&&again.intent!=='task')decision=again;
+        // Still a task for no project session, with no code in it: a research question, a draft or a priority call was queued to a
+        // closed general coordinator and never answered (sim, 7 Nov 2026). The brain answers those itself.
+        else if(again&&!here&&generic&&(!again.sessionId||router.coordinator?.isCoordinator(again.sessionId))&&!namedPlatforms(m.text).length&&(/\?\s*$/.test(m.text.trim())||/\b(?:draft|post|caption|tweet|research|look up|sources?|priorit\w*|focus|explain|summari[sz]e|ideas?|suggest)\b/i.test(m.text))&&!/\b(?:repo|code|bug|tests?|build|deploy|commit|branch|file|function|pr|pull request|merge|ci|run|install|fix|change|update|make|implement|refactor)\b/i.test(m.text)){
+          const own=await ask(`${m.text}\n\n(The owner wants you to answer this yourself in chat. Use intent chat.)`).catch(()=>undefined);
+          if(own&&own.intent!=='task')decision=own;
+        }
       }
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
