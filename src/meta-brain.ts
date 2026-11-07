@@ -934,6 +934,12 @@ export class MetaBrain {
       // Owners say "the thesis run" or "Acme storefront" for "Thesis plots and data run" / "Client: Acme storefront".
       // No exact title hit: the one session whose distinctive title words the owner used most wins (sim, 7 Nov 2026).
       // ponytail: plain word overlap, no stemming or fuzzy spelling; add when typos in names show up in the sim.
+      // "Start with the deploy checks, keep Acme queued" names Acme only to put it off; that is not where this goes (sim, 7 Nov 2026).
+      const dropDeferred=()=>{const clauses=said.split(/[.,;!?\n。，；！？—–]+/),deferred=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b/i;
+       const named=(b:Binding,c:string)=>[this.label(b),b.alias,...norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w))].map(norm).some(n=>n&&hit.call(null,n)&&norm(c).includes(n));
+       const kept=mentioned.filter(b=>!clauses.filter(c=>named(b,c)).every(c=>deferred.test(c))||!clauses.some(c=>named(b,c)));
+       if(kept.length<mentioned.length){mentioned.length=0;mentioned.push(...kept);}};
+      dropDeferred();
       if(!mentioned.length){
         const words=(b:Binding)=>[...new Set(norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w))))];
         // Paused sessions are scored too, so a paused "invoice-a" never hands its work to "invoice-b".
@@ -945,6 +951,7 @@ export class MetaBrain {
       if(mentioned.length===1&&named.length&&!named.includes(mentioned[0].provider)){named.length=0;platformConflict=false;}
       if(platformConflict&&mentioned.length===1&&mentioned[0].provider===decision.provider){platformConflict=false;named.length=0;}
       if(platformConflict)throw new Error('Which one should take it? Name the session or the platform.');
+      dropDeferred();
       if(mentioned.length>1)throw new Error(`Your message names more than one session (${[...new Set(mentioned.map(b=>this.label(b)))].join(', ')}). Send each one its own message and I'll pass it on. Nothing was sent.`);
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.

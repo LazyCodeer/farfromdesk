@@ -742,3 +742,13 @@ test('a platform named only to rule it out is dropped unless nothing else is cho
   assert.deepEqual(wantedPlatforms('Send it to claude instead of codex'),['claude']);
   assert.deepEqual(wantedPlatforms('Do not send this to Claude'),['claude']);
 });
+
+// Sim, 7 Nov 2026: "Start with the deploy checks, keep Acme queued" went to Acme.
+test('a session named only to put it off is not where the work goes',async()=>{
+  const f=fixture(decision('unspecified','Verify the deploy and rollback paths.'));try{
+    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
+    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');
+    await f.router.receive({id:'wa:defer',text:'Start with the cloud server deploy and rollback checks, keep Acme queued for later'});
+    assert.equal(f.store.job('wa:defer')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
