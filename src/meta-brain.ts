@@ -873,7 +873,7 @@ export class MetaBrain {
       const taken=!!this.shots.get(m.id)?.length;
       const reply=taken?(said.split('\n').map(line=>line.replace(/[^.!?\n]*\b(could not|couldn't|unable to|can't|cannot)\b[^.!?\n]*screenshot[^.!?\n]*[.!?]?\s*/gi,'')).filter((line,i,all)=>line.trim()||i<all.length-1).join('\n').trim()||'Here it is.'):said;
       const withNote=taken&&!/screenshot follows/i.test(reply)?`${reply}\nScreenshot follows.`:reply;
-      this.store.outputBrain(m.id,withNote||'Send a task, or ask where are we.');this.sendShots(m);return true;}
+      this.store.outputBrain(m.id,withNote||'Any time.');this.sendShots(m);return true;}
     const operated=await this.ownerOperation(router,m,decision);if(operated!==undefined)return operated;
     if(decision.intent==='device') return await this.runDevice(router,m,decision,policy);
     // The brain decided this is coding work (or the answer to a pending review), so the task
