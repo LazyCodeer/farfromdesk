@@ -12,6 +12,8 @@ import { portableAgents } from './platform.js';
 import { Items } from './items.js';
 import { bindScheduledChild,scheduleRootState } from './schedules.js';
 const targetOf=(s:Session)=>`${s.provider}:${s.executionMode??'cli'}:${s.id}`;
+// The owner reads these on a phone in their own zone; UTC lists confused them (2026-11-06).
+const localStamp=(ms:number)=>new Date(ms).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZoneName:'short'});
 
 type Browse={search:string;page:number;sessions:Session[]};
 export type SessionPage=number|'more'|'back';
@@ -103,8 +105,8 @@ export class Coordinator {
     }
     matches.sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0));
     const shown=matches.slice(0,50);
-    return `${provider==='codex'?'Codex':'Claude'} sessions active since ${new Date(since).toISOString().slice(0,16).replace('T',' ')} UTC:\n`+
-      (shown.map((s,i)=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,100)} · ${s.executionMode??'desktop'} · ${new Date(s.updatedAt!).toISOString().slice(0,16).replace('T',' ')} UTC`).join('\n')||'No matching sessions with recorded activity.')+
+    return `${provider==='codex'?'Codex':'Claude'} sessions active since ${localStamp(since)}:\n`+
+      (shown.map((s,i)=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,100)} · ${s.executionMode??'desktop'} · ${localStamp(s.updatedAt!)}`).join('\n')||'No matching sessions with recorded activity.')+
       (partial||matches.length>50?'\nShowing a bounded result; more sessions may match. Narrow the time range for a complete list.':'');
   }
   async list(search='',page:SessionPage=0) {
@@ -131,7 +133,7 @@ export class Coordinator {
       // A coordinator only sees its own platform; say where the rest go instead of showing an empty list.
       if(own&&own!==p)return `${providerLabel(p)}\nHandled by the ${providerLabel(p)} proxy. Hand work to it (ffd ask ${p}) instead of looking for its sessions here.`;
       const rows=sessions.map((s,i)=>({s,i})).filter(({s})=>s.provider===p);
-      return `${providerLabel(p)}\n${rows.map(({s,i})=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,90)}\n   ${(s.executionMode??'cli')==='desktop'?'Desktop':'CLI'}${s.accountScope?' · account '+s.accountScope.slice(0,6):''} · ${s.updatedAt?new Date(s.updatedAt).toISOString().replace('T',' ').slice(0,16)+' UTC':'Activity time unavailable'}${selected.has(targetOf(s))?' · connected':''}${s.available===false?' · '+s.status.replace(/[\r\n]/g,' ').slice(0,100):''}`).join('\n\n')||'No sessions on this page.'}`;
+      return `${providerLabel(p)}\n${rows.map(({s,i})=>`${i+1}. ${s.name.replace(/[\r\n]/g,' ').slice(0,90)}\n   ${(s.executionMode??'cli')==='desktop'?'Desktop':'CLI'}${s.accountScope?' · account '+s.accountScope.slice(0,6):''} · ${s.updatedAt?localStamp(s.updatedAt):'Activity time unavailable'}${selected.has(targetOf(s))?' · connected':''}${s.available===false?' · '+s.status.replace(/[\r\n]/g,' ').slice(0,100):''}`).join('\n\n')||'No sessions on this page.'}`;
     }).join('\n\n');
     return `${exhausted?'No older matches. Showing the last page.\n\n':''}${sessions.length?`Your coding sessions${browse.search?` matching “${browse.search}”`:''} · page ${browse.page+1} (recent first, up to 5 per connection):\n\n${groups}\n\nTell me the session name you want, or reply with its number. Say “show more” for older sessions, “previous page” to go back, or “find sessions named …” to search.`:'No matching sessions. Try another name or enable the platform in the app.'}${warnings?'\n\n'+warnings:''}`;
   }

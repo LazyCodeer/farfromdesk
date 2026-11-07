@@ -526,3 +526,19 @@ test('contract proposal and edit record only real scoped Meta calls',async()=>{
     assert.doesNotMatch(JSON.stringify(f.store.db.prepare('SELECT * FROM meta_timeline').all()),/PRIVATE TASK|PRIVATE EDIT|synthetic-key/);
   }finally{globalThis.fetch=originalFetch;f.close();}
 });
+
+test('task review is switched off once on existing installs and a leftover card stops catching messages',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ffd-tc-'));try{
+    const a=new Store(join(dir,'b.sqlite'));a.set('meta-brain-policy',JSON.stringify({...brainPolicy(a),taskContracts:true}));a.set('task-contracts-off','');a.db.close();
+    const b=new Store(join(dir,'b.sqlite'));assert.equal(brainPolicy(b).taskContracts,false);b.db.close();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+  const f=fixture(proposal('Which page?'));try{
+    f.store.set('meta-brain-policy',JSON.stringify({...brainPolicy(f.store),taskContracts:true}));
+    await f.send('1','Add dark theme');f.markSent();
+    const cards=()=>f.out().filter(o=>o.source.startsWith('task-contract:')).length;
+    assert.equal(cards(),1);
+    f.store.set('meta-brain-policy',JSON.stringify({...brainPolicy(f.store),taskContracts:false}));
+    await f.send('2','Only today please');
+    assert.equal(cards(),1);
+  }finally{f.close();}
+});

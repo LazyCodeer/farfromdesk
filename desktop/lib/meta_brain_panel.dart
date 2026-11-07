@@ -76,7 +76,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     failure = s['failure'] as String? ?? 'legacy';
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
-    taskContracts = s['taskContracts'] != false;
+    taskContracts = s['taskContracts'] == true;
   }
 
   @override
