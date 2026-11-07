@@ -812,7 +812,7 @@ export class MetaBrain {
       const generic=!decision.sessionId||router.coordinator?.isCoordinator(decision.sessionId);
       const ownTurn=decision.intent==='task'&&this.conversation(m.id).slice(-2).some(t=>t.state==='answered'||t.state==='managed');
       if(decision.intent==='task'&&!decision.taskIds.length&&(here||generic&&!namedPlatforms(m.text).length&&(ownTurn||mode?.kind!=='social'&&/\b(?:image|picture|photo|poster|logo|draft|rewrite|reword|punchier|shorter|caption|post|tweet|email|explain|what is|how do|remind|reminder|link|links|sources?|story|look up|research|last (?:did|active|activity)|each (?:of )?(?:my )?sessions?|all (?:of )?(?:my )?sessions|what time|time (?:is it|in))\b/i.test(m.text))&&(ownTurn&&!/\b(?:write|fix|run|change|edit|add|implement|refactor|commit|push|merge)\b/i.test(m.text)||!/\b(?:repo|code|bug|test|build|deploy|commit|branch|file|function)\b/i.test(m.text)))){
-        const again=await ask(`${m.text}\n\n(${here?'The owner wants you to answer this yourself in chat. Use intent chat.':(ownTurn?'You answered the last messages here yourself, not a session; this follows up on your own answer, so carry on with your own tools. ':'')+'Before sending this to a coding session: if you can do it yourself here (an answer, writing or rewriting, a picture with make_image, a reminder, a to-do, PR status), do it and use intent chat. Use task only when it needs the owner\'s code, files or a project session.'})`).catch(()=>undefined);
+        const again=await ask(`${m.text}\n\n(${here||ownTurn&&!/\b(?:write|fix|run|change|edit|add|implement|refactor|commit|push|merge|check|look at|review|status)\b/i.test(m.text)?'The owner wants you to answer this yourself in chat. Use intent chat.':(ownTurn?'You answered the last messages here yourself, not a session; this follows up on your own answer, so carry on with your own tools. ':'')+'Before sending this to a coding session: if you can do it yourself here (an answer, writing or rewriting, a picture with make_image, a reminder, a to-do, PR status), do it and use intent chat. Use task only when it needs the owner\'s code, files or a project session.'})`).catch(()=>undefined);
         if(again&&again.intent!=='task')decision=again;
       }
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
@@ -964,7 +964,7 @@ export class MetaBrain {
       const chosen=mentioned.some(b=>said.split(/[.,;!?\n。，；！？]+/).some(c=>!negated.test(c)&&(norm(c).includes(norm(this.label(b)))||distinctWords(b).some(w=>new RegExp(`(?:^|[^\\p{L}\\p{N}])${w}(?:[^\\p{L}\\p{N}]|$)`,'u').test(norm(c))))));
       // "I didn't give you an example" is not "don't give this to X": soft verbs need a "to" (sim, 7 Nov 2026).
       const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause)&&(!/\b(?:give|pass|hand|assign|send|sent|forward)\b/i.test(clause)||/\b(?:give|pass|hand|assign|send|sent|forward)\b.*\b(?:to|there)\b/i.test(clause)||destinationWord.test(clause.replace(/\b(?:give|pass|hand|assign|send|sent|forward)\b/gi,''))));
-      const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
+      let provider:Binding["provider"]|undefined=named[0]??(decision.provider==="unspecified"?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
       // Only a platform a rule actually names: a rule for Codex never lets the model pick Cursor.
@@ -997,6 +997,11 @@ export class MetaBrain {
       // the owner's latest words win over the model's guess (sim, 7 Nov 2026).
       if(decision.taskIds.length)try{topic=this.memory.resolve(decision.taskIds[0]);}catch{topic=undefined;}
       target=topic?this.memory.owner(topic,router):undefined;
+      // "Is there a preview I can look at?" after an Acme reply was filed under the switched-off Portfolio session (sim, 7 Nov 2026).
+      // When the owner named nothing and the model's pick can't be reached, the conversation's own session takes it.
+      if(!named.length&&!mentioned.length){const pick=target??(decision.sessionId?this.store.binding(decision.sessionId):undefined);
+        if(pick&&!c.isCoordinator(pick.id)&&(!pick.enabled||!c.enabled().includes(pick.provider))){const ref=this.store.get(`brain-topic:${this.store.destination()}`);const job=ref?this.memory.board().find(i=>i.ref===ref)?.jobs.at(-1):undefined;const b=job?this.store.binding(String(job.binding_id)):undefined;
+          if(b&&b.id!==pick.id&&b.enabled&&c.enabled().includes(b.provider)&&!c.isCoordinator(b.id)){topic=undefined;target=b;provider=undefined;}}}
       if(target&&((mentioned.length&&target.id!==mentioned[0].id)||(provider&&target.provider!==provider))){topic=undefined;target=undefined;}
       // An item nobody owns yet goes to the session the owner named, never the default coordinator.
       target??=mentioned[0];
