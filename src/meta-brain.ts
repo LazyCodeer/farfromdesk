@@ -753,6 +753,13 @@ export class MetaBrain {
     if(briefNow(m.text)&&router.morningBrief){const d=this.store.destination()!;
       const sent=await router.morningBrief.request(d,'first-message').catch(()=>false);
       if(!sent)this.answer(m.id,'Today\'s brief was already sent in this chat, or there is nothing to send yet.');else this.store.remember(m.id);return true;}
+    // "Which session should do this?" answered with just "FarFromDesk cloud server." sent the session its own name
+    // (sim, 7 Nov 2026). A bare session name after that question resends the held request there.
+    {const last=this.conversation(m.id).at(-1);
+      if(last&&/^Which (?:session should do this|one should take it)\?/.test(last.response??'')&&m.text.trim().split(/\s+/).length<=6){
+        const t=m.text.toLowerCase().replace(/[^\p{L}\p{N} ]+/gu,' ').trim();
+        const hit=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&[this.label(b),b.alias??''].some(n=>{const k=n.toLowerCase().replace(/[^\p{L}\p{N} ]+/gu,' ').trim();return k.length>=3&&(t===k||t.includes(k)||k.includes(t)&&t.length>=4);}));
+        if(hit.length===1)m={...m,text:`${this.label(hit[0])}: ${last.original}`};}}
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
@@ -991,8 +998,13 @@ export class MetaBrain {
         // The session a recent turn named or sent work to is still the destination, newest turn first (sim, 7 Nov 2026).
         const distinct=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));
         const live=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&norm(this.label(b)).length>=4);
-        let again:Binding[]=[];
-        for(const t of this.conversation(m.id).slice(-3).reverse()){
+        // The owner's own words now come first ("the cloud session"), minus clauses that defer ("keep Acme queued for after"),
+        // which the priorities sim tripped on (7 Nov 2026).
+        const defer=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back|after)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b/i;
+        const nowWords=new Set(said.split(/[.,;!?\n。，；！？—–]+/).filter(c=>!defer.test(c)).join(' ').toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u));
+        const nowHit=live.filter(b=>distinct(b).some(w=>nowWords.has(w)));
+        let again:Binding[]=nowHit.length===1?nowHit:[];
+        for(const t of again.length?[]:this.conversation(m.id).slice(-3).reverse()){
           const sent=new Set((this.store.db.prepare("SELECT binding_id FROM inbox WHERE id=? OR id LIKE ?").all(t.id,t.id+'~%') as {binding_id:string}[]).map(r=>r.binding_id));
           const byJob=live.filter(b=>sent.has(b.id));
           if(byJob.length===1){again=byJob;break;}

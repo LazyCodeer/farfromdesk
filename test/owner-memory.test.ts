@@ -142,3 +142,15 @@ test('a platform the owner named in the message just before counts, so "yes" aft
   assert.equal(f.store.jobs().length,before+1);
   f.close();
 });
+
+// Sim, 7 Nov 2026: answering "Which session should do this?" with just the name sent the session its own name.
+test('a bare session name after "Which session should do this?" sends the held request there', async () => {
+  const f=brain((_t,i)=>({intent:'task',provider:/Billing/.test(i.original)?'codex':'claude',normalized:'Plan the export'}));
+  {const b=f.store.register('billing-api','codex',randomUUID(),'/tmp').binding;f.store.set('name:'+b.id,'Billing API');}
+  await f.say('Plan the invoice export');
+  assert.match(f.out().at(-1)!,/Which session should do this/);
+  await f.say('Billing API.');
+  const job=f.store.jobs().at(-1) as any;
+  assert.ok(job,'a job was queued');assert.match(String(job.body),/Plan the invoice export/);
+  f.close();
+});
