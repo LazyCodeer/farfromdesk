@@ -121,9 +121,12 @@ export class BrainMemory {
     }
     if(d.operation==='set_todo') {
       const match=/^(?:please\s+)?(?:mark|set) ["“]?(.+?)["”]?(?:\s+(?:as|to))?\s+(not started|in progress|waiting on owner|blocked|done)[.!]?$/i.exec(m.text.trim());
-      if(!match||d.taskIds.length!==1||match[2].toLowerCase()!==d.itemStatus)throw new Error('Name one task and its status, for example “Mark invoice export as blocked”.');
+      // "isko complete mark kar do" got 'Name one task...' (sim, 7 Nov 2026). The owner's own words must still say the status.
+      const said:Record<string,RegExp>={done:/\b(?:done|complete[d]?|finished|ho gaya|khatam|poora|pura)\b/i,blocked:/\b(?:blocked|stuck|atka)\b/i,'in progress':/\b(?:in progress|started|chal raha)\b/i,'not started':/\bnot started\b/i,'waiting on owner':/\bwaiting on (?:me|owner)\b/i};
+      const loose=d.taskIds.length===1&&!!d.itemStatus&&!!said[d.itemStatus]?.test(m.text)&&/\b(?:mark|set|kar)\b/i.test(m.text);
+      if(!loose&&(!match||d.taskIds.length!==1||match[2].toLowerCase()!==d.itemStatus))throw new Error('Name one task and its status, for example “Mark invoice export as blocked”.');
       const item=this.resolve(d.taskIds[0]);this.link(m.id,item.id);
-      this.items.setStatus(item.id,d.itemStatus,'Owner');
+      this.items.setStatus(item.id,d.itemStatus!,'Owner');
       this.items.note(item.id,'Owner changed the board status; this does not certify execution or approve native actions.','Owner',`brain-note:${m.id}`);
       return d.itemStatus==='done'?`Marked "${item.title}" done.`:`"${item.title}" is now ${d.itemStatus}.`;
     }

@@ -944,7 +944,7 @@ export class MetaBrain {
       // A Social brief names platforms as its subject ("a post about Claude and Codex"), so there
       // a name routes only when the model also read it as the destination. Still owner-named.
       // "Actually, pause that, don't change anything yet" was still sent (sim, 7 Nov 2026). A hold from the owner sends nothing.
-      if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text)&&!(m.text.split(/[.;!?\n]+/).some(c=>!/\b(?:hold off|wait|not yet|on hold|hold on|don'?t|do not)\b/i.test(c)&&/\b(?:please|tackle|inspect|fix|check|run|review|start|do|identify|look)\b/i.test(c))))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
+      if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text)&&!(m.text.split(/[.,;!?\n—–]+/).some(c=>!/\b(?:hold off|wait|not yet|on hold|hold on|don'?t|do not)\b/i.test(c)&&/\b(?:please|tackle|inspect|fix|check|run|review|start|do|identify|look|ask|tell|send|show|report)\b/i.test(c))))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
       const named=wantedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       let platformConflict=named.length>0&&decision.provider!=='unspecified'&&named[0]!==decision.provider;
@@ -958,7 +958,7 @@ export class MetaBrain {
       // No exact title hit: the one session whose distinctive title words the owner used most wins (sim, 7 Nov 2026).
       // ponytail: plain word overlap, no stemming or fuzzy spelling; add when typos in names show up in the sim.
       // "Start with the deploy checks, keep Acme queued" names Acme only to put it off; that is not where this goes (sim, 7 Nov 2026).
-      const dropDeferred=()=>{const clauses=said.split(/[.,;!?\n。，；！？—–]+/),deferred=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b/i;
+      const dropDeferred=()=>{const clauses=said.split(/[.,;!?\n。，；！？—–]+/),deferred=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b/i;
        const named=(b:Binding,c:string)=>[this.label(b),b.alias,...norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w))].map(norm).some(n=>n&&hit.call(null,n)&&norm(c).includes(n));
        const kept=mentioned.filter(b=>!clauses.filter(c=>named(b,c)).every(c=>deferred.test(c))||!clauses.some(c=>named(b,c)));
        if(kept.length<mentioned.length){mentioned.length=0;mentioned.push(...kept);}};
@@ -1003,7 +1003,7 @@ export class MetaBrain {
         const live=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&norm(this.label(b)).length>=4);
         // The owner's own words now come first ("the cloud session"), minus clauses that defer ("keep Acme queued for after"),
         // which the priorities sim tripped on (7 Nov 2026).
-        const defer=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back|after)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b/i;
+        const defer=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back|after)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b/i;
         const nowWords=new Set(said.split(/[.,;!?\n。，；！？—–]+/).filter(c=>!defer.test(c)).join(' ').toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u));
         const nowHit=live.filter(b=>distinct(b).some(w=>nowWords.has(w)));
         let again:Binding[]=nowHit.length===1?nowHit:[];
