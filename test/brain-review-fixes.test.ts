@@ -129,3 +129,20 @@ test('more than 100 unfinished watches in this chat still let a later one fire',
     assert.equal(state('local:watch-0'),'waiting'); // unfinished work stays watched
   }finally{t.done();}
 });
+
+// Sim, 7 Nov 2026: "what changed across my projects" came back as one near-identical bubble per session.
+test('answers to one fan-out arrive as a single message once every session answered',async()=>{
+  const t=await setup();
+  try{
+    const a=t.store.register('web','codex','11111111-1111-4111-8111-111111111111',t.root).binding;
+    const b=t.store.register('api','claude','22222222-2222-4222-8222-222222222222',t.root).binding;
+    t.store.enqueue('p~1',a,'What changed?','synthetic-owner');t.store.enqueue('p~2',b,'What changed?','synthetic-owner');
+    t.store.set('fan-n:p','2');t.store.set('fan-at:p',String(Date.now()));
+    const outbox=()=>(t.store.db.prepare('SELECT body FROM outbox').all() as {body:string}[]).map(r=>r.body);
+    assert.equal(t.store.output(a,'No changes.','f1','synthetic-owner',{requestId:'p~1',kind:'final',origin:'agent'}),true);
+    assert.deepEqual(outbox(),[]);
+    t.store.output(b,'Fixed login.','f2','synthetic-owner',{requestId:'p~2',kind:'final',origin:'agent'});
+    const sent=outbox();assert.equal(sent.length,1);assert.match(sent[0],/web[\s\S]*No changes\.[\s\S]*api[\s\S]*Fixed login\./);
+    assert.equal(t.store.get('fan-n:p'),undefined);
+  }finally{t.done();}
+});

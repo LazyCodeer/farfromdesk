@@ -778,9 +778,14 @@ export class Router {
           void this.sendWakeCard(id,b,target,minutes).catch(e=>console.error(`Escalation card failed: ${e instanceof Error?e.message:'unknown failure'}`));
           return;
         }
+        // Live, 7 Nov 2026: Codex was running but left the message in its queue until a second wake. Nudge once more,
+        // and don't tell the owner to open an app that is already open.
+        const desktopCodex=!closed&&b.provider==='codex'&&b.native_id&&this.store.get(`execution-mode:${b.id}`)==='desktop';
+        if(desktopCodex)void this.native.wakeCodex(b.native_id!).catch(()=>{});
         const text=stage===1
           ?(closed?`📴 ${name} is closed. Your message is queued and runs when the app opens.`:`⏳ ${name} has not started this yet.`)
-          :`⚠️ Still no answer from ${name} after ${minutes} min. Open the app to continue, or send /status.`;
+          :closed?`⚠️ Still no answer from ${name} after ${minutes} min. Open the app to continue, or send /status.`
+          :`⚠️ Still no answer from ${name} after ${minutes} min. The app is open but hasn't picked it up: open this chat in it, or send /status.`;
         this.store.output(b,text,`silence:${id}:${stage}`,target,{requestId:id,kind:'system',origin:'system',plain:true});
         if(stage===1)arm(this.silenceEscalateMs,2);
       },delay);

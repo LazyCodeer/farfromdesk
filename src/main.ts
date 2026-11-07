@@ -5,6 +5,7 @@ import { AgentInstaller } from './agent-installer.js';
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { initializeState,stateDir,baseUrl,port } from './config.js';
+import { installBrainOverride } from './brain-override.js';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Approvals } from './approvals.js';
@@ -31,6 +32,7 @@ import { repairProviderHooks } from './hook-install.js';
 import { clearStage,recordStage } from './startup-stage.js';
 
 const token=initializeState();
+if(installBrainOverride(stateDir))console.log('Brain override active: Meta chat calls go to brain-override.json.');
 const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
 const store=new Store(join(stateDir,'bridge.sqlite'));
 const agentInstaller=new AgentInstaller(store);
