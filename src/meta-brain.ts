@@ -816,7 +816,7 @@ export class MetaBrain {
         if(again&&again.intent!=='task')decision=again;
         // Still a task for no project session, with no code in it: a research question, a draft or a priority call was queued to a
         // closed general coordinator and never answered (sim, 7 Nov 2026). The brain answers those itself.
-        else if(again&&!here&&generic&&(!again.sessionId||router.coordinator?.isCoordinator(again.sessionId))&&!namedPlatforms(m.text).length&&(/\?\s*$/.test(m.text.trim())||/\b(?:draft|post|caption|tweet|research|look up|sources?|priorit\w*|focus|explain|summari[sz]e|ideas?|suggest)\b/i.test(m.text))&&!/\b(?:repo|code|bug|tests?|build|deploy|commit|branch|file|function|pr|pull request|merge|ci|run|install|fix|change|update|make|implement|refactor)\b/i.test(m.text)){
+        else if(again&&!here&&generic&&!(this.decidesContracts(router)&&this.pendingContract(router))&&(!again.sessionId||router.coordinator?.isCoordinator(again.sessionId))&&!namedPlatforms(m.text).length&&(ownTurn||/\?\s*$/.test(m.text.trim())||/\b(?:draft|post|caption|tweet|research|look up|sources?|priorit\w*|focus|explain|summari[sz]e|ideas?|suggest|punchier|shorter|rewrite|reword|hashtags?|tone)\b/i.test(m.text))&&!/\b(?:repo|code|bug|tests?|build|deploy|commit|branch|file|function|pr|pull request|merge|ci|run|install|fix|change|update|make|implement|refactor)\b/i.test(m.text)){
           const own=await ask(`${m.text}\n\n(The owner wants you to answer this yourself in chat. Use intent chat.)`).catch(()=>undefined);
           if(own&&own.intent!=='task')decision=own;
         }
@@ -927,7 +927,7 @@ export class MetaBrain {
       // A Social brief names platforms as its subject ("a post about Claude and Codex"), so there
       // a name routes only when the model also read it as the destination. Still owner-named.
       // "Actually, pause that, don't change anything yet" was still sent (sim, 7 Nov 2026). A hold from the owner sends nothing.
-      if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
+      if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text)&&!(m.text.split(/[.;!?\n]+/).some(c=>!/\b(?:hold off|wait|not yet|on hold|hold on|don'?t|do not)\b/i.test(c)&&/\b(?:please|tackle|inspect|fix|check|run|review|start|do|identify|look)\b/i.test(c))))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
       const named=wantedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       let platformConflict=named.length>0&&decision.provider!=='unspecified'&&named[0]!==decision.provider;
