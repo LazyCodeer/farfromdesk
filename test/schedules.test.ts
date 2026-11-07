@@ -478,6 +478,10 @@ test('natural reminder wording is accepted with the owner text kept exactly', as
     f.setDecision({ text: 'school pickup', date: '2026-10-30', time: '15:15' });
     await f.send('4', 'Remind me school pickup tomorrow at 3:15pm pls, got to run 🏃');
     assert.equal((f.store.db.prepare("SELECT text FROM schedules WHERE time='15:15'").get() as { text: string } | undefined)?.text, 'school pickup');
+    // Sim, 7 Nov 2026: a further request after the reminder is not part of its timing.
+    f.setDecision({ text: 'pick up the kids from school', date: '2026-10-30', time: '15:20' });
+    await f.send('5', 'Remind me at 3:20 PM tomorrow to pick up the kids from school. Then show me my reminders, please.');
+    assert.equal((f.store.db.prepare("SELECT text FROM schedules WHERE time='15:20'").get() as { text: string } | undefined)?.text, 'pick up the kids from school');
   } finally { f.close(); }
 });
 

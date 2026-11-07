@@ -133,7 +133,8 @@ export class BrainMemory {
       // The first verb decides: "Pause X. I'll ask you to resume it shortly" is a pause (sim, 7 Nov 2026).
       const first=/\b(resume|reconnect|connect|unpause|start again|pause|disconnect|stop|hold)\b/.exec(said)?.[1];
       const verb=first?(/^(pause|disconnect|stop|hold)$/.test(first)?'pause':'resume'):undefined;
-      if(verb!==(resume?'resume':'pause'))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
+      // "Mark Portfolio as paused" in a status line is not a pause (sim, 7 Nov 2026).
+      if(verb!==(resume?'resume':'pause'))throw new Error(`I didn't ${resume?'resume':'pause'} anything. To change a session, say “${resume?'Resume':'Pause'}” and its name.`);
       const words=(b:Binding)=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].flatMap(n=>[n.toLowerCase(),...n.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4)]);
       const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
       if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');

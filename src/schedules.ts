@@ -59,7 +59,8 @@ function reminderDirective(original:string,body:string):{directive:string;action
   const directive=(original.slice(0,at).replace(/\b(?:to|for|about|that|of)\s*$/i,'')+' '+original.slice(at+want.length)).replace(/\s+/g,' ').trim();
   // A trailing aside with no time and no negation is chatter, not part of the reminder:
   // "remind me school pickup tomorrow at 3:15pm pls, got to run" (sim, 7 Nov 2026).
-  const timing=directive.replace(/,(?![^,]*\d)(?![^,]*\b(?:not|no|never|don'?t|cancel|stop|every|daily|weekdays?)\b)[^,]*$/i,'').trim();
+  // A further request after the reminder ("… to pick up the kids. Then show me my reminders") is not timing (sim, 7 Nov 2026).
+  const timing=directive.replace(/([.!?])\s+(?:then|also|and|after that|plus)\b(?![^]*\d)[^]*$/i,'$1').replace(/,(?![^,]*\d)(?![^,]*\b(?:not|no|never|don'?t|cancel|stop|every|daily|weekdays?)\b)[^,]*$/i,'').trim();
   // Everything left must be timing or filler. A content word left over means the model dropped
   // part of the owner's request ("check whether it is safe to" + "deploy production"), so refuse.
   const leftover=timing.toLowerCase()
@@ -290,8 +291,8 @@ export class Schedules {
       this.store.set(clarifyKey(destination),'null');
       const when=new Intl.DateTimeFormat('en-IN',{timeZone:decision.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
       // A confirmation reads back what and when, so the owner can catch a wrong guess at a glance.
-      const what=action==='brief'?'send your brief':action==='session'?`ask ${(binding&&this.store.get('name:'+binding.id))||binding?.alias||'the session'} to: ${body}`:body;
-      this.answer(m,`Done. ${action==='session'?'I will':'I will remind you'} ${when}${repeat==='once'?'':` (${repeat})`}${decision.zone==='Asia/Kolkata'?'':` ${decision.zone}`}: ${what}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`);
+      const what=action==='brief'?'send your brief':action==='session'?`I will ask ${(binding&&this.store.get('name:'+binding.id))||binding?.alias||'the session'} to ${body.replace(/^to\s+/i,'')}`:body;
+      this.answer(m,`Done. ${action==='session'?'At':'I will remind you'} ${when}${repeat==='once'?'':` (${repeat})`}${decision.zone==='Asia/Kolkata'?'':` ${decision.zone}`}${action==='session'?',':':'} ${what.replace(/[.!?]+$/,'')}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`);
       this.store.db.exec('RELEASE schedule_create');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_create; RELEASE schedule_create');throw e;}
     return true;

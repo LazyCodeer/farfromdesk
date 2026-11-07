@@ -316,9 +316,9 @@ export class MetaBrain {
     this.store.set(`brain-topic:${destination}`,item.ref);
     const job=item.jobs[0];
     if(!job)return answer('This task has not been sent to a session yet. I cannot watch for completion until it starts.');
-    if(this.store.db.prepare('SELECT 1 FROM brain_watches WHERE destination=? AND item_id=?').get(destination,item.id))return answer(`Already watching #${item.id}. I'll message you when it finishes or needs you.`);
+    if(this.store.db.prepare('SELECT 1 FROM brain_watches WHERE destination=? AND item_id=?').get(destination,item.id))return answer(`Already watching #${item.id} ${shortTitle(item.title)}. I'll message you when it finishes or needs you.`);
     this.store.db.prepare("INSERT OR IGNORE INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)").run(m.id,destination,item.id,job.id,Date.now());
-    return answer(`I’ll message you when #${item.id} ${item.title} finishes or needs you. The app must be running and connected.`);
+    return answer(`I’ll message you when #${item.id} ${shortTitle(item.title)} finishes or needs you.`);
   }
   /** Persisted watches only observe saved execution evidence. They never restart native work. */
   tick(router:Router) {
