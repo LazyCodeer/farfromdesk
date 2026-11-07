@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,mkdirSync,writeFileSync,readdirSync,existsSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,writeFileSync,readdirSync,existsSync,readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 const dir=mkdtempSync(join(tmpdir(),'ffd-hook-sdk-'));process.env.WSB_STATE_DIR=dir;
@@ -16,4 +16,10 @@ test('hooks stay out of a session FarFromDesk drives through the SDK',async()=>{
   }finally{delete process.env.FFD_SDK_DRIVER;}
   await handleHook('claude',{session_id:'s1',hook_event_name:'Stop',turn_id:'y',last_assistant_message:'done'});
   assert.equal(readdirSync(join(dir,'spool')).filter(f=>f.endsWith('.json')).length,1);
+});
+
+test('a Claude plan limit reaches the owner as Claude worded it',()=>{
+  const src=readFileSync(new URL('../src/claude-sdk-session.ts',import.meta.url),'utf8');
+  assert.ok(src.includes(String.raw`if(/\blimit\b/i.test(said)`));
+  assert.match(src,/Claude stopped: \$\{said\}/);
 });

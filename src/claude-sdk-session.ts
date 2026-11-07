@@ -61,7 +61,13 @@ export class ClaudeSDKSession {
     if('session_id' in message&&message.session_id!==this.id)throw new Error('Claude returned a different session identity. Delivery stopped.');
     if(message.type==='result') {
       if(message.usage)this.lastUsage={inputTokens:message.usage.input_tokens,outputTokens:message.usage.output_tokens};
-      if(message.subtype!=='success'||message.is_error)throw new Error('Claude could not complete this turn. Check native sign-in, folder permissions and the exact session before retrying.');
+      if(message.subtype!=='success'||message.is_error){
+        // A plan limit ends the turn as an error whose text says when it resets. Pass that on
+        // instead of a sign-in hint that sends the owner looking for the wrong problem.
+        const said=typeof message.result==='string'?message.result.trim():'';
+        if(/\blimit\b/i.test(said)&&said.length<300)throw new Error(`Claude stopped: ${said}. Nothing more ran; send the request again after that.`);
+        throw new Error('Claude could not complete this turn. Check native sign-in, folder permissions and the exact session before retrying.');
+      }
       return message.result as string;
     }
     return undefined;
