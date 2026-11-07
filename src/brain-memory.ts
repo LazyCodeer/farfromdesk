@@ -70,7 +70,9 @@ export class BrainMemory {
     const ids=new Set(this.board().flatMap(i=>i.jobs.map(j=>String(j.binding_id))));
     // Connected sessions count before their first job, so naming one routes to it instead of a guess.
     for(const b of router.coordinator?.selected()??[])ids.add(b.id);
-    return this.store.bindings().filter(b=>ids.has(b.id)||router.coordinator?.isCoordinator(b.id));
+    // Every enabled session the owner can see counts too: prod 'selected' is often empty, so the brain
+    // couldn't list, pause or schedule sessions the owner named (sim, 7 Nov 2026).
+    return this.store.bindings().filter(b=>b.enabled||ids.has(b.id)||router.coordinator?.isCoordinator(b.id));
   }
   resolve(ref:string):Item {
     const id=/^item:(\d+)$/.exec(ref)?.[1];
