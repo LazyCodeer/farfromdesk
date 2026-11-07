@@ -212,7 +212,8 @@ export class MetaModel {
       // Plain text twice (sim, 7 Nov 2026: a LinkedIn draft written straight out) gets the same decide-only turn.
       if(!call&&(result.steps.some(s=>s.toolCalls.length)||result.text.trim())){
         authorize?.();
-        const wrap=await generateText({model:meta(policy.model),system:BRAIN_PROMPT,maxRetries:0,abortSignal:signal,toolChoice:'required',providerOptions:{meta:{reasoningEffort:'low'}},
+        const wrap=await generateText({model:meta(policy.model),system:BRAIN_PROMPT,maxRetries:0,abortSignal:signal,toolChoice:'auto', // 'required' is HTTP 400 on Meta (sim, 7 Nov 2026: 11 failed messages a round)
+          providerOptions:{meta:{reasoningEffort:'low'}},
           messages:[{role:'user',content:JSON.stringify(input)},...result.response.messages,{role:'user',content:result.steps.some(s=>s.toolCalls.length)?'Stop using tools now. Call decide once with your answer to the owner, built only from what the tools returned: say what is done, what is not, and what you need from them.':'Call decide once now with that answer (intent chat if you answered it yourself), unchanged.'}],
           tools:{decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation})},stopWhen:[hasToolCall('decide'),stepCountIs(1)]});
         call=wrap.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
