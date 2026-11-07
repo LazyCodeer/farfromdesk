@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { nativeCommand } from './platform.js';
 import { dshBinary as dshBinaryPath, dshHome } from './dsh-paths.js';
 
 /**
@@ -60,10 +61,16 @@ export function dshArgs(options:DshRunOptions):string[] {
  */
 export function runDsh(options:DshRunOptions):Promise<DshResult> {
   if(!options.prompt.trim())return Promise.reject(new Error('DeepSeek was given no prompt.'));
-  const binary=options.binary??dshBinary();
-  const args=dshArgs(options);
+  // Windows cannot spawn DeepSeek Harness's dsh.cmd launcher without cmd.exe, so it is resolved to the direct call.
+  let native:ReturnType<typeof nativeCommand>|undefined;
+  const wanted=options.binary??dshBinary();
+  if(process.platform==='win32'&&/(?:^|[\\/])dsh(?:\.cmd)?$/i.test(wanted)){
+    try{native=nativeCommand(wanted,dshArgs(options),process.platform,process.env,undefined,true);}catch(e){return Promise.reject(e instanceof Error?e:new Error(String(e)));}
+  }
+  const binary=native?.binary??options.binary??dshBinary();
+  const args=native?.args??dshArgs(options);
   const timeoutMs=options.timeoutMs??20*60*1000;
-  const env={...process.env,...options.env,NO_COLOR:'1',CI:'1',DSH_HOME:dshHome(options.env??process.env)};
+  const env={...process.env,...options.env,...native?.env,NO_COLOR:'1',CI:'1',DSH_HOME:dshHome(options.env??process.env)};
   return new Promise((resolve,reject)=>{
     let settled=false,bytes=0,stderr='',pending='',text:string|null=null,streamError:string|null=null;
     let sessionId:string|null=options.sessionId??null;
@@ -121,7 +128,9 @@ export function runDsh(options:DshRunOptions):Promise<DshResult> {
       if(tail.startsWith('{')){try{onEvent(JSON.parse(tail));}catch{}}
       const detail=stderr.split('\n').map(line=>line.replace(/^dsh:\s*/,'').trim()).filter(Boolean).slice(-2).join(' ').slice(0,300);
       const reason=detail||streamError||'';
-      if(code!==0)fail(`DeepSeek Harness exited with code ${code ?? 'unknown'}${reason?`: ${reason}`:''} before completing the task.`);
+      // The DeepSeek Harness app (or another dsh run) holds this session open for writing.
+      if(code!==0&&/already owned by an active write handle/i.test(reason))fail('Nothing was done: this DeepSeek session is open in the DeepSeek Harness app on your PC (or another DeepSeek run), so it cannot take a second writer. Switch to another conversation in that app or close it, then send your task again. Or send /deepseek new to start a fresh session from your phone.');
+      else if(code!==0)fail(`DeepSeek Harness exited with code ${code ?? 'unknown'}${reason?`: ${reason}`:''} before completing the task.`);
       else {
         if(streamError&&!text)fail(streamError);
         else if(!text?.trim())fail('DeepSeek finished without any answer text. Check the session before retrying.');

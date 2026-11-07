@@ -81,6 +81,12 @@ export class Store {
     this.db.exec(`CREATE INDEX IF NOT EXISTS inbox_binding_created ON inbox(binding_id,created_at);
       CREATE INDEX IF NOT EXISTS outbox_request_created ON outbox(request_id,created_at);`);
     initializeOptions(this);
+    // The task review card blocked simple phone asks (2026-11-06). Switch it off once on
+    // existing installs; the owner can still turn it back on in Settings.
+    if(this.get('task-contracts-off')!=='1'){
+      try{const p=JSON.parse(this.get('meta-brain-policy')??'null');if(p&&typeof p==='object'){p.taskContracts=false;this.set('meta-brain-policy',JSON.stringify(p));}}catch{}
+      this.set('task-contracts-off','1');
+    }
     // A durable epoch also changes when settings are removed directly, and
     // makes change-away-and-back invalidate work that was already in flight.
     for(const operation of ['INSERT','UPDATE','DELETE'] as const){
@@ -167,7 +173,8 @@ export class Store {
    * plus the app's composer while its single-use claim is present. A transported id can never
    * satisfy the app branch, so an app id without a claim stays untrusted.
    */
-  ownerInputId(id:string){return /^(wa|tg|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
+  // tg-choice: a verified owner tapping a Telegram button; it continues the task, so it is owner input (live, 6 Nov 2026).
+  ownerInputId(id:string){return /^(wa|tg|tg-choice|local):/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   /** An owner request the Social session tools may act for, including a claimed app composer turn. */
   socialRequestId(id:string){return /^(?:wa:|tg:|local:social:)/.test(id)||/^app:/.test(id)&&!!this.appOriginClaim(id);}
   recordIncomingInput(id:string){
@@ -389,7 +396,8 @@ export class Store {
       }catch(e){this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output');throw e;}
     }
     // Stable message IDs are recorded before network I/O. Retries reuse them.
-    const optionText=options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';
+    // Telegram shows these as buttons, so the numbered copy there was clutter (live, 6 Nov 2026).
+    const optionText=options&&destination?.startsWith('tg:')?'':options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';
     const specialty=context.requestId?specialtyPresentation(this,context.requestId):undefined;
     const chromeAt=Date.now();
     // The specialty is context, not a signature: it rides in the metadata tail, and only when it changes.
@@ -454,11 +462,20 @@ export class Store {
   outputBrainFile(requestId:string,bytes:Buffer,filename:string,caption:string) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
     if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    return this.outputOwnerFile(requestId,task.destination,bytes,filename,caption);
+  }
+  /**
+   * A file for the owner's own chat, answering one of their recorded requests: the brain's
+   * send_file above, and headless sessions (/muse, /deepseek, /cursor) through their run pass.
+   * Same media path and limits for both; the destination is the one recorded for the request.
+   */
+  outputOwnerFile(requestId:string,destination:string|null,bytes:Buffer,filename:string,caption:string) {
+    if(!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
     if(!bytes.length||bytes.length>50_000_000)return false;
     const sha=createHash('sha256').update(bytes).digest('hex'),source=`brain-file:${requestId}:${sha.slice(0,16)}`;
     mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
     const path=join(this.mediaDir,`${sha}.bin`);writeFileSync(path,bytes,{mode:0o600});
-    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||filename,source,task.destination);
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||filename,source,destination);
     if(!queued)return false;
     const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
     if(!row)return false;
@@ -469,11 +486,16 @@ export class Store {
   outputBrainPhoto(requestId:string,png:Buffer,caption:string) {
     const task=this.db.prepare('SELECT destination FROM brain_tasks WHERE id=?').get(requestId) as {destination:string|null}|undefined;
     if(!task||!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
+    return this.outputOwnerPhoto(requestId,task.destination,png,caption);
+  }
+  /** A screenshot for the owner's own chat, answering one of their recorded requests (brain or coordinator). */
+  outputOwnerPhoto(requestId:string,destination:string|null,png:Buffer,caption:string) {
+    if(!this.ownerInputId(requestId))throw new Error('A recorded owner request is required');
     if(!png.length||png.length>10_000_000)return false;
     const sha=createHash('sha256').update(png).digest('hex'),source=`brain-photo:${requestId}:${sha.slice(0,16)}`;
     mkdirSync(this.mediaDir,{recursive:true,mode:0o700});
     const path=join(this.mediaDir,`${sha}.png`);writeFileSync(path,png,{mode:0o600});
-    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||'Screenshot',source,task.destination);
+    const queued=this.output(undefined,ownerReply(caption).slice(0,1000)||'Screenshot',source,destination);
     if(!queued)return false;
     const row=this.db.prepare('SELECT id FROM outbox WHERE source LIKE ? ORDER BY rowid DESC LIMIT 1').get(`${source}%`) as {id:string}|undefined;
     if(!row)return false;

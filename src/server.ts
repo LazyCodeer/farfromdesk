@@ -21,13 +21,15 @@ import { BrowserTabs } from './browser-tabs.js';
 import {PhoneRemoteService} from './remote-desktop/phone-service.js';
 import {RemoteDesktopService} from './remote-desktop/service.js';
 import {RemoteControlService,voiceTranscriber} from './remote-p2p/service.js';
-import {screenLockGate,sessionProbePath} from './session-lock.js';
+import {screenLockGate,sessionProbe} from './session-lock.js';
 import {RemotePasswordAccess} from './remote-desktop/access.js';
 import type {PasswordRecord} from './remote-desktop/access.js';
 import { DesktopControl } from './desktop-control.js';
-import { directMacAllowed } from './direct-mac.js';
+import { directMacAllowed, directRunFileTarget, directRunFileSent } from './direct-mac.js';
+import { ownerFileToSend } from './open-file.js';
+import { screenServiceStatus } from './screen-service.js';
 import { MacControl } from './mac-control.js';
-import { GrantHealth } from './grant-health.js';
+import { GrantHealth, NO_RESET } from './grant-health.js';
 import { channelChosen, channelSwitchState, switchControlChannel, disconnectControlChannel } from './control-channel.js';
 import { openClaudeDesktop,focusClaudeDesktop } from './session-activation.js';
 import { listNamedAgents, defineNamedAgent, assignNamedAgent, syncNamedAgents } from './named-agents.js';
@@ -54,6 +56,7 @@ import { audioReadiness } from './speech-bundle.js';
 import { roleConfig, updateRole, companionStyles } from './roles.js';
 import { fileTypes, MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_OUTGOING_DOCUMENT_BYTES, MAX_INLINE_BYTES } from './file-types.js';
 import { PREPARATION_TIMEOUT_MS } from './disk-artifacts.js';
+import { computerName } from './platform.js';
 
 const buildMeta=(()=>{try{return JSON.parse(readFileSync(new URL('../build.json',import.meta.url),'utf8'));}catch{return {};}})();
 const sourceCommit=buildMeta.sourceCommit??null;
@@ -92,7 +95,8 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
     return savedMode&&routeMode&&savedMode!==routeMode?null:savedMode??routeMode??null;
   };
   let voiceSettingsRevision=0;
-  const browser=services?.browser??new BrowserTabs();
+  // On Windows the Remote control switch gates browser reads; macOS has its Automation prompt.
+  const browser=services?.browser??new BrowserTabs(undefined,undefined,undefined,()=>desktopControl.view().enabled);
   const desktopControl=services?.desktopControl??new DesktopControl(store);
   const macControl=services?.macControl??new MacControl(store);
   const grantHealth=services?.grantHealth??new GrantHealth(store);
@@ -144,9 +148,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   // screen action is refused and the owner is handed the link the "control my screen"
   // command sends. See src/session-lock.ts for why that is the whole point.
   const requireUnlockedScreen=screenLockGate({
-    probe:sessionProbePath,
+    probe:sessionProbe,
     link:()=>remoteControl.chat('control my screen'),
     notify:text=>{store.output(undefined,text,`remote-locked:${Date.now()}`,undefined,{plain:true});},
+    lockScreenUnlockable:()=>screenServiceStatus().then(s=>s.running),
   });
   const artifacts=new Artifacts(store),items=new Items(store,b=>router.coordinator?.name(b)??b.alias);
   // Social ships in every build (5 November 2026); it was Local-only while it was being built.
@@ -172,6 +177,19 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         const {requestId:_ignored,...input}=await body(req);
         if(input.action==='stop'){macAccessEpoch++;macControl.stop();json(res,200,{stopped:true});return;}
         if(router.stopped)throw new Error('Background operation is paused.');
+        // A file from the owner's own folders to their own chat, for the request this run answers
+        // (DeepSeek could find the file but had no way to send it, live 6 Nov 2026). Same folders
+        // and limits as the brain's send_file; needs the control switch, not an unlocked screen.
+        if(input.action==='send_file'){
+          await requireDesktopPermission();
+          const target=directRunFileTarget(store,String(runId));
+          if('error' in target){json(res,200,{ok:false,error:target.error});return;}
+          const file=ownerFileToSend(String(input.path??''),homedir());
+          if('error' in file){json(res,200,{ok:false,error:file.error});return;}
+          if(!store.outputOwnerFile(target.requestId,target.destination,readFileSync(file.path),file.name,file.name)){json(res,200,{ok:false,error:'The file could not be queued for the chat.'});return;}
+          directRunFileSent(store,String(runId));store.audit('desktop-control-action','direct-run','send_file');
+          json(res,200,{ok:true,queued:file.name,bytes:file.size});return;
+        }
         const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');
         const result=await desktopControl.run(`direct:${String(runId)}`,input,()=>{if(router.stopped)throw new Error('Background operation is paused.');});
         store.audit('desktop-control-action','direct-run',String(input.action));
@@ -212,7 +230,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if(path==='/api/phone-remote') {
         if(!isAdmin){json(res,403,{error:'Phone Remote settings require the app.'});return;}
-        if(req.method==='GET'){json(res,200,phoneRemote.status);return;}
+        if(req.method==='GET'){json(res,200,{...phoneRemote.status,lockScreen:await screenServiceStatus()});return;}
         if(req.method==='POST'){json(res,200,await phoneRemote.command(await body(req,4096)));return;}
       }
       if(path==='/api/remote-desktop') {
@@ -315,11 +333,51 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
             store.db.exec('RELEASE scoped_item_add');json(res,200,result);return;
           }catch(e){store.db.exec('ROLLBACK TO scoped_item_add; RELEASE scoped_item_add');throw e;}
         }
+        // Coordinator reminders go through the bridge scheduler like the brain's. Left to itself the
+        // coordinator set a timer inside its own Claude session, which never fired (Windows test,
+        // 6 Nov 2026).
+        if(path==='/api/master/reminder'&&req.method==='POST') {
+          const {requestId,...input}=await body(req);
+          router.coordinator!.ownerRequest(requestId);
+          if(!store.ownerInputId(requestId)){json(res,200,{ok:false,error:'Reminders can only answer a message the owner sent.'});return;}
+          const reply=input.action==='list'?router.schedules.brainList():input.action==='cancel'?router.schedules.brainCancel(String(input.id??'')):input.action==='create'?router.schedules.brainCreate(router,{id:requestId} as any,{text:String(input.text??''),at:String(input.at??''),repeat:typeof input.repeat==='string'?input.repeat:undefined}):'Unknown action. Use create, list or cancel.';
+          store.audit('master-reminder',binding.id,String(input.action));
+          json(res,200,{ok:true,reply});return;
+        }
         if(path==='/api/master/desktop-control'&&req.method==='POST') {
           const {requestId,...input}=await body(req);
           router.coordinator!.ownerRequest(requestId);
           if(router.stopped&&input.action!=='stop'&&input.action!=='status')throw new Error('Background operation is paused.');
           if(input.action==='stop'){macAccessEpoch++;macControl.stop();}
+          // A file from the owner's own folders to their own chat, answering this request. The
+          // coordinator found files but had no way to send one (Windows test, 6 Nov 2026). Same
+          // folders and limits as the brain's send_file, five per request.
+          if(input.action==='send_file'){
+            const parent=router.coordinator!.ownerRequest(requestId);
+            await requireDesktopPermission();
+            if(!store.ownerInputId(requestId)){json(res,200,{ok:false,error:'Files can only answer a message the owner sent.'});return;}
+            const counter=`master-files:${requestId}`,sent=Number(store.get(counter)??0);
+            if(sent>=5){json(res,200,{ok:false,error:'At most five files per request.'});return;}
+            const file=ownerFileToSend(String(input.path??input.text??''),homedir());
+            if('error' in file){json(res,200,{ok:false,error:file.error});return;}
+            if(!store.outputOwnerFile(requestId,parent.destination??store.get('whatsapp-owner')??null,readFileSync(file.path),file.name,typeof input.caption==='string'&&input.caption.trim()?input.caption:file.name)){json(res,200,{ok:false,error:'The file could not be queued for the chat.'});return;}
+            store.set(counter,String(sent+1));store.audit('desktop-control-action',binding.id,'send_file');
+            json(res,200,{ok:true,queued:file.name,bytes:file.size,next:'The file is on its way to the owner chat. Say in your reply that it follows; do not say you cannot attach files.'});return;
+          }
+          // The whole screen as a photo in the owner chat. Window screenshots were only prepared for
+          // the coordinator's own look, so it told the owner it could not (Windows test, 6 Nov 2026).
+          if(input.action==='send_screenshot'){
+            const parent=router.coordinator!.ownerRequest(requestId);
+            const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen('read_window');if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');
+            if(!store.ownerInputId(requestId)){json(res,200,{ok:false,error:'Screenshots can only answer a message the owner sent.'});return;}
+            const counter=`master-shots:${requestId}`,taken=Number(store.get(counter)??0);
+            if(taken>=3){json(res,200,{ok:false,error:'At most three screenshots per request.'});return;}
+            const shot=await desktopControl.captureScreen();
+            const caption=typeof input.caption==='string'&&input.caption.trim()?input.caption:'Your screen';
+            if(!store.outputOwnerPhoto(requestId,parent.destination??store.get('whatsapp-owner')??null,Buffer.from(shot.pngBase64,'base64'),caption)){json(res,200,{ok:false,error:'The screenshot is too large or could not be queued.'});return;}
+            store.set(counter,String(taken+1));store.audit('desktop-control-action',binding.id,'send_screenshot');
+            json(res,200,{ok:true,queued:'screenshot',width:shot.width,height:shot.height,next:'The screenshot is on its way to the owner chat. Say in your reply that it follows.'});return;
+          }
           if(input.action==='status'){syncMacPermission(await macControl.status());router.coordinator!.ownerRequest(requestId);}
           if(input.action!=='stop'&&input.action!=='status'){const epoch=macAccessEpoch;await requireDesktopPermission();await requireUnlockedScreen(String(input.action));if(epoch!==macAccessEpoch)throw new Error('DESKTOP_STOPPED');router.coordinator!.ownerRequest(requestId);if(router.stopped)throw new Error('Background operation is paused.');}
           const result=await desktopControl.run(`${binding.id}:${requestId}`,input,()=>{
@@ -372,6 +430,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{job:router.channelPoll(binding,d.clientId)});return;
       }
       if(path==='/api/session/permission'&&req.method==='POST'&&binding) {
+        // A session FarFromDesk drives through the SDK gets its permission answers from
+        // FarFromDesk directly (pre-allowed bridge tools, or one owner prompt). The hook defers,
+        // so the owner is never asked twice for the same tool call.
+        if(services?.masters.drivesPermissions(binding.id)){json(res,200,{answer:'native'});return;}
         if(router.stopped)throw new Error('Background operation is paused; approval is unavailable.');
         const d=await body(req);if(typeof d.question!=='string')throw new Error('Question required');
         const jobs=store.unfinished(binding.id);
@@ -528,6 +590,9 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         // Clearing a stale grant is the owner's own click in the app, never a phone or session request.
         if(d.action==='reset-permission'){
           if(!isAdmin){json(res,403,{error:'Resetting a macOS permission requires the FarFromDesk app.'});return;}
+          // The app shows the reset button on macOS only. Elsewhere there is nothing to clear, and
+          // stopping control for a no-op would only interrupt the owner.
+          if(process.platform!=='darwin'){json(res,400,{error:NO_RESET});return;}
           macAccessEpoch++;desktopControl.stop();macControl.stop();
           const reset=await grantHealth.reset();
           json(res,200,{...syncMacPermission(await macControl.status(true)),reset});return;
@@ -627,7 +692,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         };
         if(action?.action==='workspace'){
           const folder=typeof action.folder==='string'?action.folder.trim():'';
-          if(!folder||!existsSync(folder))throw new Error('Choose a folder that exists on this Mac.');
+          if(!folder||!existsSync(folder))throw new Error(`Choose a folder that exists on this ${computerName()}.`);
           store.set('deepseek-workspace',folder);
         }
         // The view the app draws: the workspace the owner picked, and every workspace that already has

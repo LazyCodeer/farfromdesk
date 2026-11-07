@@ -70,7 +70,9 @@ export class BrainMemory {
     const ids=new Set(this.board().flatMap(i=>i.jobs.map(j=>String(j.binding_id))));
     // Connected sessions count before their first job, so naming one routes to it instead of a guess.
     for(const b of router.coordinator?.selected()??[])ids.add(b.id);
-    return this.store.bindings().filter(b=>ids.has(b.id)||router.coordinator?.isCoordinator(b.id));
+    // Every enabled session the owner can see counts too: prod 'selected' is often empty, so the brain
+    // couldn't list, pause or schedule sessions the owner named (sim, 7 Nov 2026).
+    return this.store.bindings().filter(b=>b.enabled||ids.has(b.id)||router.coordinator?.isCoordinator(b.id));
   }
   resolve(ref:string):Item {
     const id=/^item:(\d+)$/.exec(ref)?.[1];
@@ -108,8 +110,12 @@ export class BrainMemory {
       // correctly and this literal check did not accept the phrasing.
       const match=/^(?:please\s+)?(?:add (?:a )?(?:to-do|todo|task)|remember(?: this)?(?: task)?|don'?t (?:let me )?forget)[ :]+(?:to\s+)?([\s\S]+)$/i.exec(m.text.trim());
       if(!match)throw new Error('To save without starting work, say “Add todo: …”.');
-      const item=this.add(m.id,match[1]);
-      return `Saved #${item.id}: ${item.title}. Status: not started. No session was dispatched.`;
+      // "add todos: X; Y" or one per line saves each (sim, 7 Nov 2026: refused as "one list change per message").
+      // ponytail: only lines, semicolons and numbered/bulleted lists split; "call mom and dad" stays one item.
+      const titles=match[1].split(/\n|;|\s(?=\d+[.)]\s)/).map(t=>t.replace(/^\s*(?:[-*•]|\d+[.)])\s*/,'').trim()).filter(Boolean);
+      const items=titles.map((t,i)=>this.add(i?`${m.id}#${i}`:m.id,t));
+      return items.length===1?`Saved #${items[0].id}: ${items[0].title}. Status: not started. No session was dispatched.`
+        :`Saved ${items.length} to-dos:\n${items.map(i=>`#${i.id}: ${i.title}`).join('\n')}\nStatus: not started. No session was dispatched.`;
     }
     if(d.operation==='set_todo') {
       const match=/^(?:please\s+)?(?:mark|set) (.+?) (?:as|to) (not started|in progress|waiting on owner|blocked|done)[.!]?$/i.exec(m.text.trim());
@@ -120,11 +126,16 @@ export class BrainMemory {
       return `#${item.id}: ${d.itemStatus}. Saved as your board update; execution evidence is unchanged.`;
     }
     if(d.operation==='pause_session'||d.operation==='resume_session') {
-      const match=/^(?:please\s+)?(pause|disconnect|resume|reconnect|connect) (?:the )?(?:session )?(.+?)(?: session)?[.!]?$/i.exec(m.text.trim());
-      const resume=d.operation==='resume_session';
-      if(!match||resume!==/^(resume|reconnect|connect)$/i.test(match[1]))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
-      const matches=this.candidates(router).filter(b=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].some(n=>n.toLowerCase()===match[2].toLowerCase()));
-      if(matches.length!==1||matches[0].id!==d.sessionId)throw new Error('Please use the exact name of one session already associated with this chat.');
+      // Owners say "pause the Acme one" or "Client: Acme storefront ko pause karo". The model picks the session;
+      // code only checks the verb matches and the owner's words name that session (sim, 7 Nov 2026).
+      const said=m.text.toLowerCase(),resume=d.operation==='resume_session';
+      // The first verb decides: "Pause X. I'll ask you to resume it shortly" is a pause (sim, 7 Nov 2026).
+      const first=/\b(resume|reconnect|connect|unpause|start again|pause|disconnect|stop|hold)\b/.exec(said)?.[1];
+      const verb=first?(/^(pause|disconnect|stop|hold)$/.test(first)?'pause':'resume'):undefined;
+      if(verb!==(resume?'resume':'pause'))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
+      const words=(b:Binding)=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].flatMap(n=>[n.toLowerCase(),...n.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4)]);
+      const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
+      if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
       if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error('This platform is disabled or denied by your policy.');
       const coordinator=router.coordinator.registry.bindingFor(b);

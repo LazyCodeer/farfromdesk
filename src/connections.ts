@@ -13,8 +13,10 @@ import { cursorDataDir } from './cursor-paths.js';
 import { CURSOR_CLI_MISSING, findCursorCli } from './cursor-desktop.js';
 import { claudeProviderEnvironment, claudeProviderFingerprint } from './claude-provider.js';
 import type { Binding, Provider, Store } from './store.js';
+import { DispatchNotSubmittedError } from './brief-dispatch-guard.js';
 import type { ExecutionMode } from './desktop-claude.js';
 import { codexProfileHome } from './codex-profile.js';
+import { claudeDesktopDataDir } from './desktop-apps.js';
 
 const exec=promisify(execFile);
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -26,7 +28,7 @@ export const usableCLIConnection = (connection: Pick<Connection,'state'>) => con
 export type SessionRoute={provider:Provider;executionMode:ExecutionMode;transport:'managed-cli'|'native-session';profileId:string;accountKey?:string;accountScope?:string;label:string};
 export function connectionProfile(provider:Provider,mode:ExecutionMode,env=process.env) {
   const home=homedir();
-  const root=mode==='desktop'&&provider==='claude'?join(home,'Library/Application Support/Claude'):
+  const root=mode==='desktop'&&provider==='claude'?claudeDesktopDataDir(home):
     provider==='codex'?codexProfileHome(env):provider==='muse'?museConfigDir(env):provider==='deepseek'?dshHome(env):provider==='cursor'?cursorDataDir(env):(env.CLAUDE_CONFIG_DIR??join(home,'.claude'));
   return `${provider}:${mode}:${digest(canonical(root)).slice(0,20)}`;
 }
@@ -91,8 +93,10 @@ export async function probeDeepseekAccount(cwd:string,env:NodeJS.ProcessEnv=proc
   // secret: the presence of that file plus a working `dsh` binary is the whole
   // profile. Never read the credential, and never log its path into a label.
   if(!existsSync(credentials))return {state:'signed-out',label:'DeepSeek Harness signed out · sign in to this CLI'};
-  const command=nativeCommand(dshBinary(),['--version'],process.platform,env);
-  try {await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env,timeout:12000,maxBuffer:65536,windowsHide:true});}
+  // withEnv: on Windows dsh.cmd becomes a direct call to DeepSeek Harness.exe, which needs
+  // ELECTRON_RUN_AS_NODE from command.env; without it --version would open the app window.
+  const command=nativeCommand(dshBinary(),['--version'],process.platform,env,undefined,true);
+  try {await (dependencies.execute??exec)(command.binary,command.args,{cwd:directory,env:{...env,...command.env},timeout:12000,maxBuffer:65536,windowsHide:true});}
   catch{return {state:'unknown',label:'DeepSeek Harness CLI unavailable · install it, then retry'};}
   return {state:'verified',label:'DeepSeek Harness CLI · local credential',accountKey:digest(['deepseek',canonical(credentials)])};
 }
@@ -182,7 +186,9 @@ export class Connections {
     if(b.provider==='cursor'&&route.transport!=='managed-cli')throw new Error('Cursor has no native session to hand a turn to. Select its channel connection again.');
     if(route.transport==='managed-cli') {
       const current=await this.read(b.provider,'cli',true,b.cwd);
-      if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new Error('CLI account or provider changed. Review and reselect this session before sending more work. No other account was used.');
+      if(!usableCLIConnection(current)||current.accountKey!==route.accountKey)throw new DispatchNotSubmittedError(b.provider==='claude'
+        ?'Nothing was sent: Claude CLI’s account or provider settings changed since this session was chosen (for example a new ANTHROPIC_BASE_URL in ~/.claude/settings.json). On your PC, open FarFromDesk and choose this session again to confirm the new setup. No other account was used.'
+        :'Nothing was sent: the CLI account or provider changed since this session was chosen. On your PC, open FarFromDesk and choose this session again to confirm. No other account was used.');
     }
   }
 }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, lstatSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultStateDirectory } from './platform.js';
 const privateRoot=()=>process.env.WSB_STATE_DIR??defaultStateDirectory();
@@ -67,6 +67,21 @@ export function roleDocument(store:Store,b:Binding,root=privateRoot()) {
   if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||readFileSync(file,'utf8')!==role.instructions)throw new Error('Role document integrity check failed.');
   return {...role,file};
 }
+const bundledSkills=fileURLToPath(new URL('../skills/',import.meta.url));
+/**
+ * Whether a session may read this path without asking: only its own role folder
+ * (roles/<binding id>, which holds its role and specialist files) and the bundled
+ * skills its instructions point to. Real paths are compared, so a link cannot lead
+ * out, and Windows paths compare without case.
+ */
+export function ownInstructionFile(b:Binding,path:unknown,root=privateRoot(),skills=bundledSkills,platform:NodeJS.Platform=process.platform):boolean{
+  if(typeof path!=='string'||!path||!isAbsolute(path))return false;
+  let real:string;try{real=realpathSync(path);if(!statSync(real).isFile())return false;}catch{return false;}
+  const inside=(dir:string)=>{let base:string;try{base=realpathSync(dir);}catch{return false;}
+    const rel=platform==='win32'?relative(base.toLowerCase(),real.toLowerCase()):relative(base,real);
+    return !!rel&&!rel.startsWith('..')&&!isAbsolute(rel);};
+  return inside(join(root,'roles',b.id))||inside(skills);
+}
 /** Immutable, integrity-checked specialist document. The envelope grants read
  * access to this exact instruction file, never the rest of private app state. */
 export function specialistDocument(store:Store,b:Binding,requestId:string,root=privateRoot()) {
@@ -88,9 +103,10 @@ export function turnEnvelope(store:Store,b:Binding,text:string,requestId:string,
   const specialist=specialty?specialistDocument(store,b,requestId,root):undefined;
   const origin=requestId.startsWith('local:social:')?'desktop-owner':requestId.startsWith('report:')?'worker-report':requestId.startsWith('master:')?'delegated-owner-request':'owner';
   const key=`role-delivered:${b.id}:${b.native_id}`;
-  // Only the versioned file pointer is sent, including the first turn.
+  // Only the versioned file pointer is sent, including the first turn. Persistent sessions get the
+  // update notice too: a resumed Claude chat kept following the rules it read earlier (live, 6 Nov 2026).
   const delivered=store.get(key),kindKey=`role-delivered-kind:${b.id}:${b.native_id}`;
-  const bootstrap=!persistent&&(!delivered||(store.get(kindKey)??role.kind)!==role.kind),updated=!persistent&&!bootstrap&&delivered!==role.version;
+  const bootstrap=!persistent&&(!delivered||(store.get(kindKey)??role.kind)!==role.kind),updated=!bootstrap&&!!delivered&&delivered!==role.version;
   const channel=store.job(requestId)?.destination?.startsWith('tg:')?'telegram':'whatsapp',scope=store.get(`parent:${requestId}`)??requestId;
   // Fixed rules live in the role file; the envelope carries only what changes per request.
   const {skill,...route}=reply;

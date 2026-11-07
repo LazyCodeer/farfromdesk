@@ -3391,7 +3391,7 @@ extension _BridgeScreens on _DeskState {
                       ? (p['canCreate'] == false
                             ? platformConnectionStatus(p)
                             : null)
-                      : '${p['reason'] ?? 'Not available on this Mac'}',
+                      : '${p['reason'] ?? 'Not available on this $computer'}',
                 ),
             ],
             onChanged: (value) => editSetup(() {
@@ -3770,11 +3770,11 @@ extension _BridgeScreens on _DeskState {
                         color: muted,
                       ),
                     ),
-                  const SelectOption(
+                  SelectOption(
                     value: '__choose',
                     label: 'Choose folder…',
-                    detail: 'Any project on this Mac',
-                    leading: Icon(
+                    detail: 'Any project on this $computer',
+                    leading: const Icon(
                       Icons.create_new_folder_outlined,
                       size: 15,
                       color: muted,
@@ -4709,7 +4709,7 @@ extension _BridgeScreens on _DeskState {
                           'asks whether to keep running, and below 5% it always '
                           'sleeps. A closed '
                           'lid gets warm, so keep the vents clear. Closing the lid '
-                          'also locks the screen, so you will need your Mac '
+                          'also locks the screen, so you will need your $computer '
                           'password when you open it again. Turning this off or '
                           'running low on battery puts normal sleep back within '
                           'seconds. If FarFromDesk stops, the helper keeps holding '
@@ -4779,7 +4779,7 @@ extension _BridgeScreens on _DeskState {
               gap(7),
               small(
                 serverModeHelperStale(serverMode)
-                    ? 'macOS is still set to sleep normally. Server mode needs the '
+                    ? '${api.platform == 'macos' ? 'macOS' : api.platform == 'windows' ? 'Windows' : 'This computer'} is still set to sleep normally. Server mode needs the '
                           'background helper; turn it off and on again to reinstall it.'
                     : 'The helper holds sleep off while FarFromDesk is alive and '
                           'there is power or enough battery, and puts normal sleep back '

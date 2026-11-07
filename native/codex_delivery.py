@@ -1,13 +1,18 @@
 """Durable, at-most-one automatic submission to an existing Codex thread."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 import re
 import subprocess
 import tempfile
 import uuid
+
+try:
+    import fcntl
+except ImportError:  # Windows: byte-range locks through the C runtime instead of flock.
+    fcntl = None
+    import msvcrt
 
 
 def stamp():
@@ -26,6 +31,9 @@ def record_path(root, identifier):
 
 
 def sync_directory(path):
+    if os.name == "nt":
+        # Windows cannot open a directory as a file; a file's own fsync is what persists there.
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -38,7 +46,7 @@ def save_record(path, record):
     sync_directory(path.parent.parent)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(record, stream, ensure_ascii=False)
             stream.write("\n")
             stream.flush()
@@ -51,9 +59,30 @@ def save_record(path, record):
 
 
 @contextmanager
-def delivery_lock(root):
-    with (root / ".codex-delivery.lock").open("a") as stream:
+def exclusive(stream):
+    """Hold an exclusive lock on an open lock file until the block ends."""
+    if fcntl is not None:
         fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+        return
+    # A Windows byte lock is mandatory, so it is only ever taken on a dedicated lock file.
+    stream.seek(0)
+    while True:
+        try:
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            break
+        except OSError:
+            continue  # LK_LOCK already waited about ten seconds; keep waiting like flock.
+    try:
+        yield
+    finally:
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def delivery_lock(root):
+    with (root / ".codex-delivery.lock").open("a") as stream, exclusive(stream):
         yield
 
 
@@ -61,7 +90,7 @@ def read_record(root, identifier):
     identifier = message_id(identifier)
     path = record_path(root, identifier)
     if path.exists():
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     source = root / "codex-inbox.jsonl"
     if source.exists():
         for line in source.read_bytes().splitlines(keepends=True):
@@ -89,9 +118,19 @@ def receipt(record):
             "wakeError": record.get("error")}
 
 
-def ensure_audit(root, event):
-    with (root / "codex-inbox.jsonl").open("a+b") as stream:
+@contextmanager
+def inbox_lock(root, stream):
+    if fcntl is not None:
         fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+        return
+    # Readers open the inbox itself, so Windows locks a sidecar file instead of the inbox.
+    with (root / ".codex-inbox.lock").open("a") as lock, exclusive(lock):
+        yield
+
+
+def ensure_audit(root, event):
+    with (root / "codex-inbox.jsonl").open("a+b") as stream, inbox_lock(root, stream):
         stream.seek(0)
         contents = stream.read()
         found = False
@@ -196,6 +235,6 @@ def withheld_from_inbox(root, event):
         path = record_path(root, event["id"])
         if not path.exists():
             return bool(event.get("deliveryJournal"))
-        return json.loads(path.read_text()).get("status") != "pending"
+        return json.loads(path.read_text(encoding="utf-8")).get("status") != "pending"
     except ValueError:
         return True

@@ -59,7 +59,7 @@ export type PhoneMessage=
   |Input
   |{t:'stop';idle?:true};                   // idle: the phone's countdown ran out
 export type MacMessage=
-  |{t:'auth-ok';width:number;height:number;resume:string;desktops?:true;os?:'mac'|'windows';voice?:'local'|'cloud';idle?:number;locked?:boolean} // idle: ms the Mac allows untouched; the phone may send 'active' // desktops: lists and switches them; voice: how recordings are transcribed
+  |{t:'auth-ok';width:number;height:number;resume:string;desktops?:true;os?:'mac'|'windows';unlock?:true;voice?:'local'|'cloud';idle?:number;locked?:boolean} // idle: ms the Mac allows untouched; the phone may send 'active' // desktops: lists and switches them; voice: how recordings are transcribed
   |{t:'auth-fail';error:string}
   |{t:'locked';locked:boolean}  // sent when the Mac locks or unlocks during a session
   |{t:'voice-text';id:string;text:string}
@@ -129,6 +129,8 @@ export type DesktopFrame={jpeg:Uint8Array;width:number;height:number;captureId:s
 export interface DesktopBackend{
   /** Which computer the phone is looking at, so the page names its keys and its lock screen. */
   readonly os?:'mac'|'windows';
+  /** Windows with the Screen Helper service: the lock screen is shown and typed on, as on a Mac. */
+  readonly lockScreenInput?:boolean;
   ready(fresh?:boolean):Promise<boolean|'locked'>; // fresh: skip the 1s cache, for checks that guard the password        // unlocked, permissions granted; 'locked' keeps the session on the lock screen
   capture(signal:AbortSignal):Promise<DesktopFrame>;
   act(frame:DesktopFrame,input:Input,signal:AbortSignal):Promise<void>;

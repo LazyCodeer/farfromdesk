@@ -11,6 +11,7 @@ import type {AccessStore} from './access.js';
 import {RemotePasswordAccess} from './access.js';
 import {phoneServer} from './phone-server.js';
 import {remoteControlSupported} from '../remote-p2p/service.js';
+import {setScreenService} from '../screen-service.js';
 
 const exec=promisify(execFile),nativeRoot=fileURLToPath(new URL('../../native/',import.meta.url));
 // 100.64.0.0/10 is Tailscale's private range, so the phone can reach the Mac away from home.
@@ -43,6 +44,12 @@ export class PhoneRemoteService {
   if(d.action==='password'){
    if(!remoteControlSupported())throw Error('UNSUPPORTED_PLATFORM');
    this.stop();await this.access.setPassword(d.password as string);return this.status;
+  }
+  // Windows: the Screen Helper service that lets the phone unlock the lock screen. Only the
+  // desktop app reaches this route, and Windows asks for admin approval on the PC itself.
+  if(d.action==='lock-screen'){
+   if(typeof d.enable!=='boolean')throw Error('INVALID_REQUEST');
+   return {...this.status,lockScreen:await setScreenService(d.enable)};
   }
   if(process.platform!=='darwin')throw Error('MAC_ONLY');
   if(d.action==='check')return {...this.status,permissions:await this.getDriver().call('check_permissions',{})};

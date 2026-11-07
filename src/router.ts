@@ -2,7 +2,7 @@ import {prepareSocialPreviews,queueSocialPreviews, withoutPreviewCaptions} from 
 import {asksForSocialCreation} from './social-intent.js';
 import {requestedSocialImageProvider} from './social-image-provider.js';
 import { DesktopReadinessError } from './session-activation.js';
-import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected, toolSelected } from './owner-commands.js';
+import { ownerCommand, routeOwnerTarget, clearOwnerTarget, authenticatedOwner, ownerAttachmentTarget, ownerAttachmentTool, keepToolAttachment, runToolAttachment, toolName, isOwnerCommand, pickOwnerTarget, ownerTurnLabel, specialtyTarget, brainSelected, toolSelected } from './owner-commands.js';
 import { selectOption, previewOption, parseMessageOptions, createOptions, markActionOption, optionAction } from './message-options.js';
 import { MetaBrain } from './meta-brain.js';
 import { MetaModel } from './meta-model.js';
@@ -11,7 +11,7 @@ import { DeliveryChoiceHold, deliveryAlternatives, heldCard, escalatedCard, read
 import { Schedules,scheduleJobState,scheduleRootState,hasScheduleGuard,failScheduledBeforeSubmission } from './schedules.js';
 import { TaskContracts } from './task-contracts.js';
 import { queueReportedProof } from './proof-report.js';
-import { closedAfterQueueText, queueOwnerReceipt, sessionShortName } from './coordinator-experience.js';
+import { appClosedFor, closedAfterQueueText, queueOwnerReceipt, sessionShortName } from './coordinator-experience.js';
 import { hash, Store, type Binding, type Provider } from './store.js';
 import type { NativeAgents } from './native.js';
 import { probeDesktopApps, probeDesktopAppsNow } from './app-liveness.js';
@@ -36,6 +36,7 @@ import {GuidedModes} from './guided-modes.js';
 import {socialSpecialty} from './social-agent.js';
 import {prepareSpecialties,specialtyEpoch,specialtyIdentity,markPendingSpecialty,pendingSpecialty,hasPendingSpecialty,bindSessionSpecialty,hasSessionSpecialty,sessionSpecialty,specialtyNoticeDestination,type PendingSpecialty} from './session-specialty.js';
 import {prepareAttachmentTargetEpochs,attachmentTargetEpoch} from './attachment-target-epoch.js';
+import { computerName } from './platform.js';
 
 /** A scheduled request was held before any native submission. */
 class ScheduledChannelHold extends DispatchNotSubmittedError {}
@@ -103,12 +104,20 @@ export class Router {
     } else if(m.quotedId) {
       b=this.store.quotedBinding(m.quotedId);if(!b)throw new Error('That quoted message does not identify a registered session. Use /to NAME caption.');
       this.checkQuotedPlatform(text,b);
-    } else b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
+    } else {
+      const tool=ownerAttachmentTool(this,m);
+      if(tool){
+        if(this.schedules.isScheduleLike(text))throw new Error('Send schedules as a new text message in your own chat. Attachments cannot schedule or immediately send future actions.');
+        if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
+        return {tool,binding:undefined as unknown as Binding,text,identity:JSON.stringify(['tool',tool,this.store.get(`owner-target:${this.store.destination()}`),this.store.ownerFor(this.store.destination()),this.store.get('incoming-owner-generation')])};
+      }
+      b=ownerAttachmentTarget(this,m)??(this.coordinator?this.coordinator.destination(text):this.store.binding(this.store.get('active')??''));
+    }
     if(this.schedules.isScheduleLike(text))throw new Error('Send schedules as a new text message in your own chat. Attachments cannot schedule or immediately send future actions.');
     if(!b)throw new Error('Choose an exact session before sending an attachment.');
     this.need(b.id);
     if(text.length>32000)throw new Error('Attachment caption exceeds 32,000 characters.');
-    return {binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
+    return {tool:undefined as undefined|ReturnType<typeof ownerAttachmentTool>,binding:b,text:text||'The owner sent an attachment without a caption. Acknowledge receipt and ask what they want done with it; do not execute it.',
       identity:JSON.stringify([b.id,b.native_id,b.cwd,b.token_hash,b.provider,b.mode,this.store.get(`execution-mode:${b.id}`),this.store.get(`session-route:${b.id}`),this.store.get('master'),this.store.get('active'),this.store.get('selected'),this.store.ownerFor(this.store.destination()),this.store.controlChannel(),this.store.get('incoming-owner-generation'),this.store.get(`owner-target:${this.store.destination()}`),attachmentTargetEpoch(this.store,b.id),...(selectedRoute?[specialtyEpoch(this.store)]:[])])};
   }
   receiveAttachment(m:Incoming,file:IncomingFile,target:ReturnType<Router['attachmentTarget']>) {
@@ -116,6 +125,16 @@ export class Router {
     // Attachment captions use a separate synchronous path; do not let them bypass task review.
     if(this.contracts.enabled()&&m.text.trim())throw new Error('Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.');
     if(this.attachmentTarget(m).identity!==target.identity)throw new Error('The intended session changed during download. Please resend to the intended session.');
+    if(target.tool){
+      const tool=target.tool,path=keepToolAttachment(m.id,file);
+      this.store.remember(m.id);this.store.db.prepare("UPDATE media_inbox SET status='processed' WHERE id=?").run(m.id);
+      const destination=this.store.destination();
+      if(destination)this.store.output(undefined,`File received. I’m passing it to ${toolName(tool)}.`,`tool-attachment:${m.id}`,destination,{kind:'system',origin:'system',plain:true});
+      void runToolAttachment(this,m,tool,m.text,{kind:file.kind,filename:file.filename,path}).catch(e=>{
+        this.store.output(undefined,`${toolName(tool)} could not finish with that file: ${String((e as Error)?.message??e).slice(0,300)}`,`command:${m.id}`,undefined,{plain:true});
+      });
+      return;
+    }
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
       if(this.store.job(m.id))throw new Error('This attachment request already exists. Check its status before resending.');
@@ -196,7 +215,7 @@ export class Router {
     // Natural-language controls may be spoken; slash commands must be typed.
     const ownerIntent=m.ownerIntent??(m.ownerCommand!==false);
     // Screen-control links and the phone's answer code are handled before any routing.
-    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>'Screen control could not start. Check FarFromDesk on your Mac.');if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
+    if(this.remoteControl&&!m.quotedId&&ownerIntent&&(!text.startsWith('/')||m.ownerCommand!==false)){const reply=await this.remoteControl(text).catch(()=>`Screen control could not start. Check FarFromDesk on your ${computerName()}.`);if(!this.store.incomingOwnerCurrent())return {status:'blocked',requestId:m.id,code:'routing_unavailable'};if(reply){this.store.output(undefined,reply,`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};}}
     // Exact typed decisions are resolved before ordinary model routing.
     let ownerReply=false;
     try {
@@ -222,7 +241,11 @@ export class Router {
         // Selection may come from a channel-authenticated button or a typed
         // reply. Only a successful claim actually changes the selected target.
         if(this.store.get(targetKey)!==previousTarget||this.store.get(choiceKey)!==previousChoice){this.guidedModes.retarget(this);}
-        this.store.output(undefined,targetReply+'\n\n'+this.guidedModes.summary(this,{...m,quotedId:undefined,ownerCommand:true}),`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};
+        // An empty reply means the handler already answered (a pass-it-on tap sends its own note under
+        // command:<id>). Writing the mode line there too clashed with that note, or sent a bare
+        // "Mode: General" (Windows test, 7 Nov 2026).
+        if(targetReply)this.store.output(undefined,targetReply+'\n\n'+this.guidedModes.summary(this,{...m,quotedId:undefined,ownerCommand:true}),`command:${m.id}`,undefined,{plain:true});
+        this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
         const input={responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)};
@@ -723,7 +746,7 @@ export class Router {
     if(!hold||!alternative)throw new Error('that session is no longer offered');
     const target=this.store.binding(alternative.bindingId);
     if(!target||!target.enabled)throw new Error('that session is no longer connected');
-    if(target.provider!=='muse'&&target.provider!=='deepseek'&&target.provider!=='cursor'&&!this.appOnline(target.provider))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
+    if(target.provider!=='muse'&&target.provider!=='deepseek'&&target.provider!=='cursor'&&(process.platform==='darwin'?!this.appOnline(target.provider):appClosedFor(this.store,target)))throw new Error(`${sessionShortName(this.store,target)} is not running now`);
     say(`➡️ Sending this to ${alternative.label}…`,'delivery-move');
     // The held copy was never submitted, so closing it cannot leave the task running twice.
     this.store.jobState(hold.requestId,'replaced','You moved this message to another session before it was sent.');
@@ -746,6 +769,8 @@ export class Router {
         if(readDeliveryHold(this.store,id))continue;
         const binding=this.store.binding(job.binding_id);
         if(!binding||binding.provider!==provider)continue;
+        // Off macOS a CLI connection does not wait on the desktop app.
+        if(process.platform!=='darwin'&&!appClosedFor(this.store,binding))continue;
         if(this.store.db.prepare('SELECT 1 FROM reply_receipts WHERE source=?').get(`closed:${id}`))continue;
         this.store.output(binding,closedAfterQueueText(sessionShortName(this.store,binding)),`closed:${id}`,
           job.destination??this.store.destination(),{kind:'system',origin:'system',plain:true,requestId:id});
@@ -768,7 +793,7 @@ export class Router {
         this.silenceTimers.delete(id);
         const job=this.store.job(id);
         if(this.paused||!job||job.first_reply_at||!['dispatched','submitted','queued'].includes(job.status))return;
-        const closed=!this.appOnline(b.provider);
+        const closed=process.platform==='darwin'?!this.appOnline(b.provider):appClosedFor(this.store,b);
         this.store.event(id,stage===1?'silence_notice':'silence_escalated',{stage,appRunning:!closed});
         const minutes=Math.max(1,Math.round((Date.now()-job.created_at)/60000));
         const target=destination??this.store.get('whatsapp-owner')??null;
@@ -962,6 +987,13 @@ export class Router {
       if(destination&&this.store.incomingOwnerCurrent())this.store.output(undefined,reason,`specialty-not-sent:${id}`,destination,{requestId:id,kind:'system',origin:'system',plain:true});
     }
     this.collaboration?.reject(id,reason);
+    // Any other request refused before submission must end visibly; left as 'dispatched' it would wait forever.
+    const left=this.store.job(id);
+    if(left&&['queued','dispatched'].includes(left.status)){
+      this.store.jobState(id,'failed',reason);
+      const destination=left.destination??this.store.get('whatsapp-owner')??null;
+      if(destination&&!id.startsWith('report:')&&this.store.incomingOwnerCurrent())this.store.output(this.store.binding(left.binding_id)??undefined,reason,`not-sent:${id}`,destination,{requestId:id,kind:'system',origin:'system',plain:true});
+    }
   }
   private routableJob(b:Binding) {
     for(;;){

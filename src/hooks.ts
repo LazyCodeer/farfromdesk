@@ -14,6 +14,11 @@ export function hookMessage(provider:string,input:any) {
   return null;
 }
 export async function handleHook(provider:string,input:any) {
+  // A session FarFromDesk drives through the Claude SDK answers its own permissions and
+  // replies through session_bridge. Hooks from any install (this one or a leftover other
+  // one in the user's settings) must stay out: live, 6 Nov 2026, a second install's hooks
+  // sent the owner 36 permission cards for tool calls its own app never made.
+  if(process.env.FFD_SDK_DRIVER)return;
   const c=hookMessage(provider,input);if(!c)return;
   if(input.hook_event_name==='PermissionRequest') {
     let answer:string|undefined;

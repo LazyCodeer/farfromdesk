@@ -114,3 +114,18 @@ test('the page calls a Windows host a PC, with Ctrl shortcuts, Task View and an 
  vm.runInContext("nameHost(undefined)",context);
  assert.equal(vm.runInContext("named('Your Mac')",context),'Your Mac','an older host sends no os: a Mac');
 });
+
+test('with the Screen Helper, a Windows host keeps the type-your-password lock bar, worded for a PC',()=>{
+ const el:any={},small:any={textContent:''},lockSmall:any={textContent:''};
+ const ids:Record<string,any>={overview:{querySelector:()=>small},lockbar:{querySelector:()=>lockSmall},locktype:{hidden:true},lockfact:{hidden:true}};
+ const context=vm.createContext({$:(id:string)=>ids[id]??el,document:{body:{},createTreeWalker:()=>({nextNode:()=>null}),querySelectorAll:()=>[]},NodeFilter:{SHOW_TEXT:4},WeakMap});
+ vm.runInContext(page('// ---- Which computer this is.','const explain='),context);
+ vm.runInContext("nameHost('windows',true)",context);
+ assert.match(lockSmall.textContent,/enter your PC PIN or password/);
+ assert.equal(ids.locktype.hidden,false);assert.equal(ids.lockfact.hidden,false);
+ assert.equal(vm.runInContext('atThePc()',context),false);
+ vm.runInContext("nameHost('windows',false)",context);
+ assert.equal(vm.runInContext('atThePc()',context),true,'without it the PC is unlocked at the PC');
+ vm.runInContext("nameHost(undefined)",context);
+ assert.equal(vm.runInContext('atThePc()',context),false,'a Mac always types on its lock screen');
+});

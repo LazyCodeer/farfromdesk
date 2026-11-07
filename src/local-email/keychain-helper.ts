@@ -1,6 +1,7 @@
-import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
+import type {ChildProcessWithoutNullStreams} from 'node:child_process';
 import {isAbsolute} from 'node:path';
 import type {MailKeychainVault} from './keychain-adapter.js';
+import {spawnMailHelper} from './helper-command.js';
 
 const error=()=>new Error('Keychain unavailable.');
 /** One broker owns the OS lock across every operation and while parent IPC remains open. */
@@ -11,12 +12,13 @@ export class MailKeychainHelper implements MailKeychainVault {
   private pending?:{resolve:(x:any)=>void;reject:(e:Error)=>void;timer:NodeJS.Timeout};
   private serial:Promise<unknown>=Promise.resolve();
   private closed?:Promise<void>;
-  constructor(private readonly executable:string,private readonly lockPath:string,private readonly timeoutMs=15_000){
+  /** extraArgs is a trusted test seam (a synthetic credential namespace), never derived from input. */
+  constructor(private readonly executable:string,private readonly lockPath:string,private readonly timeoutMs=15_000,private readonly extraArgs:string[]=[]){
     if(!isAbsolute(executable)||!isAbsolute(lockPath)||!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>60_000)throw error();
   }
   async start(){
     if(this.process)throw error();
-    let p:ChildProcessWithoutNullStreams;try{p=spawn(this.executable,[this.lockPath],{stdio:['pipe','pipe','pipe'],env:{}});}catch{throw error();}
+    let p:ChildProcessWithoutNullStreams;try{p=spawnMailHelper(this.executable,[this.lockPath,...this.extraArgs]);}catch{throw error();}
     this.process=p;this.closed=new Promise(resolve=>p.once('close',()=>{this.active=false;const pending=this.pending;this.pending=undefined;if(pending){clearTimeout(pending.timer);pending.reject(error());}resolve();}));
     p.on('error',()=>{this.active=false;});p.stdin.on('error',()=>{this.active=false;p.kill('SIGKILL');});p.stderr.resume();
     p.stdout.on('data',(chunk:Buffer)=>{

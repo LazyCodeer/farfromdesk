@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import type { Binding, Store } from './store.js';
 import { sessionMeta } from './coordinator-experience.js';
 import { hookTroubleLine, type ProviderHookReport } from './provider-hooks.js';
+import { computerName } from './platform.js';
+/** What the owner calls this computer in messages: Mac, PC or computer. */
+const PC=computerName();
 
 /**
  * Owner-facing companion copy and records.
@@ -82,7 +85,7 @@ export function blockCard(o:{store:Store;binding:Binding;question:string;expires
       '- I cannot answer this one from here, so it will stay open in the app.',
       ...(lines.length?['',...lines]:[]),
       '',
-      `You: answer it in ${appName(binding.provider)} on the Mac, then send /done here and I will check. Send /screen to do it from your phone.`,
+      `You: answer it in ${appName(binding.provider)} on the ${PC}, then send /done here and I will check. Send /screen to do it from your phone.`,
     ].join('\n');
     return {kind:'question',text:text.slice(0,1200),choices};
   }
@@ -93,7 +96,7 @@ export function blockCard(o:{store:Store;binding:Binding;question:string;expires
     '',
     '1. Allow it',
     '2. Deny it',
-    '3. I do it on the Mac myself',
+    `3. I do it on the ${PC} myself`,
     '',
     timing,
   ].join('\n');
@@ -117,13 +120,13 @@ const guideWhy:Record<HandoverReason,(name:string)=>string>={
 export function takeoverGuide(o:{store:Store;binding:Binding;reason:HandoverReason;hookReports?:ProviderHookReport[];deepLink?:string}):string {
   const {store,binding}=o,session=sessionLine(store,binding),app=appName(binding.provider);
   const lines=[
-    '⚠️ *This one needs your Mac*',
+    `⚠️ *This one needs your ${PC}*`,
     `- ${guideWhy[o.reason](session.name)}`,
   ];
   if(binding.provider!=='muse'&&binding.provider!=='deepseek')lines.push(`- ${session.name} is in ${app}${session.where?`, folder ${session.where}`:''}.`);
-  lines.push('',binding.provider==='muse'||binding.provider==='deepseek'?'1. Open your terminal on the Mac.':`1. Open ${app} on the Mac.`,'2. Open the chat above and approve the request there.','3. Send /done here and I will check whether it moved.');
+  lines.push('',binding.provider==='muse'||binding.provider==='deepseek'?`1. Open your terminal on the ${PC}.`:`1. Open ${app} on the ${PC}.`,'2. Open the chat above and approve the request there.','3. Send /done here and I will check whether it moved.');
   if(o.deepLink)lines.push('',`Or open it directly: ${o.deepLink}`);
-  lines.push('',`From your phone: send /screen to control the Mac, then do the same steps.`);
+  lines.push('',`From your phone: send /screen to control the ${PC}, then do the same steps.`);
   const trouble=hookTroubleLine(o.hookReports);
   if(trouble)lines.push('',`Note: ${trouble}`);
   return lines.join('\n').slice(0,1500);

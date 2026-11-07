@@ -26,8 +26,9 @@ function classify(title:string){
   const urgent=/^(?:urgent|asap|critical|high priority)\s*[:!-]\s+/i.test(title.trim())&&!/\b(?:not|never|no|isn.t|don.t|doesn.t|without)\b/i.test(title);
   return {category,urgency:urgent?'stated urgent':'not stated'};
 }
-const validDestination=(store:Store,destination:string,owner:string)=>store.controlChannel()==='whatsapp'&&!!owner&&store.ownerFor(destination)===owner&&
-  (destination===owner||destination===store.get('destination-jid')&&!!store.get(`owned-group:${destination}`));
+// Telegram is the main channel now; the brief was WhatsApp-only and refused there (sim, 7 Nov 2026).
+const validDestination=(store:Store,destination:string,owner:string)=>!!owner&&store.ownerFor(destination)===owner&&
+  (store.controlChannel()==='telegram'?destination===owner:store.controlChannel()==='whatsapp'&&(destination===owner||destination===store.get('destination-jid')&&!!store.get(`owned-group:${destination}`)));
 async function readPr(owner:string,repo:string,number:number):Promise<PullRequest>{
   const r=await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`,{redirect:'error',signal:AbortSignal.timeout(4000),headers:{Accept:'application/vnd.github+json','User-Agent':'FarFromDesk'}});
   if(!r.ok||!r.body)throw new Error('PR unavailable');
@@ -157,8 +158,8 @@ export class MorningBrief {
   async request(destination:string,mode:'scheduled'|'first-message',now=this.clock(),canSend?:()=>boolean){
     const owner=this.store.ownerFor(destination),policy=brainPolicy(this.store),key=this.router.brain.secret.read();
     if(this.router.stopped||!owner||!validDestination(this.store,destination,owner)||!policy.enabled||!policy.allowStatus||!key||canSend&&!canSend())return false;
-    const existing=this.store.incomingOwnerContext.getStore(),origin=existing??this.store.captureIncomingOwner(destination,'whatsapp');
-    if(!origin||!origin.generation||origin.channel!=='whatsapp'||origin.owner!==owner||origin.destination!==destination||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return false;
+    const existing=this.store.incomingOwnerContext.getStore(),origin=existing??this.store.captureIncomingOwner(destination,this.store.controlChannel()==='telegram'?'telegram':'whatsapp');
+    if(!origin||!origin.generation||origin.channel!==this.store.controlChannel()||origin.owner!==owner||origin.destination!==destination||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return false;
     const ownerCurrent=()=>this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent())&&validDestination(this.store,destination,owner);
     const cfg=this.config();let local:ReturnType<typeof localTime>;
     try {local=localTime(now,cfg.zone);}catch{return false;}

@@ -90,3 +90,10 @@ test('a resumed run passes --session-id and still sends the prompt on stdin',asy
   assert.match(args,/\n-\n$/,'the documented stdin marker is the last argument');
   assert.equal(readFileSync(run.stdin,'utf8'),'continue please');
 });
+test('a session held open by the DeepSeek app is explained with a way forward',async()=>{
+  const run=stub('held',[
+    emit({type:'error',message:'session "session-2b25d7c5" is already owned by an active write handle'}),
+    'exit 1',
+  ].join('\n'));
+  await assert.rejects(()=>runDsh({prompt:'check mail',cwd:dir,binary:run.path}),/Nothing was done: this DeepSeek session is open in the DeepSeek Harness app.*\/deepseek new/);
+});

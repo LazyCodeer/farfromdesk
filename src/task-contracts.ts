@@ -94,8 +94,9 @@ export class TaskContracts {
   private answer(m:Incoming,text:string){this.store.output(undefined,text,`task-contract-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}
   shouldHandle(r:Router,m:Incoming){
     const context=this.context(r,m);if(!context)return false;
-    if(this.pending(context.owner,context.destination))return true;
+    // Off means off: a card left pending must not keep catching the owner's messages.
     if(!this.enabled())return false;
+    if(this.pending(context.owner,context.destination))return true;
     const text=m.text.trim();return !text.startsWith('/')||/^\/to\s+/i.test(text);
   }
   /** Recover an approval saved before a crash without routing its 'ok' as a task. */

@@ -1,4 +1,5 @@
 import {socialPreviewDeliveryState} from './social-preview.js';
+import {attachmentRefusal} from './attachment-errors.js';
 import { TELEGRAM_COMMANDS, telegramCommand } from './owner-commands.js';
 import { optionsMarkup } from './message-options.js';
 import { scheduleDeliveryState } from './schedules.js';
@@ -19,7 +20,11 @@ export const TELEGRAM_DOWNLOAD_BYTES=20_000_000, TELEGRAM_DOCUMENT_BYTES=50_000_
 const validId=(id:unknown):id is number=>Number.isSafeInteger(id)&&Number(id)>0;
 export const telegramDestination=(bot:number,user:number)=>`tg:${bot}:${user}`;
 export const telegramMessageId=(bot:number,chat:number,message:number)=>`tg:${bot}:${chat}:${message}`;
+/** Telegram videos often come without a file name; name them by their type. */
+const videoName=(mime:unknown)=>mime==='video/quicktime'?'video.mov':mime==='video/webm'?'video.webm':'video.mp4';
 export class TelegramError extends Error {
+  /** True when the request never left this PC (no connection), so sending again cannot duplicate it. */
+  notSent=false;
   constructor(public code:number,public retryAfter=0){super(code===401?'Telegram rejected this bot token. Get a valid token from BotFather.':code===409?'This bot is already receiving updates elsewhere. Use a dedicated bot for FarFromDesk.':code===429?'Telegram rate limit reached. Waiting before retrying.':code===403?'Telegram cannot send to this account. Unblock the bot in Telegram.':'Telegram could not complete the request. Check your connection and try again.');}
 }
 // Safe subset of the existing phone format. Escape everything before adding tags;
@@ -92,7 +97,14 @@ export class Telegram {
       const data:any=await res.json();
       if(!res.ok||data.ok!==true)throw new TelegramError(Number(data.error_code)||res.status,Math.min(3600,Math.max(1,Number(data.parameters?.retry_after)||1)));
       return data.result;
-    }catch(e){if(e instanceof TelegramError)throw e;throw new TelegramError(0);}
+    }catch(e){
+      if(e instanceof TelegramError)throw e;
+      const err=new TelegramError(0);
+      // A connection that was never made (DNS, refused, unreachable, connect timeout) sent nothing.
+      const code=String((e as any)?.cause?.code??(e as any)?.code??'');
+      err.notSent=/^(?:ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)$/.test(code);
+      throw err;
+    }
   }
   async connect(supplied?:string) {
     if(this.configuring)throw new Error('Telegram connection is already being checked.');
@@ -189,7 +201,7 @@ export class Telegram {
     const m=update?.message;
     if(this.closed||!this.bot||!m||m.chat?.type!=='private'||!validId(m.chat.id)||!validId(m.from?.id)||m.from.is_bot||m.chat.id!==m.from.id||!validId(m.message_id))return;
     let text=typeof m.text==='string'?m.text:'';
-    const ownerIntent=!m.reply_to_message&&!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.quote&&!m.via_bot&&!m.document&&!m.photo;
+    const ownerIntent=!m.reply_to_message&&!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.quote&&!m.via_bot&&!m.document&&!m.photo&&!m.video;
     const ownerCommand=ownerIntent&&!m.voice;
     const id=telegramMessageId(this.bot.id,m.chat.id,m.message_id);
     if(this.store.seen(id))return;
@@ -215,7 +227,7 @@ export class Telegram {
     if(ownerCommand){const normalized=telegramCommand(text,this.bot.username);if(normalized===null){this.store.remember(id);return;}text=normalized;}
     const incoming:Incoming={id,text:text==='/start'&&ownerCommand?'Show my recent sessions':text,quotedId,ownerCommand,ownerIntent,ownerChoice:!m.forward_origin&&!m.forward_from&&!m.forward_from_chat&&!m.forward_date&&!m.external_reply&&!m.via_bot&&!m.voice,activityScope:{destination,owner:destination}};
     await this.store.incomingOwnerContext.run(owner,()=>this.store.destinationContext.run(destination,async()=>{
-      const file=m.voice??m.document??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
+      const file=m.voice??m.document??m.video??(Array.isArray(m.photo)?m.photo.at(-1):undefined);
       if(file){
         const table=m.voice?'audio_inbox':'media_inbox';
         if(this.store.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(id))return;
@@ -225,7 +237,7 @@ export class Telegram {
         const controller=new AbortController();this.media.add(controller);
         void this.processMedia(m,incoming,file,destination,controller.signal).catch(()=>{}).finally(()=>this.media.delete(controller));return;
       }
-      if(!text){this.store.output(undefined,'Send text, a voice note, an image or a document to control your sessions.',`telegram-unsupported:${id}`,destination);this.store.remember(id);return;}
+      if(!text){this.store.output(undefined,'Send text, a voice note, an image, a video or a document to control your sessions.',`telegram-unsupported:${id}`,destination);this.store.remember(id);return;}
       // The typing indicator from the moment the message arrives, until the router is done with it,
       // so the owner sees at once that the request was picked up. Telegram clears it after 5 s, so
       // it is renewed; failures are ignored because it is only a hint.
@@ -260,16 +272,15 @@ export class Telegram {
         incoming={...incoming,text:typeof m.caption==='string'?m.caption:''};
       }
       const target=voice?undefined:this.router.attachmentTarget(incoming);
-      if(!voice)downloaded=await this.download(file,m.document?.file_name??'image.jpg',signal);
+      if(!voice)downloaded=await this.download(file,m.document?.file_name??(m.video?m.video.file_name??videoName(m.video.mime_type):'image.jpg'),signal);
       signal.throwIfAborted();
       if(this.closed||this.router.stopped||!this.store.incomingOwnerCurrent()||this.store.controlChannel()!=='telegram'||destination!==this.store.get('telegram-owner'))throw new Error('Connection changed. Resend from the intended chat.');
       if(voice)await this.router.receive(incoming);
-      else this.router.receiveAttachment(incoming,{kind:m.document?'document':'image',filename:downloaded!.filename,sha256:downloaded!.sha256,download:downloaded!},target!);
+      else this.router.receiveAttachment(incoming,{kind:m.document||m.video?'document':'image',filename:downloaded!.filename,sha256:downloaded!.sha256,download:downloaded!},target!);
       this.store.db.prepare(`UPDATE ${table} SET status='processed' WHERE id=?`).run(incoming.id);
     }catch(e){
       if(!this.closed&&this.store.incomingOwnerCurrent()){
-        const review='Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.';
-        const message=e instanceof Error&&e.message===review?review:'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.';
+        const message=attachmentRefusal(e)??'I couldn’t process this file. Telegram bot downloads support up to 20 MB; local voice transcription supports up to five minutes. Check your voice setup or send text instead.';
         this.store.output(undefined,message,`telegram-media-error:${incoming.id}`,destination);this.store.remember(incoming.id);this.store.db.prepare(`UPDATE ${table} SET status='failed' WHERE id=?`).run(incoming.id);
       }
     }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare(`UPDATE ${table} SET status='interrupted' WHERE id=? AND status='processing'`).run(incoming.id);downloaded?.dispose();}
@@ -329,7 +340,8 @@ export class Telegram {
         this.store.db.prepare('UPDATE outbox SET wa_id=? WHERE id=?').run(telegramMessageId(this.bot.id,sent.chat.id,sent.message_id),row.id);this.store.sent(row.id);
       }catch(e){
         this.error=e instanceof TelegramError?e.message:'Telegram delivery could not be confirmed.';
-        if(e instanceof TelegramError&&e.code===429)this.store.db.prepare("UPDATE outbox SET status='queued',next_at=?,error='Telegram rate limit; retry scheduled' WHERE id=?").run(Date.now()+e.retryAfter*1000,row.id);
+        if(e instanceof TelegramError&&e.notSent&&Number((row as any).attempts??0)<20)this.store.db.prepare("UPDATE outbox SET status='queued',next_at=?,error='Telegram unreachable; retry scheduled' WHERE id=?").run(Date.now()+Math.min(300_000,5_000*2**Number((row as any).attempts??0)),row.id);
+        else if(e instanceof TelegramError&&e.code===429)this.store.db.prepare("UPDATE outbox SET status='queued',next_at=?,error='Telegram rate limit; retry scheduled' WHERE id=?").run(Date.now()+e.retryAfter*1000,row.id);
         else this.store.db.prepare("UPDATE outbox SET status=?,error=? WHERE id=?").run(e instanceof TelegramError&&e.code>=400&&e.code<500?'failed':'uncertain',e instanceof TelegramError?e.message:'Telegram delivery could not be confirmed; check the chat before resending.',row.id);
       }
     }finally{this.flushing=false;}

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AssistPlan } from './desktop-control.js';
-import { toolByName } from './app-tools/packs.js';
+import { platformToolByName as toolByName } from './app-tools/packs.js';
+import { computerName } from './platform.js';
 
 /**
  * The owner brain's device vocabulary.
@@ -56,8 +57,9 @@ export function devicePlanIssue(plan: DevicePlan): string | null {
  * there. Keeping both paths means the general promise ("write this down where I am") does
  * not silently become Notes-only.
  */
-export function notesWritePlan(app: string, body: string): DevicePlan {
-  const tool = toolByName('notes_create_note');
+export function notesWritePlan(app: string, body: string, platform: NodeJS.Platform = process.platform): DevicePlan {
+  // The Notes tool of this computer: Apple Notes on a Mac, OneNote on Windows.
+  const tool = toolByName('notes_create_note', platform);
   if (tool && app.toLowerCase() === tool.app.toLowerCase()) return { action: 'app_tool', tool: tool.name, app, args: { body } };
   return { action: 'type', app, text: body };
 }
@@ -311,11 +313,12 @@ export function deviceOutcome(plan: DevicePlan, result: any): DeviceOutcome {
  * The driver's own text never goes through: measured live, a bare keypress refusal read
  * "I could not do that on your Mac: DESKTOP_NATIVE_REFUSED: [{"type":"text","text":...}]".
  */
-export function deviceRefusal(error: unknown): string {
+export function deviceRefusal(error: unknown, platform: NodeJS.Platform = process.platform): string {
   const message = String((error as Error)?.message ?? error);
+  const pc = computerName(platform);
   if (message.startsWith('ACCESSIBILITY_PERMISSION_REQUIRED')) return 'I cannot control apps yet: Accessibility is not granted to FarFromDesk Local. Open Settings, Remote control, allow Accessibility, then ask me again.';
   if (message.startsWith('MAC_CONTROL_DISABLED')) return 'Desktop control is switched off in Settings. Turn on Remote control, then ask me again.';
-  if (message.startsWith('SENSITIVE_TARGET')) return 'I am not allowed to drive System Settings, keychain or password apps.';
+  if (message.startsWith('SENSITIVE_TARGET')) return platform === 'win32' ? 'I am not allowed to drive Windows Settings, Credential Manager or password apps.' : 'I am not allowed to drive System Settings, keychain or password apps.';
   if (message.startsWith('APP_TOOL_UNKNOWN')) return 'I do not have a reviewed tool for that app action yet, so I did nothing.';
   if (message.startsWith('APP_TOOL_ARGUMENT_MISSING')) return `I need one more detail before I can do that: ${message.slice('APP_TOOL_ARGUMENT_MISSING: '.length)}`;
   if (message.startsWith('APP_TOOL_ARGUMENT_INVALID')) return `I could not use those details, so I did nothing: ${message.slice('APP_TOOL_ARGUMENT_INVALID: '.length)}`;
@@ -326,14 +329,14 @@ export function deviceRefusal(error: unknown): string {
   if (message.startsWith('APP_TOOL_REFUSED')) return message.slice('APP_TOOL_REFUSED: '.length);
   if (message.startsWith('APP_TOOL_FAILED')) return `I could not do that: ${plainCause(message.slice('APP_TOOL_FAILED:'.length))}.`;
   if (message.startsWith('DESKTOP_APP_NOT_RUNNING')) return 'That app has no open window right now, so there is nothing to act on yet.';
-  if (message.startsWith('DESKTOP_MACOS_ONLY')) return 'That works on macOS only for now.';
+  if (message.startsWith('DESKTOP_MACOS_ONLY')) return platform === 'darwin' ? 'That works on macOS only for now.' : `That works on macOS only for now, so I cannot do it on this ${pc} yet.`;
   // Windows and Linux refusals already carry the owner's sentence after the code.
-  for (const code of ['DESKTOP_PLATFORM_UNSUPPORTED', 'ATSPI_UNAVAILABLE', 'WAYLAND_INPUT_UNSUPPORTED', 'ELEVATED_TARGET', 'DESKTOP_CONTROL_NOT_FOUND', 'SCREENSHOT_REFUSED']) if (message.startsWith(code + ': ')) return message.slice(code.length + 2);
-  if (message.startsWith('DESKTOP_BUSY')) return 'I am already doing something on your Mac. Let that finish, then ask me again.';
+  for (const code of ['DESKTOP_PLATFORM_UNSUPPORTED', 'ATSPI_UNAVAILABLE', 'WAYLAND_INPUT_UNSUPPORTED', 'ELEVATED_TARGET', 'DESKTOP_CONTROL_NOT_FOUND', 'SCREENSHOT_REFUSED', 'BROWSER_ACTION_UNSUPPORTED', 'BROWSER_TAB_GONE', 'BROWSER_LAUNCH_PAGE', 'BROWSER_PAGE_UNREADABLE', 'BROWSER_FOCUS_UNVERIFIED', 'BROWSER_CLOSE_UNVERIFIED', 'NEW_TAB_OUTCOME_UNKNOWN', 'BROWSER_TIMEOUT', 'BROWSER_HELPER_FAILED']) if (message.startsWith(code + ': ')) return message.slice(code.length + 2);
+  if (message.startsWith('DESKTOP_BUSY')) return `I am already doing something on your ${pc}. Let that finish, then ask me again.`;
   if (message.startsWith('DESKTOP_STOPPED')) return 'I stopped that action. Nothing else was tried.';
   if (/mcp error|connection closed|\beconn|socket hang|network|terminated/i.test(message)) return 'I lost the connection to the desktop helper just then, so I cannot say what happened. Check the app, then ask me again.';
   if (message.startsWith('DESKTOP_NATIVE_REFUSED')) return `I could not do that: ${plainCause(message.slice('DESKTOP_NATIVE_REFUSED:'.length))}.`;
-  return `I could not do that on your Mac: ${plainCause(message)}.`;
+  return `I could not do that on your ${pc}: ${plainCause(message)}.`;
 }
 
 /** Execute one plan and report facts, never a claim the driver did not make. */

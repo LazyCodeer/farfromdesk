@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { stateDir,baseUrl,codexBin,claudeBin,coordinatorHome } from './config.js';
-import { portableAgents } from './platform.js';
+import { portableAgents, nativeCommand } from './platform.js';
+import { claudeConfigHome, claudeDesktopDataDir, desktopSyncCommand } from './desktop-apps.js';
 import type { Store,Binding,Provider } from './store.js';
 import type { Approvals } from './approvals.js';
 import { turnEnvelope,roleConfig } from './roles.js';
@@ -28,10 +29,15 @@ import {museDataHome} from './muse-paths.js';
 import {sessionSpecialty} from './session-specialty.js';
 import {dshSessionsDir} from './dsh-paths.js';
 import {cursorSessions} from './cursor-desktop.js';
+import {bridgeCurl,ownerAppsPhrase,writeAuthHeader,WINDOWS_PIPE_NOTE} from './direct-mac.js';
 
 const exec=promisify(execFile);
 // Always the app's own copy (backend/native beside dist), never a personal helper in ~/.local/bin.
-const helper=()=>process.env.WSB_DESKTOP_SYNC_BIN??fileURLToPath(new URL('../native/desktop-sync',import.meta.url));
+// On Windows the same desktop_sync.py runs under Python, since there is no /bin/sh wrapper.
+const runHelper=(args:string[],options:{timeout:number;maxBuffer:number;env?:NodeJS.ProcessEnv})=>{
+  const command=desktopSyncCommand(args);
+  return exec(command.binary,command.args,{...options,windowsHide:true});
+};
 const cli=fileURLToPath(new URL('./cli.js',import.meta.url));
 const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
 export function deliveryId(jobId:string) {
@@ -77,6 +83,15 @@ export function claudeOwnerEnvironment(env:NodeJS.ProcessEnv=process.env):NodeJS
   const {CLAUDE_CONFIG_DIR:_private,...rest}=env;
   return {...rest,HOME:cursorOwnerHome(env)};
 }
+/**
+ * The Codex executable desktop-sync queues with. On Windows it must be a real .exe found now (the
+ * configured name is bare, and an npm codex.cmd would route the owner's text through cmd.exe);
+ * without one the helper keeps the message in its file inbox and says so.
+ */
+export function transportCodexBinary(platform:NodeJS.Platform=process.platform,binary=codexBin) {
+  if(platform!=='win32')return binary;
+  try{const command=nativeCommand(binary,[]);return !command.args.length&&/\.exe$/i.test(command.binary)?command.binary:undefined;}catch{return undefined;}
+}
 function waitingForDesktopInbox(s:Session) {
   return s.activation==='desktop-open'||(s.provider==='claude'&&s.executionMode==='desktop'&&s.live===true&&s.available===false&&!!s.desktopId&&!!s.accountScope);
 }
@@ -105,7 +120,7 @@ export class NativeAgents {
   }
   private writeTransportConfig(claudeBinary?:string) {
     const temp=`${this.configPath}.${process.pid}.tmp`;
-    writeFileSync(temp,JSON.stringify({claudeBinary,codexBinary:codexBin,coordinationDirectory:join(stateDir,'native-delivery')}),{mode:0o600});renameSync(temp,this.configPath);
+    writeFileSync(temp,JSON.stringify({claudeBinary,codexBinary:transportCodexBinary(),coordinationDirectory:join(stateDir,'native-delivery')}),{mode:0o600});renameSync(temp,this.configPath);
   }
   async requestStatus(job:{id:string;binding_id:string}) {
     const b=this.store.binding(job.binding_id);if(!b?.enabled||b.provider!=='codex')return undefined;
@@ -114,6 +129,13 @@ export class NativeAgents {
     try{await runtime.initialize();return await observeCodexRequest(runtime,b,job.id);}finally{clearTimeout(timer);runtime.close();}
   }
   private async desktopConfig() {this.writeTransportConfig(await claudeDiscoveryBinary(claudeBin));}
+  /** Every running Claude session as Claude's own `agents --json` lists it, read through desktop-sync. */
+  protected async liveClaudeSessions():Promise<any[]> {
+    await this.desktopConfig();
+    const {stdout}=await runHelper(['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024,env:claudeOwnerEnvironment()});
+    const live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');
+    return live;
+  }
   async catalog(provider:Provider,cursor?:string,options:{fresh?:boolean}={}):Promise<{sessions:Session[];cursor:string|null}> {
     if(this.deniedCatalogs.has(provider))throw new Error('File access was denied. Review FarFromDesk in System Settings → Privacy & Security → Files and Folders, then click Detect apps.');
     const key=provider+':'+(cursor??''),now=Date.now();
@@ -211,15 +233,15 @@ export class NativeAgents {
         claudeHistory(join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects')),
         // Claude Desktop keeps its sessions in the owner's real Library. The Local backend runs with a
         // private HOME, which hid every Desktop session and left new coordinators "not confirmed" (live).
-        claudeDesktopHistory(join(cursorOwnerHome(),'Library/Application Support/Claude/claude-code-sessions')),
+        claudeDesktopHistory(join(claudeDesktopDataDir(cursorOwnerHome()),'claude-code-sessions')),
         claudeDesktopProcesses().catch(()=>new Set<number>()),
         this.desktopConfig(),
         this.connections.read('claude','cli',fresh)
       ]);
       let live:any[]=[],liveComplete=false;
-      try{const {stdout}=await exec(helper(),['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024,env:claudeOwnerEnvironment()});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
+      try{const {stdout}=await runHelper(['--config',this.configPath,'list-claude'],{timeout:6000,maxBuffer:4*1024*1024,env:claudeOwnerEnvironment()});live=JSON.parse(stdout);if(!Array.isArray(live))throw new Error('Invalid live catalog');liveComplete=true;}
       catch{if(!history.length&&!desktopHistory.length)throw new Error('Claude discovery is unavailable. Check the native CLI.');}
-      const inboxes=await hasClaudeInboxes(live.map(s=>s.pid));
+      const inboxes=await hasClaudeInboxes(live.map(s=>s.pid),claudeConfigHome(claudeOwnerEnvironment(),cursorOwnerHome()));
       const all=mergeClaudeSessions(history,desktopHistory,live,desktopPids,inboxes);
       for(const b of this.store.bindings())if(b.provider==='claude'&&this.store.get(`execution-mode:${b.id}`)!=='desktop'&&b.enabled&&(this.store.get(`managed-worker:${b.id}`)==='true'||this.store.get(`managed-claude:${b.id}`)==='true')) {
         const key=`cli:${b.native_id}`,existing=all.get(key);if(existing?.live||all.get(`desktop:${b.native_id}`)?.live)continue;
@@ -351,14 +373,23 @@ export class NativeAgents {
     // curl reads the token from this binding's own credential file when it runs: the token is
     // never in the prompt or the transcript.
     const credential=join(stateDir,'bindings',`${b.alias}.json`).replaceAll("'","'\\''");
-    const curl=(path:string,secs=70)=>`curl -s --max-time ${secs} -X POST 'http://127.0.0.1:${new URL(baseUrl).port}${path}' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
+    // Windows has no plutil and no shell substitution every CLI agrees on (the token arrived empty
+    // and every call got a 401), so curl there reads the Authorization header from a file written
+    // next to this binding's credential, refreshed on every turn (see bridgeCurl in direct-mac.ts).
+    const windows=process.platform==='win32';
+    const headerFile=join(stateDir,'bindings',`${b.alias}.auth-header`);
+    const headless=b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor';
+    if(windows&&headless&&managed){try{const token=JSON.parse(readFileSync(join(stateDir,'bindings',`${b.alias}.json`),'utf8'))?.token;if(typeof token==='string'&&token)writeAuthHeader(headerFile,token);}catch{}}
+    const curl=(path:string,secs=70)=>windows
+      ?bridgeCurl('win32',`http://127.0.0.1:${new URL(baseUrl).port}${path}`,['Content-Type: application/json',`X-Binding-Id: ${b.id}`],{headerFile},secs)
+      :`curl -s --max-time ${secs} -X POST 'http://127.0.0.1:${new URL(baseUrl).port}${path}' -H 'Content-Type: application/json' -H "X-Binding-Id: ${b.id}" -H "Authorization: Bearer $(/usr/bin/plutil -extract token raw -o - '${credential}')" --data-binary @-`;
     const post=curl('/api/master/desktop-control');
     // The same gap for Social: FFD social-save and friends do not exist in a headless session, so it
     // reported that drafts could not be saved and no image preview followed (live, 5 Nov 2026).
     const headlessSocial=(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor')&&sessionSpecialty(this.store,jobId)?.kind==='social'
       ?{socialTools:`FFD is not installed here. In place of FFD social-creative, social-save, social-render and social-image, pipe JSON to these commands. Skill and schema: echo '{"requestId":"${jobId}"}' | ${curl('/api/session/social-creative')} . Save drafts: {"requestId":"${jobId}","eventId":"<new id of 8+ letters or digits>","drafts":[...]} | ${curl('/api/session/social-drafts')} . Render: {"requestId":"${jobId}","draftId":"<id>","revision":<n>,"plan":{...}} | ${curl('/api/session/social-render',180)} . Meta image: {"requestId":"${jobId}","draftId":"<id>"} | ${curl('/api/session/social-image',180)} .`}:{};
     const headlessApps=(b.provider==='muse'||b.provider==='deepseek')&&roleConfig(this.store,b).kind==='master'
-      ?{macApps:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
+      ?{macApps:windows?`For the content of ${ownerAppsPhrase('win32')}, never read windows or write scripts. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.${WINDOWS_PIPE_NOTE}`:`For the content of Notes, Calendar, Reminders, Mail, Finder, Safari, Music or Messages, never read windows or write AppleScript. Run: echo '{"requestId":"${jobId}","action":"app_tools","text":"<the owner words>"}' | ${post} , then pipe {"requestId":"${jobId}","action":"app_tool","tool":"<name from that list>","args":{...string values}} to the same curl. A tool that writes also needs "actionId":"<a new UUID>". Answer from what the tool returned; if it refused, give its reason.`}:{};
     const reply=managed?(b.provider==='muse'||b.provider==='deepseek'||b.provider==='cursor'?{tool:'final answer',...headlessApps,...headlessSocial}:{tool:'whatsapp_reply'}):ensureFfd(coordinatorHome,stateDir,b.alias,bridge,ownFolder?[join(support!,'.agents/skills/farfromdesk'),join(support!,'.claude/skills/farfromdesk')]:[],roleConfig(this.store,b).kind==='master');
     const envelope=turnEnvelope(this.store,b,text,jobId,reply,attachments,stateDir,managed);
     const message=envelope.body;
@@ -384,10 +415,12 @@ export class NativeAgents {
     const args=['--config',this.configPath,'--coord-dir',dir,...(b.provider==='codex'?['send-codex','--target',b.native_id,'--id',id]:['send-claude','--session',b.native_id]),'--sender',sender,'--file',file];
     try {
       if(b.provider==='claude')await verify(this.desktopConfig());
+      // A missing helper runtime (Python on Windows) is found before the hand-off, so it reads as not sent.
+      desktopSyncCommand(args);
       this.beforeDispatch?.(b,jobId);
       // Longer than the helper's own 30-second wait on codex queue, so the helper records the outcome itself.
       handedOff=true;
-      const {stdout}=await exec(helper(),args,{timeout:45000,maxBuffer:1024*1024,...(b.provider==='codex'?{env:codexProfileEnvironment()}:{env:claudeOwnerEnvironment()})});
+      const {stdout}=await runHelper(args,{timeout:45000,maxBuffer:1024*1024,...(b.provider==='codex'?{env:codexProfileEnvironment()}:{env:claudeOwnerEnvironment()})});
       const r=JSON.parse(stdout);
       if(r.status!=='submitted'&&r.status!=='received')throw new Error(`Native delivery is ${r.status??'unconfirmed'}. Reference ${id}`);
       envelope.acknowledge();
@@ -423,7 +456,7 @@ export class NativeAgents {
   private async sendDesktopCreationScoped(sessionId:string,file:string) {
     await this.desktopConfig();
     assertProviderSetup(this.store);
-    const {stdout}=await exec(helper(),['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{env:claudeOwnerEnvironment(),timeout:30000,maxBuffer:1024*1024});
+    const {stdout}=await runHelper(['--config',this.configPath,'send-claude','--session',sessionId,'--sender','FarFromDesk owner-requested session setup','--file',file],{env:claudeOwnerEnvironment(),timeout:30000,maxBuffer:1024*1024});
     const receipt=JSON.parse(stdout);
     if(receipt.status!=='submitted'&&receipt.status!=='received')throw new Error('Desktop creation submission could not be confirmed. Do not resubmit.');
   }

@@ -3,7 +3,9 @@ import {join} from 'node:path';
 import {execFileSync,spawn} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import type {Session} from './session-catalog.js';
-import {cursorConversationDb,cursorOwnerHome,cursorProjectsDir,cursorProjectPath} from './cursor-paths.js';
+import {cursorAppBinary,cursorConversationDb,cursorOwnerHome,cursorProjectsDir,cursorProjectPath,cursorRunning} from './cursor-paths.js';
+import {windowsShellOpen} from './open-file.js';
+import {computerName} from './platform.js';
 
 /**
  * Cursor's agent runs inside the app, and the app is reachable from outside through exactly one
@@ -182,6 +184,9 @@ export function cursorSessions(env:NodeJS.ProcessEnv=process.env):Session[] {
 }
 
 function openUrl(url:string):Promise<void> {
+  // explorer.exe exits 1 whether or not it worked, so Windows goes through ShellExecute instead,
+  // which does report a missing cursor:// handler.
+  if(process.platform==='win32')return windowsShellOpen(url).catch(error=>{throw new Error(`Cursor could not be opened: ${error instanceof Error?error.message:String(error)}`);});
   return new Promise((resolve,reject)=>{
     const command=process.platform==='darwin'?'open':process.platform==='win32'?'explorer':'xdg-open';
     const child=spawn(command,[url],{stdio:'ignore',detached:false});
@@ -193,25 +198,37 @@ function openUrl(url:string):Promise<void> {
 function sleep(ms:number):Promise<void>{return new Promise((resolve)=>setTimeout(resolve,ms));}
 
 /** The app's prefill needs Cursor running, so a closed Cursor is opened first instead of the prompt being lost. */
-async function openInCursor(url:string):Promise<void> {
-  const running=()=>{try{execFileSync('/usr/bin/pgrep',['-xq','Cursor']);return true;}catch{return false;}};
-  if(process.platform==='darwin'&&!process.env.NODE_TEST_CONTEXT&&!running()){
-    await new Promise<void>(resolve=>spawn('/usr/bin/open',['-a','Cursor'],{stdio:'ignore'}).on('close',()=>resolve()).on('error',()=>resolve()));
-    for(let i=0;i<30&&!running();i++)await sleep(500);
-    await sleep(5000); // its window restores a few seconds after the process starts
+export async function openInCursor(url:string,deps:{platform?:NodeJS.Platform;running?:()=>boolean;launch?:()=>Promise<void>;open?:(url:string)=>Promise<void>;wait?:(ms:number)=>Promise<void>;testing?:boolean}={}):Promise<void> {
+  const platform=deps.platform??process.platform,running=deps.running??(()=>cursorRunning(platform)),wait=deps.wait??sleep;
+  const launch=deps.launch??(()=>platform==='win32'
+    // ShellExecute starts the GUI app normally; a hidden spawn would pass SW_HIDE on to its first window.
+    ?windowsShellOpen(cursorAppBinary(process.env,platform)).catch(()=>{})
+    :new Promise<void>(resolve=>spawn('/usr/bin/open',['-a','Cursor'],{stdio:'ignore'}).on('close',()=>resolve()).on('error',()=>resolve())));
+  const testing=deps.testing??!!process.env.NODE_TEST_CONTEXT;
+  if((platform==='darwin'||platform==='win32')&&!testing&&!running()){
+    await launch();
+    for(let i=0;i<30&&!running();i++)await wait(500);
+    await wait(5000); // its window restores a few seconds after the process starts
   }
-  await openUrl(url);
+  await (deps.open??openUrl)(url);
 }
 
 /** What a Cursor coordinator needs and the owner can fix: the desktop app alone cannot keep one chat. */
-export const CURSOR_CLI_MISSING='Cursor coordinators need the Cursor command-line agent, signed in. The Cursor desktop app alone opens a new chat for every message. In Terminal run: curl https://cursor.com/install -fsS | bash, then cursor-agent login. Then create the coordinator again';
+export const cursorCliMissing=(platform:NodeJS.Platform=process.platform)=>platform==='win32'
+  ?'Cursor coordinators need the Cursor command-line agent, signed in. The Cursor desktop app alone opens a new chat for every message. Install the Cursor CLI for Windows from https://cursor.com/cli, then run cursor-agent login in a terminal. Then create the coordinator again'
+  :'Cursor coordinators need the Cursor command-line agent, signed in. The Cursor desktop app alone opens a new chat for every message. In Terminal run: curl https://cursor.com/install -fsS | bash, then cursor-agent login. Then create the coordinator again';
+export const CURSOR_CLI_MISSING=cursorCliMissing();
 
 /** Cursor's own command-line agent, when it is installed and signed in in the owner's home. */
 export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefined {
-  const home=cursorOwnerHome(env),bin=env.CURSOR_AGENT_BIN?.trim()||join(home,'.local','bin','cursor-agent');
-  if(process.env.NODE_TEST_CONTEXT&&!env.CURSOR_AGENT_BIN||!existsSync(bin))return;
+  const home=cursorOwnerHome(env);
+  // Windows can only run an .exe here: a .cmd shim would need cmd.exe, which must never get the prompt.
+  const bin=env.CURSOR_AGENT_BIN?.trim()||(process.platform==='win32'
+    ?[join(home,'.local','bin','cursor-agent.exe'),join(env.LOCALAPPDATA?.trim()||join(home,'AppData','Local'),'cursor-agent','cursor-agent.exe')].find(p=>existsSync(p))??''
+    :join(home,'.local','bin','cursor-agent'));
+  if(process.env.NODE_TEST_CONTEXT&&!env.CURSOR_AGENT_BIN||!bin||!existsSync(bin))return;
   try{
-    const out=execFileSync(bin,['status'],{env:{...env,HOME:home},timeout:15000,encoding:'utf8'});
+    const out=execFileSync(bin,['status'],{env:{...env,HOME:home},timeout:15000,encoding:'utf8',windowsHide:true});
     return /not logged in/i.test(out)?undefined:bin;
   }catch{return;}
 }
@@ -225,7 +242,7 @@ export function findCursorCli(env:NodeJS.ProcessEnv=process.env):string|undefine
  */
 function runCursorCli(bin:string,prompt:string,cwd:string|undefined,timeoutMs:number,env:NodeJS.ProcessEnv,resume?:string):Promise<CursorTurnResult> {
   return new Promise((resolve,reject)=>{
-    const child=spawn(bin,['-p','--output-format','stream-json','--trust','--force',...(resume?['--resume',resume]:[]),...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe']});
+    const child=spawn(bin,['-p','--output-format','stream-json','--trust','--force',...(resume?['--resume',resume]:[]),...(cwd?['--workspace',cwd]:[]),prompt],{cwd,env:{...env,HOME:cursorOwnerHome(env)},stdio:['ignore','pipe','pipe'],windowsHide:true});
     let out='',err='';
     const timer=setTimeout(()=>{child.kill();reject(new Error('Cursor did not finish this turn in time.'));},timeoutMs);
     child.stdout.on('data',d=>{out+=d;});child.stderr.on('data',d=>{err+=d;});
@@ -274,7 +291,7 @@ export async function runCursorTurn(options:CursorTurnOptions):Promise<CursorTur
   while(Date.now()<deadline){
     await sleep(pollMs);
     // A prompt Cursor never took will not finish either: say so in minutes, not after the whole timeout.
-    if(!picked&&pickupMs<timeoutMs&&Date.now()-started>pickupMs)throw new Error('Cursor did not take the message. Bring a Cursor chat window up on the Mac and send it again.');
+    if(!picked&&pickupMs<timeoutMs&&Date.now()-started>pickupMs)throw new Error(`Cursor did not take the message. Bring a Cursor chat window up on the ${computerName()} and send it again.`);
     for(const entry of cursorTranscriptFiles(env)){
       // Cursor either appends to the chat that had focus or opens a new one, so both are candidates.
       if((seen.get(entry.file)??-1)>=entry.updatedAt)continue;

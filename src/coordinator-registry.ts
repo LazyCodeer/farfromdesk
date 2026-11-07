@@ -31,6 +31,17 @@ export class CoordinatorRegistry {
   entry(id:string){return this.entries().find(r=>r.bindingId===id);}
   isCoordinator(id:string){return !!this.entry(id);}
   bindingFor(b:Binding){const key=this.identity(b).key;return this.store.binding(this.entries().find(r=>r.key===key)?.bindingId??'');}
+  /**
+   * The owner chose the same coordinator again after its CLI account key changed (for example a
+   * proxy base URL added to Claude's settings). Moves its entry to the new identity, keeping its
+   * generation; refuses when another coordinator already holds that identity.
+   */
+  rekey(b:Binding) {
+    const entries=this.entries(),own=entries.find(r=>r.bindingId===b.id);if(!own)return;
+    const identity=this.identity(b);if(identity.key===own.key)return;
+    if(entries.some(r=>r.bindingId!==b.id&&r.key===identity.key))throw new Error('Another coordinator already uses this account. Select that one instead.');
+    this.store.set('coordinator-registry',JSON.stringify(entries.map(r=>r.bindingId===b.id?{...identity,bindingId:b.id,generation:own.generation}:r)));
+  }
   register(b:Binding) {
     const identity=this.identity(b),entries=this.entries(),old=entries.find(r=>r.key===identity.key);
     if(entries.some(r=>r.bindingId===b.id&&r.key!==identity.key))throw new Error('Coordinator account or runtime changed. Create or select a separate coordinator.');

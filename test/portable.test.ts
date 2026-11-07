@@ -86,3 +86,19 @@ test('public Claude SDK stops when the native session identity differs',async()=
   const session=new ClaudeSDKSession(process.execPath,'/project','exact',true,async()=>false,{},query);
   await assert.rejects(session.run('Request'),/different session identity/);assert.equal(closed,true);session.close();
 });
+
+// Three Windows helpers were once missing from the packaged backend (screen control, then
+// browser tabs), each failing only at first use in an installed app. Every native script the
+// backend names must be copied by the packaging step.
+test('every native helper script the backend names is packaged with it', async () => {
+  const { readdirSync, readFileSync, statSync } = await import('node:fs');
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const scripts = new Set(readdirSync(join(root, 'native')).filter(f => /\.(ps1|py)$/.test(f)));
+  const sources: string[] = [];
+  const walk = (dir: string) => { for (const f of readdirSync(dir)) { const p = join(dir, f); if (statSync(p).isDirectory()) walk(p); else if (p.endsWith('.ts')) sources.push(readFileSync(p, 'utf8')); } };
+  walk(join(root, 'src'));
+  const named = [...scripts].filter(s => sources.some(text => text.includes(s)));
+  const prepare = readFileSync(join(root, 'script', 'prepare_desktop_backend.mjs'), 'utf8');
+  assert.ok(named.includes('browser-windows.ps1') && named.includes('desktop_sync.py'), 'the scan sees the helpers');
+  assert.deepEqual(named.filter(s => !prepare.includes(s)), [], 'named in src but not packaged');
+});

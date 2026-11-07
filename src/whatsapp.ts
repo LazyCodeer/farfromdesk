@@ -1,4 +1,5 @@
 import {socialPreviewDeliveryState} from './social-preview.js';
+import {attachmentRefusal} from './attachment-errors.js';
 import { WhatsAppPolls } from './whatsapp-polls.js';
 import { ErrandOrder } from './errand-order.js';
 import {parseErrandChoice} from './errand-choice.js';
@@ -234,7 +235,7 @@ export class WhatsApp {
     const group=m.key.remoteJid===destination&&destination?.endsWith('@g.us');
     if((!self&&!group)||this.store.seen(id)||this.receiving.has(id))return;
     const msg=normalizeMessageContent(m.message),audio=msg?.audioMessage;
-    const media=msg?.imageMessage??msg?.documentMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
+    const media=msg?.imageMessage??msg?.documentMessage??msg?.videoMessage,kind:AttachmentKind=msg?.imageMessage?'image':'document';
     let text=msg?.conversation??msg?.extendedTextMessage?.text;
     if(!text&&!audio&&!media&&!msg?.pollUpdateMessage)return;
     // With a group selected, the self chat only accepts the /self escape back to it.
@@ -277,10 +278,8 @@ export class WhatsApp {
             this.router.receiveAttachment(incoming,file,target);
           }catch(e) {
             if(this.closed||!this.store.incomingOwnerCurrent())return;
-            const message=(e as Error).message;
-            const safe=/^(?:Use a simple|Unsupported|Attachment |Files must|Text files|Binary data|Invalid (?:PDF|PNG|JPEG|WebP|GIF|ZIP|gzip|executable|WebAssembly)|Expected a complete|The intended session|Choose an exact session|That quoted message|Session is missing|Two attachments|Incoming attachment)/;
-            const review='Send the task as a text or voice message first. Attachment task review is not available yet. Nothing was sent.';
-            this.store.output(undefined,message===review||safe.test(message)?message:'I couldn’t receive this attachment. Please resend a supported image or document. Documents support the WhatsApp ceiling of 2,097,152,000 bytes when disk space permits.',`media-error:${id}`,origin);
+            const refusal=attachmentRefusal(e);
+            this.store.output(undefined,refusal??'I couldn’t receive this attachment. Please resend a supported image or document. Documents support the WhatsApp ceiling of 2,097,152,000 bytes when disk space permits.',`media-error:${id}`,origin);
             this.store.remember(id);this.store.db.prepare("UPDATE media_inbox SET status='failed' WHERE id=?").run(id);
           }finally{if(!this.store.incomingOwnerCurrent())this.store.db.prepare("UPDATE media_inbox SET status='interrupted' WHERE id=? AND status='processing'").run(id);disposeIncoming(file);this.mediaControllers.delete(controller);}
           return;

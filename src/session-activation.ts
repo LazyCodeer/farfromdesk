@@ -4,6 +4,8 @@ import { realpathSync } from 'node:fs';
 import type { Session } from './session-catalog.js';
 import type { Store } from './store.js';
 import { probeDesktopApps } from './app-liveness.js';
+import { openWithShell, windowsClaudeDesktop, windowsCodexDesktop, type WindowsDesktopApp } from './desktop-apps.js';
+import { computerName } from './platform.js';
 
 const exec=promisify(execFile);
 export function codexDesktopUrl(id:string,wakeOnly=false) {
@@ -23,12 +25,32 @@ export function codexDesktopUrl(id:string,wakeOnly=false) {
 export function codexOpenArguments(wakeOnly:boolean,running:boolean,url:string) {
   return [...(wakeOnly&&running?['-g']:[]),'-b','com.openai.codex',url];
 }
+/**
+ * What opens a desktop app or one of its URLs on this OS. macOS asks LaunchServices for the
+ * app's bundle; Windows hands the URL (claude:, codex:) or the app's Start entry to the shell,
+ * which is how those apps register their links there. Anything else is refused plainly.
+ */
+export type DesktopOpen={kind:'mac';args:string[]}|{kind:'shell';target:string};
+export function desktopOpenPlan(app:'claude'|'codex',url:string|undefined,platform:NodeJS.Platform=process.platform,
+  windows:{claude?:WindowsDesktopApp;codex?:WindowsDesktopApp}={claude:windowsClaudeDesktop(),codex:windowsCodexDesktop()},running=false):DesktopOpen {
+  const name=app==='claude'?'Claude Desktop':'Codex Desktop';
+  if(platform==='darwin')return {kind:'mac',args:app==='codex'?codexOpenArguments(url?.includes('/wake/')===true,running,url!):['-b','com.anthropic.claudefordesktop',...(url?[url]:[])]};
+  if(platform!=='win32')throw new Error(`Opening ${name} automatically works on macOS and Windows only. Open it yourself on this ${computerName(platform)}.`);
+  const installed=windows[app];
+  if(!installed)throw new Error(`${name} is not installed on this PC. Install it from ${app==='claude'?'claude.ai/download':'the Microsoft Store (it is listed as ChatGPT)'}, sign in, then try again.`);
+  if(url)return {kind:'shell',target:url};
+  return {kind:'shell',target:installed.aumid?`shell:AppsFolder\\${installed.aumid}`:installed.executable!};
+}
+async function openDesktop(plan:DesktopOpen) {
+  if(plan.kind==='mac')await exec('/usr/bin/open',plan.args,{timeout:10000,maxBuffer:65536});
+  else await openWithShell(plan.target);
+}
 export async function openCodexDesktop(id:string,wakeOnly=false) {
   const url=codexDesktopUrl(id,wakeOnly);
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Codex Desktop from a test run.');
-  if(process.platform!=='darwin')throw new Error('Automatic Codex Desktop opening is not supported by this OS adapter.');
+  if(process.platform!=='darwin'&&process.platform!=='win32')throw new Error('Automatic Codex Desktop opening is not supported by this OS adapter.');
   const running=(await probeDesktopApps()).codex;
-  await exec('/usr/bin/open',codexOpenArguments(wakeOnly,running,url),{timeout:10000,maxBuffer:65536});
+  await openDesktop(desktopOpenPlan('codex',url,process.platform,undefined,running));
   if(running)return;
   // A closed app takes a moment to appear, and only a running Codex can process
   // the wake route. Wait briefly, then say what is actually true.
@@ -41,9 +63,9 @@ export async function openCodexDesktop(id:string,wakeOnly=false) {
 /** Open the exact native Desktop identity without creating a CLI runtime. */
 export async function openClaudeDesktop(session:Session) {
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
-  if(process.platform!=='darwin')throw new Error('Automatic Claude Desktop reopening is not supported by this OS adapter.');
+  if(process.platform!=='darwin'&&process.platform!=='win32')throw new Error('Automatic Claude Desktop reopening is not supported by this OS adapter.');
   if(!/^local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.desktopId??''))throw new Error('An exact native Desktop ID is required to reopen this chat.');
-  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://claude.ai/epitaxy/${session.desktopId}`],{timeout:10000,maxBuffer:65536});
+  await openDesktop(desktopOpenPlan('claude',`claude://claude.ai/epitaxy/${session.desktopId}`));
 }
 
 // Opens Claude's new-session page on a folder with a prefilled prompt. The owner presses Send,
@@ -51,12 +73,12 @@ export async function openClaudeDesktop(session:Session) {
 export async function openClaudeNewSession(folder:string,prompt:string) {
   // Tests must never open the owner's real Claude app.
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
-  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://code/new?${new URLSearchParams({folder,q:prompt})}`],{timeout:10000,maxBuffer:65536});
+  await openDesktop(desktopOpenPlan('claude',`claude://code/new?${new URLSearchParams({folder,q:prompt})}`));
 }
 // Brings Claude to the front without opening another new-session page (that could start a second session).
 export async function focusClaudeDesktop() {
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
-  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop'],{timeout:10000,maxBuffer:65536});
+  await openDesktop(desktopOpenPlan('claude',undefined));
 }
 export const CLAUDE_DESKTOP_READY_TIMEOUT_MS=180_000;
 /** Readiness failed before a native message was submitted. The router can report

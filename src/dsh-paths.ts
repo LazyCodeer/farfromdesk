@@ -1,6 +1,6 @@
 import {existsSync} from 'node:fs';
 import {homedir,userInfo} from 'node:os';
-import {join} from 'node:path';
+import {join,win32} from 'node:path';
 
 /**
  * DeepSeek Harness is installed and signed in by the owner in their own home. The Local app runs
@@ -27,11 +27,19 @@ export const dshCredentialsPath=(env:NodeJS.ProcessEnv=process.env):string=>join
  * absolute locations are tried before the bare name, and `exists` is injectable so a test can say
  * what is installed. A broken symlink counts as missing, which is the honest answer.
  */
-export const dshBinary=(env:NodeJS.ProcessEnv=process.env,exists:(path:string)=>boolean=existsSync):string=>{
+export const dshBinary=(env:NodeJS.ProcessEnv=process.env,exists:(path:string)=>boolean=existsSync,platform:NodeJS.Platform=process.platform):string=>{
   const configured=env.DSH_BIN?.trim()||env.WSB_DSH_BIN?.trim();
   if(configured)return configured;
   const home=dshOwnerHome(env);
-  const names=process.platform==='win32'?['dsh.exe','dsh.cmd','dsh']:['dsh'];
+  if(platform==='win32'){
+    // The DeepSeek Harness installer is per-user under %LOCALAPPDATA%\Programs; its launcher is a
+    // .cmd, which nativeCommand turns into a direct call before anything runs it.
+    const local=env.LOCALAPPDATA?.trim()||win32.join(home,'AppData','Local'),roaming=env.APPDATA?.trim()||win32.join(home,'AppData','Roaming');
+    const winRoots=[win32.join(home,'.local','bin'),win32.join(home,'.bun','bin'),win32.join(roaming,'npm'),win32.join(local,'Programs','DeepSeek Harness','resources','runtime','cli','bin')];
+    for(const root of winRoots)for(const name of ['dsh.exe','dsh.cmd']){const candidate=win32.join(root,name);if(exists(candidate))return candidate;}
+    return 'dsh';
+  }
+  const names=['dsh'];
   const roots=[
     join(home,'.local','bin'),
     join(home,'.bun','bin'),

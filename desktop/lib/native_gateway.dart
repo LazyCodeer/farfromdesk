@@ -21,6 +21,7 @@ import 'local_backend_environment.dart';
 import 'local_state_guard.dart';
 import 'social_meta_client.dart';
 import 'startup_wait.dart';
+import 'windows_process_probe.dart';
 
 export 'local_state_guard.dart' show LocalStateUnsafe;
 export 'startup_wait.dart' show BackendNotReady, PortHolder, PortState;
@@ -93,7 +94,10 @@ class NativeGateway extends Gateway {
   @override
   String get platform => Platform.operatingSystem;
   @override
-  bool get localEmail => _isolatedLocal && Platform.isMacOS;
+  // Windows keeps the passwords in Credential Manager and asks for each send in a
+  // native window (native/local-mail-*.ps1), like the Keychain and alert on a Mac.
+  bool get localEmail =>
+      _isolatedLocal && (Platform.isMacOS || Platform.isWindows);
   @override
   String get computerName => Platform.localHostname;
   static String stateDirectory() {
@@ -211,7 +215,8 @@ class NativeGateway extends Gateway {
   }
 
   @override
-  bool get canShareSocialNatively => Platform.isMacOS;
+  // The Windows runner opens the system Share window (DataTransferManager).
+  bool get canShareSocialNatively => Platform.isMacOS || Platform.isWindows;
 
   @override
   Future<void> openSocialPlatform(String platform, String caption) =>
@@ -708,12 +713,16 @@ class NativeGateway extends Gateway {
           'FFD_MAIL_KEYCHAIN_HELPER': p.join(
             root,
             'native',
-            'local-mail-keychain',
+            Platform.isWindows
+                ? 'local-mail-credentials.ps1'
+                : 'local-mail-keychain',
           ),
           'FFD_MAIL_APPROVAL_HELPER': p.join(
             root,
             'native',
-            'local-mail-approval',
+            Platform.isWindows
+                ? 'local-mail-approval.ps1'
+                : 'local-mail-approval',
           ),
         },
         'WSB_STATE_DIR': state,
@@ -786,15 +795,43 @@ class NativeGateway extends Gateway {
   /// else on our port never is. Matching the whole bundle path is what the
   /// installer uses too, and it covers both the app binary and the backend node
   /// process inside the same bundle, which a path fragment like "MacOS" does not.
+  /// On Windows the install folder holds the app exe and backend\runtime\node.exe.
   String get _bundle {
+    if (Platform.isWindows) return p.dirname(Platform.resolvedExecutable);
     return p.dirname(p.dirname(p.dirname(Platform.resolvedExecutable)));
   }
 
-  bool _isOurs(String command) => command.trim().startsWith(_bundle);
+  /// On Windows [command] is the process's executable path (see [_commandOf]).
+  bool _isOurs(String command) => Platform.isWindows
+      ? windowsPathWithin(command, _bundle)
+      : command.trim().startsWith(_bundle);
+
+  final _windowsProbe = WindowsProcessProbe();
+
+  Future<PortHolder?> _windowsPortHolder() async {
+    final pid = await _windowsProbe.listeningPid(port);
+    if (pid == null) return null;
+    final path = await _windowsProbe.executablePath(pid);
+    return PortHolder(pid, isOurs: path != null && _isOurs(path));
+  }
+
+  /// Windows has no lsof for the SQLite folder lock, so this looks for this
+  /// install's own backend (backend\runtime\node.exe) running without holding
+  /// the port: that is the copy that took the data folder and never bound.
+  Future<PortHolder?> _windowsLockHolder() async {
+    // Only asked while the port is free, so any such node.exe is not the listener.
+    final nodes = await _windowsProbe.processesNamed('node');
+    for (final entry in nodes.entries) {
+      if (!_isOurs(entry.value)) continue;
+      return PortHolder(entry.key, isOurs: true, onPort: false);
+    }
+    return null;
+  }
 
   /// Names the process holding the port, and says whether it is this app's own
   /// backend, which is the only process the UI may offer to end.
   Future<PortHolder?> _portHolder() async {
+    if (Platform.isWindows) return _windowsPortHolder();
     if (!Platform.isMacOS) return null;
     try {
       final found = await Process.run('/usr/sbin/lsof', [
@@ -822,6 +859,7 @@ class NativeGateway extends Gateway {
   /// this app's own backend. A copy that wedged before binding its port answers
   /// nothing, so the folder lock is the only thing that gives it away.
   Future<PortHolder?> _lockHolder() async {
+    if (Platform.isWindows) return _windowsLockHolder();
     if (!Platform.isMacOS) return null;
     try {
       final found = await Process.run('/usr/sbin/lsof', [
@@ -866,6 +904,7 @@ class NativeGateway extends Gateway {
   }
 
   Future<String?> _commandOf(int pid) async {
+    if (Platform.isWindows) return _windowsProbe.executablePath(pid);
     try {
       final command = await Process.run('/bin/ps', [
         '-p',

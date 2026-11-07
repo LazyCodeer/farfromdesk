@@ -33,6 +33,9 @@ with tempfile.TemporaryDirectory(prefix='ffd-installer-') as temp:
             for name in ['farfromdesk.exe', 'backend/runtime/node.exe', 'backend/dist/main.js',
                          # Desktop control and phone screen control run these; without them both fail at first use.
                          'backend/native/desktop-windows.ps1', 'backend/native/remote-windows.ps1',
+                         'backend/native/browser-windows.ps1', 'backend/native/app-tools-windows.ps1',
+                         'backend/native/desktop_sync.py', 'backend/native/codex_delivery.py',
+                         'backend/native/ffd-screen-service.exe', 'backend/native/screen-service-install.ps1',
                          'speech/ffmpeg.exe', 'speech/whisper-cli.exe', 'speech/manifest.json']:
                 assert (target / name).is_file(), name
             assert not (target / 'speech/ggml-base.bin').exists(), 'Model belongs in first-use cache'

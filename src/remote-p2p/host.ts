@@ -205,7 +205,7 @@ export class P2PHost{
   return this.serial(s,async j=>{
    // The phone needs the lock state before it shows the type field, not 2s later.
    const locked=await j.backend.ready(true).catch(()=>false)==='locked';
-   const f=await this.capture(j);if(!this.live(s,j.epoch))return;s.locked=locked;this.send(s,{t:'auth-ok',locked:s.locked,width:f.width,height:f.height,resume:secret,...j.backend.desktops?{desktops:true as const}:{},...j.backend.os?{os:j.backend.os}:{},...this.opts.transcriber?{voice:this.opts.transcriber.engine}:{},idle:MAC_IDLE_MS});await this.sendFrame(s,f,j.epoch);});
+   const f=await this.capture(j);if(!this.live(s,j.epoch))return;s.locked=locked;this.send(s,{t:'auth-ok',locked:s.locked,width:f.width,height:f.height,resume:secret,...j.backend.desktops?{desktops:true as const}:{},...j.backend.os?{os:j.backend.os}:{},...j.backend.lockScreenInput?{unlock:true as const}:{},...this.opts.transcriber?{voice:this.opts.transcriber.engine}:{},idle:MAC_IDLE_MS});await this.sendFrame(s,f,j.epoch);});
  }
  /** A single failed screenshot is usually transient; retry briefly before giving up. */
  private async capture(j:Job){

@@ -115,6 +115,15 @@ test('scheduled session is bound to exact explicit session and cannot dispatch a
   }finally{f.close();}
 });
 
+test('scheduled session work accepts the name the owner sees',async()=>{
+  const f=fixture();try{
+    const {binding}=f.store.register('cloud-srv','codex','22222222-2222-4222-8222-222222222222','/tmp/cloud');f.store.set(`name:${binding.id}`,'FarFromDesk cloud server');
+    f.setDecision({action:'session',text:'run the tests',target:'cloud-srv'});
+    await f.send('1','At 6 PM ask the FarFromDesk cloud server session to run the tests');
+    assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as {text:string}|undefined)?.text,'run the tests');
+  }finally{f.close();}
+});
+
 test('a revoked inbound context settles a scheduled action without sending its rejection notice',async()=>{
   const f=fixture();try{
     f.store.register('site','codex','11111111-1111-4111-8111-111111111111','/tmp/example');
@@ -459,6 +468,10 @@ test('natural reminder wording is accepted with the owner text kept exactly', as
     assert.deepEqual(rows.map(r => [r.text, r.date, r.time]), [['meta hackathon submission', '2026-10-30', '10:00'], ['call mom', '2026-10-30', '17:00']]);
     f.setDecision({ text: 'buy 2 milk', time: '02:00' });
     await assert.rejects(f.send('3', 'remind me to buy 2 milk'), /time/i, 'a bare number inside the reminder is not a time');
+    // Sim, 7 Nov 2026: no "to", and a trailing aside.
+    f.setDecision({ text: 'school pickup', date: '2026-10-30', time: '15:15' });
+    await f.send('4', 'Remind me school pickup tomorrow at 3:15pm pls, got to run 🏃');
+    assert.equal((f.store.db.prepare("SELECT text FROM schedules WHERE time='15:15'").get() as { text: string } | undefined)?.text, 'school pickup');
   } finally { f.close(); }
 });
 
@@ -522,5 +535,14 @@ test('brain-scheduled session work is checked, held for review when reviews are 
     f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
     const job=f.store.db.prepare('SELECT binding_id,body FROM inbox').get() as {binding_id:string;body:string};
     assert.equal(job.binding_id,binding.id);assert.match(job.body,/check PR 20/);
+  }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: "What reminders have I got?" was taken as a bad schedule.
+test('owners can ask for their reminder list in their own words',async()=>{
+  const f=fixture();try{
+    for(const [i,t] of ['What reminders have I got?','what reminders do I have','show me my reminders','any reminders today?'].entries()){
+      await f.send(`l${i}`,t);assert.doesNotMatch(String((f.store.db.prepare('SELECT body FROM outbox ORDER BY rowid DESC LIMIT 1').get() as {body:string}|undefined)?.body),/could not confirm|resend|^undefined$/i,t);
+    }
   }finally{f.close();}
 });

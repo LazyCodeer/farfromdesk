@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import 'bridge_theme.dart';
@@ -134,8 +136,8 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
                   onChanged: (_) => setState(() {}),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Shared with Brain settings and saved on this Mac. Never sent to the coding session. Meta usage may be billed.',
+                Text(
+                  'Shared with Brain settings and saved on this ${Platform.isMacOS ? 'Mac' : Platform.isWindows ? 'PC' : 'computer'}. Never sent to the coding session. Meta usage may be billed.',
                   style: TextStyle(color: muted, fontSize: 12),
                 ),
               ],

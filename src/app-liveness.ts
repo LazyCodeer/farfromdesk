@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { probeWindowsApps, probeWindowsAppsSync } from './desktop-apps.js';
 
 const exec=promisify(execFile);
 
@@ -15,6 +16,9 @@ const CLAUDE_APPS=['com.anthropic.claudefordesktop','com.anthropic.claude'];
  * Any failure reports `true`, so the bridge never claims an app is closed when it cannot tell.
  */
 export async function probeDesktopApps():Promise<{codex:boolean;claude:boolean}> {
+  // Windows: filtered `tasklist /apps`, matched by package identity, not by image name alone:
+  // Claude Code's CLI is also claude.exe, and Codex Desktop runs as ChatGPT.exe.
+  if(process.platform==='win32')return probeWindowsApps().catch(()=>({codex:true,claude:true}));
   if(process.platform!=='darwin')return {codex:true,claude:true};
   try {
     const {stdout}=await exec('/usr/bin/lsappinfo',['list'],{timeout:2500,maxBuffer:1024*1024});
@@ -31,6 +35,8 @@ export async function probeDesktopApps():Promise<{codex:boolean;claude:boolean}>
  * One 30ms `lsappinfo` per owner message, so this never runs on a timer.
  */
 export function probeDesktopAppsNow():{codex:boolean;claude:boolean} {
+  // Windows answers from the newest background probe: a synchronous tasklist can take seconds.
+  if(process.platform==='win32')return probeWindowsAppsSync();
   if(process.platform!=='darwin')return {codex:true,claude:true};
   try {
     const stdout=execFileSync('/usr/bin/lsappinfo',['list'],{timeout:2500,maxBuffer:1024*1024,encoding:'utf8'});

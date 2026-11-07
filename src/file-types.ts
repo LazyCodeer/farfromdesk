@@ -9,6 +9,7 @@ export const fileTypes: Record<string, string> = {
   html:'text/html', pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp', gif:'image/gif',
   txt:'text/plain', md:'text/markdown', csv:'text/csv', json:'application/json', xml:'application/xml', yaml:'application/yaml', yml:'application/yaml',
   log:'text/plain', js:'text/javascript', ts:'text/plain', tsx:'text/plain', jsx:'text/plain', css:'text/css', py:'text/plain', sh:'text/plain', sql:'text/plain', toml:'text/plain',
+  mp4:'video/mp4', m4v:'video/mp4', mov:'video/quicktime', webm:'video/webm', '3gp':'video/3gpp',
   zip:'application/zip', tar:'application/x-tar', gz:'application/gzip', tgz:'application/gzip', '7z':'application/x-7z-compressed',
   docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   apk:'application/vnd.android.package-archive', aab:'application/octet-stream', ipa:'application/octet-stream', dmg:'application/x-apple-diskimage',
@@ -22,7 +23,7 @@ export function safeFilename(filename: unknown): string {
 }
 export function fileType(filename:unknown) {
   const name=safeFilename(filename),ext=name.split('.').pop()!.toLowerCase(),mime=fileTypes[ext];
-  if(!mime)throw new Error('Unsupported file type. Use a supported document, source file, image, archive or build artifact.');
+  if(!mime)throw new Error('Unsupported file type. Use a supported document, source file, image, video, archive or build artifact.');
   return {filename:name,ext,mime};
 }
 export function validateFileHeader(filename:unknown,data:Buffer) {
@@ -37,6 +38,8 @@ export function validateFileHeader(filename:unknown,data:Buffer) {
   if(['gz','tgz'].includes(ext)&&!prefix([31,139]))throw new Error('Invalid gzip signature.');
   if(ext==='exe'&&!prefix('MZ'))throw new Error('Invalid executable signature.');
   if(ext==='wasm'&&!prefix([0,97,115,109]))throw new Error('Invalid WebAssembly signature.');
+  if(['mp4','m4v','mov','3gp'].includes(ext)&&data.toString('ascii',4,8)!=='ftyp'&&!['moov','mdat','wide','free'].includes(data.toString('ascii',4,8)))throw new Error('Invalid video signature.');
+  if(ext==='webm'&&!prefix([26,69,223,163]))throw new Error('Invalid video signature.');
   return fileType(filename);
 }
 export function validateFile(filename:unknown,data:Buffer,limit=MAX_FILE_BYTES) {

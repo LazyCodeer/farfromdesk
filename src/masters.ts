@@ -24,9 +24,10 @@ import { ClaudeSession } from './claude-session.js';
 import { DesktopStarts } from './desktop-start.js';
 import { executionMode, type ExecutionMode } from './desktop-claude.js';
 import { masterPolicy } from './master-policy.js';
-import { roleConfig, rolePointer, coordinatorRoleStatus } from './roles.js';
+import { roleConfig, rolePointer, coordinatorRoleStatus, ownInstructionFile } from './roles.js';
 import {assertProviderSetup,withProviderSetup} from './provider-setup-barrier.js';
-import { portableAgents, requirePortableCLI, nativeCommand } from './platform.js';
+import { portableAgents, desktopSessions, requirePortableCLI, nativeCommand } from './platform.js';
+import { windowsClaudeDesktop, windowsCodexDesktop } from './desktop-apps.js';
 import { ClaudeSDKSession } from './claude-sdk-session.js';
 import { Connections, usableCLIConnection } from './connections.js';
 import { WorkspaceScanner,deniedMessage,type ResolvedWorkspaces } from './workspace-scanner.js';
@@ -40,9 +41,17 @@ import { dshSettings, dshStatus, credentialHint, keyEnvironment, writePatch, rea
 import { dshHome } from './dsh-paths.js';
 import { runCursorTurn, findCursorCli, CURSOR_CLI_MISSING } from './cursor-desktop.js';
 import { cursorAppBinary } from './cursor-paths.js';
+import { computerName } from './platform.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
+/** True only for a real file inside this binding's own attachment folder (links resolved first). */
+export function ownAttachment(bindingId:string,path:unknown,root:string=stateDir):boolean {
+  if(typeof path!=='string'||!path)return false;
+  try{const base=realpathSync(join(root,'incoming',bindingId)),real=realpathSync(resolve(path));return real.startsWith(base+sep)&&statSync(real).isFile();}catch{return false;}
+}
+/** The coordinator's own bridge tools: pre-allowed on the CLI route (--allowedTools) and the SDK route alike. */
+export const coordinatorBridgeTools=['session_research','master_reach','master_reminder','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`);
 // Muse has one connection kind and no app, so a requested Desktop mode is refused rather than coerced.
 const masterMode=(provider:Provider,value:unknown):ExecutionMode=>{
   if(provider==='muse'){if(value!==undefined&&value!=='cli')throw new Error('Muse Code has only a CLI connection. Choose CLI.');return 'cli';}
@@ -55,10 +64,12 @@ const museTurnTimeoutMs=20*60*1000;
 const deepseekTurnTimeoutMs=20*60*1000;
 const cursorTurnTimeoutMs=10*60*1000;
 const quote=(s:string)=>`'${s.replaceAll("'","'\\''")}'`;
-export function codexDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
+export function codexDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync,platform:NodeJS.Platform=process.platform) {
+  if(platform==='win32')return windowsCodexDesktop()!==undefined;
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Codex.app'))||exists(join(root,'ChatGPT.app/Contents/Frameworks/Codex Framework.framework')));
 }
-export function claudeDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync) {
+export function claudeDesktopInstalled(home=cursorOwnerHome(),exists:(path:string)=>boolean=existsSync,platform:NodeJS.Platform=process.platform) {
+  if(platform==='win32')return windowsClaudeDesktop()!==undefined;
   return ['/Applications',join(home,'Applications')].some(root=>exists(join(root,'Claude.app')));
 }
 export function masterName(provider:Provider,mode:ExecutionMode,value:unknown) {
@@ -132,6 +143,13 @@ export class Masters {
   registry:CoordinatorRegistry;
   runtimes=new Map<string,CodexSession>();
   claudeRuntimes=new Map<string,ClaudeSession|ClaudeSDKSession>();
+  /**
+   * FarFromDesk answers this session's permission questions itself (the SDK's canUseTool, see
+   * claudeWorker), so the provider PermissionRequest hook in the owner's Claude settings must
+   * defer instead of asking the owner a second time. On Windows every coordinator runs this way,
+   * and each tool call posted a duplicate prompt to the chat (live, 6 Nov 2026).
+   */
+  drivesPermissions(bindingId:string){return this.claudeRuntimes.get(bindingId) instanceof ClaudeSDKSession;}
   runtimeRoles=new Map<string,string>();
   desktop:DesktopStarts;
   private setupContext=new AsyncLocalStorage<{id:string;connection:string}>();
@@ -194,7 +212,7 @@ export class Masters {
   private async deepseekPlatform() {
     const platform:any={provider:'deepseek',executionMode:'cli',label:'DeepSeek Harness',available:false};
     if(this.router.native.discoveryBlocked?.('deepseek'))return this.platforms.find(p=>p.provider==='deepseek')??{...platform,reason:'File access denied · click Detect apps to retry'};
-    try {const command=nativeCommand(dshBinary(),['--version']);await exec(command.binary,command.args,{timeout:15000,maxBuffer:10000,windowsHide:true});platform.available=true;}
+    try {const command=nativeCommand(dshBinary(),['--version'],process.platform,process.env,undefined,true);await exec(command.binary,command.args,{timeout:15000,maxBuffer:10000,windowsHide:true,...(command.env?{env:{...process.env,...command.env}}:{})});platform.available=true;}
     catch{platform.reason='DeepSeek Harness CLI unavailable. Install it, then try again.';}
     return platform;
   }
@@ -241,7 +259,7 @@ export class Masters {
     for(const platform of platforms)platform.sessions=rows(platform.provider==='claude'?claude.filter(s=>s.executionMode!=='desktop'):platform.provider==='muse'?muse:platform.provider==='deepseek'?deepseek:platform.provider==='cursor'?cursor:codex);
     platforms.push({provider:'claude',executionMode:'desktop',label:'Claude Desktop',available:claudeDesktopInstalled()||claude.some(s=>s.executionMode==='desktop'),sessions:rows(claude.filter(s=>s.executionMode==='desktop')),reason:'New coordinators open directly in Claude Desktop. Existing chats still require verified session discovery.'});
     platforms.push({provider:'codex',executionMode:'desktop',label:'Codex Desktop',available:platforms.find(p=>p.provider==='codex')?.available&&codexDesktopInstalled(),sessions:rows(codex),reason:'Requires Codex Desktop and its local adapter. Desktop and CLI share local Codex history; new chats use the native app-server.'});
-    if(portableAgents)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
+    if(!desktopSessions)for(const platform of platforms)if(platform.executionMode==='desktop'){platform.available=false;platform.sessions=[];platform.reason='Desktop delivery is not supported by this adapter. Choose an exact saved CLI session.';}
     await Promise.all(platforms.map(async platform=>{
       const {accountKey,...connection}=await this.connections.read(platform.provider,platform.executionMode,fresh);
       platform.connection=connection;
@@ -445,7 +463,9 @@ export class Masters {
     try {
       const session=provider==='claude'&&mode==='desktop'?await this.desktop.parent(sessionId):(await this.catalog(provider,true)).find(s=>s.id===sessionId&&(provider==='codex'||(s.executionMode??'cli')===mode));
       if(!session?.cwd||(!(provider==='claude'&&mode==='desktop')&&session.available!==true))throw new Error('This saved session is not reachable. Open it in its native app or CLI, then refresh.');
-      if(inProject(session.cwd))throw new Error('This chat works in a project folder, so it cannot be your proxy. Choose Create new proxy chat instead, and keep this chat as a worker.');
+      // Re-choosing an existing coordinator confirms it again; it was accepted when it was created.
+      const existingCoordinator=this.store.bindings().some(x=>x.provider===provider&&x.native_id===session.id&&this.registry.isCoordinator(x.id));
+      if(!existingCoordinator&&inProject(session.cwd))throw new Error('This chat works in a project folder, so it cannot be your proxy. Choose Create new proxy chat instead, and keep this chat as a worker.');
       if(!(provider==='claude'&&mode==='desktop'))await this.router.native.validate(provider,session.id,session.cwd);
       let b=this.store.bindings().find(b=>b.provider===provider&&b.native_id===session.id);
       if(b&&realpathSync(b.cwd)!==realpathSync(session.cwd))throw new Error('Selected project differs from the registered binding.');
@@ -454,12 +474,14 @@ export class Masters {
       const managed=mode==='cli'&&(provider==='codex'||portableAgents);
       const route=await this.connections.prepare({provider,cwd:session.cwd},mode,managed,session.accountScope,connectionRevision);
       const priorRoute=b?this.connections.route(b):undefined;
-      if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountKey!==route.accountKey||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
-      if(b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
+      if(b&&this.registry.isCoordinator(b.id)&&priorRoute&&(priorRoute.executionMode!==route.executionMode||priorRoute.profileId!==route.profileId||priorRoute.accountScope!==route.accountScope))throw new Error('This coordinator belongs to another connection identity. Select a separate exact native session.');
+      const rekey=!!(b&&this.registry.isCoordinator(b.id)&&priorRoute&&priorRoute.accountKey!==route.accountKey);
+      if(rekey&&this.store.unfinished(b!.id).length)throw new Error('This coordinator is still running a request. Wait until it finishes, then choose it again.');
+      if(!rekey&&b&&priorRoute&&JSON.stringify(priorRoute)!==JSON.stringify(route)&&this.store.pendingJobs().some(j=>j.binding_id===b!.id))throw new Error('This session has unfinished requests. Close or finish them before changing its platform or account.');
       assertProviderSetup(this.store);this.setAside();
       if(!b){const r=this.store.register(`selected-master-${operationId.slice(0,8)}`,provider,session.id,session.cwd);b=r.binding;saveBindingCredentials(b,r.token);}
       this.stopWorker(b.id);this.store.set(`execution-mode:${b.id}`,mode);
-      this.connections.save(b,route);
+      this.connections.save(b,route);if(rekey)this.registry.rekey(b);
       if(mode==='cli'&&(provider==='codex'||portableAgents))this.store.set(`managed-${provider}:${b.id}`,'true');
       this.saveOperation({id:operationId,provider,executionMode:mode,selectedSessionId:session.id,bindingId:b.id,nativeId:b.native_id,cwd:b.cwd,status:'creating'});
       this.activate(b,operationId);this.store.set(`name:${b.id}`,session.name);
@@ -538,7 +560,7 @@ export class Masters {
     // owner chose a real project and kept trust on. The private coordinator folder has none to load.
     if(provider==='muse')this.store.set(`muse-trust:${b.id}`,this.operation()?.trustWorkspace===true?'true':'false');
     // Muse runs headless with no bridge tools, so its finished answer is the reply the bridge delivers.
-    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?'Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run, except the Mac app command each request envelope gives under macApps.':'Use the session_bridge MCP tools for coordination and replies.';
+    const tools=mode==='desktop'?`Use the local bridge CLI for coordination: ${scopedBridgeCommand(process.execPath,join(root,'dist/cli.js'),stateDir,new URL(baseUrl).port)} master --binding ${quote(b.alias)}. Incoming requests include the exact reply command.`:(provider==='muse'||provider==='deepseek'||provider==='cursor')?`Answer in your final message; FarFromDesk delivers that answer to the owner. Coordination tools are not available in this run, except the ${computerName()} app command each request envelope gives under macApps.`:'Use the session_bridge MCP tools for coordination and replies.';
     // Support files are written once and may be auto-loaded beside the provider instructions,
     // so they point to the versioned role instead of carrying a copy that would go stale.
     // A coordinator in its own home folder reads the owner's other folders only through native permission prompts.
@@ -575,7 +597,7 @@ export class Masters {
       const cli=findCursorCli();
       if(!cli)throw new Error(CURSOR_CLI_MISSING+'.');
       const ready=await runCursorTurn({prompt:`${instruction}\n\nReturn exactly READY without using tools. Wait for the owner's first message.`,timeoutMs:cursorTurnTimeoutMs,cli,cwd});
-      if(!ready.sessionId)throw new Error('Cursor did not return a chat id. Check that cursor-agent works in Terminal, then create the coordinator again.');
+      if(!ready.sessionId)throw new Error(`Cursor did not return a chat id. Check that cursor-agent works in ${process.platform==='win32'?'a terminal':'Terminal'}, then create the coordinator again.`);
       this.store.set(`cursor-chat:${b.id}`,ready.sessionId);
       this.saveOperation({...this.operation(),nativeId:b.native_id,stage:'Ready for the first request'});
     } else if(provider==='muse'||provider==='deepseek') {
@@ -765,14 +787,30 @@ export class Masters {
   private claudeWorker(b:Binding,resume:boolean) {
     if(portableAgents||(this.store.get(`managed-claude:${b.id}`)==='true'&&!this.registry.isCoordinator(b.id)&&this.store.get(`managed-worker:${b.id}`)!=='true'))return new ClaudeSDKSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
+      // The same tools the CLI route pre-allows with --allowedTools, plus reading its own role
+      // and skill files. On Windows (portableAgents) every coordinator takes this SDK route, and
+      // asking the owner for these blocked the first step of every request (live, 6 Nov 2026:
+      // "check my browser" stopped at a prompt to read the role file, then at master_browser).
+      if(this.store.get(`managed-worker:${b.id}`)!=='true'&&coordinatorBridgeTools.includes(tool))return true;
+      // Grep over its own role file too (live, 6 Nov 2026: a "/help" question stopped at a
+      // permission prompt to grep the role file).
+      // Listing file names is what the finder_find app tool already does without a prompt, so a
+      // coordinator checking that a file it saved is there must not stop to ask (live, 6 Nov 2026).
+      if(this.store.get(`managed-worker:${b.id}`)!=='true'&&tool==='Glob')return true;
+      if((tool==='Read'||tool==='Grep')&&ownInstructionFile(b,(input as {file_path?:unknown,path?:unknown}|undefined)?.[tool==='Read'?'file_path':'path']))return true;
+      // A photo, PDF or video the owner just sent sits in this session's own incoming folder.
+      // Asking the owner whether it may read what they sent stalled every attachment (Windows test, 7 Nov 2026).
+      if(tool==='Read'&&ownAttachment(b.id,(input as {file_path?:unknown}|undefined)?.file_path))return true;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b));
+    },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b),
+    // Windows: one warm, lean process for the coordinator (each turn took about a minute, live 6 Nov 2026).
+    process.platform==='win32'&&this.store.get(`managed-worker:${b.id}`)!=='true'?{warm:true,lean:true}:{});
     return new ClaudeSession(claudeBin,b.cwd,b.native_id,resume,async(tool,input)=>{
       if(this.router.stopped||!this.store.binding(b.id)?.enabled)return false;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
-    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:rolePointer(this.store,b),...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:['session_research','master_reach','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`).join(',')})});
+    },{...process.env,WSB_STATE_DIR:stateDir,WSB_PORT:new URL(baseUrl).port},{instructions:rolePointer(this.store,b),...(this.store.get(`managed-worker:${b.id}`)==='true'?{}:{name:this.store.get(`name:${b.id}`),permissionMode:'manual',mcpConfig:join(this.store.get(`master-support:${b.id}`)??b.cwd,'bridge-mcp.json'),allowedTools:coordinatorBridgeTools.join(',')})});
   }
   async provisionWorker(b:Binding) {
     return withProviderSetup(this.store,'worker-provision',()=>this.provisionWorkerScoped(b));

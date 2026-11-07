@@ -1,4 +1,4 @@
-import {spawn} from 'node:child_process';
+import {execFile,spawn} from 'node:child_process';
 import {accessSync,constants,mkdtempSync,realpathSync,rmSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {delimiter,dirname,join} from 'node:path';
@@ -73,6 +73,21 @@ function parseOutput(output:string,q:Query,exitCode:number|null):PublicResearchR
   return {status:'ok',channel:q.channel,sources:items};
 }
 
+const systemRoot=()=>process.env.SystemRoot??'C:\\Windows';
+/** A fresh, empty home: no inherited credentials, config or caches reach the tool. */
+export function researchEnv(executable:string,home:string,platform=process.platform):Record<string,string>{
+  if(platform!=='win32')return {HOME:home,USERPROFILE:home,TMPDIR:home,TEMP:home,TMP:home,PATH:[dirname(executable),'/usr/bin','/bin'].join(delimiter),LANG:'C.UTF-8'};
+  // On Windows, Python and uv's launcher find per-user folders through these rather
+  // than HOME. Networking needs SystemRoot.
+  const root=systemRoot();
+  return {HOME:home,USERPROFILE:home,APPDATA:home,LOCALAPPDATA:home,TEMP:home,TMP:home,SystemRoot:root,windir:root,PATH:[dirname(executable),join(root,'System32'),root].join(';'),PYTHONUTF8:'1',LANG:'C.UTF-8'};
+}
+/** Windows has no process groups: end the launcher and everything it started. */
+function killWindowsTree(pid:number|undefined,fallback:()=>void){
+  if(!pid){fallback();return;}
+  execFile(join(systemRoot(),'System32','taskkill.exe'),['/PID',String(pid),'/T','/F'],{windowsHide:true,timeout:10_000},error=>{if(error)fallback();});
+}
+
 /** Isolated, bounded execution. The binary must be installed separately; never auto-install. */
 export async function agentReachSources(text:string,current:()=>boolean,options:{executable?:string;lookup?:()=>string|undefined;timeoutMs?:number}={}):Promise<PublicResearchResult> {
   return runPublicReach(parseReach(text),current,options);
@@ -86,7 +101,6 @@ export async function agentReachRead(url:string,current:()=>boolean,options:{exe
 
 
 async function runPublicReach(query:Query,current:()=>boolean,options:{executable?:string;lookup?:()=>string|undefined;timeoutMs?:number}):Promise<PublicResearchResult> {
-  if(process.platform==='win32')throw new Error('Public research is unavailable on Windows in this build.');
   const executable=options.executable??(options.lookup??findExecutable)();
   if((pausedUntil.get(query.backend)??0)>Date.now())throw new PublicReachStop('RATE_LIMITED','The public source is rate limiting requests. Try later.');
   if(!executable)return {status:'unavailable',reason:'not_installed'};
@@ -97,14 +111,14 @@ async function runPublicReach(query:Query,current:()=>boolean,options:{executabl
   // macOS /tmp is a symlink; Agent-Reach correctly rejects symlinked config roots.
   let home:string|undefined;
   try {
-    home=mkdtempSync(join(realpathSync(tmpdir()),'ffd-reach-'));
+    const cwd=home=mkdtempSync(join(realpathSync(tmpdir()),'ffd-reach-'));
     const args=[query.channel,query.action,query.value,'--backend',query.backend,'--timeout','15',...(query.action==='search'?['--limit','5']:[])];
     const result=await new Promise<{output:string;code:number|null}>((resolve,reject)=>{
       if(!allowed()){reject(new Error('The owner connection changed.'));return;}
-      const child=spawn(executable,args,{cwd:home,env:{HOME:home,USERPROFILE:home,TMPDIR:home,TEMP:home,TMP:home,PATH:[dirname(executable),'/usr/bin','/bin'].join(delimiter),LANG:'C.UTF-8',...(process.platform==='win32'?{SystemRoot:process.env.SystemRoot??'C:\\Windows'}:{})},stdio:['ignore','pipe','pipe'],windowsHide:true,detached:process.platform!=='win32'});
+      const child=spawn(executable,args,{cwd,env:researchEnv(executable,cwd),stdio:['ignore','pipe','pipe'],windowsHide:true,detached:process.platform!=='win32'});
       let data=Buffer.alloc(0),done=false,stopped:Error|undefined;
       const finish=(error?:Error,code:number|null=null)=>{if(done)return;done=true;clearTimeout(timer);clearInterval(watch);if(error)reject(error);else resolve({output:data.toString('utf8'),code});};
-      const kill=()=>{try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else child.kill('SIGKILL');}catch{}};
+      const kill=()=>{try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else killWindowsTree(child.pid,()=>child.kill('SIGKILL'));}catch{}};
       const stop=(error:Error)=>{if(!stopped){stopped=error;kill();}};
       const timer=setTimeout(()=>stop(new Error('Public research timed out.')),options.timeoutMs??20_000);
       const watch=setInterval(()=>{if(!allowed())stop(new Error('The owner connection changed.'));},100);

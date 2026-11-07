@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 
@@ -76,7 +77,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     failure = s['failure'] as String? ?? 'legacy';
     providers = Set<String>.from(s['providers'] ?? []);
     learn = s['learn'] != false;
-    taskContracts = s['taskContracts'] != false;
+    taskContracts = s['taskContracts'] == true;
   }
 
   @override
@@ -614,7 +615,12 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
 
   Widget instructionsTab() {
     final rules = widget.saved['instructions'];
-    const promises = [
+    final system = Platform.isMacOS
+        ? 'macOS'
+        : Platform.isWindows
+        ? 'Windows'
+        : 'system';
+    final promises = [
       (Icons.reply_rounded, 'Acts only on the message you just sent'),
       (
         Icons.verified_outlined,
@@ -626,7 +632,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       ),
       (
         Icons.lock_outline_rounded,
-        'Cannot change macOS or coding app approvals',
+        'Cannot change $system or coding app approvals',
       ),
     ];
     return box(
