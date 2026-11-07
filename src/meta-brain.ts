@@ -908,7 +908,6 @@ export class MetaBrain {
         this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
         this.store.outputBrain(m.id,text);return true;
       }
-      this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);
       // Model selects relevant rows; only deterministic persisted evidence supplies claims.
       // Same reason as `statusText`: the facts are unchanged, the layout is the owner's.
       const listed=rows.map(t=>{
@@ -917,7 +916,13 @@ export class MetaBrain {
         const child=t.evidence.children.map(c=>`${(()=>{const b=this.store.binding(String(c.binding_id));return b?this.label(b):'a saved session';})()} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
         return `- ${title}${title.length>=100?'...':''} · ${t.status}${alias?` · ${alias}`:''}${child?` · delegated to ${child}`:''}`;
       });
-      this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;
+      // "How's the cloud launch going?" with nothing tracked got 'No tracked work yet' and a roster (sim, 7 Nov 2026).
+      // When the owner's words point at exactly one session, that session is asked instead.
+      const norm=(t:string)=>t.normalize('NFKC').toLowerCase();
+      const words=` ${norm(m.text).replace(/[^\p{L}\p{N}]+/gu,' ')} `;
+      const pointed=rows.length?[]:this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&[norm(this.label(b)),...norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)))].some(w=>w&&words.includes(` ${w.replace(/[^\p{L}\p{N}]+/gu,' ').trim()} `)));
+      if(pointed.length===1)decision={...decision,intent:'task',sessionId:pointed[0].id,provider:pointed[0].provider as any,taskIds:[]};
+      else {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;}
     }
     if(!policy.allowRouting){this.stop(m.id,'Routing is disabled by your Meta brain policy.');return true;}
     const c=router.coordinator;if(!c){this.stop(m.id,'Connect an existing coordinator in Coding platforms first.');return true;}
