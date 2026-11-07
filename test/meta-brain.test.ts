@@ -9,7 +9,7 @@ import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
 import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
-import { MetaBrain } from '../src/meta-brain.js';
+import { MetaBrain,briefNow } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
 import { BrainMemory } from '../src/brain-memory.js';
@@ -705,4 +705,16 @@ test('pause or resume naming one session is done, even when the model picks a ta
     await f.router.receive({id:'wa:resume',text:'Resume Client: Acme storefront.'});
     assert.equal(f.store.job('wa:resume'),undefined);assert.equal(!!f.store.binding(acme.id)?.enabled,true);
   }finally{f.close();}
+});
+// Sim, 7 Nov 2026: a picture request went to the closed Codex coordinator.
+test('a picture or writing request bound for a platform gets a second look and is done here',async()=>{
+  const f=fixture();try{let n=0;
+    (f.model as any).interpret=async()=>++n===1?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Here it is.'};
+    await f.router.receive({id:'wa:pic',text:'Can you make me an image for a coffee shop launch?'});
+    assert.equal(n,2);assert.equal(f.store.job('wa:pic'),undefined);
+  }finally{f.close();}
+});
+test('"brief now" is never read as a schedule',()=>{
+  assert.ok(briefNow('brief now'));assert.ok(briefNow('send me the brief now please'));
+  assert.ok(!briefNow('send my brief every weekday at 8am'));assert.ok(!briefNow('what is a brief'));
 });

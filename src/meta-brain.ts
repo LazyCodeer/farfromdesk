@@ -80,6 +80,7 @@ type Task={id:string;original:string;normalized:string|null;source:string;destin
 const LOOSE_STOP=new Set(['client','session','sessions','with','from','this','that','work','task','tasks','project','repo','code','data','fixes','update','about','into','the']);
 // ponytail: first sentence, cut at 60 chars on a word; a model title is preferred when given.
 const shortTitle=(t:string)=>{const first=t.trim().split(/(?<=[.?!])\s|\n/)[0];return first.length<=60?first:first.slice(0,60).replace(/\s+\S*$/,'')+'…';};
+export const briefNow=(t:string)=>/\b(?:brief|briefing)\b/i.test(t)&&/\bnow\b|\bright away\b/i.test(t)&&!/\b(?:every|daily|weekdays?|at\s+\d|\d\s*(?:am|pm))\b/i.test(t);
 export class MetaBrain {
   readonly memory:BrainMemory;
   readonly owner:OwnerMemory;
@@ -722,6 +723,10 @@ export class MetaBrain {
     const routingChanged=()=>{if(routingSnapshot()===routingAtStart)return false;this.stop(m.id,'Executor or task mode changed while Brain was routing. Nothing was sent; send a new message.');return true;};
     this.memory.synchronize();
     if(revoked()||routingChanged())return true;
+    // "brief now" became a reminder for the current minute (sim, 7 Nov 2026). Today's brief is sent instead.
+    if(briefNow(m.text)&&router.morningBrief){const d=this.store.destination()!;
+      const sent=await router.morningBrief.request(d,'first-message').catch(()=>false);
+      this.answer(m.id,sent?'Here is today\'s brief.':'Today\'s brief was already sent in this chat, or there is nothing to send yet.');return true;}
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
@@ -774,8 +779,13 @@ export class MetaBrain {
         (sessionId,text)=>this.fanOut(router,m,policy,sessionId,text),openPrStatus));
       decision=await ask(m.text);
       // The owner asked for the answer here, not from a session ("I meant you, just answer here"); the model still queued it (sim, 7 Nov 2026).
-      if(decision.intent==='task'&&!decision.taskIds.length&&/\b(?:answer (?:it |this )?here|you answer|i meant you|not (?:the |a |to )?(?:\w+ )?(?:session|codex|claude|cursor)|don'?t (?:want to )?queue)\b/i.test(m.text)){
-        const again=await ask(`${m.text}\n\n(The owner wants you to answer this yourself in chat. Use intent chat.)`).catch(()=>undefined);if(again?.intent==='chat')decision=again;
+      const here=/\b(?:answer (?:it |this )?here|you answer|i meant you|not (?:the |a |to )?(?:\w+ )?(?:session|codex|claude|cursor)|don'?t (?:want to )?queue)\b/i.test(m.text);
+      // Pictures and rewrites still went to the platform's coordinator, which answers nothing when closed (sim, 7 Nov 2026).
+      // A task for no particular project session, on a platform the owner did not name, gets one second look.
+      const generic=!decision.sessionId||router.coordinator?.isCoordinator(decision.sessionId);
+      if(decision.intent==='task'&&!decision.taskIds.length&&(here||generic&&!namedPlatforms(m.text).length&&mode?.kind!=='social'&&/\b(?:image|picture|photo|poster|logo|draft|rewrite|reword|punchier|shorter|caption|post|tweet|email|explain|what is|how do)\b/i.test(m.text)&&!/\b(?:repo|code|bug|test|build|deploy|commit|branch|file|function)\b/i.test(m.text))){
+        const again=await ask(`${m.text}\n\n(${here?'The owner wants you to answer this yourself in chat. Use intent chat.':'Before sending this to a coding session: if you can do it yourself here (an answer, writing or rewriting, a picture with make_image, a reminder, a to-do, PR status), do it and use intent chat. Use task only when it needs the owner\'s code, files or a project session.'})`).catch(()=>undefined);
+        if(again&&again.intent!=='task')decision=again;
       }
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {

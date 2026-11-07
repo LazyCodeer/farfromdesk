@@ -1,3 +1,4 @@
+import {briefNow} from './meta-brain.js';
 import {randomUUID} from 'node:crypto';
 import {authenticatedOwner,brainSelected,sessionSelected } from './owner-commands.js';
 import {brainPolicy,MetaSecret} from './meta-brain-config.js';
@@ -90,7 +91,8 @@ function explicitSessionDispatch(original:string,target:string,body:string):{dir
   const match=new RegExp(`\\b(?:ask|tell)\\s+(?:the\\s+)?(?:session\\s+)?${name}(?:\\s+session)?\\s+to\\s+`,'iu').exec(original);
   // Every qualifier after "ask SESSION to" remains part of the task. A substring
   // such as "deploy" must not replace "check whether it is safe to deploy".
-  if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||cleanAction(original.slice(match.index+match[0].length))!==cleanAction(body))return;
+  if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||!cleanAction(original.slice(match.index+match[0].length)).startsWith(cleanAction(body)))return;
+  // The model may drop a tail like "and tell me the results" (sim, 7 Nov 2026); the owner's full words are what gets sent.
   // Timing is checked only against the directive, not words inside the task.
   return {directive:original.slice(0,match.index+match[0].length),action:original.slice(match.index+match[0].length).trim()};
 }
@@ -185,6 +187,7 @@ export class Schedules {
     // calendar, or a note), the way OpenClaw's agent schedules with its own cron tool. This filter
     // used to take the message before the chosen session ever saw it.
     if(sessionSelected(router))return false;
+    if(briefNow(text))return false;
     // With the brain selected it decides too: it has reminder_create, reminder_list and
     // reminder_cancel in its loop, so no pattern takes the message first.
     if(brainSelected(router)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
