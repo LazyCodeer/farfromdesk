@@ -93,7 +93,7 @@ test('task, transport evidence and owner verification persist through restart',a
   }finally{f.close();}
 });
 test('status selects saved evidence, ignores fabricated task IDs and scopes recipient routes',async()=>{
-  const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/\*#1 Fix it\*[^"]*- Session: codex-proxy[^"]*- State: in progress, queued/);
+  const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/📋 Fix it[^"]*- Session: codex-proxy[^"]*- State: in progress, queued/);
     await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task|tracked work)/);
   }finally{f.close();}
 });
@@ -488,7 +488,7 @@ test('status quotes what a blocked session asked, and the owner answer moves it 
     f.store.output(owner,'Which format do you want, CSV or XLSX?',undefined,f.store.destination(),{requestId:'wa:t1',kind:'final',origin:'agent',outcome:'blocked'});
     f.respond(async()=>({...decision(),intent:'status',taskIds:['item:1']}));
     await f.router.receive({id:'wa:s1',text:'Does anything need me?'});
-    assert.match(String((f.out().at(-1) as any).body),/\*#1 Codex, fix the export\*[\s\S]*- Session: \S+[\s\S]*- State: blocked[\s\S]*- It asked: "Which format do you want, CSV or XLSX\?"/);
+    assert.match(String((f.out().at(-1) as any).body),/📋 Codex, fix the export[\s\S]*- Session: \S+[\s\S]*- State: blocked[\s\S]*- It asked: "Which format do you want, CSV or XLSX\?"/);
     f.respond(async()=>({...decision(),taskIds:['item:1']}));
     await f.router.receive({id:'wa:a1',text:'CSV please'});
     assert.equal(f.store.job('wa:a1')?.binding_id,owner.id);

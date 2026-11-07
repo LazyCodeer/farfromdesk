@@ -276,13 +276,14 @@ export class MetaBrain {
     const out:string[]=[];
     if(rows.length===1){
       const r=rows[0]!;
-      out.push(`📋 *${r.ref} ${r.title}*`);
+      // The owner never uses item codes; "#1" in bold read as noise (sim, 7 Nov 2026).
+      out.push(`📋 ${r.title}`);
       if(r.session)out.push(`- Session: ${r.session}`);
       out.push(`- State: ${r.state}`);
       if(r.asked)out.push(`- It asked: "${r.asked}"`);
     }else if(rows.length){
       out.push(`📋 *${rows.length} tasks*`);
-      for(const r of rows)out.push(`- *${r.ref}* ${r.title}${[r.session,r.state].filter(Boolean).length?` · ${[r.session,r.state].filter(Boolean).join(' · ')}`:''}${r.asked?` · it asked: "${r.asked}"`:''}`);
+      for(const r of rows)out.push(`- ${r.title}${[r.session,r.state].filter(Boolean).length?` · ${[r.session,r.state].filter(Boolean).join(' · ')}`:''}${r.asked?` · it asked: "${r.asked}"`:''}`);
     }
     out.push(...notes);
     return out.join('\n')||'No matching tracked tasks.';

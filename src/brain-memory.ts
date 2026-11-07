@@ -29,7 +29,7 @@ export class BrainMemory {
         if(restart>=0)jobs=jobs.slice(0,restart+1);
         const latest=jobs[0];
         const gone=this.gone(latest);
-        const executionState=!latest?'not dispatched':gone?gone:latest.outcome==='blocked'||['failed','uncertain'].includes(String(latest.status))?'blocked':latest.outcome==='done'?'reported done, not owner verified':latest.status==='completed'?'reported finished':latest.first_reply_at?'in progress':latest.status==='submitted'?'sent to session; no reply yet':String(latest.status);
+        const executionState=!latest?'not dispatched':gone?gone:latest.outcome==='blocked'||['failed','uncertain'].includes(String(latest.status))?'blocked':latest.outcome==='done'?'the session says it is done':latest.status==='completed'?'reported finished':latest.first_reply_at?'in progress':latest.status==='submitted'?'sent to session; no reply yet':String(latest.status);
         return {...item,executionState,ref:`item:${item.id}`,jobs,session:item.binding_id&&this.store.binding(item.binding_id)?itemSessionLabel(this.store,this.store.binding(item.binding_id)!):null};
       });
   }
