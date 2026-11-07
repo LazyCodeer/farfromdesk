@@ -60,7 +60,7 @@ function reminderDirective(original:string,body:string):{directive:string;action
   // A trailing aside with no time and no negation is chatter, not part of the reminder:
   // "remind me school pickup tomorrow at 3:15pm pls, got to run" (sim, 7 Nov 2026).
   // A further request after the reminder ("… to pick up the kids. Then show me my reminders") is not timing (sim, 7 Nov 2026).
-  const timing=directive.replace(/([.!?])\s+(?:then|also|and|after that|plus)\b(?![^]*\d)[^]*$/i,'$1').replace(/,(?![^,]*\d)(?![^,]*\b(?:not|no|never|don'?t|cancel|stop|every|daily|weekdays?)\b)[^,]*$/i,'').trim();
+  const timing=directive.replace(/([.!?])\s+(?:then|also|and|after that|plus)\b(?![^]*\d)[^]*$/i,'$1').replace(/[,;—–](?![^,;—–]*\d)(?![^,;—–]*\b(?:not|no|never|don'?t|cancel|stop|every|daily|weekdays?)\b)[^,;—–]*$/i,'').trim();
   // Everything left must be timing or filler. A content word left over means the model dropped
   // part of the owner's request ("check whether it is safe to" + "deploy production"), so refuse.
   const leftover=timing.toLowerCase()
@@ -128,7 +128,8 @@ function checkedTiming(original:string,decision:{time:string;date:string;repeat:
 }
 const scheduleKey=(destination:string)=>`schedule-list:${destination}`;
 const clarifyKey=(destination:string)=>`schedule-clarify:${destination}`;
-const bareTime=(s:string)=>/^\s*(?:(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|a\.?m\.?|p\.?m\.?|morning|afternoon|evening|tonight|tomorrow|today)\s*[.!?]*\s*$/i.test(s);
+// Only a time, maybe with a day and "please": "Tomorrow at 3:15 PM, please." (sim, 7 Nov 2026).
+const bareTime=(s:string)=>/\d|\b(?:a\.?m|p\.?m|morning|afternoon|evening|tonight|tomorrow|today)\b/i.test(s)&&!s.toLowerCase().replace(/\b(?:at|on|by|please|pls|tomorrow|today|tonight|morning|afternoon|evening|this|a\.?m\.?|p\.?m\.?)(?![a-z])|\d{1,2}(?::\d{2})?/g,' ').replace(/[\s.,!?]+/g,'');
 
 /** Revalidate the paired owner and channel. F2 deliberately supports self-chat only. */
 export function validScheduleOwner(store:Store,owner:string,destination:string,channel:string) {
@@ -163,7 +164,7 @@ export class Schedules {
   private context(destination:string,owner:string,channel:string){return this.store.controlChannel()===channel&&validScheduleOwner(this.store,owner,destination,channel);}
   private answer(m:Incoming,message:string){this.store.output(undefined,message,`schedule-reply:${m.id}`,undefined,{plain:true});this.store.remember(m.id);}
   private snapshot(destination:string):ListSnapshot|undefined{try{return JSON.parse(this.store.get(scheduleKey(destination))??'null')??undefined;}catch{return;}}
-  private clarification(destination:string){try{return JSON.parse(this.store.get(clarifyKey(destination))??'null') as {owner:string;expires:number}|null;}catch{return null;}}
+  private clarification(destination:string){try{return JSON.parse(this.store.get(clarifyKey(destination))??'null') as {owner:string;expires:number;text?:string}|null;}catch{return null;}}
   isScheduleLike(text:string){return candidate(text.trim());}
   private list(m:Incoming,destination:string,owner:string) {
     const rows=this.store.db.prepare(`SELECT s.* FROM schedules s WHERE s.owner=? AND s.destination=? AND (s.status='active' OR (s.status='done' AND EXISTS(SELECT 1 FROM schedule_occurrences o JOIN schedule_jobs j ON j.occurrence_id=o.id JOIN inbox i ON i.id=j.job_id WHERE o.schedule_id=s.id AND i.status IN ('queued','dispatched')))) ORDER BY s.next_at,s.id LIMIT 100`).all(owner,destination) as Row[];
@@ -205,7 +206,7 @@ export class Schedules {
     catch(error){
       if(!this.store.incomingOwnerCurrent())return true;
       // A short response to a validation error must not be delivered as a session task.
-      if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));
+      if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000,text:m.text.slice(0,2000)}));
       throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Nothing was scheduled.`);
     }
   }
@@ -220,7 +221,10 @@ export class Schedules {
       if(approved){this.answer(m,this.saveApproved(router,m,approved,owner,destination,channel));return true;}
     }
     const pending=this.clarification(destination);
-    if(pending&&pending.owner===owner&&pending.expires>this.now()&&bareTime(text)){this.answer(m,'Please resend the complete reminder with its date, time and action. Nothing has been scheduled.');return true;}
+    if(pending&&pending.owner===owner&&pending.expires>this.now()&&bareTime(text)){
+      // The time the reminder was missing completes the earlier request (sim, 7 Nov 2026).
+      if(pending.text&&!bareTime(pending.text)){this.store.set(clarifyKey(destination),'null');return this.handleOnce(router,{...m,text:`${pending.text} ${text}`},ownerIntent,contractApproved);}
+      this.answer(m,'Please resend the complete reminder with its date, time and action. Nothing has been scheduled.');return true;}
     if(!isList&&!candidate(text)&&!(cancel&&(snapshot||/\b(?:reminder|schedule)\b/i.test(text))))return false;
     if(isList){this.list(m,destination,owner);return true;}
     if(cancel){this.cancel(m,destination,owner,Number(cancel[1]));return true;}
@@ -232,7 +236,7 @@ export class Schedules {
     if(router.stopped||!this.store.incomingOwnerCurrent()||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
     // An explicit time-shaped request must never fall through into immediate work.
     if(decision.kind==='not_schedule'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'I could not confirm that schedule. Please resend the complete request with its time and action. Nothing was sent.');return true;}
-    if(decision.kind==='clarify'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'Please resend the complete reminder with its date, time and action, and the session if needed. Nothing has been scheduled.');return true;}
+    if(decision.kind==='clarify'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000,text:m.text.slice(0,2000)}));this.answer(m,'Please resend the complete reminder with its date, time and action, and the session if needed. Nothing has been scheduled.');return true;}
     if(decision.kind!=='create'||!['message','brief','session'].includes(decision.action))throw new Error('I could not safely identify the reminder. Please say the time and action again.');
     const action=decision.action as Action;let body=decision.text.trim(),timingText=text;
     if(action!=='brief'&&(!body||body.length>MAX_TEXT||!normalized(text).includes(normalized(body))))throw new Error('Please state the exact reminder or session request in your message.');

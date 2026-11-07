@@ -165,7 +165,7 @@ test('the reviewed tools follow the Mac, not the chat', async () => {
       assert.equal(names[0], 'calendar_create_event', `expected the calendar tool first, got ${names.join(', ')}`);
       assert.equal(names.length, 32, 'the whole catalog is offered; the model decides (OpenClaw-style skills list)');
       assert.ok(input.appTools.every((tool: any) => tool.app), 'every offered tool names its app');
-      assert.match(String(input.now), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \w+$/);
+      assert.match(String(input.now), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \w+ \(.+, UTC[+-]\d{2}:\d{2}\)$/);
     }
     // With the Notes app in front the Notes tool is offered, and the calendar tool stays in
     // the list for a meeting request. The order is a hint, not a decision.

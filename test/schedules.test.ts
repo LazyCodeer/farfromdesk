@@ -563,3 +563,16 @@ test('a reminder on a condition with no time is left to the brain',async()=>{
     assert.equal(f.schedules.shouldHandle(f.router,{id:'c1',text:'remind me to review #79 when Codex is back',ownerCommand:true} as any,true),false);
   }finally{f.close();}
 });
+
+// Sim, 7 Nov 2026: the time sent after a reminder that lacked one completes it.
+test('a time sent after a reminder without one completes that reminder',async()=>{
+  const f=fixture();try{
+    f.setDecision({kind:'clarify'});
+    await f.send('1','Remind me about school pickup please');
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM schedules').get()?.n,0);
+    assert.equal(f.schedules.shouldHandle(f.router,{id:'wa:2',text:'Tomorrow at 3:15 PM, please.',ownerCommand:true} as any,true),true);
+    f.setDecision({kind:'create',text:'school pickup',date:'2026-10-30',time:'15:15'});
+    await f.send('2','Tomorrow at 3:15 PM, please.');
+    assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as {text:string}|undefined)?.text,'school pickup');
+  }finally{f.close();}
+});

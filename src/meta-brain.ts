@@ -40,7 +40,7 @@ const DEVICE_FACT_MS=10*60_000;
 export function localStamp(date:Date=new Date()):string{
   const pad=(n:number)=>String(n).padStart(2,'0');
   const weekday=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getDay()];
-  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${weekday}`;
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${weekday} (${Intl.DateTimeFormat().resolvedOptions().timeZone}, UTC${(o=>(o<=0?'+':'-')+pad(Math.floor(Math.abs(o)/60))+':'+pad(Math.abs(o)%60))(date.getTimezoneOffset())})`;
 }
 
 /**
@@ -91,7 +91,7 @@ const LOOSE_STOP=new Set(['client','session','sessions','with','from','this','th
 export function unreachable(name:string,b:Binding,brainProviders:readonly string[],appOn:readonly string[]){
   const p=b.provider[0].toUpperCase()+b.provider.slice(1);
   if(!b.enabled)return `${name} is paused. Say "resume ${name}" and I'll send it.`;
-  if(!appOn.includes(b.provider))return `${p} is turned off in the app (Settings, Coding platforms), so ${name} can't get messages. Turn it on there; I can't from chat.`;
+  if(!appOn.includes(b.provider))return `${p} is turned off in the app (Settings, Coding platforms), so ${name} can't get messages. Turn it on there; I can't from chat. If you just did, it hasn't saved yet: open it again, check the switch, then ask me again.`;
   if(!brainProviders.includes(b.provider))return `${p} isn't allowed for the Brain. In Settings, turn the Brain off and on again to include it; I can't from chat.`;
   return '';
 }
@@ -320,15 +320,22 @@ export class MetaBrain {
     // The coded list (P1, D2) the owner reads is what later "update on P1" resolves against.
     if(op==='list_items')return answer(this.memory.items.text(true,board,`item-codes:${destination}`));
     if(op==='stop_watching'){this.store.db.prepare("UPDATE brain_watches SET state='cancelled' WHERE destination IS ? AND state='waiting'").run(destination);return answer('Follow-up notifications cancelled. Tasks and sessions are unchanged.');}
-    if(!item)return answer('Which task should I watch? Ask for your items to see the codes.');
-    this.store.set(`brain-topic:${destination}`,item.ref);
-    const job=item.jobs[0];
-    if(!job)return answer('This task has not been sent to a session yet. I cannot watch for completion until it starts.');
-    // Name the session, not the owner's own question back as a title (sim, 7 Nov 2026).
-    const who=(b=>b?this.label(b):'the session')(this.store.bindings().find(b=>b.id===job.binding_id));
-    if(this.store.db.prepare('SELECT 1 FROM brain_watches WHERE destination=? AND item_id=?').get(destination,item.id))return answer(`Already watching what you asked ${who}. I'll message you when it finishes or needs you.`);
-    this.store.db.prepare("INSERT OR IGNORE INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)").run(m.id,destination,item.id,job.id,Date.now());
-    return answer(`I’ll message you when ${who} answers or needs you.`);
+    // Every task the owner wants to hear about gets a watch, not only the first (sim, 7 Nov 2026).
+    const items=[...new Set(decision.taskIds.map(r=>board.find(i=>i.ref===r||this.store.itemOf(r)===i.id)).filter(Boolean))] as typeof board;
+    if(!items.length)return answer('Which task should I watch? Ask for your items to see the codes.');
+    this.store.set(`brain-topic:${destination}`,items[0].ref);
+    const whos:string[]=[],already:string[]=[];
+    for(const it of items){
+      const job=it.jobs[0];if(!job)continue;
+      // Name the session, not the owner's own question back as a title (sim, 7 Nov 2026).
+      const who=(b=>b?this.label(b):'the session')(this.store.bindings().find(b=>b.id===job.binding_id));
+      if(this.store.db.prepare('SELECT 1 FROM brain_watches WHERE destination=? AND item_id=?').get(destination,it.id)){already.push(who);continue;}
+      this.store.db.prepare("INSERT OR IGNORE INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)").run(m.id,destination,it.id,job.id,Date.now());whos.push(who);
+    }
+    const list=(a:string[])=>a.length<2?a.join(''):`${a.slice(0,-1).join(', ')} and ${a.at(-1)}`;
+    if(!whos.length&&!already.length)return answer('This task has not been sent to a session yet. I cannot watch for completion until it starts.');
+    if(!whos.length)return answer(`Already watching what you asked ${list(already)}. I'll message you when it finishes or needs you.`);
+    return answer(`I’ll message you when ${list(whos)} ${whos.length>1?'answer':'answers'} or needs you.`.replace('answer or needs','answer or need'));
   }
   /** Persisted watches only observe saved execution evidence. They never restart native work. */
   tick(router:Router) {
@@ -791,7 +798,7 @@ export class MetaBrain {
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:async(url,browser)=>{this.ack(m,browser);this.armed.delete(m.id);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
         focusTab:match=>{this.ack(m,`the ${match} tab`);this.armed.delete(m.id);return this.focusTabFor(m,match);},
-      }:undefined,{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},mode?.kind==='social'?undefined:prompt=>this.makeImageFor(m,key,prompt),policy.allowManagement?{
+      }:undefined,{briefNow:async()=>{const d=this.store.destination();if(!d)return 'No chat to send it to.';const r=await router.morningBrief?.request(d,'first-message');return r===false?'The brief could not be sent now (it may be off in Settings or already sent).':'Sent the brief.';},create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},mode?.kind==='social'?undefined:prompt=>this.makeImageFor(m,key,prompt),policy.allowManagement?{
         add:t=>{const i=this.memory.add(`${m.id}#${t.slice(0,40)}`,t);return `Saved #${i.id}: ${i.title}`;},
         set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
         list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined,
@@ -949,8 +956,10 @@ export class MetaBrain {
       const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
       if(!named.length&&!mentioned.length&&decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider)){
         // A session named in a recent turn is still the destination (sim, 7 Nov 2026).
-        const prior=this.conversation(m.id).slice(-3).map(t=>norm(t.original)).join(' ');
-        const again=this.store.bindings().filter(b=>b.enabled&&norm(this.label(b)).length>=4&&prior.includes(norm(this.label(b))));
+        const prior=this.conversation(m.id).slice(-3).map(t=>norm(t.original+' '+(t.response??''))).join(' ');
+        const priorWords=new Set(prior.split(/[^\p{L}\p{N}]+/u));
+        // A partial name ("Acme storefront") carries over too, by its distinctive words (sim, 7 Nov 2026).
+        const again=this.store.bindings().filter(b=>b.enabled&&norm(this.label(b)).length>=4&&(prior.includes(norm(this.label(b)))||norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w))).some(w=>priorWords.has(w))));
         if(again.length===1)mentioned.push(again[0]);else throw new Error('Which session should do this? Say its name.');
       }
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
@@ -980,7 +989,7 @@ export class MetaBrain {
     return true;
   }
   // "When did each session last do something, in Singapore time?" was sent to a session; the app already knows (sim, 7 Nov 2026).
-  private lastActive(id:string){const r=this.store.db.prepare('SELECT MAX(COALESCE(final_reply_at,first_reply_at,updated_at,created_at)) AS at FROM inbox WHERE binding_id=?').get(id) as {at:number|null}|undefined;return r?.at?{lastActiveUtc:new Date(r.at).toISOString()}:{};}
+  private lastActive(id:string){const r=this.store.db.prepare('SELECT MAX(COALESCE(final_reply_at,first_reply_at)) AS at FROM inbox WHERE binding_id=?').get(id) as {at:number|null}|undefined;return r?.at?{lastActiveUtc:new Date(r.at).toISOString()}:{};}
   private fanned=new Map<string,number>();
   /** One part of a message meant for several sessions, sent under its own request id so each answer comes back on its own. */
   private fanOut(router:Router,m:Incoming,policy:BrainPolicy,sessionId:string,text:string):string{
@@ -1001,7 +1010,7 @@ export class MetaBrain {
   private introOnce(text=''){const k=`intro-shown:${this.store.destination()}`;if(!this.owner.introNeeded()||this.store.get(k))return false;
     if(!/^\W*(?:hi+|hello|hey+|hiya|yo|namaste|good (?:morning|afternoon|evening)|what can you do|who are you)\b[^?]{0,30}[.!?\s\p{Emoji}]*$/iu.test(text.trim()))return false;this.store.set(k,'1');return true;}
   // "Status of my sessions" with nothing tracked yet answered "No matching tracked tasks." and never named a session (sim, 7 Nov 2026).
-  private noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?['No tracked work yet. Your sessions:',...names,'Ask any of them for an update by name.'].join('\n'):'No tracked work and no sessions connected yet.';}
+  noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?['No tracked work yet. Your sessions:',...names,'Ask any of them for an update by name.'].join('\n'):'No tracked work and no sessions connected yet.';}
   // A platform's coordinator is plumbing; the owner knows it as the platform ("Codex"), never "codex-proxy" (sim, 7 Nov 2026).
   private label(b:Binding){return this.store.get(`name:${b.id}`)??((JSON.parse(this.store.get('coordinator-registry')??'[]') as {bindingId:string}[]).some(r=>r.bindingId===b.id)?b.provider[0].toUpperCase()+b.provider.slice(1):b.alias);}
   private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming,title?:string) {

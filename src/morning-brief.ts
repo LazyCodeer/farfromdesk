@@ -209,7 +209,7 @@ export class MorningBrief {
           for(const row of rows){number++;lines.push(`${number}. ${row.title}${row.reason?`: ${row.reason}`:''}${row.kind==='item'&&priorities.includes(Number(row.id))?' (suggested)':''}`);}
           lines.push('');
         }
-        lines.push([prs.notice==='No linked pull requests recorded.'?'':prs.notice,number?'Reply go, pause or later with an item number.':'Nothing recorded yet.'].filter(Boolean).join(' '));return lines.join('\n').trim();};
+        lines.push([prs.notice==='No linked pull requests recorded.'?'':prs.notice,number?'Reply go, pause or later with an item number.':this.router.brain.noTasksText(this.router)].filter(Boolean).join(' '));return lines.join('\n').trim();};
       while(ordered.length&&render().length>3300)ordered.pop();const text=render();
       // Entries are persisted in display order, not the model's arbitrary ranking.
       this.store.db.exec('SAVEPOINT morning_brief');

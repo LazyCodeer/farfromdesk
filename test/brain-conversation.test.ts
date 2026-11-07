@@ -222,7 +222,7 @@ test('a reviewed tool for the app in front is offered, and the plan the model pi
     const offered = f.seen[0]?.appTools ?? [];
     assert.ok(offered.some((t: any) => t.name === 'calendar_create_event'), 'the calendar tool was offered');
     assert.ok(Array.isArray(offered[0]?.args) && offered[0].args.length > 0, 'the offer carries the argument names');
-    assert.match(String(f.seen[0]?.now ?? ''), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \w+$/, 'the model was given the clock it needs for "tomorrow"');
+    assert.match(String(f.seen[0]?.now ?? ''), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \w+ \(.+, UTC[+-]\d{2}:\d{2}\)$/, 'the model was given the clock it needs for "tomorrow"');
   } finally { f.close(); }
 });
 
