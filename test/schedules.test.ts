@@ -616,3 +616,10 @@ test('a not-schedule message with no clock time goes to the brain',async()=>{
     assert.equal(await f.send('1','Draft a LinkedIn post: tasks, status, reminders, all in one chat'),false);
   }finally{f.close();}
 });
+// Sim, 7 Nov 2026: list/cancel matchers caught a task brief and missed a polite cancel.
+test('reminder list and cancel match only what they mean',async()=>{
+  const f=fixture();try{
+    assert.equal(f.schedules.shouldHandle(f.router,{id:'wa:1',text:'Please start these three:\n1. Splice: check any reminders code\n2. Cloud: what changed',ownerCommand:true} as any,true),false);
+    assert.equal(f.schedules.shouldHandle(f.router,{id:'wa:2',text:'What reminders do I have?',ownerCommand:true} as any,true),true);
+  }finally{f.close();}
+});

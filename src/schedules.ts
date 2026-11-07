@@ -33,8 +33,10 @@ const candidate=(s:string)=>{
 // "What reminders have I got?" got "I could not confirm that schedule" (sim, 7 Nov 2026).
 const listCommand=(s:string)=>/^(?:please\s+)?(?:(?:list|show)(?:\s+me)?(?:\s+(?:my|all))?|what(?:\s+are)?(?:\s+my)?|which|any)\s+(?:reminders|schedules)(?:\s+(?:do\s+i\s+have|have\s+i\s+got|are\s+set|are\s+there|i\s+have))?(?:\s+(?:today|tomorrow|set))?\s*[.!?]*$/i.test(s.trim().replace(/[.!?]+$/,''));
 // Any question about the reminders already set is a list, however it is worded (sim, 7 Nov 2026).
-const asksReminders=(s:string)=>/\b(?:reminders|schedules)\b/i.test(s)&&/\b(?:what|which|show|list|any|have\s+i\s+got|do\s+i\s+have)\b/i.test(s)&&!/\bremind\s+me\b/i.test(s);
-const cancelCommand=(s:string)=>/^(?:please\s+)?cancel\s+(?:(?:reminder|schedule)\s+)?(\d{1,3})\s*[.!?]*$/i.exec(s);
+// Only a short single-line question: a 3-part task brief that mentioned reminders got "You have no active reminders" (sim, 7 Nov 2026).
+const asksReminders=(s:string)=>s.length<=160&&!s.includes('\n')&&/\b(?:reminders|schedules)\b/i.test(s)&&/\b(?:what|which|show|list|any|have\s+i\s+got|do\s+i\s+have)\b/i.test(s)&&!/\bremind\s+me\b/i.test(s);
+// "Cancel 1 please, I'll keep it in my calendar" asked to confirm again (sim, 7 Nov 2026).
+const cancelCommand=(s:string)=>/^(?:please\s+)?cancel\s+(?:(?:reminder|schedule)\s+)?(?:#|number\s+)?(\d{1,3})(?!\s*(?:am|pm|:|\d))\b(?:\s*,?\s*please)?(?:\s*[.!?,;—–-].{0,120})?\s*$/i.exec(s.trim());
 const readOnlyPrStatus=(s:string)=>/^(?:please\s+)?check\s+(?:whether|if)\s+(?:pr|pull request)\s+#?\d{1,9}\s+is\s+green\s+and\s+tell\s+me[.!?]*$/i.test(s.trim());
 const cleanAction=(s:string)=>normalized(s).replace(/[.!?]+$/,'');
 function reminderDirective(original:string,body:string):{directive:string;action:string}|undefined {
