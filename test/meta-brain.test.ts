@@ -752,3 +752,12 @@ test('a session named only to put it off is not where the work goes',async()=>{
     assert.equal(f.store.job('wa:defer')?.binding_id,f.claude.id);
   }finally{f.close();}
 });
+
+// Sim, 7 Nov 2026: a rate-limited interpretation fell back to the closed Codex coordinator.
+test('a transient model failure is retried once before any fallback',async()=>{
+  const f=fixture();try{
+    let n=0;f.respond(async()=>{if(n++===0)throw Object.assign(new Error('rate limited'),{code:'provider_rejected'});return {...decision(),intent:'chat',reply:'Here you go.'} as any;});
+    await f.router.receive({id:'wa:retry',text:'what is a good eval tool?'});
+    assert.equal(n,2);assert.equal(f.store.job('wa:retry'),undefined);
+  }finally{f.close();}
+});

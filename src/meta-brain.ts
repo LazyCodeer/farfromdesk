@@ -803,7 +803,9 @@ export class MetaBrain {
         set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
         list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined,
         (sessionId,text)=>this.fanOut(router,m,policy,sessionId,text),openPrStatus));
-      decision=await ask(m.text);
+      // A rate limit or slow reply sent research questions and caption edits to the closed Codex coordinator through the
+      // legacy fallback (sim, 7 Nov 2026: 9 of 33 runs). One retry before falling back.
+      decision=await ask(m.text).catch(async e=>{const code=String((e as {code?:unknown})?.code??'');if(!/^(?:timeout|provider_rejected|provider_unavailable)$/.test(code)||revoked()||routingChanged())throw e;this.store.event(m.id,'brain_interpretation_retry',{code});return ask(m.text);});
       // The owner asked for the answer here, not from a session ("I meant you, just answer here"); the model still queued it (sim, 7 Nov 2026).
       const here=/\b(?:answer (?:it |this )?here|you answer|i meant you|not (?:the |a |to )?(?:\w+ )?(?:session|codex|claude|cursor)|don'?t (?:want to )?queue)\b/i.test(m.text);
       // Pictures and rewrites still went to the platform's coordinator, which answers nothing when closed (sim, 7 Nov 2026).
