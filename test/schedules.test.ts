@@ -259,9 +259,11 @@ test('a model cannot turn an owner reminder into a session action',async()=>{
 test('a model cannot remove qualifiers from an explicitly authorized session action',async()=>{
   const f=fixture();try{
     f.store.register('codex','codex','33333333-3333-4333-8333-333333333333','/tmp/codex');
+    // The model's shortened "deploy production" is ignored: the owner's full words are what runs.
     f.setDecision({action:'session',text:'deploy production',target:'codex'});
-    await assert.rejects(f.send('1','At 6 PM ask codex to check whether it is safe to deploy production'),/explicitly say/);
-    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
+    await f.send('1','At 6 PM ask codex to check whether it is safe to deploy production');
+    f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
+    assert.equal(f.store.db.prepare('SELECT body FROM inbox').get()?.body,'check whether it is safe to deploy production');
   }finally{f.close();}
 });
 
@@ -574,5 +576,16 @@ test('a time sent after a reminder without one completes that reminder',async()=
     f.setDecision({kind:'create',text:'school pickup',date:'2026-10-30',time:'15:15'});
     await f.send('2','Tomorrow at 3:15 PM, please.');
     assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as {text:string}|undefined)?.text,'school pickup');
+  }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: "at the moment" made a list question look like a new reminder.
+test('a reminders question in any wording lists them, and list-plus-cancel goes to the brain',async()=>{
+  const f=fixture();try{
+    const ask=(t:string)=>f.schedules.shouldHandle(f.router,{id:'wa:9',text:t,ownerCommand:true} as any,true);
+    assert.equal(ask('Thanks! What reminders have I got at the moment?'),true);
+    assert.equal(ask('can you show me what reminders I have? And cancel the school pickup one at 3:15pm'),false);
+    await f.send('1','Thanks! What reminders have I got at the moment?');
+    assert.doesNotMatch(String(f.store.db.prepare("SELECT body FROM outbox ORDER BY rowid DESC").get()?.body),/could not confirm/);
   }finally{f.close();}
 });

@@ -32,6 +32,8 @@ const candidate=(s:string)=>{
 };
 // "What reminders have I got?" got "I could not confirm that schedule" (sim, 7 Nov 2026).
 const listCommand=(s:string)=>/^(?:please\s+)?(?:(?:list|show)(?:\s+me)?(?:\s+(?:my|all))?|what(?:\s+are)?(?:\s+my)?|which|any)\s+(?:reminders|schedules)(?:\s+(?:do\s+i\s+have|have\s+i\s+got|are\s+set|are\s+there|i\s+have))?(?:\s+(?:today|tomorrow|set))?\s*[.!?]*$/i.test(s.trim().replace(/[.!?]+$/,''));
+// Any question about the reminders already set is a list, however it is worded (sim, 7 Nov 2026).
+const asksReminders=(s:string)=>/\b(?:reminders|schedules)\b/i.test(s)&&/\b(?:what|which|show|list|any|have\s+i\s+got|do\s+i\s+have)\b/i.test(s)&&!/\bremind\s+me\b/i.test(s);
 const cancelCommand=(s:string)=>/^(?:please\s+)?cancel\s+(?:(?:reminder|schedule)\s+)?(\d{1,3})\s*[.!?]*$/i.exec(s);
 const readOnlyPrStatus=(s:string)=>/^(?:please\s+)?check\s+(?:whether|if)\s+(?:pr|pull request)\s+#?\d{1,9}\s+is\s+green\s+and\s+tell\s+me[.!?]*$/i.test(s.trim());
 const cleanAction=(s:string)=>normalized(s).replace(/[.!?]+$/,'');
@@ -94,7 +96,9 @@ function explicitSessionDispatch(original:string,target:string,body:string):{dir
   const match=new RegExp(`\\b(?:ask|tell)\\s+(?:the\\s+)?(?:session\\s+)?${name}(?:\\s+session)?\\s+to\\s+`,'iu').exec(original);
   // Every qualifier after "ask SESSION to" remains part of the task. A substring
   // such as "deploy" must not replace "check whether it is safe to deploy".
-  if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||!cleanAction(original.slice(match.index+match[0].length)).startsWith(cleanAction(body)))return;
+  if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||!cleanAction(original.slice(match.index+match[0].length)))return;
+  // The owner's own words after "ask SESSION to" are what gets sent, so the model's paraphrase of them need not match (sim, 7 Nov 2026).
+  void body;
   // The model may drop a tail like "and tell me the results" (sim, 7 Nov 2026); the owner's full words are what gets sent.
   // Timing is checked only against the directive, not words inside the task.
   return {directive:original.slice(0,match.index+match[0].length),action:original.slice(match.index+match[0].length).trim()};
@@ -197,7 +201,8 @@ export class Schedules {
     if(brainSelected(router)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
     const snap=this.snapshot(destination),live=!!(snap&&snap.owner===this.owner(destination)&&snap.destination===destination&&snap.expires>this.now());
     const clarify=this.clarification(destination),pending=!!(clarify&&clarify.owner===this.owner(destination)&&clarify.expires>this.now());
-    return listCommand(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));
+    if(asksReminders(text)&&/\b(?:cancel|delete|remove|stop)\b/i.test(text))return false;
+    return listCommand(text)||asksReminders(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));
   }
   async handle(router:Router,m:Incoming,ownerIntent:boolean,contractApproved=false):Promise<boolean> {
     if(!this.store.incomingOwnerCurrent())return true;
@@ -213,7 +218,7 @@ export class Schedules {
   private async handleOnce(router:Router,m:Incoming,ownerIntent:boolean,contractApproved:boolean):Promise<boolean> {
     const text=m.text.trim(),destination=this.store.destination();
     if(!destination||!this.shouldHandle(router,m,ownerIntent))return false;
-    const isList=listCommand(text),cancel=cancelCommand(text),snapshot=this.snapshot(destination);
+    const isList=listCommand(text)||asksReminders(text),cancel=cancelCommand(text),snapshot=this.snapshot(destination);
     const owner=this.owner(destination),channel=this.store.controlChannel();
     if(!this.context(destination,owner,channel)){this.answer(m,'For reminders, please message me in your own self-chat.');return true;}
     if(contractApproved){

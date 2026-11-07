@@ -830,7 +830,7 @@ export class MetaBrain {
       this.stop(m.id,!this.secret.present()?'Meta API key is missing. Add it in the Brain page, or turn the brain off.'
         :code==='authentication_required'?'Meta rejected your API key. Replace it in the Brain page, then send your message again.'
         :code==='timeout'?'Meta took too long to answer. Send your message again.'
-        :'Meta could not read that message right now. Send it again in a moment.');return true;
+        :'Sorry, I lost my train of thought on that one. Send it again and I will pick it up.');return true;
     }
     if(revoked()||this.get(m.id)?.state!=='interpreting'||routingChanged())return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);
@@ -947,7 +947,8 @@ export class MetaBrain {
       const destinationWord=new RegExp(`\\b(?:send(?!\\s+(?:me|us)\\b)|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
       // A session named outside any negation is a clear destination even if another clause says "don't" (sim, 7 Nov 2026).
       const chosen=mentioned.some(b=>said.split(/[.,;:!?\n。，；！？—–]+/).some(c=>!negated.test(c)&&norm(c).includes(norm(this.label(b)))));
-      const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
+      // "I didn't give you an example" is not "don't give this to X": soft verbs need a "to" (sim, 7 Nov 2026).
+      const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause)&&(!/\b(?:give|pass|hand|assign)\b/i.test(clause)||/\b(?:give|pass|hand|assign)\b.*\bto\b/i.test(clause)||destinationWord.test(clause.replace(/\b(?:give|pass|hand|assign)\b/gi,''))));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
@@ -993,7 +994,11 @@ export class MetaBrain {
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
       if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, send it again with that session's name in it${topic?` (it won't be filed under item #${topic.id})`:''}. Nothing was sent.`);
-    }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send|^Holding off/i.test(reason)?'clarification':'blocked');return true;}
+    }catch(e){let reason=(e as Error).message;
+      // The same refusal twice reads like a wall; the second time say what is still seen and offer a way on (sim, 7 Nov 2026).
+      if(/is turned off in the app|isn't allowed for the Brain/.test(reason)&&this.conversation(m.id).slice(-2).some(t=>(t.response??'').includes(reason.slice(0,40))))
+        reason=`It still shows off on the laptop, so I can't reach it yet. In the app, Settings, Coding platforms: switch it on and wait for "Connected". Or name another session and I'll send it there now.`;
+      this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send|^Holding off/i.test(reason)?'clarification':'blocked');return true;}
     // Typing stops once the work is queued; without a line the owner can't tell it went anywhere (sim, 7 Nov 2026).
     // Plain output, not outputBrain: it is a receipt, not an answer, so the silence notice still fires.
     if(this.send(router,m.id,m.text,target,coordinator,topic,m,decision.title))this.store.output(undefined,`${decision.intent==='task'&&decision.reply?.trim()?decision.reply.trim()+'\n':''}✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${m.id}`,this.store.job(m.id)?.destination??this.store.destination());
