@@ -45,6 +45,11 @@ import { computerName } from './platform.js';
 
 const exec=promisify(execFile);
 const root=fileURLToPath(new URL('..',import.meta.url));
+/** True only for a real file inside this binding's own attachment folder (links resolved first). */
+export function ownAttachment(bindingId:string,path:unknown,root:string=stateDir):boolean {
+  if(typeof path!=='string'||!path)return false;
+  try{const base=realpathSync(join(root,'incoming',bindingId)),real=realpathSync(resolve(path));return real.startsWith(base+sep)&&statSync(real).isFile();}catch{return false;}
+}
 /** The coordinator's own bridge tools: pre-allowed on the CLI route (--allowedTools) and the SDK route alike. */
 export const coordinatorBridgeTools=['session_research','master_reach','master_reminder','master_desktop_control','master_mac_control','master_browser','master_agents','master_define_agent','master_assign_agent','master_sessions','master_selected','master_connect','master_dispatch','master_create_session','master_creation_status','master_recover_session','whatsapp_reply','master_quiet','master_resolve'].map(t=>`mcp__session_bridge__${t}`);
 // Muse has one connection kind and no app, so a requested Desktop mode is refused rather than coerced.
@@ -793,6 +798,9 @@ export class Masters {
       // coordinator checking that a file it saved is there must not stop to ask (live, 6 Nov 2026).
       if(this.store.get(`managed-worker:${b.id}`)!=='true'&&tool==='Glob')return true;
       if((tool==='Read'||tool==='Grep')&&ownInstructionFile(b,(input as {file_path?:unknown,path?:unknown}|undefined)?.[tool==='Read'?'file_path':'path']))return true;
+      // A photo, PDF or video the owner just sent sits in this session's own incoming folder.
+      // Asking the owner whether it may read what they sent stalled every attachment (Windows test, 7 Nov 2026).
+      if(tool==='Read'&&ownAttachment(b.id,(input as {file_path?:unknown}|undefined)?.file_path))return true;
       const answer=await this.router.approvals.ask(b,`${tool}\n${JSON.stringify(input).slice(0,12000)}`);
       return answer==='approve'&&!this.router.stopped&&!!this.store.binding(b.id)?.enabled;
     },{session_bridge:this.mcpConfig(b)},undefined,rolePointer(this.store,b),

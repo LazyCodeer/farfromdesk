@@ -61,3 +61,20 @@ test('coordinator reminders go through the bridge scheduler, not a timer in its 
   assert.match(route,/schedules\.brainCreate\(/);
   assert.match(policy,/master_reminder action create/);
 });
+
+test('a coordinator may read only files in its own attachment folder without asking',async()=>{
+  const { ownAttachment }=await import('../src/masters.js');
+  const { mkdirSync, writeFileSync }=await import('node:fs');
+  const root=mkdtempSync(join(tmpdir(),'ffd-att-'));
+  try {
+    const mine=join(root,'incoming','b1','h','x');mkdirSync(mine,{recursive:true});writeFileSync(join(mine,'a.pdf'),'x');
+    const other=join(root,'incoming','b2','h','x');mkdirSync(other,{recursive:true});writeFileSync(join(other,'a.pdf'),'x');
+    writeFileSync(join(root,'state.db'),'x');
+    assert.equal(ownAttachment('b1',join(mine,'a.pdf'),root),true);
+    assert.equal(ownAttachment('b1',join(mine,'..','..','..','b2','h','x','a.pdf'),root),false);
+    assert.equal(ownAttachment('b1',join(other,'a.pdf'),root),false);
+    assert.equal(ownAttachment('b1',join(root,'state.db'),root),false);
+    assert.equal(ownAttachment('b1',mine,root),false);
+    assert.equal(ownAttachment('b1',undefined,root),false);
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
