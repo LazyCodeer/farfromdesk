@@ -661,6 +661,9 @@ test('an update about something untracked asks the model for a session, not the 
     // Live, 7 Nov 2026: two sessions with one name, the model picked the paused one.
     f.store.set(`name:${sessions[0].id}`,'AGI');f.store.set(`name:${sessions[1].id}`,'AGI');f.store.db.prepare('UPDATE bindings SET enabled=0 WHERE id=?').run(sessions[0].id);
     assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'task',sessionId:sessions[0].id})),new RegExp(`Use sessionId ${sessions[1].id}`));
+    const seen=brain.visibleSessions(f.router).map((b:any)=>b.id);
+    assert.ok(!seen.includes(sessions[0].id)&&seen.includes(sessions[1].id),'paused twin hidden');
+    assert.ok(seen.includes(f.router.coordinator!.master()!.id),'live coordinator shown');
     assert.match(String(brain.refuse(f.router,{...policy,allowManagement:true},{...decision(),intent:'manage',operation:'add_todo'})),/todo_add/);
   }finally{f.close();}
 });
