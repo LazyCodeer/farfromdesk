@@ -93,7 +93,8 @@ function explicitSessionDispatch(original:string,target:string,body:string):{dir
   if(/\bremind\s+me\b/i.test(original))return;
   const name=normalized(target).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   if(!name)return;
-  const match=new RegExp(`\\b(?:ask|tell)\\s+(?:the\\s+)?(?:session\\s+)?${name}(?:\\s+session)?\\s+to\\s+`,'iu').exec(original);
+  // "Schedule “Client: Acme storefront” to rerun…" and "have Acme rerun…" ask a session as surely as "ask Acme to" (sim, 7 Nov 2026).
+  const match=new RegExp(`\\b(?:ask|tell|have|get|schedule|let)\\s+(?:the\\s+)?(?:session\\s+)?["“'‘]?${name}["”'’]?(?:\\s+session)?\\s+(?:to\\s+)?`,'iu').exec(original);
   // Every qualifier after "ask SESSION to" remains part of the task. A substring
   // such as "deploy" must not replace "check whether it is safe to deploy".
   if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||!cleanAction(original.slice(match.index+match[0].length)))return;
@@ -202,6 +203,8 @@ export class Schedules {
     const snap=this.snapshot(destination),live=!!(snap&&snap.owner===this.owner(destination)&&snap.destination===destination&&snap.expires>this.now());
     const clarify=this.clarification(destination),pending=!!(clarify&&clarify.owner===this.owner(destination)&&clarify.expires>this.now());
     if(asksReminders(text)&&/\b(?:cancel|delete|remove|stop)\b/i.test(text))return false;
+    // "Keep the reminder for 10am with that caption", "label the reminder 9am Singapore time" change one already set: the brain has the tools and the context (sim, 7 Nov 2026).
+    if(/\b(?:the|that|this|my)\s+reminder\b/i.test(text)&&!/\bremind\s+me\b/i.test(text)&&!listCommand(text)&&!cancelCommand(text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
     // "Yes, remind me in 30 minutes" says when, not what: the brain has the conversation it refers to (sim, 7 Nov 2026).
     if(/\bremind\s+me\b/i.test(text)&&!/\bremind\s+me\b.*\b(?:to|about|that|of|for)\b/i.test(text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
     return listCommand(text)||asksReminders(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));

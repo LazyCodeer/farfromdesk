@@ -940,6 +940,8 @@ export class MetaBrain {
         if(scored.length&&scored[0].b.enabled&&(scored.length===1||scored[0].n>scored[1].n))mentioned.push(scored[0].b);
       }
       // "Leave Cursor for now, check the Acme storefront session" names the session; the platform word was not the destination (sim, 7 Nov 2026).
+      // "I'll turn Cursor back on later" beside a named Codex session is an aside, not a platform choice (sim, 7 Nov 2026).
+      if(mentioned.length===1&&named.length&&!named.includes(mentioned[0].provider)){named.length=0;platformConflict=false;}
       if(platformConflict&&mentioned.length===1&&mentioned[0].provider===decision.provider){platformConflict=false;named.length=0;}
       if(platformConflict)throw new Error('Which one should take it? Name the session or the platform.');
       if(mentioned.length>1)throw new Error(`Your message names more than one session (${[...new Set(mentioned.map(b=>this.label(b)))].join(', ')}). Send each one its own message and I'll pass it on. Nothing was sent.`);
