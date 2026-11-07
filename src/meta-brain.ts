@@ -74,6 +74,8 @@ function namedPlatforms(text:string):BrainProvider[] {
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
+// Title words too common to pick a session by themselves.
+const LOOSE_STOP=new Set(['client','session','sessions','with','from','this','that','work','task','tasks','project','repo','code','data','fixes','update','about','into','the']);
 export class MetaBrain {
   readonly memory:BrainMemory;
   readonly owner:OwnerMemory;
@@ -188,7 +190,7 @@ export class MetaBrain {
     const answer=(s:string)=>{this.answer(m.id,s);return true;};
     const policy=brainPolicy(this.store);
     // Model intent is advisory. Explicit negation and quoted instructions cannot authorize a dispatch.
-    if(/\b(?:don['’]?t|do not|never|stop|cancel|not to)\b/i.test(original)||/["“][^"”]*\b(?:ask|ping|check with|request)\b/i.test(original))return answer('No update request was sent. If you want a fresh report, ask me to contact the owning session.');
+    if(/\b(?:don['’]?t|do not|never|not to)\s+(?:ask|ping|contact|check with|bother|disturb|message|request)\b/i.test(original)||/["“][^"”]*\b(?:ask|ping|check with|request)\b/i.test(original))return answer('No update request was sent. If you want a fresh report, ask me to contact the owning session.');
     if(!policy.allowRouting)return answer('Asking sessions for updates is disabled in Meta Settings. Here is the saved status:\n'+this.statusText([item],router));
     const stale=this.memory.attention(item);if(stale)return answer(stale);
     if(!item.jobs.length)return answer(`#${item.id} ${item.title} hasn't been sent to a session yet, so there's no one to ask. Tell me what you want done and I'll send it.`);
@@ -859,6 +861,15 @@ export class MetaBrain {
       const hit=(n:string)=>/[^\x00-\x7f]/.test(n)?said.includes(n):new RegExp(`(?:^|[^a-z0-9])${esc(n)}(?:[^a-z0-9]|$)`).test(said);
       // Any enabled session the owner can see by name counts, connected or not: naming it is as exact as /to (sim, 7 Nov 2026).
       const mentioned=this.store.bindings().filter(b=>b.enabled&&[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
+      // Owners say "the thesis run" or "Acme storefront" for "Thesis plots and data run" / "Client: Acme storefront".
+      // No exact title hit: the one session whose distinctive title words the owner used most wins (sim, 7 Nov 2026).
+      // ponytail: plain word overlap, no stemming or fuzzy spelling; add when typos in names show up in the sim.
+      if(!mentioned.length){
+        const words=(b:Binding)=>[...new Set(norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w))))];
+        // Paused sessions are scored too, so a paused "invoice-a" never hands its work to "invoice-b".
+        const scored=this.store.bindings().map(b=>({b,n:words(b).filter(hit).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
+        if(scored.length&&scored[0].b.enabled&&(scored.length===1||scored[0].n>scored[1].n))mentioned.push(scored[0].b);
+      }
       if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
@@ -888,7 +899,6 @@ export class MetaBrain {
       if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error('The selected platform is paused or denied by your routing policy.');
       coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
-      if(target.id!==mentioned[0]?.id&&!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id))throw new Error('The owning session is not connected. Connect that exact session first.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
       if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);

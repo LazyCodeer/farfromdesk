@@ -660,3 +660,13 @@ test('a status check with no tracked item, a guessed topic id, or a topic owned 
     assert.equal(f.store.job('wa:move')?.binding_id,f.claude.id);
   }finally{f.close();}
 });
+test('a loose session name ("the thesis run") reaches the one session whose title words match, and "do not publish" still asks it',async()=>{
+  const f=fixture(decision('unspecified','Check the thesis run.'));try{
+    f.store.set(`name:${f.claude.id}`,'Thesis plots and data run');
+    await f.router.receive({id:'wa:loose',text:'how is the thesis run going?'});
+    assert.equal(f.store.job('wa:loose')?.binding_id,f.claude.id);
+    f.respond(async()=>({...decision('unspecified','Check thesis, do not publish.'),intent:'update'}));
+    await f.router.receive({id:'wa:np',text:'check the thesis plots, do not publish anything'});
+    assert.equal(f.store.job('wa:np')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
