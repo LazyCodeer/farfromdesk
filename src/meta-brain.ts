@@ -839,8 +839,8 @@ export class MetaBrain {
       // Same reason as `statusText`: the facts are unchanged, the layout is the owner's.
       const listed=rows.map(t=>{
         const title=t.original.replace(/\s+/g,' ').slice(0,100);
-        const alias=t.coordinator_id?this.store.binding(t.coordinator_id)?.alias??'a saved session':undefined;
-        const child=t.evidence.children.map(c=>`${this.store.binding(String(c.binding_id))?.alias??'a saved session'} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
+        const alias=t.coordinator_id?(()=>{const b=this.store.binding(t.coordinator_id!);return b?this.label(b):'a saved session';})():undefined;
+        const child=t.evidence.children.map(c=>`${(()=>{const b=this.store.binding(String(c.binding_id));return b?this.label(b):'a saved session';})()} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
         return `- ${title}${title.length>=100?'...':''} · ${t.status}${alias?` · ${alias}`:''}${child?` · delegated to ${child}`:''}`;
       });
       this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;
