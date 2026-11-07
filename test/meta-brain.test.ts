@@ -647,5 +647,6 @@ test('an update about something untracked asks the model for a session, not the 
     assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:['cloud-server']})),/Set sessionId/);
     assert.equal(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:[],sessionId:sessions[0].id}),undefined);
     assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'manage',operation:'none'})),/intent chat/);
+    assert.match(String(brain.refuse(f.router,{...policy,allowManagement:true},{...decision(),intent:'manage',operation:'add_todo'})),/todo_add/);
   }finally{f.close();}
 });
