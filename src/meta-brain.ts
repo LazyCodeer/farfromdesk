@@ -815,8 +815,9 @@ export class MetaBrain {
     if(decision.intent==='update') {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
       const picked=decision.taskIds.length===1?this.memory.board().find(i=>i.ref===decision.taskIds[0]||this.store.itemOf(decision.taskIds[0])===i.id):undefined;
-      if(!picked){this.stop(m.id,'Which item should I ask about? Ask for your items and name its code, like P1.','clarification');return true;}
-      return this.requestUpdate(router,m,picked,m.text,decision.provider);
+      // No tracked item: the owner never sees item codes, so ask the session itself ("check the cloud server session", sim 7 Nov 2026).
+      if(picked)return this.requestUpdate(router,m,picked,m.text,decision.provider);
+      decision={...decision,intent:'task',taskIds:[]};
     }
     if(decision.intent==='status') {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
@@ -873,9 +874,11 @@ export class MetaBrain {
       const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
       if(!named.length&&!mentioned.length&&decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider))throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
-      if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
+      // A topic id the model guessed wrong, or one owned by another session than the owner now names, starts fresh:
+      // the owner's latest words win over the model's guess (sim, 7 Nov 2026).
+      if(decision.taskIds.length)try{topic=this.memory.resolve(decision.taskIds[0]);}catch{topic=undefined;}
       target=topic?this.memory.owner(topic,router):undefined;
-      if(mentioned.length&&target&&target.id!==mentioned[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
+      if(target&&((mentioned.length&&target.id!==mentioned[0].id)||(provider&&target.provider!==provider))){topic=undefined;target=undefined;}
       // An item nobody owns yet goes to the session the owner named, never the default coordinator.
       target??=mentioned[0];
       // A replaced or paused owner is never silently swapped for the current proxy.

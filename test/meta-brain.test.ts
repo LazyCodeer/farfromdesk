@@ -642,3 +642,21 @@ test('naming a session by the title the owner sees sends it there, connected or 
     assert.equal(f.store.job('wa:named')?.binding_id,f.claude.id);
   }finally{f.close();}
 });
+test('a status check with no tracked item, a guessed topic id, or a topic owned elsewhere goes to the session the owner names',async()=>{
+  const f=fixture();try{
+    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
+    f.respond(async()=>({...decision('unspecified','Check the cloud server.'),intent:'update'}));
+    await f.router.receive({id:'wa:upd',text:'How is the FarFromDesk cloud server session doing?'});
+    assert.equal(f.store.job('wa:upd')?.binding_id,f.claude.id);
+    f.respond(async()=>({...decision('unspecified','Fix it.'),taskIds:['P99']}));
+    await f.router.receive({id:'wa:guess',text:'FarFromDesk cloud server, fix the build'});
+    assert.equal(f.store.job('wa:guess')?.binding_id,f.claude.id);
+    f.respond(async()=>decision('codex','Fix the export.'));
+    await f.router.receive({id:'wa:first',text:'codex, fix the export'});
+    assert.equal(f.store.job('wa:first')?.binding_id,f.codex.id);
+    const ref=(f.router.brain as any).memory.board()[0].ref;
+    f.respond(async()=>({...decision('unspecified','Do it there instead.'),taskIds:[ref]}));
+    await f.router.receive({id:'wa:move',text:'I meant the FarFromDesk cloud server session, do it there'});
+    assert.equal(f.store.job('wa:move')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
