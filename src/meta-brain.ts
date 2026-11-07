@@ -949,7 +949,9 @@ export class MetaBrain {
       const negated=/\b(?:not|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
       const destinationWord=new RegExp(`\\b(?:send(?!\\s+(?:me|us)\\b)|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
       // A session named outside any negation is a clear destination even if another clause says "don't" (sim, 7 Nov 2026).
-      const chosen=mentioned.some(b=>said.split(/[.,;!?\n。，；！？]+/).some(c=>!negated.test(c)&&norm(c).includes(norm(this.label(b)))));
+      // A loose name ("the Acme storefront session") chooses too (sim, 7 Nov 2026).
+      const distinctWords=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));
+      const chosen=mentioned.some(b=>said.split(/[.,;!?\n。，；！？]+/).some(c=>!negated.test(c)&&(norm(c).includes(norm(this.label(b)))||distinctWords(b).some(w=>new RegExp(`(?:^|[^\\p{L}\\p{N}])${w}(?:[^\\p{L}\\p{N}]|$)`,'u').test(norm(c))))));
       // "I didn't give you an example" is not "don't give this to X": soft verbs need a "to" (sim, 7 Nov 2026).
       const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause)&&(!/\b(?:give|pass|hand|assign|send|sent|forward)\b/i.test(clause)||/\b(?:give|pass|hand|assign|send|sent|forward)\b.*\b(?:to|there)\b/i.test(clause)||destinationWord.test(clause.replace(/\b(?:give|pass|hand|assign|send|sent|forward)\b/gi,''))));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
@@ -960,7 +962,8 @@ export class MetaBrain {
       const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
       // An unnamed follow-up the model gave to no session, or to a platform's coordinator, also stays with the conversation (sim, 7 Nov 2026).
       const unsure=decision.provider==='unspecified'||(!!decision.sessionId&&!!c.isCoordinator(decision.sessionId));
-      if(!named.length&&!mentioned.length&&!decision.taskIds.length&&(unsure||decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider))){
+      const topicKnown=decision.taskIds.length===1&&(()=>{try{return !!this.memory.resolve(decision.taskIds[0]);}catch{return false;}})();
+      if(!named.length&&!mentioned.length&&!topicKnown&&(unsure||decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider))){
         // A session named in a recent turn is still the destination (sim, 7 Nov 2026).
         // The session a recent turn named or sent work to is still the destination, newest turn first (sim, 7 Nov 2026).
         const distinct=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));

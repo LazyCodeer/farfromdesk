@@ -202,6 +202,8 @@ export class Schedules {
     const snap=this.snapshot(destination),live=!!(snap&&snap.owner===this.owner(destination)&&snap.destination===destination&&snap.expires>this.now());
     const clarify=this.clarification(destination),pending=!!(clarify&&clarify.owner===this.owner(destination)&&clarify.expires>this.now());
     if(asksReminders(text)&&/\b(?:cancel|delete|remove|stop)\b/i.test(text))return false;
+    // "Yes, remind me in 30 minutes" says when, not what: the brain has the conversation it refers to (sim, 7 Nov 2026).
+    if(/\bremind\s+me\b/i.test(text)&&!/\bremind\s+me\b.*\b(?:to|about|that|of|for)\b/i.test(text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
     return listCommand(text)||asksReminders(text)||candidate(text)||!!(pending&&bareTime(text))||!!(cancelCommand(text)&&(live||/\b(?:reminder|schedule)\b/i.test(text)));
   }
   async handle(router:Router,m:Incoming,ownerIntent:boolean,contractApproved=false):Promise<boolean> {
