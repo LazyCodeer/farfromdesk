@@ -129,7 +129,9 @@ export class BrainMemory {
       // Owners say "pause the Acme one" or "Client: Acme storefront ko pause karo". The model picks the session;
       // code only checks the verb matches and the owner's words name that session (sim, 7 Nov 2026).
       const said=m.text.toLowerCase(),resume=d.operation==='resume_session';
-      const verb=/\b(resume|reconnect|connect|unpause|start again)\b/.test(said)?'resume':/\b(pause|disconnect|stop|hold)\b/.test(said)?'pause':undefined;
+      // The first verb decides: "Pause X. I'll ask you to resume it shortly" is a pause (sim, 7 Nov 2026).
+      const first=/\b(resume|reconnect|connect|unpause|start again|pause|disconnect|stop|hold)\b/.exec(said)?.[1];
+      const verb=first?(/^(pause|disconnect|stop|hold)$/.test(first)?'pause':'resume'):undefined;
       if(verb!==(resume?'resume':'pause'))throw new Error('Say “Pause session NAME” or “Resume session NAME” for one exact session.');
       const words=(b:Binding)=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].flatMap(n=>[n.toLowerCase(),...n.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4)]);
       const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));

@@ -681,3 +681,19 @@ test('a loose session name ("the thesis run") reaches the one session whose titl
     assert.equal(f.store.job('wa:np')?.binding_id,f.claude.id);
   }finally{f.close();}
 });
+
+// Sim, 7 Nov 2026: "Actually, pause that, don't change anything yet" still went to a session.
+test('a hold from the owner sends nothing, even when the model picks a task',async()=>{
+  const f=fixture({...decision(),sessionId:''});try{
+    await f.router.receive({id:'wa:hold',text:"Actually wait, don't change anything yet"});
+    assert.equal(f.store.job('wa:hold'),undefined);assert.match(String((f.out().at(-1) as any).body),/nothing was sent/i);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: "ask each session where it is" was refused or went to one proxy.
+test('one message can ask several sessions, each under its own request',async()=>{
+  const f=fixture();try{
+    (f.model as any).interpret=async(...a:any[])=>{const send=a[10];send(f.codex.id,'where are you?');send(f.claude.id,'where are you?');return {...decision(),intent:'task'};};
+    await f.router.receive({id:'wa:fan',text:'ask each session where it is'});
+    assert.ok(f.store.job('wa:fan~1'));assert.ok(f.store.job('wa:fan~2'));assert.equal(f.store.job('wa:fan'),undefined,'the whole message is not sent again');
+  }finally{f.close();}
+});

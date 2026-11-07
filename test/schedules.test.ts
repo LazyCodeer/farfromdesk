@@ -537,3 +537,12 @@ test('brain-scheduled session work is checked, held for review when reviews are 
     assert.equal(job.binding_id,binding.id);assert.match(job.body,/check PR 20/);
   }finally{f.close();}
 });
+
+// Sim, 7 Nov 2026: "What reminders have I got?" was taken as a bad schedule.
+test('owners can ask for their reminder list in their own words',async()=>{
+  const f=fixture();try{
+    for(const [i,t] of ['What reminders have I got?','what reminders do I have','show me my reminders','any reminders today?'].entries()){
+      await f.send(`l${i}`,t);assert.doesNotMatch(String((f.store.db.prepare('SELECT body FROM outbox ORDER BY rowid DESC LIMIT 1').get() as {body:string}|undefined)?.body),/could not confirm|resend|^undefined$/i,t);
+    }
+  }finally{f.close();}
+});
