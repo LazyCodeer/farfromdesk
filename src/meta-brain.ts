@@ -960,7 +960,11 @@ export class MetaBrain {
     if(d.sessionId&&!c.isCoordinator(d.sessionId)){
       const b=sessions.find(x=>x.id===d.sessionId);
       if(!b)return `sessionId ${d.sessionId} is not one of the sessions: ${list()}.`;
-      return ok(b)?undefined:`${unreachable(this.label(b),b,policy.providers,c.enabled())} Nothing can be sent to it. Tell the owner that with intent chat, or use the session they meant.`;
+      if(ok(b))return;
+      // Two sessions named "AGI", one paused: the model picked the paused one and offered to resume it (live, 7 Nov 2026).
+      const twin=sessions.find(x=>x.id!==b.id&&ok(x)&&this.label(x)===this.label(b));
+      if(twin)return `${b.id} is paused, but ${twin.id} has the same name (${this.label(twin)}) and can take it. Use sessionId ${twin.id}.`;
+      return `${unreachable(this.label(b),b,policy.providers,c.enabled())} Nothing can be sent to it. Tell the owner that with intent chat, or use the session they meant.`;
     }
     if(sessions.filter(ok).length>1)return `Set sessionId to the session that should do this: ${list()}. If the owner's words and the conversation don't say which, use intent clarify and ask them.`;
   }

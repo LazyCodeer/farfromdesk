@@ -658,6 +658,9 @@ test('an update about something untracked asks the model for a session, not the 
     assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:['cloud-server']})),/Set sessionId/);
     assert.equal(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:[],sessionId:sessions[0].id}),undefined);
     assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'manage',operation:'none'})),/intent chat/);
+    // Live, 7 Nov 2026: two sessions with one name, the model picked the paused one.
+    f.store.set(`name:${sessions[0].id}`,'AGI');f.store.set(`name:${sessions[1].id}`,'AGI');f.store.db.prepare('UPDATE bindings SET enabled=0 WHERE id=?').run(sessions[0].id);
+    assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'task',sessionId:sessions[0].id})),new RegExp(`Use sessionId ${sessions[1].id}`));
     assert.match(String(brain.refuse(f.router,{...policy,allowManagement:true},{...decision(),intent:'manage',operation:'add_todo'})),/todo_add/);
   }finally{f.close();}
 });
