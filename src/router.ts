@@ -241,7 +241,11 @@ export class Router {
         // Selection may come from a channel-authenticated button or a typed
         // reply. Only a successful claim actually changes the selected target.
         if(this.store.get(targetKey)!==previousTarget||this.store.get(choiceKey)!==previousChoice){this.guidedModes.retarget(this);}
-        this.store.output(undefined,targetReply+'\n\n'+this.guidedModes.summary(this,{...m,quotedId:undefined,ownerCommand:true}),`command:${m.id}`,undefined,{plain:true});this.store.remember(m.id);return {status:'handled',requestId:m.id};
+        // An empty reply means the handler already answered (a pass-it-on tap sends its own note under
+        // command:<id>). Writing the mode line there too clashed with that note, or sent a bare
+        // "Mode: General" (Windows test, 7 Nov 2026).
+        if(targetReply)this.store.output(undefined,targetReply+'\n\n'+this.guidedModes.summary(this,{...m,quotedId:undefined,ownerCommand:true}),`command:${m.id}`,undefined,{plain:true});
+        this.store.remember(m.id);return {status:'handled',requestId:m.id};
       }
       if(m.quotedId&&(m.optionToken||m.source!=='voice'&&/^\d+$/.test(text))){
         const input={responseId:m.id,destination:this.store.destination()??'',messageId:m.quotedId,token:m.optionToken,number:Number(text)};

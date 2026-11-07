@@ -78,3 +78,8 @@ test('a coordinator may read only files in its own attachment folder without ask
     assert.equal(ownAttachment('b1',undefined,root),false);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+
+test('a pass-it-on tap that already answered gets no second, empty command reply',()=>{
+  const src=readFileSync(new URL('../src/router.ts',import.meta.url),'utf8');
+  assert.ok(src.includes("if(targetReply)this.store.output(undefined,targetReply+"));
+});
