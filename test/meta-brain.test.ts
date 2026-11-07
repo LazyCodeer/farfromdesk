@@ -718,3 +718,19 @@ test('"brief now" is never read as a schedule',()=>{
   assert.ok(briefNow('brief now'));assert.ok(briefNow('send me the brief now please'));
   assert.ok(!briefNow('send my brief every weekday at 8am'));assert.ok(!briefNow('what is a brief'));
 });
+// Sim, 7 Nov 2026: follow-ups to a chat answer went to the closed Codex coordinator.
+test('a follow-up to a chat answer bound for a platform gets a second look',async()=>{
+  const f=fixture();try{let n=0;
+    (f.model as any).interpret=async()=>{n++;return n===1?{...decision(),intent:'chat',reply:'Tokyo is UTC+9.'}:n===2?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Sydney is UTC+11.'};};
+    await f.router.receive({id:'wa:tz1',text:'What time zone is Tokyo?'});
+    await f.router.receive({id:'wa:tz2',text:'And Sydney?'});
+    assert.equal(n,3);assert.equal(f.store.job('wa:tz2'),undefined);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: "send me a short summary" was read as a destination and the task was refused as ambiguous.
+test('"send me" in a task is not read as naming a destination',async()=>{
+  const f=fixture();try{
+    await f.router.receive({id:'wa:sendme',text:'Fix the flaky login test — then send me a short summary.'});
+    assert.ok(f.store.job('wa:sendme')||f.store.db.prepare("SELECT 1 FROM inbox WHERE body LIKE '%flaky login%'").get());
+  }finally{f.close();}
+});

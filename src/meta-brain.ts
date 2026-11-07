@@ -308,6 +308,7 @@ export class MetaBrain {
     this.store.set(`brain-topic:${destination}`,item.ref);
     const job=item.jobs[0];
     if(!job)return answer('This task has not been sent to a session yet. I cannot watch for completion until it starts.');
+    if(this.store.db.prepare('SELECT 1 FROM brain_watches WHERE destination=? AND item_id=?').get(destination,item.id))return answer(`Already watching #${item.id}. I'll message you when it finishes or needs you.`);
     this.store.db.prepare("INSERT OR IGNORE INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)").run(m.id,destination,item.id,job.id,Date.now());
     return answer(`I’ll notify you when #${item.id} has a completion report or needs attention. The app must be running and connected.`);
   }
@@ -782,8 +783,9 @@ export class MetaBrain {
       const here=/\b(?:answer (?:it |this )?here|you answer|i meant you|not (?:the |a |to )?(?:\w+ )?(?:session|codex|claude|cursor)|don'?t (?:want to )?queue)\b/i.test(m.text);
       // Pictures and rewrites still went to the platform's coordinator, which answers nothing when closed (sim, 7 Nov 2026).
       // A task for no particular project session, on a platform the owner did not name, gets one second look.
+      // A follow-up to an answer given here ("add a third tool", "what about Sydney?") is usually more of the same (sim, 7 Nov 2026).
       const generic=!decision.sessionId||router.coordinator?.isCoordinator(decision.sessionId);
-      if(decision.intent==='task'&&!decision.taskIds.length&&(here||generic&&!namedPlatforms(m.text).length&&mode?.kind!=='social'&&/\b(?:image|picture|photo|poster|logo|draft|rewrite|reword|punchier|shorter|caption|post|tweet|email|explain|what is|how do)\b/i.test(m.text)&&!/\b(?:repo|code|bug|test|build|deploy|commit|branch|file|function)\b/i.test(m.text))){
+      if(decision.intent==='task'&&!decision.taskIds.length&&(here||generic&&!namedPlatforms(m.text).length&&mode?.kind!=='social'&&(/\b(?:image|picture|photo|poster|logo|draft|rewrite|reword|punchier|shorter|caption|post|tweet|email|explain|what is|how do)\b/i.test(m.text)||this.conversation(m.id).at(-1)?.state==='answered')&&!/\b(?:repo|code|bug|test|build|deploy|commit|branch|file|function)\b/i.test(m.text))){
         const again=await ask(`${m.text}\n\n(${here?'The owner wants you to answer this yourself in chat. Use intent chat.':'Before sending this to a coding session: if you can do it yourself here (an answer, writing or rewriting, a picture with make_image, a reminder, a to-do, PR status), do it and use intent chat. Use task only when it needs the owner\'s code, files or a project session.'})`).catch(()=>undefined);
         if(again&&again.intent!=='task')decision=again;
       }
@@ -916,8 +918,8 @@ export class MetaBrain {
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
       const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
-      const destinationWord=new RegExp(`\\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
-      const ambiguous=said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
+      const destinationWord=new RegExp(`\\b(?:send(?!\\s+(?:me|us)\\b)|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
+      const ambiguous=said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
@@ -936,8 +938,10 @@ export class MetaBrain {
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
       if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
+      // A follow-up with no session named goes where the conversation was, not to the Codex coordinator (sim, 7 Nov 2026).
+      if(!target&&!provider){const ref=this.store.get(`brain-topic:${this.store.destination()}`);const job=ref?this.memory.board().find(i=>i.ref===ref)?.jobs.at(-1):undefined;const b=job?this.store.binding(String(job.binding_id)):undefined;if(b?.enabled&&!c.isCoordinator(b.id))target=b;}
       if(!target)target=provider?c.registry.choose(provider,/\bdesktop\b/i.test(m.text)?'desktop':/\bcli\b/i.test(m.text)?'cli':undefined):c.master();
-      if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error('The selected platform is paused or denied by your routing policy.');
+      if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error(!target?'No session can take this right now.':!target.enabled?`${this.label(target)} is paused. Say "resume ${this.label(target)}" to send work to it.`:`${target.provider[0].toUpperCase()+target.provider.slice(1)} is switched off for the brain in Settings.`);
       coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
