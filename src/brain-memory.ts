@@ -133,14 +133,19 @@ export class BrainMemory {
     if(d.operation==='pause_session'||d.operation==='resume_session') {
       // Owners say "pause the Acme one" or "Client: Acme storefront ko pause karo". The model picks the session;
       // code only checks the verb matches and the owner's words name that session (sim, 7 Nov 2026).
-      const said=m.text.toLowerCase(),resume=d.operation==='resume_session';
+      // "Yes, resume it" answers the bot's own "Want me to resume final testing first?" (live, 7 Nov 2026): the session
+      // name, and for a bare yes the verb, may come from that question if it was the last thing sent, within 10 minutes.
+      const last=this.store.db.prepare('SELECT body,created_at FROM outbox WHERE destination IS ? ORDER BY rowid DESC LIMIT 1').get(this.store.destination()) as {body?:string;created_at?:number}|undefined;
+      const prev=String(last?.body??''),recent=Number(last?.created_at??0)>Date.now()-600000&&prev.split('\n\n')[0]!.trim().endsWith('?');
+      const own=m.text.toLowerCase(),yes=recent&&own.length<=40&&/^(?:yes|yeah|yep|ok(?:ay)?|sure|haan?|do it|go ahead)\b/.test(own);
+      const said=yes?prev.toLowerCase():own,named=recent?own+' '+prev.toLowerCase():own,resume=d.operation==='resume_session';
       // The first verb decides: "Pause X. I'll ask you to resume it shortly" is a pause (sim, 7 Nov 2026).
       const first=/\b(resume|reconnect|connect|unpause|start again|pause|disconnect|stop|hold)\b/.exec(said)?.[1];
       const verb=first?(/^(pause|disconnect|stop|hold)$/.test(first)?'pause':'resume'):undefined;
       // "Mark Portfolio as paused" in a status line is not a pause (sim, 7 Nov 2026).
       if(verb!==(resume?'resume':'pause'))throw new Error(`I didn't ${resume?'resume':'pause'} anything. To change a session, say “${resume?'Resume':'Pause'}” and its name.`);
       const words=(b:Binding)=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].flatMap(n=>[n.toLowerCase(),...n.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4)]);
-      const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
+      const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>named.includes(w)));
       if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
       if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error(unreachable(this.store.get(`name:${b.id}`)??b.alias,{...b,enabled:1},policy.providers??[],router.coordinator?.enabled()??[]));

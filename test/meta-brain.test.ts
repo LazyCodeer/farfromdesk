@@ -278,6 +278,17 @@ test('"pause the NAME session" works and a paused coordinator can resume itself'
     await f.router.receive({id:'wa:resume-c',text:'resume session Mobile app'});assert.equal(f.store.binding(f.claude.id)?.enabled,1);
   }finally{f.close();}
 });
+// Live, 7 Nov 2026: "Yes, resume it" after the bot asked "Want me to resume final testing first?" was refused.
+test('a yes to the bot\'s own resume question resumes the session it named',async()=>{
+  const f=fixture();try{
+    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});f.store.set(`name:${f.claude.id}`,'final testing');
+    f.respond(async()=>({...decision(),intent:'manage',operation:'pause_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:p1',text:'pause the final testing session'});assert.equal(f.store.binding(f.claude.id)?.enabled,0);
+    f.store.output(f.claude,'The final testing session is paused. Want me to resume it first?','test-q',f.store.destination());
+    f.respond(async()=>({...decision(),intent:'manage',operation:'resume_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:y1',text:'Yes please'});assert.equal(f.store.binding(f.claude.id)?.enabled,1);
+  }finally{f.close();}
+});
 test('a rejected key tells the owner to replace it',async()=>{
   const f=fixture();try{
     f.respond(async()=>{throw Object.assign(new Error('Meta interpretation unavailable.'),{code:'authentication_required'});});

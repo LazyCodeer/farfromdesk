@@ -282,8 +282,13 @@ export class MetaBrain {
       out.push(`- State: ${r.state}`);
       if(r.asked)out.push(`- It asked: "${r.asked}"`);
     }else if(rows.length){
-      out.push(`📋 *${rows.length} tasks*`);
-      for(const r of rows)out.push(`- ${r.title}${[r.session,r.state].filter(Boolean).length?` · ${[r.session,r.state].filter(Boolean).join(' · ')}`:''}${r.asked?` · it asked: "${r.asked}"`:''}`);
+      // A status question listed all 22 board rows, most long finished (live, 7 Nov 2026). Open work first, capped;
+      // finished rows become one count line.
+      const finished=(r:typeof rows[number])=>/reported finished|^done/.test(r.state),open=rows.filter(r=>!finished(r)),shown=open.slice(0,6),done=rows.length-open.length;
+      out.push(open.length?`📋 *${open.length} open task${open.length===1?'':'s'}*`:'📋 Nothing open.');
+      if(open.length>shown.length)out.push(`(showing ${shown.length} of ${open.length})`);
+      if(done)notes.unshift(`${done} more reported finished.`);
+      for(const r of shown)out.push(`- ${r.title}${[r.session,r.state].filter(Boolean).length?` · ${[r.session,r.state].filter(Boolean).join(' · ')}`:''}${r.asked?` · it asked: "${r.asked}"`:''}`);
     }
     out.push(...notes);
     return out.join('\n')||'No matching tracked tasks.';
