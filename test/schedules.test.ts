@@ -552,3 +552,10 @@ test('owners can ask for their reminder list in their own words',async()=>{
     }
   }finally{f.close();}
 });
+
+// Sim, 7 Nov 2026: a condition with no clock time got "resend the complete reminder".
+test('a reminder on a condition with no time is left to the brain',async()=>{
+  const f=fixture();try{
+    assert.equal(f.schedules.shouldHandle(f.router,{id:'c1',text:'remind me to review #79 when Codex is back',ownerCommand:true} as any,true),false);
+  }finally{f.close();}
+});

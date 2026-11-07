@@ -23,6 +23,8 @@ function containsExact(text:string,part:string) {
 const candidate=(s:string)=>{
   // "check my reminders" is a question about Apple Reminders, not a schedule to create: the word
   // alone took it here and the owner got "I could not confirm that schedule" (live, 4 November 2026).
+  // "remind me to review #79 when Codex is back" has no clock time; the brain explains and offers one (sim, 7 Nov 2026).
+  if(/\bremind\s+me\b/i.test(s)&&/\b(?:when|once|after|as soon as)\b/i.test(s)&&!/\b(?:at|on|every|daily|tomorrow|tonight|today|in\s+\d+|noon|midnight|morning|evening)\b|\d\s*(?:a\.?m|p\.?m)\b|\d:\d\d/i.test(s))return false;
   if(/\bremind\s+me\b/i.test(s)||/\breminders?\b/i.test(s)&&/\b(?:at|on|every|daily|tomorrow|tonight|in\s+\d+)\b|\d\s*(?:a\.?m|p\.?m)\b/i.test(s)||/^(?:(?:every|each)\s+(?:day|weekday)|daily|weekdays)\b.*\b(?:send|remind|check|ask)\b/i.test(s))return true;
   const past=/^(?:at|on)\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\s+(?:(?:i|we|he|she|they)|(?:the|a|an)\s+[a-z0-9_-]+)\s+(?:saw|noticed|observed|experienced|received|found|encountered|reported|heard|had|was|were|went|broke|fell|crashed|failed|stopped|disconnected|restarted)\b[^.!?]*[.!?]/i.exec(s);
   if(past&&!/\b(?:at|on)\s+\d|\b(?:later|tomorrow|tonight|next\s+\w+|after|before|remind|schedule)\b/i.test(s.slice(past[0].length)))return false;
