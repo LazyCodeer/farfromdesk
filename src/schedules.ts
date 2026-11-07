@@ -215,6 +215,11 @@ export class Schedules {
     try{return await this.handleOnce(router,m,ownerIntent,contractApproved);}
     catch(error){
       if(!this.store.incomingOwnerCurrent())return true;
+      // The fixed parser only knows a few shapes ("remind me about X tomorrow at 3:15pm", "9am Berlin" failed, sim 7 Nov 2026).
+      // A plain reminder to the owner it can't read goes to the brain, whose reminder tool works the time out. Session work,
+      // negations and anything the brain can't do stay refused here.
+      const msg=error instanceof Error?error.message:'';
+      if(/specify one time|could not interpret|remind me at TIME|resend the complete reminder|could not confirm that schedule/i.test(msg)&&!/\b(?:ask|tell|have|get|let)\s+\S/i.test(m.text)&&!/\b(?:do\s+not|don['’]?t|never)\b/i.test(m.text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
       // A short response to a validation error must not be delivered as a session task.
       if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000,text:m.text.slice(0,2000)}));
       throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Nothing was scheduled.`);
@@ -251,7 +256,8 @@ export class Schedules {
     const action=decision.action as Action;let body=decision.text.trim(),timingText=text;
     if(action!=='brief'&&(!body||body.length>MAX_TEXT||!normalized(text).includes(normalized(body))))throw new Error('Please state the exact reminder or session request in your message.');
     if(action==='message'){
-      const directive=reminderDirective(text,body);if(!directive)throw new Error('Please say "remind me at TIME to" followed by the complete reminder.');timingText=directive.directive;body=directive.action;
+      // The model's shortened text is not trusted; the owner's own words after "remind me" are what gets saved (sim, 7 Nov 2026).
+      const rm=REMIND.exec(text),directive=reminderDirective(text,body)??(rm?reminderDirective(text,ownAction(text.slice(rm.index+rm[0].length))):undefined);if(!directive)throw new Error('Please say "remind me at TIME to" followed by the complete reminder.');timingText=directive.directive;body=directive.action;
     }
     if(action==='brief'){
       const directive=briefDirective(text);if(directive===undefined)throw new Error('Please explicitly ask me to send your brief. A reminder alone will not send it.');timingText=directive;

@@ -269,9 +269,10 @@ test('a model cannot remove qualifiers from an explicitly authorized session act
 
 test('a model cannot remove qualifiers from reminder text',async()=>{
   const f=fixture();try{
+    // The model's shortened "deploy production" is ignored: the owner's full words are what gets saved.
     f.setDecision({text:'deploy production'});
-    await assert.rejects(f.send('1','Remind me at 6 PM to check whether it is safe to deploy production'),/complete reminder/);
-    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
+    await f.send('1','Remind me at 6 PM to check whether it is safe to deploy production');
+    assert.equal(f.store.db.prepare('SELECT text FROM schedules').get()?.text,'check whether it is safe to deploy production');
   }finally{f.close();}
 });
 
@@ -475,7 +476,9 @@ test('natural reminder wording is accepted with the owner text kept exactly', as
     const rows = f.store.db.prepare('SELECT text,date,time FROM schedules ORDER BY created_at').all() as { text: string; date: string; time: string }[];
     assert.deepEqual(rows.map(r => [r.text, r.date, r.time]), [['meta hackathon submission', '2026-10-30', '10:00'], ['call mom', '2026-10-30', '17:00']]);
     f.setDecision({ text: 'buy 2 milk', time: '02:00' });
-    await assert.rejects(f.send('3', 'remind me to buy 2 milk'), /time/i, 'a bare number inside the reminder is not a time');
+    // With no time the fixed parser hands it to the brain, which asks for one; it never saves 2 o'clock.
+    await f.send('3', 'remind me to buy 2 milk').catch(()=>{});
+    assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE text='buy 2 milk'").get()?.n, 0, 'a bare number inside the reminder is not a time');
     // Sim, 7 Nov 2026: no "to", and a trailing aside.
     f.setDecision({ text: 'school pickup', date: '2026-10-30', time: '15:15' });
     await f.send('4', 'Remind me school pickup tomorrow at 3:15pm pls, got to run 🏃');

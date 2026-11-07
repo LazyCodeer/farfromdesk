@@ -63,8 +63,8 @@ test('the list has To do, In progress and Done sections with codes that route fo
     for(const id of [4,5,6,7,8,9])items.setStatus(id,'done');
     const text=items.text();
     assert.match(text,/^1 to do, 2 in progress \(1 need the owner or are blocked\), 6 done\./);
-    assert.match(text,/\*To do\*\nT1 ⚪ Task 1 · no session \(#1\)/);
-    assert.match(text,/\*In progress\*\nP1 ⛔ Task 3 · blocked · no session \(#3\)\nP2 🛠️ Task 2/);
+    assert.match(text,/\*To do\*\nT1 ⚪ Task 1\n/);
+    assert.match(text,/\*In progress\*\nP1 ⛔ Task 3 · blocked\nP2 🛠️ Task 2/);
     assert.match(text,/\*Done, latest 5 of 6\*\nD1 ✅ Task 9[\s\S]*…and 1 older/);
     const codes=JSON.parse(store.get('item-codes')!);
     assert.equal(codes.P2,2);assert.equal(codes.D1,9);assert.equal(codes.D6,undefined);
