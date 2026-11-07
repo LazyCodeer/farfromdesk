@@ -110,8 +110,12 @@ export class BrainMemory {
       // correctly and this literal check did not accept the phrasing.
       const match=/^(?:please\s+)?(?:add (?:a )?(?:to-do|todo|task)|remember(?: this)?(?: task)?|don'?t (?:let me )?forget)[ :]+(?:to\s+)?([\s\S]+)$/i.exec(m.text.trim());
       if(!match)throw new Error('To save without starting work, say “Add todo: …”.');
-      const item=this.add(m.id,match[1]);
-      return `Saved #${item.id}: ${item.title}. Status: not started. No session was dispatched.`;
+      // "add todos: X; Y" or one per line saves each (sim, 7 Nov 2026: refused as "one list change per message").
+      // ponytail: only lines, semicolons and numbered/bulleted lists split; "call mom and dad" stays one item.
+      const titles=match[1].split(/\n|;|\s(?=\d+[.)]\s)/).map(t=>t.replace(/^\s*(?:[-*•]|\d+[.)])\s*/,'').trim()).filter(Boolean);
+      const items=titles.map((t,i)=>this.add(i?`${m.id}#${i}`:m.id,t));
+      return items.length===1?`Saved #${items[0].id}: ${items[0].title}. Status: not started. No session was dispatched.`
+        :`Saved ${items.length} to-dos:\n${items.map(i=>`#${i.id}: ${i.title}`).join('\n')}\nStatus: not started. No session was dispatched.`;
     }
     if(d.operation==='set_todo') {
       const match=/^(?:please\s+)?(?:mark|set) (.+?) (?:as|to) (not started|in progress|waiting on owner|blocked|done)[.!]?$/i.exec(m.text.trim());

@@ -226,6 +226,8 @@ test('owner can save a todo without dispatch, update it, and recover it from dis
     saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
     await f.router.receive({id:'wa:todo',text:'Add todo: improve invoice export'});
     assert.equal(f.store.jobs().length,0);const item=f.router.brain.memory.board()[0];assert.equal(item.title,'improve invoice export');assert.equal(item.status,'not started');
+    await f.router.receive({id:'wa:todos',text:'Add todo: book flights; renew passport'});
+    assert.deepEqual(f.router.brain.memory.board().map(i=>i.title).filter(t=>/flights|passport/.test(t)).sort(),['book flights','renew passport']);
     // The same operation, said the way the owner actually says it. Live on 2393 the phrase below
     // answered 'To save without starting work, say "Add todo: …".', because the model read the
     // intent and this literal check refused the wording.
