@@ -941,7 +941,8 @@ export class MetaBrain {
   /** Checks a task's destination inside the model's loop. The returned sentence goes back to the model to fix. */
   private refuse(router:Router,policy:BrainPolicy,d:Interpretation):string|undefined {
     const c=router.coordinator;
-    if(d.intent!=='task'||d.taskIds.length||!c||this.decidesContracts(router)&&this.pendingContract(router))return;
+    // An update with no tracked item is sent to a session as a task, so it needs a session too (sim, 7 Nov 2026).
+    if(!(d.intent==='task'||d.intent==='update')||d.taskIds.length||!c||this.decidesContracts(router)&&this.pendingContract(router))return;
     const sessions=this.memory.candidates(router).filter(b=>!c.isCoordinator(b.id));
     const ok=(b:Binding)=>!!b.enabled&&policy.providers.includes(b.provider)&&c.enabled().includes(b.provider);
     const list=()=>sessions.map(b=>`${b.id} (${this.label(b)}${ok(b)?'':', off'})`).join('; ');
