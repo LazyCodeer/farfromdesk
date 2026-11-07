@@ -219,9 +219,10 @@ export class Schedules {
       if(!this.store.incomingOwnerCurrent())return true;
       // The fixed parser only knows a few shapes ("remind me about X tomorrow at 3:15pm", "9am Berlin" failed, sim 7 Nov 2026).
       // A plain reminder to the owner it can't read goes to the brain, whose reminder tool works the time out. Session work,
-      // negations and anything the brain can't do stay refused here.
+      // negations and anything the brain can't do stay refused here. Session work goes too: the brain
+      // has a session-schedule tool ("at 6pm ask the cloud server session…" got "resend the complete reminder", sim 7 Nov 2026).
       const msg=error instanceof Error?error.message:'';
-      if(/specify one time|could not interpret|remind me at TIME|resend the complete reminder|could not confirm that schedule/i.test(msg)&&!/\b(?:ask|tell|have|get|let)\s+\S/i.test(m.text)&&!/\b(?:do\s+not|don['’]?t|never)\b/i.test(m.text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
+      if(/specify one time|could not interpret|remind me at TIME|resend the complete reminder|could not confirm that schedule/i.test(msg)&&!/\b(?:do\s+not|don['’]?t|never)\b/i.test(m.text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
       // A short response to a validation error must not be delivered as a session task.
       if(destination&&this.context(destination,owner,channel))this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000,text:m.text.slice(0,2000)}));
       throw new Error(`${error instanceof Error?error.message:'I could not save that schedule.'} Nothing was scheduled.`);
@@ -253,6 +254,7 @@ export class Schedules {
     if(router.stopped||!this.store.incomingOwnerCurrent()||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
     // An explicit time-shaped request must never fall through into immediate work.
     if(decision.kind==='not_schedule'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'I could not confirm that schedule. Please resend the complete request with its time and action. Nothing was sent.');return true;}
+    if(decision.kind==='clarify'&&/\b(?:ask|tell|have|get|let)\s+\S/i.test(text)&&brainPolicy(this.store).enabled&&this.secret.present()&&!/\b(?:do\s+not|don['’]?t|never)\b/i.test(text))return false;
     if(decision.kind==='clarify'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000,text:m.text.slice(0,2000)}));this.answer(m,'Please resend the complete reminder with its date, time and action, and the session if needed. Nothing has been scheduled.');return true;}
     if(decision.kind!=='create'||!['message','brief','session'].includes(decision.action))throw new Error('I could not safely identify the reminder. Please say the time and action again.');
     const action=decision.action as Action;let body=decision.text.trim(),timingText=text;

@@ -799,7 +799,7 @@ export class MetaBrain {
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:async(url,browser)=>{this.ack(m,browser);this.armed.delete(m.id);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
         focusTab:match=>{this.ack(m,`the ${match} tab`);this.armed.delete(m.id);return this.focusTabFor(m,match);},
-      }:undefined,{briefNow:async()=>{const d=this.store.destination();if(!d)return 'No chat to send it to.';const r=await router.morningBrief?.request(d,'first-message');return r===false?'The brief could not be sent now (it may be off in Settings or already sent).':'Sent the brief.';},create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},mode?.kind==='social'?undefined:prompt=>this.makeImageFor(m,key,prompt),policy.allowManagement?{
+      }:undefined,{briefNow:async()=>{const d=this.store.destination();if(!d)return 'No chat to send it to.';const r=await router.morningBrief?.request(d,'first-message');return r===false?'No brief was sent (today\'s was already sent, or briefs are off in Settings). Do not tell the owner a brief was sent. Answer from the tasks and sessions you know, and offer to ask all sessions for an update.':'Sent the brief.';},create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},mode?.kind==='social'?undefined:prompt=>this.makeImageFor(m,key,prompt),policy.allowManagement?{
         add:t=>{const i=this.memory.add(`${m.id}#${t.slice(0,40)}`,t);return `Saved #${i.id}: ${i.title}`;},
         set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
         list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined,
@@ -901,7 +901,6 @@ export class MetaBrain {
     let target:Binding|undefined,coordinator:Binding|undefined,topic:ReturnType<BrainMemory['resolve']>|undefined;
     try {
       // Where it goes is the model's decision (sessionId), checked by refuse() inside its loop. These checks only keep it safe.
-      if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       if(decision.taskIds.length)try{topic=this.memory.resolve(decision.taskIds[0]);}catch{topic=undefined;}
       target=topic?this.memory.owner(topic,router):undefined;
       const picked=decision.sessionId?this.store.binding(decision.sessionId):undefined;

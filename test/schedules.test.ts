@@ -601,3 +601,11 @@ test('zone aliases are the same zone',async()=>{
   assert.ok(zoneSaid('at 6pm Pacific Time','America/Los_Angeles'));assert.ok(zoneSaid('9am PST','America/Los_Angeles'));assert.ok(zoneSaid('9am Singapore time','Asia/Singapore'));assert.ok(!zoneSaid('at 6pm','America/Los_Angeles'));assert.ok(!zoneSaid('9am Spacific','America/Los_Angeles'));
   assert.ok(sameZone('Asia/Calcutta','Asia/Kolkata'));assert.ok(!sameZone('Europe/London','Asia/Kolkata'));assert.ok(!sameZone('Nope/Zone','Asia/Kolkata'));assert.ok(!sameZone(undefined,'Asia/Kolkata'));
 });
+// Sim, 7 Nov 2026: "At 6pm, ask the cloud server session to run the tests" got "resend the complete reminder".
+test('session work the fixed parser cannot read goes to the brain',async()=>{
+  const f=fixture();try{
+    f.setDecision({kind:'clarify'});
+    assert.equal(await f.send('1','At 6pm, ask the cloud server session to run the tests'),false);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM schedules').get()?.n,0);
+  }finally{f.close();}
+});
