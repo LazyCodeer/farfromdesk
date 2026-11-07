@@ -231,7 +231,7 @@ export class Schedules {
     }
     if(action==='brief'){
       const directive=briefDirective(text);if(directive===undefined)throw new Error('Please explicitly ask me to send your brief. A reminder alone will not send it.');timingText=directive;
-      if(channel!=='whatsapp')throw new Error('Scheduled briefs are available in your WhatsApp self-chat.');
+      if(channel!=='whatsapp'&&channel!=='telegram')throw new Error('Scheduled briefs are available in your own chat.');
       if(!router.scheduledBrief)throw new Error('Scheduled briefs are not available yet. No reminder was created.');
     }
     let binding:Binding|undefined;
@@ -359,7 +359,7 @@ export class Schedules {
     if(!destination||!this.context(destination,owner,channel))return 'Reminders work only in your own chat. Nothing was scheduled.';
     const kind=input.kind==='brief'?'brief':'message',text=input.text.trim().replace(/\s+/g,' ');
     if(kind==='message'&&(!text||text.length>MAX_TEXT))return 'Say what the reminder should say. Nothing was scheduled.';
-    if(kind==='brief'&&(channel!=='whatsapp'||!router.scheduledBrief))return 'Scheduled briefs work only in your WhatsApp self-chat. Nothing was scheduled.';
+    if(kind==='brief'&&(!['whatsapp','telegram'].includes(channel??'')||!router.scheduledBrief))return 'Scheduled briefs work only in your own chat. Nothing was scheduled.';
     const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
     const {date,time,zone,repeat,next}=t,now=this.now();
     if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active reminders. Cancel one first.';

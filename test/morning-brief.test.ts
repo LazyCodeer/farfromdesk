@@ -711,3 +711,10 @@ test('later hides an item for the rest of the current local day and returns it t
     assert.match(next.body,/Task/);
   }finally{f.close();}
 });
+test('the scheduled brief works in the Telegram owner chat too',async()=>{
+  const f=setup();try{
+    f.store.set('telegram-owner','tg:123');f.store.set('control-channel','telegram');
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);
+    assert.equal(await brief.scheduledBrief('tg:123','tg:123','occurrence-tg'),'queued');assert.equal(sourceRows(f.store).length,1);
+  }finally{f.close();}
+});
