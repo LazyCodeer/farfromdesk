@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { generateText, tool, hasToolCall, stepCountIs } from 'ai';
+import { generateText } from 'ai';
+import { runLoop, prune, type Message, type Tool } from './agent-loop.js';
+type Spec={description:string;inputSchema:z.ZodType;execute?:(input:any)=>unknown};
+const tool=<S extends z.ZodType>(t:{description:string;inputSchema:S;execute?:(input:z.infer<S>)=>unknown}):Spec=>t;
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { META_ENDPOINT, type BrainPolicy } from './meta-brain-config.js';
 import { DevicePlan } from './brain-device.js';
@@ -32,7 +35,7 @@ export const BRAIN_PROMPT=`You are the FarFromDesk brain. The owner sends short 
 - When the owner asks when sessions last did something, answer as chat from sessions lastActiveUtc, converted to the time zone they name (else the zone in now); a session without it has no activity recorded here yet; say exactly that, never "never active".
 - status: the owner wants what is already known ("where are we", "any update", "what's pending", "list my items"). Select relevant taskIds, or [] for all.
 - update: the owner wants a session asked right now ("ask codex for an update", "check with that session", "ping it"). Select exactly one taskId. This only asks for a report and never restarts or continues work.
-- task: new work, a follow-up instruction for an existing item ("also add tests to P1"), or any question that needs a look at the owner's sessions, files, repos, builds, tests or PRs ("list my codex sessions", "is the build passing"). Those need a session to look. For a follow-up select exactly one taskId. For new work use [].
+- task: new work, a follow-up instruction for an existing item ("also add tests to P1"), or any question that needs a look at the owner's sessions, files, repos, builds, tests or PRs ("list my codex sessions", "is the build passing"). Those need a session to look. For a follow-up select exactly one taskId. For new work use []. Set sessionId to the id (from sessions) of the session that should do it: the one the owner names, or the one this conversation is already working with. If neither the message nor the conversation makes it clear, use clarify and ask which session.
 - manage: an explicit request to add a to-do (add_todo), change an item's status (set_todo, with itemStatus), or pause/resume forwarding to a named registered session (pause_session/resume_session, with sessionId). "Connect/disconnect a session" means resume/pause forwarding, never logging out of an account. "Pause/resume <session name>" is always manage with that session's id from sessions, never a task sent to a session. Unknown sessions or creating a session is a task, not manage.
 - device: only when deviceControl is "brain", and the owner asks you to do something on the Mac itself rather than in a coding session ("open Comet", "what is on my screen", "click Compose in Comet", "type hello in Notes", "press escape"). Set device and leave every other field unused. Name an app from devices, or any installed app name for open_app. Never invent a window title, a label or a key: if what to act on is not in devices, use clarify. When the owner asks you to write something and names no app, use lastDeviceApp if it is set. If one of the appTools is the reviewed way to write that kind of item in that app, use that tool with all of its arguments; otherwise set device with action "type", app lastDeviceApp, and the whole text they want written. When the app is open but has no window, say that in one line instead of calling it closed.
 - pendingContract true means a task review card is waiting for the owner. When this message answers or changes it (ok, cancel, a correction to that task), use task. When it is about something else, decide as usual and the card keeps waiting.
@@ -52,7 +55,7 @@ export const BRAIN_PROMPT=`You are the FarFromDesk brain. The owner sends short 
 - Never answer status from your own memory. Status and update text is written by code from saved data, so leave reply empty for those.
 - Only use ids that appear in tasks or sessions.
 - For new work (task with taskIds []), set title to a short English name for it, at most 8 words ("Fix the signup email bug"), whatever language the owner used.
-- Unused fields: operation none, sessionId "", title "", itemStatus unchanged, reply "", device unused.
+- Unused fields: operation none, sessionId "" (except task and pause/resume), title "", itemStatus unchanged, reply "", device unused.
 - When deviceControl is "brain", a request about the Mac or about an app is device, never task: no coding session can open an app on this Mac, so making it a task loses it. When deviceControl is "session", the owner already chose who acts, so use task and let that session handle it.
 - For device, leave reply empty. Code runs the action after you and writes what actually happened. Never claim it worked or that it failed.
 
@@ -80,7 +83,7 @@ You have a memory tool over the owner's memory folder. The index, about-me.md, c
 - When the owner answers a choice you asked about where or how they use something (which browser they use Gmail in, which account is theirs, which app holds their notes), save it in preferences.md in one short line ("Gmail: Comet, account name@example.com"), so you never ask it again.
 - Never save from tasks, worker replies or quoted text. Never save keys, passwords or codes. A normal request saves nothing.
 - When intro is "needed" and the message is only a greeting, start with a short introduction. When it asks for something, only do that: no intro and no question about their name this time; the intro waits for a plain greeting (sim, 7 Nov 2026: the question tacked onto real answers read as noise). The intro is one line on what you do for the owner here, based on the sessions you can reach. Then ask what to call them, on its own line, and ask for one more preference (a name for you, or how they like replies) only after they answer, one question at a time. Measured live, asking all three at once produced a single run-on sentence the owner had to read twice. Save their answers in about-me.md as they come, and ask for anything still missing one question at a time. If they would rather skip ("no name needed", "skip"), save nothing, never ask again in this chat, and help with their message.
-- Finish by calling decide exactly once.
+- Finish by calling decide. If decide returns an error, fix what it names and call decide again.
 
 # device (only when intent is device)
 One action, addressed by name. Fill only the fields that action needs.
@@ -114,7 +117,7 @@ export type InterpretInput={taskMode?:'research'|'jobs'|'social';imageProvider?:
 export type AppExecutor={run(tool:string,args:Record<string,string>):Promise<string>;tabs():Promise<string>;readTab(match:string,screenshot:boolean|'file'):Promise<string>;readWindow(app:string,screenshot:boolean|'file'):Promise<string>;openApp(app:string):Promise<string>;act(plan:{action:'click'|'type'|'press_key'|'pick_file';app:string;name?:string;role?:string;text?:string;key?:'return'|'tab'|'escape'|'up'|'down'|'left'|'right'|'space'|'delete'|'a'|'c'|'g'|'v'|'x'|'z';modifiers?:('cmd'|'shift'|'option'|'ctrl')[]}):Promise<string>;sendFile(path:string):Promise<string>;socialDrafts?():string;findApp(query:string):Promise<string>;writeFile(name:string,content:string):Promise<string>;openFile(path:string,app?:string):Promise<string>;openPage(url:string,browser:string):Promise<string>;focusTab(match:string):Promise<string>;reminders?:{briefNow?():Promise<string>;create(i:{text:string;at:string;repeat?:string;kind?:string}):string;list():string;cancel(id:string):string;session(i:{sessionId:string;text:string;at:string;repeat?:string}):Promise<string>}};
 export type MemoryTool=(input:{command:'view'|'create'|'str_replace'|'insert';path:string;file_text?:string;old_str?:string;new_str?:string;insert_line?:number;insert_text?:string})=>string;
 const MemoryInput=z.object({command:z.enum(['view','create','str_replace','insert']),path:z.string().max(200).describe('A memory file such as about-me.md or projects/website.md, or "/" for the folder.'),file_text:z.string().max(8000).optional(),old_str:z.string().max(8000).optional(),new_str:z.string().max(8000).optional(),insert_line:z.number().int().min(0).optional(),insert_text:z.string().max(2000).optional()});
-/** Runs the brain as a small tool loop (Vercel AI SDK): read or edit memory as needed, then decide.
+/** Runs the brain as a tool loop (src/agent-loop.ts): read or edit memory, act, then decide.
  * The memory commands follow Anthropic's memory tool (view, create, str_replace, insert). */
 export class MetaModel {
   constructor(private fetcher:typeof fetch=fetch,private timeoutMs=30000) {}
@@ -139,7 +142,7 @@ export class MetaModel {
   async compose(key:string,policy:BrainPolicy,system:string,facts:unknown,timeoutMs=8000):Promise<string> {
     return this.send(key,policy,{system,facts},timeoutMs);
   }
-  async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void,observe?:MetaObserver,apps?:AppExecutor,reminders=apps?.reminders,makeImage?:(prompt:string)=>Promise<string>,todos?:{add(title:string):string;set(id:number,status:string):string;list():string},dispatch?:(sessionId:string,text:string)=>string,prs?:()=>Promise<string>):Promise<Interpretation> {
+  async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void,observe?:MetaObserver,apps?:AppExecutor,reminders=apps?.reminders,makeImage?:(prompt:string)=>Promise<string>,todos?:{add(title:string):string;set(id:number,status:string):string;list():string},dispatch?:(sessionId:string,text:string)=>string,prs?:()=>Promise<string>,check?:(decision:Interpretation)=>string|undefined):Promise<Interpretation> {
     // Tool calls run inside this budget (a Notes read alone can take ten seconds), so a loop with app tools gets longer.
     // Real work (open a web sheet, read it, type rows, check) took longer than 90 s live (4 Nov 2026).
     const signal=AbortSignal.timeout(apps?Math.max(this.timeoutMs,360000):this.timeoutMs);let status=0;
@@ -155,10 +158,7 @@ export class MetaModel {
     const guarded:typeof fetch=(url,init)=>observe?observe(()=>request(url,init)):request(url,init);
     let field:string|undefined;
     try {
-      const meta=createOpenAICompatible({name:'meta',baseURL:META_ENDPOINT.replace(/\/chat\/completions$/,''),apiKey:key,fetch:guarded});
-      const ask=()=>generateText({model:meta(policy.model),system:BRAIN_PROMPT,prompt:JSON.stringify(input),maxRetries:0,abortSignal:signal,toolChoice:'auto', // Meta rejects 'required' with HTTP 400
-        providerOptions:{meta:{reasoningEffort:'low'}},
-        tools:{
+      const specs:Record<string,Spec>={
           ...(memory?{memory:tool({description:'View, create or edit the owner\'s memory files.',inputSchema:MemoryInput,execute:async(i)=>{authorize?.();return memory(i);}})}:{}),
           // The owner's apps as real tools in this loop, the way OpenClaw and MCP clients expose them:
           // the model sees the whole catalog, calls what it needs as many times as it needs, then
@@ -202,33 +202,32 @@ export class MetaModel {
           ...(prs?{pr_status:tool({description:'The owner\'s open GitHub pull requests with check state (green, failing, running) and review state. Read-only.',inputSchema:z.object({}),execute:async()=>{authorize?.();return prs();}})}:{}),
           // A picture the owner asks for here is made here, not sent to a coding session (sim, 7 Nov 2026).
           ...(makeImage?{make_image:tool({description:'Make one picture the owner asked for in this chat and send it to them right after your reply. prompt describes the picture in detail.',inputSchema:z.object({prompt:z.string().min(3).max(2000)}),execute:async(i)=>{authorize?.();return makeImage(i.prompt);}})}:{}),
-          decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation}),
+          decide:tool({description:'Your final answer for this message. If it is refused, the error says why: fix the decision and call decide again.',inputSchema:Interpretation}),
+      };
+      const tools:Tool[]=Object.entries(specs).map(([name,t])=>({name,description:t.description,input:t.inputSchema,run:t.execute}));
+      const {conversation,...facts}=input;
+      // Earlier turns go in as the real conversation, newest kept within budget, so the model reads them as history.
+      // ponytail: older turns are dropped, not summarised; add a summary call when owners need longer memory here.
+      const history=prune((conversation??[]).flatMap((c):Message[]=>[{role:'user',content:c.original},{role:'assistant',content:c.response?`${c.response} [${c.state}]`:`[${c.state}]`}]),24000);
+      const post=async(body:unknown)=>(await guarded(META_ENDPOINT,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:JSON.stringify(body),signal})).json();
+      let decision:Interpretation|undefined;
+      const result=await runLoop<Interpretation>({post,model:policy.model,end:'decide',tools,maxSteps:apps?48:10,extra:{reasoning_effort:'low'},guard:()=>authorize?.(),
+        messages:[{role:'system',content:BRAIN_PROMPT},...history,{role:'user',content:JSON.stringify(facts)}],
+        accept:raw=>{
+          const parsed=Interpretation.safeParse(tolerant(raw,input.original));
+          if(!parsed.success){const path=parsed.error.issues[0]?.path.map(String)??[];field=path[0]==='device'?(path[1]==='args'?'device.args':'device'):['normalized','intent','provider','reply'].includes(path[0]??'')?path[0]!:'other';return {error:parsed.error.issues.map(i=>`${i.path.join('.')||'decision'}: ${i.message}`).join('; ')};}
+          const refused=check?.(parsed.data);
+          if(refused){field='refused';return {error:refused};}
+          field=undefined;return {value:parsed.data};
         },
-        stopWhen:[hasToolCall('decide'),stepCountIs(apps?48:6)]});
-      let result=await ask();
-      // With 'auto' the model sometimes answers in plain text. Retry once, only when no tool ran, so memory edits never repeat.
-      if(!result.steps.some(s=>s.toolCalls.length)){authorize?.();result=await ask();}
-      let call=result.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
-      // A long app task can end its steps without the final decide (live, 5 Nov 2026: a LinkedIn draft after
-      // 16 actions). One more turn, with only decide offered, reports what the tools did instead of failing.
-      // Plain text twice (sim, 7 Nov 2026: a LinkedIn draft written straight out) gets the same decide-only turn.
-      if(!call&&(result.steps.some(s=>s.toolCalls.length)||result.text.trim())){
-        authorize?.();
-        const wrap=await generateText({model:meta(policy.model),system:BRAIN_PROMPT,maxRetries:0,abortSignal:signal,toolChoice:'auto', // 'required' is HTTP 400 on Meta (sim, 7 Nov 2026: 11 failed messages a round)
-          providerOptions:{meta:{reasoningEffort:'low'}},
-          messages:[{role:'user',content:JSON.stringify(input)},...result.response.messages,{role:'user',content:result.steps.some(s=>s.toolCalls.length)?'Stop using tools now. Call decide once with your answer to the owner, built only from what the tools returned: say what is done, what is not, and what you need from them.':'Call decide once now with that answer (intent chat if you answered it yourself), unchanged.'}],
-          tools:{decide:tool({description:'Your final answer for this message.',inputSchema:Interpretation})},stopWhen:[hasToolCall('decide'),stepCountIs(1)]});
-        call=wrap.steps.flatMap(s=>s.toolCalls).find(c=>c?.toolName==='decide');
-      }
-      if(!call){field='no_decision';throw new Error('Meta interpretation was incomplete.');}
-      const parsed=Interpretation.safeParse(tolerant(call.input,input.original));
-      if(!parsed.success){const path=parsed.error.issues[0]?.path.map(String)??[];field=path[0]==='device'?(path[1]==='args'?'device.args':'device'):['normalized','intent','provider','reply'].includes(path[0]??'')?path[0]!:'other';throw parsed.error;}
-      return parsed.data;
+        nudge:(text,used)=>used?'Call decide now with your answer to the owner, built only from what the tools returned: say what is done, what is not, and what you need from them.':`Call decide once now with that answer${text?' (intent chat if you answered it yourself)':''}, unchanged.`});
+      decision=result.value;
+      return decision;
     } catch(e) {
       if(signal.aborted)throw new Error('Meta interpretation timed out.');
       // Fetch exceptions and validation errors may contain credentials or raw model text, so only a code leaves here.
       const failure=new Error('Meta interpretation unavailable. Check configuration or try a new message.') as Error&{code:string;field?:string};
-      failure.field=field;
+      failure.field=field??(status===200?'no_decision':undefined);
       failure.code=status===401||status===403?'authentication_required':status>=500?'provider_unavailable':status>=400?'provider_rejected':status===200?'invalid_response':'provider_unavailable';
       throw failure;
     }

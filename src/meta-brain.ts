@@ -84,8 +84,6 @@ function namedPlatforms(text:string):BrainProvider[] {
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
-// Title words too common to pick a session by themselves.
-const LOOSE_STOP=new Set(['client','session','sessions','with','from','this','that','work','task','tasks','project','repo','code','data','fixes','update','about','into','the']);
 // ponytail: first sentence, cut at 60 chars on a word; a model title is preferred when given.
 /** Why the brain can't reach a session, naming the real switch (sim, 7 Nov 2026: "paused or its platform is off" misled owners). */
 export function unreachable(name:string,b:Binding,brainProviders:readonly string[],appOn:readonly string[]){
@@ -753,13 +751,6 @@ export class MetaBrain {
     if(briefNow(m.text)&&router.morningBrief){const d=this.store.destination()!;
       const sent=await router.morningBrief.request(d,'first-message').catch(()=>false);
       if(!sent)this.answer(m.id,'Today\'s brief was already sent in this chat, or there is nothing to send yet.');else this.store.remember(m.id);return true;}
-    // "Which session should do this?" answered with just "FarFromDesk cloud server." sent the session its own name
-    // (sim, 7 Nov 2026). A bare session name after that question resends the held request there.
-    {const last=this.conversation(m.id).at(-1);
-      if(last&&/^Which (?:session should do this|one should take it)\?/.test(last.response??'')&&m.text.trim().split(/\s+/).length<=6){
-        const t=m.text.toLowerCase().replace(/[^\p{L}\p{N} ]+/gu,' ').trim();
-        const hit=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&[this.label(b),b.alias??''].some(n=>{const k=n.toLowerCase().replace(/[^\p{L}\p{N} ]+/gu,' ').trim();return k.length>=3&&(t===k||t.includes(k)||k.includes(t)&&t.length>=4);}));
-        if(hit.length===1)m={...m,text:`${this.label(hit[0])}: ${last.original}`};}}
     let decision:Interpretation;const interpretationStarted=Date.now();
     const board=this.memory.board();
     const topicKey=`brain-topic:${this.store.destination()}`;
@@ -809,27 +800,10 @@ export class MetaBrain {
         add:t=>{const i=this.memory.add(`${m.id}#${t.slice(0,40)}`,t);return `Saved #${i.id}: ${i.title}`;},
         set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
         list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined,
-        (sessionId,text)=>this.fanOut(router,m,policy,sessionId,text),openPrStatus));
+        (sessionId,text)=>this.fanOut(router,m,policy,sessionId,text),openPrStatus,d=>this.refuse(router,policy,d)));
       // A rate limit or slow reply sent research questions and caption edits to the closed Codex coordinator through the
       // legacy fallback (sim, 7 Nov 2026: 9 of 33 runs). One retry before falling back.
       decision=await ask(m.text).catch(async e=>{const code=String((e as {code?:unknown})?.code??'');if(!/^(?:timeout|provider_rejected|provider_unavailable)$/.test(code)||revoked()||routingChanged())throw e;this.store.event(m.id,'brain_interpretation_retry',{code});return ask(m.text);});
-      // The owner asked for the answer here, not from a session ("I meant you, just answer here"); the model still queued it (sim, 7 Nov 2026).
-      const here=/\b(?:answer (?:it |this )?here|you answer|i meant you|not (?:the |a |to )?(?:\w+ )?(?:session|codex|claude|cursor)|don'?t (?:want to )?queue)\b/i.test(m.text);
-      // Pictures and rewrites still went to the platform's coordinator, which answers nothing when closed (sim, 7 Nov 2026).
-      // A task for no particular project session, on a platform the owner did not name, gets one second look.
-      // A follow-up to an answer given here ("add a third tool", "what about Sydney?") is usually more of the same (sim, 7 Nov 2026).
-      const generic=!decision.sessionId||router.coordinator?.isCoordinator(decision.sessionId);
-      const ownTurn=decision.intent==='task'&&this.conversation(m.id).slice(-2).some(t=>t.state==='answered'||t.state==='managed');
-      if(decision.intent==='task'&&!decision.taskIds.length&&(here||generic&&!namedPlatforms(m.text).length&&(ownTurn||mode?.kind!=='social'&&/\b(?:image|picture|photo|poster|logo|draft|rewrite|reword|punchier|shorter|caption|post|tweet|email|explain|what is|how do|remind|reminder|link|links|sources?|story|look up|research|last (?:did|active|activity)|each (?:of )?(?:my )?sessions?|all (?:of )?(?:my )?sessions|what time|time (?:is it|in))\b/i.test(m.text))&&(ownTurn&&!/\b(?:write|fix|run|change|edit|add|implement|refactor|commit|push|merge)\b/i.test(m.text)||!/\b(?:repo|code|bug|test|build|deploy|commit|branch|file|function)\b/i.test(m.text)))){
-        const again=await ask(`${m.text}\n\n(${here||ownTurn&&!/\b(?:write|fix|run|change|edit|add|implement|refactor|commit|push|merge|check|look at|review|status)\b/i.test(m.text)?'The owner wants you to answer this yourself in chat. Use intent chat.':(ownTurn?'You answered the last messages here yourself, not a session; this follows up on your own answer, so carry on with your own tools. ':'')+'Before sending this to a coding session: if you can do it yourself here (an answer, writing or rewriting, a picture with make_image, a reminder, a to-do, PR status), do it and use intent chat. Use task only when it needs the owner\'s code, files or a project session.'})`).catch(()=>undefined);
-        if(again&&again.intent!=='task')decision=again;
-        // Still a task for no project session, with no code in it: a research question, a draft or a priority call was queued to a
-        // closed general coordinator and never answered (sim, 7 Nov 2026). The brain answers those itself.
-        else if(again&&!here&&generic&&!(this.decidesContracts(router)&&this.pendingContract(router))&&(!again.sessionId||router.coordinator?.isCoordinator(again.sessionId))&&!namedPlatforms(m.text).length&&(ownTurn||/\?\s*$/.test(m.text.trim())||/\b(?:draft|post|caption|tweet|research|look up|sources?|priorit\w*|focus|explain|summari[sz]e|ideas?|suggest|punchier|shorter|rewrite|reword|hashtags?|tone)\b/i.test(m.text))&&!/\b(?:repo|code|bug|tests?|build|deploy|commit|branch|file|function|pr|pull request|merge|ci|run|install|fix|change|update|make|implement|refactor)\b/i.test(m.text)){
-          const own=await ask(`${m.text}\n\n(The owner wants you to answer this yourself in chat. Use intent chat.)`).catch(()=>undefined);
-          if(own&&own.intent!=='task')decision=own;
-        }
-      }
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;
@@ -856,14 +830,6 @@ export class MetaBrain {
     // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
     // once. A second copy would silently stop applying when that one changes.
     // Room for an answer built from tool results (a tab list was cut mid-word at 400).
-    // "Resume Client: Acme storefront." was sent to Codex as a task (sim, 7 Nov 2026). A message that starts with
-    // pause/resume and names exactly one session is that manage operation, whatever the model picked.
-    const verb=/^\W*(?:please\s+)?(pause|resume|unpause)\b/i.exec(m.text)?.[1]?.toLowerCase();
-    if(verb&&decision.intent==='task'){
-      const said=m.text.toLowerCase(),hits=this.memory.candidates(router).filter(b=>!router.coordinator?.isCoordinator(b.id))
-        .map(b=>({b,n:[this.label(b),b.alias].flatMap(n=>n.toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(w=>w.length>=4&&said.includes(w)).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
-      if(hits.length===1||hits.length>1&&hits[0].n>hits[1].n)decision={...decision,intent:'manage',operation:verb==='pause'?'pause_session':'resume_session',sessionId:hits[0].b.id};
-    }
     // Parts already went out through send_to_session; a final task would send the whole message again.
     if(this.fanned.has(m.id)){this.fanned.delete(m.id);if(decision.intent!=='chat')decision={...decision,intent:'chat',reply:decision.reply||'Sent. I\'ll tell you as each one answers.'};}
     const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,3800);
@@ -901,10 +867,7 @@ export class MetaBrain {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
       const picked=decision.taskIds.length===1?this.memory.board().find(i=>i.ref===decision.taskIds[0]||this.store.itemOf(decision.taskIds[0])===i.id):undefined;
       // No tracked item: the owner never sees item codes, so ask the session itself ("check the cloud server session", sim 7 Nov 2026).
-      // "Ask it for the actual patch and test file names" is a request, not a status check; wrapping it as one
-      // got a progress summary back (sim, 7 Nov 2026). Those words go to the session as written.
-      const asks=!/\bfor\s+(?:an?\s+)?(?:update|status|progress)\b/i.test(m.text)&&/\b(?:ask|tell|have|get)\s+(?:it|them|the session|\w+)\s+(?:to|for|what|which|where|how|whether|if|about)\b|\b(?:show|send|share|paste|give)\s+(?:me\s+)?(?:the\s+)?(?:actual\s+)?(?:diff|patch|files?|logs?|output|tests?|screenshot)\b/i.test(m.text);
-      if(picked&&!asks)return this.requestUpdate(router,m,picked,m.text,decision.provider);
+      if(picked)return this.requestUpdate(router,m,picked,m.text,decision.provider);
       decision={...decision,intent:'task',taskIds:[]};
     }
     if(decision.intent==='status') {
@@ -928,123 +891,37 @@ export class MetaBrain {
         const child=t.evidence.children.map(c=>`${(()=>{const b=this.store.binding(String(c.binding_id));return b?this.label(b):'a saved session';})()} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
         return `- ${title}${title.length>=100?'...':''} · ${t.status}${alias?` · ${alias}`:''}${child?` · delegated to ${child}`:''}`;
       });
-      // "How's the cloud launch going?" with nothing tracked got 'No tracked work yet' and a roster (sim, 7 Nov 2026).
-      // When the owner's words point at exactly one session, that session is asked instead.
-      const norm=(t:string)=>t.normalize('NFKC').toLowerCase();
-      const words=` ${norm(m.text).replace(/[^\p{L}\p{N}]+/gu,' ')} `;
-      const pointed=rows.length?[]:this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&[norm(this.label(b)),...norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)))].some(w=>w&&words.includes(` ${w.replace(/[^\p{L}\p{N}]+/gu,' ').trim()} `)));
-      if(pointed.length===1)decision={...decision,intent:'task',sessionId:pointed[0].id,provider:pointed[0].provider as any,taskIds:[]};
-      else {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;}
+      this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;
     }
     if(!policy.allowRouting){this.stop(m.id,'Routing is disabled by your Meta brain policy.');return true;}
     const c=router.coordinator;if(!c){this.stop(m.id,'Connect an existing coordinator in Coding platforms first.');return true;}
     let target:Binding|undefined,coordinator:Binding|undefined,topic:ReturnType<BrainMemory['resolve']>|undefined;
     try {
-      // The original text, never cleaned-up consent, controls explicit platform constraints.
-      // A Social brief names platforms as its subject ("a post about Claude and Codex"), so there
-      // a name routes only when the model also read it as the destination. Still owner-named.
-      // "Actually, pause that, don't change anything yet" was still sent (sim, 7 Nov 2026). A hold from the owner sends nothing.
-      if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text)&&!(m.text.split(/[.,;!?\n—–]+/).some(c=>!/\b(?:hold off|wait|not yet|on hold|hold on|don'?t|do not)\b/i.test(c)&&/\b(?:please|tackle|inspect|fix|check|run|review|start|do|identify|look|ask|tell|send|show|report)\b/i.test(c))))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
-      const named=wantedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
-      if(named.length>1)throw new Error('Please choose one coding platform for this request.');
-      let platformConflict=named.length>0&&decision.provider!=='unspecified'&&named[0]!==decision.provider;
-      // Display names and aliases of any length name a session: "UX", "开发", "claude-proxy" as surely as "Payments API".
-      const norm=(t:string)=>t.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
-      const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
-      const hit=(n:string)=>/[^\x00-\x7f]/.test(n)?said.includes(n):new RegExp(`(?:^|[^a-z0-9])${esc(n)}(?:[^a-z0-9]|$)`).test(said);
-      // Any enabled session the owner can see by name counts, connected or not: naming it is as exact as /to (sim, 7 Nov 2026).
-      const mentioned=this.store.bindings().filter(b=>b.enabled&&[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
-      // Owners say "the thesis run" or "Acme storefront" for "Thesis plots and data run" / "Client: Acme storefront".
-      // No exact title hit: the one session whose distinctive title words the owner used most wins (sim, 7 Nov 2026).
-      // ponytail: plain word overlap, no stemming or fuzzy spelling; add when typos in names show up in the sim.
-      // "Start with the deploy checks, keep Acme queued" names Acme only to put it off; that is not where this goes (sim, 7 Nov 2026).
-      const dropDeferred=()=>{const clauses=said.split(/[.,;!?\n。，；！？—–]+/),deferred=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b|\bcan wait\b|\b(?:once|until|till)\b.*\b(?:back on|turned on|is on|on again)\b/i;
-       const named=(b:Binding,c:string)=>[this.label(b),b.alias,...norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w))].map(norm).some(n=>n&&hit.call(null,n)&&norm(c).includes(n));
-       const kept=mentioned.filter(b=>!clauses.filter(c=>named(b,c)).every(c=>deferred.test(c))||!clauses.some(c=>named(b,c)));
-       if(kept.length<mentioned.length){mentioned.length=0;mentioned.push(...kept);}};
-      dropDeferred();
-      if(!mentioned.length){
-        const words=(b:Binding)=>[...new Set(norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w))))];
-        // Paused sessions are scored too, so a paused "invoice-a" never hands its work to "invoice-b".
-        const scored=this.store.bindings().map(b=>({b,n:words(b).filter(hit).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
-        if(scored.length&&scored[0].b.enabled&&(scored.length===1||scored[0].n>scored[1].n))mentioned.push(scored[0].b);
-      }
-      // "Leave Cursor for now, check the Acme storefront session" names the session; the platform word was not the destination (sim, 7 Nov 2026).
-      // "I'll turn Cursor back on later" beside a named Codex session is an aside, not a platform choice (sim, 7 Nov 2026).
-      if(mentioned.length===1&&named.length&&!named.includes(mentioned[0].provider)){named.length=0;platformConflict=false;}
-      if(platformConflict&&mentioned.length===1&&mentioned[0].provider===decision.provider){platformConflict=false;named.length=0;}
-      if(platformConflict)throw new Error('Which one should take it? Name the session or the platform.');
-      dropDeferred();
-      if(mentioned.length>1)throw new Error(`Your message names more than one session (${[...new Set(mentioned.map(b=>this.label(b)))].join(', ')}). Send each one its own message and I'll pass it on. Nothing was sent.`);
-      // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
-      // next to destination words, is ambiguous: the owner is asked and nothing is sent.
-      // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
-      const negated=/\b(?:not|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
-      const destinationWord=new RegExp(`\\b(?:send(?!\\s+(?:me|us)\\b)|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
-      // A session named outside any negation is a clear destination even if another clause says "don't" (sim, 7 Nov 2026).
-      // A loose name ("the Acme storefront session") chooses too (sim, 7 Nov 2026).
-      const distinctWords=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));
-      const chosen=mentioned.some(b=>said.split(/[.,;!?\n。，；！？]+/).some(c=>!negated.test(c)&&(norm(c).includes(norm(this.label(b)))||distinctWords(b).some(w=>new RegExp(`(?:^|[^\\p{L}\\p{N}])${w}(?:[^\\p{L}\\p{N}]|$)`,'u').test(norm(c))))));
-      // "I didn't give you an example" is not "don't give this to X": soft verbs need a "to" (sim, 7 Nov 2026).
-      const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause)&&(!/\b(?:give|pass|hand|assign|send|sent|forward)\b/i.test(clause)||/\b(?:give|pass|hand|assign|send|sent|forward)\b.*\b(?:to|there)\b/i.test(clause)||destinationWord.test(clause.replace(/\b(?:give|pass|hand|assign|send|sent|forward)\b/gi,''))));
-      let provider:Binding["provider"]|undefined=named[0]??(decision.provider==="unspecified"?undefined:decision.provider);
-      // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
-      // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
-      // Only a platform a rule actually names: a rule for Codex never lets the model pick Cursor.
-      const ruled=()=>(this.owner.read('collaboration.md')??'').split('\n').filter(l=>/^[-*]\s+\S/.test(l)).flatMap(namedPlatforms);
-      const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
-      // An unnamed follow-up the model gave to no session, or to a platform's coordinator, also stays with the conversation (sim, 7 Nov 2026).
-      const unsure=decision.provider==='unspecified'||(!!decision.sessionId&&!!c.isCoordinator(decision.sessionId));
-      const topicKnown=decision.taskIds.length===1&&(()=>{try{return !!this.memory.resolve(decision.taskIds[0]);}catch{return false;}})();
-      if(!named.length&&!mentioned.length&&!topicKnown&&(unsure||decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider))){
-        // A session named in a recent turn is still the destination (sim, 7 Nov 2026).
-        // The session a recent turn named or sent work to is still the destination, newest turn first (sim, 7 Nov 2026).
-        const distinct=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));
-        const live=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&norm(this.label(b)).length>=4);
-        // The owner's own words now come first ("the cloud session"), minus clauses that defer ("keep Acme queued for after"),
-        // which the priorities sim tripped on (7 Nov 2026).
-        const defer=/\b(?:keep|leave|park|hold|put)\b.*\b(?:queued|for now|for later|later|aside|on hold|waiting|back|after)\b|\b(?:after (?:that|this)|afterwards|later|next week)\b|\b(?:switch|move|go)\s+to\b.*\b(?:once|when|after|until)\b|\bcan wait\b|\b(?:once|until|till)\b.*\b(?:back on|turned on|is on|on again)\b/i;
-        const nowWords=new Set(said.split(/[.,;!?\n。，；！？—–]+/).filter(c=>!defer.test(c)).join(' ').toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u));
-        const nowHit=live.filter(b=>distinct(b).some(w=>nowWords.has(w)));
-        let again:Binding[]=nowHit.length===1?nowHit:[];
-        for(const t of again.length?[]:this.conversation(m.id).slice(-3).reverse()){
-          const sent=new Set((this.store.db.prepare("SELECT binding_id FROM inbox WHERE id=? OR id LIKE ?").all(t.id,t.id+'~%') as {binding_id:string}[]).map(r=>r.binding_id));
-          const byJob=live.filter(b=>sent.has(b.id));
-          if(byJob.length===1){again=byJob;break;}
-          const said=norm(t.original),words=new Set(said.split(/[^\p{L}\p{N}]+/u));
-          const byName=live.filter(b=>said.includes(norm(this.label(b)))||distinct(b).some(w=>words.has(w)));
-          if(byName.length===1){again=byName;break;}
-          if(byJob.length||byName.length)break;
-        }
-        // The owner's own words now may name it partly ("the cloud session").
-        if(!again.length){const now=new Set(norm(said).split(/[^\p{L}\p{N}]+/u));const hit=live.filter(b=>distinct(b).some(w=>now.has(w)));if(hit.length===1)again=hit;}
-        if(again.length===1)mentioned.push(again[0]);else if(!unsure)throw new Error('Which session should do this? Say its name.');
-      }
+      // Where it goes is the model's decision (sessionId), checked by refuse() inside its loop. These checks only keep it safe.
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
-      // A topic id the model guessed wrong, or one owned by another session than the owner now names, starts fresh:
-      // the owner's latest words win over the model's guess (sim, 7 Nov 2026).
       if(decision.taskIds.length)try{topic=this.memory.resolve(decision.taskIds[0]);}catch{topic=undefined;}
       target=topic?this.memory.owner(topic,router):undefined;
-      // "Is there a preview I can look at?" after an Acme reply was filed under the switched-off Portfolio session (sim, 7 Nov 2026).
-      // When the owner named nothing and the model's pick can't be reached, the conversation's own session takes it.
-      if(!named.length&&!mentioned.length){const pick=target??(decision.sessionId?this.store.binding(decision.sessionId):undefined);
-        if(pick&&!c.isCoordinator(pick.id)&&(!pick.enabled||!c.enabled().includes(pick.provider))){const ref=this.store.get(`brain-topic:${this.store.destination()}`);const job=ref?this.memory.board().find(i=>i.ref===ref)?.jobs.at(-1):undefined;const b=job?this.store.binding(String(job.binding_id)):undefined;
-          if(b&&b.id!==pick.id&&b.enabled&&c.enabled().includes(b.provider)&&!c.isCoordinator(b.id)){topic=undefined;target=b;provider=undefined;}}}
-      if(target&&((mentioned.length&&target.id!==mentioned[0].id)||(provider&&target.provider!==provider))){topic=undefined;target=undefined;}
-      // An item nobody owns yet goes to the session the owner named, never the default coordinator.
-      target??=mentioned[0];
+      const picked=decision.sessionId?this.store.binding(decision.sessionId):undefined;
+      // The session the owner now names wins over the topic's earlier owner; the work starts fresh there.
+      if(picked&&target&&picked.id!==target.id){topic=undefined;target=undefined;}
+      target??=picked;
+      // Consent, not routing: the owner's own words limit the platform. The model never picks one they didn't name,
+      // didn't use earlier in this conversation and no collaboration.md rule names.
+      const named=wantedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
+      if(named.length>1&&!picked)throw new Error('Please choose one coding platform for this request.');
+      if(picked&&named.length&&!named.includes(picked.provider))throw new Error('Which one should take it? Name the session or the platform.');
+      const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
+      if(named.length&&decision.provider!=='unspecified'&&decision.provider!==named[0]&&!picked)throw new Error('Which one should take it? Name the session or the platform.');
+      const sanctioned=()=>[...(this.owner.read('collaboration.md')??'').split('\n').filter(l=>/^[-*]\s+\S/.test(l)),...this.conversation(m.id).slice(-3).map(t=>t.original)].flatMap(namedPlatforms);
+      if(!picked&&!topic&&provider&&!named.length&&!sanctioned().includes(provider))throw new Error('Which session should do this? Say its name.');
       // A replaced or paused owner is never silently swapped for the current proxy.
       const stale=topic&&this.memory.attention(this.memory.board().find(i=>i.id===topic!.id)!);if(stale)throw new Error(stale);
-      if(target&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
-      // A follow-up with no session named goes where the conversation was, not to the Codex coordinator (sim, 7 Nov 2026).
-      if(!target&&!provider){const ref=this.store.get(`brain-topic:${this.store.destination()}`);const job=ref?this.memory.board().find(i=>i.ref===ref)?.jobs.at(-1):undefined;const b=job?this.store.binding(String(job.binding_id)):undefined;if(b?.enabled&&!c.isCoordinator(b.id))target=b;}
+      if(target&&!picked&&provider&&target.provider!==provider)throw new Error('This topic belongs to another platform. Please clarify whether you want to change its assignment.');
       if(!target)target=provider?c.registry.choose(provider,/\bdesktop\b/i.test(m.text)?'desktop':/\bcli\b/i.test(m.text)?'cli':undefined):c.master();
       if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error(!target?'No session can take this right now.':unreachable(this.label(target),target,policy.providers,c.enabled()));
       coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
-      // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
-      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, send it again with that session's name in it${topic?` (it won't be filed under item #${topic.id})`:''}. Nothing was sent.`);
     }catch(e){let reason=(e as Error).message;
       // The same refusal twice reads like a wall; the second time say what is still seen and offer a way on (sim, 7 Nov 2026).
       if(/is turned off in the app|isn't allowed for the Brain/.test(reason)&&this.conversation(m.id).slice(-2).some(t=>(t.response??'').includes(reason.slice(0,40))))
@@ -1059,6 +936,20 @@ export class MetaBrain {
   private lastActive(id:string){const r=this.store.db.prepare('SELECT MAX(COALESCE(final_reply_at,first_reply_at)) AS at FROM inbox WHERE binding_id=?').get(id) as {at:number|null}|undefined;return r?.at?{lastActiveUtc:new Date(r.at).toISOString()}:{};}
   private fanned=new Map<string,number>();
   /** One part of a message meant for several sessions, sent under its own request id so each answer comes back on its own. */
+  /** Checks a task's destination inside the model's loop. The returned sentence goes back to the model to fix. */
+  private refuse(router:Router,policy:BrainPolicy,d:Interpretation):string|undefined {
+    const c=router.coordinator;
+    if(d.intent!=='task'||d.taskIds.length||!c||this.decidesContracts(router)&&this.pendingContract(router))return;
+    const sessions=this.memory.candidates(router).filter(b=>!c.isCoordinator(b.id));
+    const ok=(b:Binding)=>!!b.enabled&&policy.providers.includes(b.provider)&&c.enabled().includes(b.provider);
+    const list=()=>sessions.map(b=>`${b.id} (${this.label(b)}${ok(b)?'':', off'})`).join('; ');
+    if(d.sessionId&&!c.isCoordinator(d.sessionId)){
+      const b=sessions.find(x=>x.id===d.sessionId);
+      if(!b)return `sessionId ${d.sessionId} is not one of the sessions: ${list()}.`;
+      return ok(b)?undefined:`${unreachable(this.label(b),b,policy.providers,c.enabled())} Nothing can be sent to it. Tell the owner that with intent chat, or use the session they meant.`;
+    }
+    if(sessions.filter(ok).length>1)return `Set sessionId to the session that should do this: ${list()}. If the owner's words and the conversation don't say which, use intent clarify and ask them.`;
+  }
   private fanOut(router:Router,m:Incoming,policy:BrainPolicy,sessionId:string,text:string):string{
     if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text))return 'Refused: the owner said to hold off. Nothing was sent.';
     const n=(this.fanned.get(m.id)??0)+1;if(n>6)return 'Refused: at most six sessions per message.';

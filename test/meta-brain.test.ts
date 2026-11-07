@@ -495,60 +495,6 @@ test('status quotes what a blocked session asked, and the owner answer moves it 
     assert.equal((f.store.db.prepare('SELECT status FROM items WHERE id=1').get() as any).status,'in progress');
   }finally{f.close();}
 });
-test('a session named in free text never gets the task, whatever the model picks; the owner is asked to choose',async()=>{
-  const f=fixture();try{
-    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
-    const twin=f.store.register('payments-api-2','claude',randomUUID(),'/tmp').binding;
-    const inc=f.store.register('payments-inc','claude',randomUUID(),'/tmp').binding;
-    f.store.set(`name:${worker.id}`,'Payments API');f.store.set(`name:${twin.id}`,'Payments API');f.store.set(`name:${inc.id}`,'Payments API. Inc');
-    f.store.set('selected',JSON.stringify([worker.id,twin.id,inc.id]));
-    new BrainMemory(f.store).add('wa:todo','add retry to the webhook');
-    const texts=['Payments API: do not send this to Payments API; ask the coordinator','Payments API: don\'t send this to you','Payments API: please do not work on this; ask coordinator.',
-      'Payments API: update the webhook','Payments API: add logging. Do not touch the database.','send the payments api session: add retry','"PAYMENTS API": add logging to the webhook','Payments API. Inc: add logging',
-      'Do not send this to Payments API. Ask the coordinator to inspect the webhook.','don\'t give "Payments API" this one','Everyone except Payments API should look','Do not send to:\n"Payments API"','Don’t send this to Payments API','payments api and billing ui both need this'];
-    for(const pick of [worker,twin,inc])for(const [i,text] of texts.entries()){
-      const id=`wa:${pick.alias}:${i}`;
-      f.respond(async()=>({...decision(),taskIds:i===3?['item:1']:[],sessionId:pick.id}));
-      await f.router.receive({id,text});
-      assert.equal(f.store.job(id),undefined,text);
-      assert.match(String((f.out().at(-1) as any).body),/(own message|session.s name).*Nothing was sent/s,text);
-    }
-    assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,null);
-    // A model naming a session the owner never mentioned doesn't route there either.
-    f.respond(async()=>({...decision(),sessionId:worker.id}));
-    await f.router.receive({id:'wa:plain',text:'add retry to the webhook'});
-    assert.ok(f.store.job('wa:plain'));assert.notEqual(f.store.job('wa:plain')?.binding_id,worker.id);
-  }finally{f.close();}
-});
-test('an excluded coordinator never gets the request: platform, alias, short names and the item owner all ask first',async()=>{
-  const f=fixture();try{
-    const body=()=>String((f.out().at(-1) as any).body);
-    const cases:[string,()=>void,()=>Interpretation][]=[
-      ['Do not send this to Claude',()=>{},()=>decision('claude')],
-      ['Do not send this to claude-proxy',()=>f.store.set(`name:${f.claude.id}`,'Main builder'),()=>decision('claude')],
-      ['Do not send this to UX',()=>f.store.set(`name:${f.codex.id}`,'UX'),()=>decision()],
-      ['不要发给开发',()=>f.store.set(`name:${f.codex.id}`,'开发'),()=>decision()],
-      ['Do not send this to 开发',()=>f.store.set(`name:${f.codex.id}`,'开发'),()=>decision()],
-      ['Keep it away from codex',()=>{},()=>decision('codex')],
-    ];
-    for(const [i,[text,setup,pick]] of cases.entries()){
-      setup();f.respond(async()=>pick());
-      await f.router.receive({id:`wa:ex${i}`,text});
-      assert.equal(f.store.job(`wa:ex${i}`),undefined,text);assert.match(body(),/Please clarify where this should go\. Did you mean .*Nothing was sent/,text);
-    }
-    // A coordinator-owned item, excluded by reference without any name.
-    f.respond(async()=>decision());
-    await f.router.receive({id:'wa:item',text:'Fix invoice export'});
-    const item=f.store.itemOf('wa:item')!;assert.ok(f.store.job('wa:item'));
-    f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
-    await f.router.receive({id:'wa:ref',text:'Do not send this to the session that previously worked on this item.'});
-    assert.equal(f.store.job('wa:ref'),undefined);assert.match(body(),/won't be filed under item #/);
-    // Nothing is held for a later "yes": it is a new message, and the stale question never sends.
-    f.respond(async()=>({...decision(),intent:'chat',reply:'ok'}));
-    await f.router.receive({id:'wa:late',text:'yes'});
-    assert.equal(f.store.job('wa:ref'),undefined);assert.equal(f.store.job('wa:late'),undefined);assert.equal(f.store.get(`brain-confirm:${f.store.destination()}`),undefined);
-  }finally{f.close();}
-});
 test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
   for(const by of ['Owner','codex-proxy',undefined]){
     const f=fixture(decision('codex'));try{
@@ -645,50 +591,6 @@ test('Brain rejects a result after task mode is changed while interpreting',asyn
   assert.equal(f.store.job('wa:old-mode'),undefined);assert.match(f.router.brain.get('wa:old-mode')?.reason??'',/task mode changed/);
  }finally{f.close();}
 });
-test('naming a session by the title the owner sees sends it there, connected or not',async()=>{
-  const f=fixture(decision('unspecified','Check the FarFromDesk cloud server session.'));try{
-    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
-    await f.router.receive({id:'wa:named',text:'Can you check the FarFromDesk cloud server session?'});
-    assert.equal(f.store.job('wa:named')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-test('a status check with no tracked item, a guessed topic id, or a topic owned elsewhere goes to the session the owner names',async()=>{
-  const f=fixture();try{
-    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
-    f.respond(async()=>({...decision('unspecified','Check the cloud server.'),intent:'update'}));
-    await f.router.receive({id:'wa:upd',text:'How is the FarFromDesk cloud server session doing?'});
-    assert.equal(f.store.job('wa:upd')?.binding_id,f.claude.id);
-    f.respond(async()=>({...decision('unspecified','Fix it.'),taskIds:['P99']}));
-    await f.router.receive({id:'wa:guess',text:'FarFromDesk cloud server, fix the build'});
-    assert.equal(f.store.job('wa:guess')?.binding_id,f.claude.id);
-    f.respond(async()=>decision('codex','Fix the export.'));
-    await f.router.receive({id:'wa:first',text:'codex, fix the export'});
-    assert.equal(f.store.job('wa:first')?.binding_id,f.codex.id);
-    const ref=(f.router.brain as any).memory.board()[0].ref;
-    f.respond(async()=>({...decision('unspecified','Do it there instead.'),taskIds:[ref]}));
-    await f.router.receive({id:'wa:move',text:'I meant the FarFromDesk cloud server session, do it there'});
-    assert.equal(f.store.job('wa:move')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-test('a loose session name ("the thesis run") reaches the one session whose title words match, and "do not publish" still asks it',async()=>{
-  const f=fixture(decision('unspecified','Check the thesis run.'));try{
-    f.store.set(`name:${f.claude.id}`,'Thesis plots and data run');
-    await f.router.receive({id:'wa:loose',text:'how is the thesis run going?'});
-    assert.equal(f.store.job('wa:loose')?.binding_id,f.claude.id);
-    assert.match(JSON.stringify(f.store.db.prepare('SELECT source,body FROM outbox').all()),/Sent to Thesis plots and data run/);
-    f.respond(async()=>({...decision('unspecified','Check thesis, do not publish.'),intent:'update'}));
-    await f.router.receive({id:'wa:np',text:'check the thesis plots, do not publish anything'});
-    assert.equal(f.store.job('wa:np')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-
-// Sim, 7 Nov 2026: "Actually, pause that, don't change anything yet" still went to a session.
-test('a hold from the owner sends nothing, even when the model picks a task',async()=>{
-  const f=fixture({...decision(),sessionId:''});try{
-    await f.router.receive({id:'wa:hold',text:"Actually wait, don't change anything yet"});
-    assert.equal(f.store.job('wa:hold'),undefined);assert.match(String((f.out().at(-1) as any).body),/nothing was sent/i);
-  }finally{f.close();}
-});
 // Sim, 7 Nov 2026: "ask each session where it is" was refused or went to one proxy.
 test('one message can ask several sessions, each under its own request',async()=>{
   const f=fixture();try{
@@ -697,35 +599,9 @@ test('one message can ask several sessions, each under its own request',async()=
     assert.ok(f.store.job('wa:fan~1'));assert.ok(f.store.job('wa:fan~2'));assert.equal(f.store.job('wa:fan'),undefined,'the whole message is not sent again');
   }finally{f.close();}
 });
-// Sim, 7 Nov 2026: "Resume Client: Acme storefront." was sent to Codex as a task.
-test('pause or resume naming one session is done, even when the model picks a task',async()=>{
-  const f=fixture({...decision(),sessionId:''});try{
-    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
-    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');f.store.enable(acme.id,false);
-    await f.router.receive({id:'wa:resume',text:'Resume Client: Acme storefront.'});
-    assert.equal(f.store.job('wa:resume'),undefined);assert.equal(!!f.store.binding(acme.id)?.enabled,true);
-  }finally{f.close();}
-});
-// Sim, 7 Nov 2026: a picture request went to the closed Codex coordinator.
-test('a picture or writing request bound for a platform gets a second look and is done here',async()=>{
-  const f=fixture();try{let n=0;
-    (f.model as any).interpret=async()=>++n===1?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Here it is.'};
-    await f.router.receive({id:'wa:pic',text:'Can you make me an image for a coffee shop launch?'});
-    assert.equal(n,2);assert.equal(f.store.job('wa:pic'),undefined);
-  }finally{f.close();}
-});
 test('"brief now" is never read as a schedule',()=>{
   assert.ok(briefNow('brief now'));assert.ok(briefNow('send me the brief now please'));
   assert.ok(!briefNow('send my brief every weekday at 8am'));assert.ok(!briefNow('what is a brief'));
-});
-// Sim, 7 Nov 2026: follow-ups to a chat answer went to the closed Codex coordinator.
-test('a follow-up to a chat answer bound for a platform gets a second look',async()=>{
-  const f=fixture();try{let n=0;
-    (f.model as any).interpret=async()=>{n++;return n===1?{...decision(),intent:'chat',reply:'Tokyo is UTC+9.'}:n===2?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Sydney is UTC+11.'};};
-    await f.router.receive({id:'wa:tz1',text:'What time zone is Tokyo?'});
-    await f.router.receive({id:'wa:tz2',text:'And Sydney?'});
-    assert.equal(n,3);assert.equal(f.store.job('wa:tz2'),undefined);
-  }finally{f.close();}
 });
 // Sim, 7 Nov 2026: "send me a short summary" was read as a destination and the task was refused as ambiguous.
 test('"send me" in a task is not read as naming a destination',async()=>{
@@ -743,16 +619,6 @@ test('a platform named only to rule it out is dropped unless nothing else is cho
   assert.deepEqual(wantedPlatforms('Do not send this to Claude'),['claude']);
 });
 
-// Sim, 7 Nov 2026: "Start with the deploy checks, keep Acme queued" went to Acme.
-test('a session named only to put it off is not where the work goes',async()=>{
-  const f=fixture(decision('unspecified','Verify the deploy and rollback paths.'));try{
-    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
-    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');
-    await f.router.receive({id:'wa:defer',text:'Start with the cloud server deploy and rollback checks, keep Acme queued for later'});
-    assert.equal(f.store.job('wa:defer')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-
 // Sim, 7 Nov 2026: a rate-limited interpretation fell back to the closed Codex coordinator.
 test('a transient model failure is retried once before any fallback',async()=>{
   const f=fixture();try{
@@ -760,4 +626,14 @@ test('a transient model failure is retried once before any fallback',async()=>{
     await f.router.receive({id:'wa:retry',text:'what is a good eval tool?'});
     assert.equal(n,2);assert.equal(f.store.job('wa:retry'),undefined);
   }finally{f.close();}
+});
+// The model fixes its own decision: a refused decide comes back as an error it reads, not a rule after the loop.
+test('a refused decision goes back to the model, which fixes it',async()=>{
+  const seen:string[]=[];let n=0;
+  const model=new MetaModel((async(_u,init)=>{const body=JSON.parse(init!.body as string);
+    if(n++===0)return call('decide',{...decision(),sessionId:'nope'},'d1');
+    seen.push(body.messages.at(-1).content);return call('decide',{...decision(),sessionId:'s2'},'d2');}) as typeof fetch);
+  const r=await model.interpret('k',DEFAULT_BRAIN,{original:'fix it',source:'text',tasks:[]},undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,
+    d=>d.sessionId==='s2'?undefined:'sessionId nope is not one of the sessions: s2 (Cloud).');
+  assert.equal(r.sessionId,'s2');assert.match(seen[0],/^Error: sessionId nope is not one of the sessions.*\n Please fix your mistakes\.$/s);
 });
