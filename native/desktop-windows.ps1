@@ -42,6 +42,8 @@ public static class FfdUser32 {
   [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId")] static extern uint WindowPid(IntPtr h, out uint pid);
+  public static int ForegroundPid() { uint p; IntPtr h = GetForegroundWindow(); if (h == IntPtr.Zero) return -1; WindowPid(h, out p); return (int)p; }
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
@@ -234,8 +236,12 @@ function Clip([string]$s, [int]$n = 300) { if ($null -eq $s) { return '' }; $s =
 
 function Get-Windows {
   $rows = @()
-  $active = [System.Windows.Automation.AutomationElement]::FocusedElement
-  $activePid = if ($active) { $active.Current.ProcessId } else { -1 }
+  # Some focused windows cannot be reached through UI Automation and FocusedElement throws
+  # ("lookup key was not found in any active activation context"). That cost the whole list,
+  # not just the active flag (Windows test, 7 Nov 2026). Fall back to the foreground window.
+  $activePid = -1
+  try { $active = [System.Windows.Automation.AutomationElement]::FocusedElement; if ($active) { $activePid = $active.Current.ProcessId } } catch {}
+  if ($activePid -le 0) { try { $activePid = [FfdUser32]::ForegroundPid() } catch {} }
   $tops = @($AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition))
   $seen = @{}; foreach ($w in $tops) { try { $seen[[string]$w.Current.NativeWindowHandle] = $true } catch {} }
   foreach ($h in [FfdUser32]::OtherDesktopWindows()) {
