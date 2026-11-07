@@ -547,7 +547,7 @@ test('brain-scheduled session work is checked, held for review when reviews are 
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
     Object.assign(c,real);
     // Reviews off: saved straight away, and the tick sends it to that exact session.
-    assert.match(await f.schedules.brainScheduleSession(f.router,m('s2'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/^Saved\. 29 Oct 2026, 6:00 pm I will ask Site Repo to: check PR 20\./);
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s2'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/^Saved\. 29 Oct 2026, 6:00 pm \(Asia\/Kolkata\) I will ask Site Repo to: check PR 20\./);
     assert.match(f.schedules.brainList(),/"session":true/);
     f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
     const job=f.store.db.prepare('SELECT binding_id,body FROM inbox').get() as {binding_id:string;body:string};

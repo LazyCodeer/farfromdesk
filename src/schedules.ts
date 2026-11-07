@@ -388,7 +388,8 @@ export class Schedules {
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:t.zone,dateStyle:'medium',timeStyle:'short'}).format(t.next);
     // The name the owner sees in the app, not the internal alias (live: "selected-master-04a13fbb").
     const name=(this.store.get(`name:${binding.id}`)??binding.alias).replace(/\s+/g,' ').slice(0,60);
-    return `Saved. ${when}${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${name} to: ${text.replace(/[.!?]+$/,'')}.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
+    // "9:00 am" with no zone left the owner asking which zone; nothing goes to the session until then (sim, 7 Nov 2026).
+    return `Saved. ${when} (${t.zone})${t.repeat==='once'?'':` (${t.repeat})`} I will ask ${name} to: ${text.replace(/[.!?]+$/,'')}. Nothing is sent to it before then.${t.repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`;
   }
   /**
    * The brain's reminder tools. The brain decides that a message is a reminder and works out
