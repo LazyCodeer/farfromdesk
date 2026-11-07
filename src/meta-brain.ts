@@ -510,7 +510,7 @@ export class MetaBrain {
     const list=this.files.get(m.id)??[];if(list.length>=3)return 'At most three pictures per message.';
     try{const image=await generateMetaImage({prompt,apiKey:key},fetch);list.push({bytes:Buffer.from(image.bytes),name:'image.jpg'});this.files.set(m.id,list);}
     catch(e){return `The picture could not be made: ${(e as Error).message} Say so plainly.`;}
-    return JSON.stringify({queued:'image.jpg',note:'It is sent to the owner right after your reply. Say it follows.'});
+    return JSON.stringify({queued:'image.jpg',note:'It is sent to the owner right after your reply. Say in one short line what you are sending, e.g. "Here is the sunset poster."'});
   }
   private sendFileFor(m:Incoming,raw:string):string{
     const home=userInfo().homedir,roots=['Downloads','Desktop','Documents','Pictures','Movies','Music'].map(d=>join(home,d));
@@ -523,7 +523,7 @@ export class MetaBrain {
     if(st.size>50_000_000)return `${basename(real)} is over 50 MB, which is more than the chat accepts.`;
     const list=this.files.get(m.id)??[];if(list.length>=5)return 'At most five files per message.';
     list.push({bytes:readFileSync(real),name:basename(real)});this.files.set(m.id,list);
-    return JSON.stringify({queued:basename(real),bytes:st.size,note:'It is sent to the owner right after your reply. Say it follows.'});
+    return JSON.stringify({queued:basename(real),bytes:st.size,note:'It is sent to the owner right after your reply. Say in one short line what you are sending, e.g. "Here is the sunset poster."'});
   }
   /**
    * The newest Social drafts, so "post the one you just made" uses that draft's own caption and image.
@@ -1077,7 +1077,7 @@ export class MetaBrain {
   private introOnce(text=''){const k=`intro-shown:${this.store.destination()}`;if(!this.owner.introNeeded()||this.store.get(k))return false;
     if(!/^\W*(?:hi+|hello|hey+|hiya|yo|namaste|good (?:morning|afternoon|evening)|what can you do|who are you)\b[^?]{0,30}[.!?\s\p{Emoji}]*$/iu.test(text.trim()))return false;this.store.set(k,'1');return true;}
   // "Status of my sessions" with nothing tracked yet answered "No matching tracked tasks." and never named a session (sim, 7 Nov 2026).
-  noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?['No tracked work yet. Your sessions:',...names,'Ask any of them for an update by name.'].join('\n'):'No tracked work and no sessions connected yet.';}
+  noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?["I haven't sent these sessions anything yet, so I have no status to report. Your sessions:",...names,'Say "ask all for an update" or name one, and their answers will come here.'].join('\n'):'No tracked work and no sessions connected yet.';}
   // A platform's coordinator is plumbing; the owner knows it as the platform ("Codex"), never "codex-proxy" (sim, 7 Nov 2026).
   private label(b:Binding){return this.store.get(`name:${b.id}`)??((JSON.parse(this.store.get('coordinator-registry')??'[]') as {bindingId:string}[]).some(r=>r.bindingId===b.id)?b.provider[0].toUpperCase()+b.provider.slice(1):b.alias);}
   private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming,title?:string) {
