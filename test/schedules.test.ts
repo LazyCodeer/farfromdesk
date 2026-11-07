@@ -242,8 +242,9 @@ test('channel polling skips held work and refuses changed-owner scheduled jobs',
 test('model may not invent reminder contents, target, or timezone',async()=>{
   const f=fixture();try{
     f.setDecision({text:'send money'});await assert.rejects(f.send('1','Remind me at 6 PM to call the bank'),/exact reminder/);
-    f.setDecision({text:'call the bank',zone:'America/New_York'});await assert.rejects(f.send('2','Remind me at 6 PM to call the bank'),/time zone explicitly/);
-    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('3','Remind me at 6 PM New York time to call the bank');assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,1);
+    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('2','Remind me at 6 PM to call the bank');
+    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('3','Remind me at 6 PM New York time to call the bank');
+    assert.deepEqual(f.store.db.prepare('SELECT zone FROM schedules ORDER BY rowid').all().map((r:any)=>r.zone),['Asia/Kolkata','America/New_York'],'an unnamed zone falls back to the default');
     f.store.db.prepare('DELETE FROM schedules').run();
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
   }finally{f.close();}
@@ -291,7 +292,8 @@ test('scheduled action is the exact owner text, preserving case and whitespace',
 test('a timezone named only in the action cannot alter the reminder zone',async()=>{
   const f=fixture();try{
     f.setDecision({text:'call America/New_York office',zone:'America/New_York'});
-    await assert.rejects(f.send('1','Remind me at 6 PM to call America/New_York office'),/time zone explicitly/);
+    await f.send('1','Remind me at 6 PM to call America/New_York office');
+    assert.equal((f.store.db.prepare('SELECT zone FROM schedules').get() as any)?.zone,'Asia/Kolkata');
   }finally{f.close();}
 });
 
@@ -595,6 +597,7 @@ test('a reminders question in any wording lists them, and list-plus-cancel goes 
   }finally{f.close();}
 });
 test('zone aliases are the same zone',async()=>{
-  const {sameZone}=await import('../src/schedules.js');
+  const {sameZone,zoneSaid}=await import('../src/schedules.js');
+  assert.ok(zoneSaid('at 6pm Pacific Time','America/Los_Angeles'));assert.ok(zoneSaid('9am PST','America/Los_Angeles'));assert.ok(zoneSaid('9am Singapore time','Asia/Singapore'));assert.ok(!zoneSaid('at 6pm','America/Los_Angeles'));assert.ok(!zoneSaid('9am Spacific','America/Los_Angeles'));
   assert.ok(sameZone('Asia/Calcutta','Asia/Kolkata'));assert.ok(!sameZone('Europe/London','Asia/Kolkata'));assert.ok(!sameZone('Nope/Zone','Asia/Kolkata'));assert.ok(!sameZone(undefined,'Asia/Kolkata'));
 });
