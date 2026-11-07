@@ -177,7 +177,7 @@ export class MetaBrain {
     return (this.store.db.prepare(`SELECT id,original,state,created_at FROM brain_tasks WHERE destination IS ? AND id<>?
       UNION ALL SELECT id,body,status,created_at FROM inbox WHERE destination IS ? AND id<>? AND id NOT IN (SELECT id FROM brain_tasks) AND (id LIKE 'wa:%' OR id LIKE 'tg:%' OR id LIKE 'local:%')
       ORDER BY created_at DESC LIMIT 12`).all(d,exclude,d,exclude))
-      .reverse().map(row=>({original:String(row.original).slice(0,2000),state:String(row.state),response:(this.store.db.prepare(`SELECT body FROM outbox WHERE (request_id=? OR request_id IN (SELECT key FROM (SELECT substr(key,8) AS key,value FROM settings WHERE key LIKE 'parent:%') WHERE value=?)) AND destination IS ? AND (reply_kind<>'system' OR source LIKE ?) ORDER BY created_at LIMIT 3`).all(row.id,row.id,d,`brain:${row.id}:%`).map(r=>String(r.body)).join('\n')).slice(0,1500)}));
+      .reverse().map(row=>({id:String(row.id),original:String(row.original).slice(0,2000),state:String(row.state),response:(this.store.db.prepare(`SELECT body FROM outbox WHERE (request_id=? OR request_id IN (SELECT key FROM (SELECT substr(key,8) AS key,value FROM settings WHERE key LIKE 'parent:%') WHERE value=?)) AND destination IS ? AND (reply_kind<>'system' OR source LIKE ?) ORDER BY created_at LIMIT 3`).all(row.id,row.id,d,`brain:${row.id}:%`).map(r=>String(r.body)).join('\n')).slice(0,1500)}));
   }
   /** The owner's explicit recovery for an item whose session was replaced or paused: send its original request,
    * word for word, to the current default proxy. Only the owner's "start #N again" does this; nothing replays on its own. */
@@ -956,10 +956,21 @@ export class MetaBrain {
       const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
       if(!named.length&&!mentioned.length&&decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider)){
         // A session named in a recent turn is still the destination (sim, 7 Nov 2026).
-        const prior=this.conversation(m.id).slice(-3).map(t=>norm(t.original+' '+(t.response??''))).join(' ');
-        const priorWords=new Set(prior.split(/[^\p{L}\p{N}]+/u));
-        // A partial name ("Acme storefront") carries over too, by its distinctive words (sim, 7 Nov 2026).
-        const again=this.store.bindings().filter(b=>b.enabled&&norm(this.label(b)).length>=4&&(prior.includes(norm(this.label(b)))||norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w))).some(w=>priorWords.has(w))));
+        // The session a recent turn named or sent work to is still the destination, newest turn first (sim, 7 Nov 2026).
+        const distinct=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));
+        const live=this.store.bindings().filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)&&norm(this.label(b)).length>=4);
+        let again:Binding[]=[];
+        for(const t of this.conversation(m.id).slice(-3).reverse()){
+          const sent=new Set((this.store.db.prepare("SELECT binding_id FROM inbox WHERE id=? OR id LIKE ?").all(t.id,t.id+'~%') as {binding_id:string}[]).map(r=>r.binding_id));
+          const byJob=live.filter(b=>sent.has(b.id));
+          if(byJob.length===1){again=byJob;break;}
+          const said=norm(t.original),words=new Set(said.split(/[^\p{L}\p{N}]+/u));
+          const byName=live.filter(b=>said.includes(norm(this.label(b)))||distinct(b).some(w=>words.has(w)));
+          if(byName.length===1){again=byName;break;}
+          if(byJob.length||byName.length)break;
+        }
+        // The owner's own words now may name it partly ("the cloud session").
+        if(!again.length){const now=new Set(norm(said).split(/[^\p{L}\p{N}]+/u));const hit=live.filter(b=>distinct(b).some(w=>now.has(w)));if(hit.length===1)again=hit;}
         if(again.length===1)mentioned.push(again[0]);else throw new Error('Which session should do this? Say its name.');
       }
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');

@@ -125,7 +125,7 @@ export class BrainMemory {
       const item=this.resolve(d.taskIds[0]);this.link(m.id,item.id);
       this.items.setStatus(item.id,d.itemStatus,'Owner');
       this.items.note(item.id,'Owner changed the board status; this does not certify execution or approve native actions.','Owner',`brain-note:${m.id}`);
-      return `#${item.id}: ${d.itemStatus}. Saved as your board update; execution evidence is unchanged.`;
+      return d.itemStatus==='done'?`Marked "${item.title}" done.`:`"${item.title}" is now ${d.itemStatus}.`;
     }
     if(d.operation==='pause_session'||d.operation==='resume_session') {
       // Owners say "pause the Acme one" or "Client: Acme storefront ko pause karo". The model picks the session;
