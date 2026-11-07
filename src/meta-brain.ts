@@ -903,7 +903,9 @@ export class MetaBrain {
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
       if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);
     }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
-    this.send(router,m.id,m.text,target,coordinator,topic,m);
+    // Typing stops once the work is queued; without a line the owner can't tell it went anywhere (sim, 7 Nov 2026).
+    // Plain output, not outputBrain: it is a receipt, not an answer, so the silence notice still fires.
+    if(this.send(router,m.id,m.text,target,coordinator,topic,m))this.store.output(undefined,`✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${m.id}`,this.store.job(m.id)?.destination??this.store.destination());
     return true;
   }
   private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}

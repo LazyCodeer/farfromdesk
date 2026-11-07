@@ -665,6 +665,7 @@ test('a loose session name ("the thesis run") reaches the one session whose titl
     f.store.set(`name:${f.claude.id}`,'Thesis plots and data run');
     await f.router.receive({id:'wa:loose',text:'how is the thesis run going?'});
     assert.equal(f.store.job('wa:loose')?.binding_id,f.claude.id);
+    assert.match((f.store.db.prepare("SELECT body FROM outbox WHERE source='brain-sent:wa:loose'").get() as any)?.body??'',/Sent to Thesis plots and data run/);
     f.respond(async()=>({...decision('unspecified','Check thesis, do not publish.'),intent:'update'}));
     await f.router.receive({id:'wa:np',text:'check the thesis plots, do not publish anything'});
     assert.equal(f.store.job('wa:np')?.binding_id,f.claude.id);
