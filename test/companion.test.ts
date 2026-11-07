@@ -74,7 +74,7 @@ test('a fresh update asks the owning worker once, status only, and its reply is 
     const ask=f.store.job('tg:2')!;
     assert.equal(ask.binding_id,f.worker.id);
     assert.match(ask.body,/^Status check from the owner for #1 /);assert.match(ask.body,/Do not resume, rerun or continue the task/);
-    assert.match(f.last(),/Asking Billing API/);assert.equal(f.store.itemOf('tg:2'),1);
+    assert.match(f.last(),/Asked Billing API/);assert.equal(f.store.itemOf('tg:2'),1);
     // An uncertain status question never marks the work itself blocked, and is never resent.
     f.store.jobState('tg:2','uncertain','Native submission unconfirmed');f.router.brain.memory.synchronize();
     assert.equal(f.c.items().get(1).status,'in progress');

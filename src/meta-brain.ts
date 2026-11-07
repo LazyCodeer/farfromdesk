@@ -235,7 +235,7 @@ export class MetaBrain {
       this.store.db.prepare("UPDATE brain_tasks SET coordinator_id=?,target_session_id=?,state='queued',permission='allowed' WHERE id=?").run(proxy.id,target.id,m.id);
       this.store.set(`brain-topic:${this.store.destination()}`,item.ref);
       this.store.event(m.id,'brain_update_requested');
-      this.store.output(undefined,`🔎 *Asking ${name}*\nAn update request is queued for #${item.id} ${item.title}. Its reply will come here after delivery.`,`brain-ask:${m.id}`,this.store.destination(),{kind:'system',origin:'system',requestId:m.id});
+      this.store.output(undefined,`🔎 Asked ${name} for an update. Its reply will come here.`,`brain-ask:${m.id}`,this.store.destination(),{kind:'system',origin:'system',requestId:m.id});
       this.store.db.exec('RELEASE brain_update');
     }catch{this.store.db.exec('ROLLBACK TO brain_update; RELEASE brain_update');return answer('I couldn\'t send the update request. Nothing was sent; try again in a moment.');}
     return true;
@@ -830,7 +830,7 @@ export class MetaBrain {
       this.stop(m.id,!this.secret.present()?'Meta API key is missing. Add it in the Brain page, or turn the brain off.'
         :code==='authentication_required'?'Meta rejected your API key. Replace it in the Brain page, then send your message again.'
         :code==='timeout'?'Meta took too long to answer. Send your message again.'
-        :'Sorry, I lost my train of thought on that one. Send it again and I will pick it up.');return true;
+        :this.fanned.has(m.id)?'I asked them. Their answers will come here.':'Sorry, I lost my train of thought on that one. Send it again and I will pick it up.');return true;
     }
     if(revoked()||this.get(m.id)?.state!=='interpreting'||routingChanged())return true;
     this.store.db.prepare('UPDATE brain_tasks SET normalized=? WHERE id=?').run(decision.normalized,m.id);
@@ -923,7 +923,7 @@ export class MetaBrain {
       if(/\b(?:don'?t|do not)\s+(?:(?:do|send|start)\s+anything|(?:change|touch)\s+anything\s+(?:yet|for now))\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
       const named=wantedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
-      if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
+      let platformConflict=named.length>0&&decision.provider!=='unspecified'&&named[0]!==decision.provider;
       // Display names and aliases of any length name a session: "UX", "开发", "claude-proxy" as surely as "Payments API".
       const norm=(t:string)=>t.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
       const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
@@ -939,6 +939,9 @@ export class MetaBrain {
         const scored=this.store.bindings().map(b=>({b,n:words(b).filter(hit).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
         if(scored.length&&scored[0].b.enabled&&(scored.length===1||scored[0].n>scored[1].n))mentioned.push(scored[0].b);
       }
+      // "Leave Cursor for now, check the Acme storefront session" names the session; the platform word was not the destination (sim, 7 Nov 2026).
+      if(platformConflict&&mentioned.length===1&&mentioned[0].provider===decision.provider){platformConflict=false;named.length=0;}
+      if(platformConflict)throw new Error('Which one should take it? Name the session or the platform.');
       if(mentioned.length>1)throw new Error(`Your message names more than one session (${[...new Set(mentioned.map(b=>this.label(b)))].join(', ')}). Send each one its own message and I'll pass it on. Nothing was sent.`);
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
@@ -946,16 +949,18 @@ export class MetaBrain {
       const negated=/\b(?:not|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
       const destinationWord=new RegExp(`\\b(?:send(?!\\s+(?:me|us)\\b)|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
       // A session named outside any negation is a clear destination even if another clause says "don't" (sim, 7 Nov 2026).
-      const chosen=mentioned.some(b=>said.split(/[.,;:!?\n。，；！？—–]+/).some(c=>!negated.test(c)&&norm(c).includes(norm(this.label(b)))));
+      const chosen=mentioned.some(b=>said.split(/[.,;!?\n。，；！？]+/).some(c=>!negated.test(c)&&norm(c).includes(norm(this.label(b)))));
       // "I didn't give you an example" is not "don't give this to X": soft verbs need a "to" (sim, 7 Nov 2026).
-      const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause)&&(!/\b(?:give|pass|hand|assign)\b/i.test(clause)||/\b(?:give|pass|hand|assign)\b.*\bto\b/i.test(clause)||destinationWord.test(clause.replace(/\b(?:give|pass|hand|assign)\b/gi,''))));
+      const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause)&&(!/\b(?:give|pass|hand|assign|send|sent|forward)\b/i.test(clause)||/\b(?:give|pass|hand|assign|send|sent|forward)\b.*\b(?:to|there)\b/i.test(clause)||destinationWord.test(clause.replace(/\b(?:give|pass|hand|assign|send|sent|forward)\b/gi,''))));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
       // Only a platform a rule actually names: a rule for Codex never lets the model pick Cursor.
       const ruled=()=>(this.owner.read('collaboration.md')??'').split('\n').filter(l=>/^[-*]\s+\S/.test(l)).flatMap(namedPlatforms);
       const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
-      if(!named.length&&!mentioned.length&&decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider)){
+      // An unnamed follow-up the model gave to no session, or to a platform's coordinator, also stays with the conversation (sim, 7 Nov 2026).
+      const unsure=decision.provider==='unspecified'||(!!decision.sessionId&&!!c.isCoordinator(decision.sessionId));
+      if(!named.length&&!mentioned.length&&!decision.taskIds.length&&(unsure||decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider))){
         // A session named in a recent turn is still the destination (sim, 7 Nov 2026).
         // The session a recent turn named or sent work to is still the destination, newest turn first (sim, 7 Nov 2026).
         const distinct=(b:Binding)=>norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w)));
@@ -972,7 +977,7 @@ export class MetaBrain {
         }
         // The owner's own words now may name it partly ("the cloud session").
         if(!again.length){const now=new Set(norm(said).split(/[^\p{L}\p{N}]+/u));const hit=live.filter(b=>distinct(b).some(w=>now.has(w)));if(hit.length===1)again=hit;}
-        if(again.length===1)mentioned.push(again[0]);else throw new Error('Which session should do this? Say its name.');
+        if(again.length===1)mentioned.push(again[0]);else if(!unsure)throw new Error('Which session should do this? Say its name.');
       }
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
       // A topic id the model guessed wrong, or one owned by another session than the owner now names, starts fresh:
