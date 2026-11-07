@@ -609,3 +609,10 @@ test('session work the fixed parser cannot read goes to the brain',async()=>{
     assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM schedules').get()?.n,0);
   }finally{f.close();}
 });
+// Sim, 7 Nov 2026: a post draft that mentions reminders got "I could not confirm that schedule".
+test('a not-schedule message with no clock time goes to the brain',async()=>{
+  const f=fixture();try{
+    f.setDecision({kind:'not_schedule'});
+    assert.equal(await f.send('1','Draft a LinkedIn post: tasks, status, reminders, all in one chat'),false);
+  }finally{f.close();}
+});

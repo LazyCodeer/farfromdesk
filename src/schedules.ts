@@ -253,6 +253,8 @@ export class Schedules {
     // Changes during the model call cannot create a schedule under another owner, group or channel.
     if(router.stopped||!this.store.incomingOwnerCurrent()||!this.context(destination,owner,channel)||!brainPolicy(this.store).enabled||!this.secret.present())throw new Error('Your connection or Brain settings changed. Please send the reminder again.');
     // An explicit time-shaped request must never fall through into immediate work.
+    // Not a schedule (a post draft that mentions reminders, sim 7 Nov 2026) is the brain's to answer, not a refusal.
+    if(decision.kind==='not_schedule'&&!/\b\d{1,2}(?::\d\d)?\s*(?:am|pm)\b|\b\d{1,2}:\d\d\b/i.test(text)&&brainPolicy(this.store).enabled&&this.secret.present())return false;
     if(decision.kind==='not_schedule'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000}));this.answer(m,'I could not confirm that schedule. Please resend the complete request with its time and action. Nothing was sent.');return true;}
     if(decision.kind==='clarify'&&/\b(?:ask|tell|have|get|let)\s+\S/i.test(text)&&brainPolicy(this.store).enabled&&this.secret.present()&&!/\b(?:do\s+not|don['’]?t|never)\b/i.test(text))return false;
     if(decision.kind==='clarify'){this.store.set(clarifyKey(destination),JSON.stringify({owner,expires:this.now()+600000,text:m.text.slice(0,2000)}));this.answer(m,'Please resend the complete reminder with its date, time and action, and the session if needed. Nothing has been scheduled.');return true;}
