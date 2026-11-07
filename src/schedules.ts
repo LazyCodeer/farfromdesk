@@ -334,12 +334,14 @@ export class Schedules {
     return `Approved schedule set for ${when} (${s.zone}${s.repeat==='once'?'':`, ${s.repeat}`}).`;
   }
   /** "YYYY-MM-DD HH:MM" in the owner's zone, checked: a sentence for the brain, or the times. */
-  private brainTime(at:string,repeatIn?:string):string|{date:string;time:string;zone:string;repeat:Recurrence;next:number} {
+  private brainTime(at:string,repeatIn?:string,zoneIn?:string):string|{date:string;time:string;zone:string;repeat:Recurrence;next:number} {
     const repeat=(['once','daily','weekdays'] as const).find(r=>r===(repeatIn??'once'));
     if(!repeat)return 'Repeat must be once, daily or weekdays. Nothing was scheduled.';
     const m=/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/.exec(at.trim());
     if(!m||Number(m[2])>23||Number(m[3])>59)return 'Give the time as YYYY-MM-DD HH:MM. Nothing was scheduled.';
-    const zone=this.store.get('schedule-timezone')??'Asia/Kolkata';if(!validZone(zone))return 'Choose a valid reminder time zone in Settings. Nothing was scheduled.';
+    // "8pm Singapore time": the model names the zone and the clock does the converting; it got 5:30pm by hand (sim, 7 Nov 2026).
+    if(zoneIn&&!validZone(zoneIn))return `${zoneIn} is not a time zone I know. Nothing was scheduled.`;
+    const zone=zoneIn||(this.store.get('schedule-timezone')??'Asia/Kolkata');if(!validZone(zone))return 'Choose a valid reminder time zone in Settings. Nothing was scheduled.';
     const date=m[1],time=`${m[2]}:${m[3]}`,now=this.now();
     if(repeat==='once'&&!localInstants(date,time,zone).length)return 'That local time does not exist. Nothing was scheduled.';
     const next=nextOccurrence(date,time,zone,repeat,now);
@@ -352,7 +354,7 @@ export class Schedules {
    * tests"). The same checks as the typed path: the session must be connected and allowed, and
    * with task reviews on, the owner approves a card before anything is saved.
    */
-  async brainScheduleSession(router:Router,m:Incoming,input:{sessionId:string;text:string;at:string;repeat?:string}):Promise<string> {
+  async brainScheduleSession(router:Router,m:Incoming,input:{sessionId:string;text:string;at:string;repeat?:string;zone?:string}):Promise<string> {
     const destination=this.store.destination(),owner=destination?this.owner(destination):'',channel=this.store.controlChannel();
     if(!destination||!this.context(destination,owner,channel))return 'Scheduled work can be set only from your own chat. Nothing was scheduled.';
     const approved=router.contracts.approvedSchedule(m.id);
@@ -363,7 +365,7 @@ export class Schedules {
     if(!binding)return 'No session has that id. Use an id from sessions. Nothing was scheduled.';
     const identity=bindingFingerprint(router,binding);
     if(!sessionAvailable(router,{binding_id:binding.id,binding_identity:identity}))return `${this.store.get(`name:${binding.id}`)??binding.alias} is unavailable, or routing to it is off in Settings. Nothing was scheduled.`;
-    const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
+    const t=this.brainTime(input.at,input.repeat,input.zone);if(typeof t==='string')return t;
     if(this.store.db.prepare('SELECT 1 FROM schedules WHERE origin_id=?').get(m.id))return 'This message already scheduled work.';
     if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active schedules. Cancel one first.';
     const now=this.now(),id=randomUUID();
@@ -391,13 +393,13 @@ export class Schedules {
    * the time; this checks the owner and channel, the time, and the limit, then saves it. The
    * confirmation reads back what and when, so a wrong guess is caught at a glance.
    */
-  brainCreate(router:Router,m:Incoming,input:{text:string;at:string;repeat?:string;kind?:string}):string {
+  brainCreate(router:Router,m:Incoming,input:{text:string;at:string;repeat?:string;kind?:string;zone?:string}):string {
     const destination=this.store.destination(),owner=destination?this.owner(destination):'',channel=this.store.controlChannel();
     if(!destination||!this.context(destination,owner,channel))return 'Reminders work only in your own chat. Nothing was scheduled.';
     const kind=input.kind==='brief'?'brief':'message',text=input.text.trim().replace(/\s+/g,' ');
     if(kind==='message'&&(!text||text.length>MAX_TEXT))return 'Say what the reminder should say. Nothing was scheduled.';
     if(kind==='brief'&&(!['whatsapp','telegram'].includes(channel??'')||!router.scheduledBrief))return 'Scheduled briefs work only in your own chat. Nothing was scheduled.';
-    const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
+    const t=this.brainTime(input.at,input.repeat,input.zone);if(typeof t==='string')return t;
     const {date,time,zone,repeat,next}=t,now=this.now();
     if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active reminders. Cancel one first.';
     if(this.store.db.prepare('SELECT 1 FROM schedules WHERE origin_id=?').get(m.id))return 'This message already created a reminder.';
