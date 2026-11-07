@@ -1,4 +1,4 @@
-import {unreachable} from './meta-brain.js';
+import {unreachable,coordinatorProblem} from './meta-brain.js';
 import { itemSessionLabel } from './item-session-label.js';
 import { Items, type Item } from './items.js';
 import type { Store, Binding } from './store.js';
@@ -151,7 +151,7 @@ export class BrainMemory {
       if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error(unreachable(this.store.get(`name:${b.id}`)??b.alias,{...b,enabled:1},policy.providers??[],router.coordinator?.enabled()??[]));
       const coordinator=router.coordinator.registry.bindingFor(b);
       // A paused coordinator can resume itself; its own pause must not lock it out.
-      if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error('Review the saved coordinator connection before changing this session.');
+      if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error(coordinatorProblem(this.store,b.provider,coordinator,!!coordinator&&router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key));
       if(resume){const selected=JSON.parse(this.store.get('selected')??'[]') as string[];this.store.set('selected',JSON.stringify([...new Set([...selected,b.id])]));}
       this.store.enable(b.id,resume);
       // Pausing forwarding does not terminate native work or disconnect the owner messaging account.

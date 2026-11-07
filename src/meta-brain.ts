@@ -93,6 +93,15 @@ export function unreachable(name:string,b:Binding,brainProviders:readonly string
   if(!brainProviders.includes(b.provider))return `${p} isn't allowed for the Brain. In Settings, turn the Brain off and on again to include it; I can't from chat.`;
   return '';
 }
+/** Why a session's coordinator can't take work, and where the owner fixes it. "Review the saved coordinator
+ * connection" left the owner guessing (live, 7 Nov 2026). */
+export function coordinatorProblem(store:Store,provider:string,coordinator:Binding|undefined,keyChanged:boolean){
+  const p=provider[0]!.toUpperCase()+provider.slice(1),where='In the app: Settings, Coding platforms. I can\'t do this from chat.';
+  if(!coordinator)return `${p} has no coordinator set up, so I can't route to its sessions. ${where}`;
+  const name=store.get(`name:${coordinator.id}`)??coordinator.alias;
+  if(keyChanged)return `${p}'s sign-in or app changed since ${name} was set up as its coordinator, so I won't route through it. Reconnect ${p}. ${where}`;
+  return `${name}, the ${p} coordinator, is paused, so ${p} sessions can't get messages. Say "resume ${name}", or turn it on in Settings, Coding platforms.`;
+}
 const shortTitle=(t:string)=>{const first=t.trim().split(/(?<=[.?!])\s|\n/)[0];return first.length<=60?first:first.slice(0,60).replace(/\s+\S*$/,'')+'…';};
 export const briefNow=(t:string)=>/\b(?:send|give|show|get)\b.{0,20}\bbrief(?:ing)?\b.{0,15}\b(?:now|right away)\b|^\W*(?:brief(?:ing)?\s+now|morning brief)\W*$/i.test(t)&&!/\b(?:every|daily|weekdays?|at\s+\d|\d\s*(?:am|pm))\b/i.test(t);
 export class MetaBrain {
@@ -927,7 +936,7 @@ export class MetaBrain {
       if(!target)target=provider?c.registry.choose(provider,/\bdesktop\b/i.test(m.text)?'desktop':/\bcli\b/i.test(m.text)?'cli':undefined):c.master();
       if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error(!target?'No session can take this right now.':unreachable(this.label(target),target,policy.providers,c.enabled()));
       coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
-      if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
+      if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error(coordinatorProblem(this.store,target.provider,coordinator,!!coordinator&&c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key));
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
     }catch(e){let reason=(e as Error).message;
       // The same refusal twice reads like a wall; the second time say what is still seen and offer a way on (sim, 7 Nov 2026).

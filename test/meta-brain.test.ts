@@ -667,3 +667,13 @@ test('an update about something untracked asks the model for a session, not the 
     assert.match(String(brain.refuse(f.router,{...policy,allowManagement:true},{...decision(),intent:'manage',operation:'add_todo'})),/todo_add/);
   }finally{f.close();}
 });
+// Live, 7 Nov 2026: "Review the saved coordinator connection" didn't say what was wrong or where to fix it.
+test('coordinator problems name the cause and the place to fix it',async()=>{
+  const {coordinatorProblem}=await import('../src/meta-brain.js');
+  const f=fixture();try{
+    const c=f.store.register('agi','claude','55555555-5555-4555-8555-555555555555',process.cwd()).binding;f.store.set(`name:${c.id}`,'Claude AGI');
+    assert.match(coordinatorProblem(f.store,'claude',undefined,false),/Claude has no coordinator.*Settings, Coding platforms/);
+    assert.match(coordinatorProblem(f.store,'claude',c,false),/Claude AGI, the Claude coordinator, is paused.*resume Claude AGI/);
+    assert.match(coordinatorProblem(f.store,'claude',c,true),/sign-in or app changed.*Reconnect Claude/);
+  }finally{f.close();}
+});
