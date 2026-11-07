@@ -117,7 +117,7 @@ test('the brain may pick an unnamed platform only by following collaboration.md'
   f.router.brain.owner.write('about-me.md','# About you\n- Call me: Sam\n','owner');
   await f.say('Plan the invoice export');
   assert.equal(f.store.jobs().length,0);
-  assert.match(f.out().at(-1)!,/name the coding platform/);
+  assert.match(f.out().at(-1)!,/Which session should do this/);
   f.router.brain.owner.write('collaboration.md','# Collaboration\n- Planning and review: Codex\n','owner');
   await f.say('Plan the invoice export again');
   assert.equal(f.store.jobs().length,1);
@@ -129,7 +129,7 @@ test('a collaboration rule for one platform does not let the brain pick another'
   f.router.brain.owner.write('collaboration.md','# Collaboration\n- Planning and review: Codex\n','owner');
   await f.say('Plan the invoice export');
   assert.equal(f.store.jobs().length,0);
-  assert.match(f.out().at(-1)!,/name the coding platform/);
+  assert.match(f.out().at(-1)!,/Which session should do this/);
   f.close();
 });
 
@@ -138,7 +138,7 @@ test('a platform the owner named in the message just before counts, so "yes" aft
   await f.say('hey codex, can you take something for me?');
   const before=f.store.jobs().length;
   await f.say('yes, say hi');
-  assert.doesNotMatch(f.out().at(-1)!,/name the coding platform/);
+  assert.doesNotMatch(f.out().at(-1)!,/Which session should do this/);
   assert.equal(f.store.jobs().length,before+1);
   f.close();
 });

@@ -1,3 +1,4 @@
+import {unreachable} from './meta-brain.js';
 import { itemSessionLabel } from './item-session-label.js';
 import { Items, type Item } from './items.js';
 import type { Store, Binding } from './store.js';
@@ -139,7 +140,7 @@ export class BrainMemory {
       const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
       if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
-      if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error(`${b.provider[0].toUpperCase()+b.provider.slice(1)} is switched off for the brain in Settings. Turn it on there; I can't change that from chat.`);
+      if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error(unreachable(this.store.get(`name:${b.id}`)??b.alias,{...b,enabled:1},policy.providers??[],router.coordinator?.enabled()??[]));
       const coordinator=router.coordinator.registry.bindingFor(b);
       // A paused coordinator can resume itself; its own pause must not lock it out.
       if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error('Review the saved coordinator connection before changing this session.');

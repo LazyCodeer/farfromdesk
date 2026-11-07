@@ -355,7 +355,7 @@ test('notify-on-completion persists, waits for evidence and queues once without 
   await f.router.receive({id:'wa:work',text:'Fix CSV export'});
   f.respond(async()=>({...decision(),intent:'manage',operation:'watch',taskIds:[itemRef(f,'wa:work')]}));
   await f.router.receive({id:'wa:watch',text:'Okay let me know once itls done'});
-  assert.match(String(f.out().at(-1)?.body),/message you when #1/i);assert.equal(f.store.jobs().length,1);
+  assert.match(String(f.out().at(-1)?.body),/message you when .+ answers or needs you/i);assert.equal(f.store.jobs().length,1);
   const before=f.out().length;f.router.brain.tick(f.router);assert.equal(f.out().length,before);
   f.store.jobState('wa:work','completed',null,'done'); // an outcome marker alone is insufficient
   f.router.brain.tick(f.router);assert.equal(f.out().length,before);

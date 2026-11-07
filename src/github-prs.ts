@@ -11,7 +11,7 @@ export function formatPrs(nodes:Node[]):string{
   const checks:Record<string,string>={SUCCESS:'green',FAILURE:'failing',ERROR:'failing',PENDING:'running',EXPECTED:'running'};
   const review:Record<string,string>={APPROVED:'approved',CHANGES_REQUESTED:'changes requested',REVIEW_REQUIRED:'needs review'};
   return nodes.map(n=>{const s=n.commits.nodes[0]?.commit.statusCheckRollup?.state;
-    return `${n.repository.nameWithOwner.split('/').pop()} PR ${n.number}, ${n.title}: checks ${s?checks[s]??s.toLowerCase():'none'}, ${n.isDraft?'draft':review[n.reviewDecision??'']??'no review needed'}`;}).join('\n');
+    return `${n.repository.nameWithOwner.split('/').pop()} PR ${n.number}, ${n.title}: checks ${s?checks[s]??s.toLowerCase():'none'}, ${n.isDraft?'draft':review[n.reviewDecision??'']??'no review required by the repo'}`;}).join('\n');
 }
 /** The owner's open PRs with checks and review state, read with their own gh login. Read-only. */
 export function openPrStatus():Promise<string>{
