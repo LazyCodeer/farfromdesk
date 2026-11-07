@@ -242,11 +242,13 @@ export class Schedules {
     if(action==='session'){
       if(decision.target){
         // The owner says the name they see ("ask the FarFromDesk cloud server session to"), not the alias (sim, 7 Nov 2026).
-        const found=this.store.binding(decision.target),names=[decision.target,...(found?[found.alias,this.store.get(`name:${found.id}`)??'']:[])].filter(Boolean);
+        const norm=(v:string)=>v.trim().toLowerCase();
+        // The model may hand back the display name or alias instead of the id.
+        const found=this.store.binding(decision.target)??this.store.bindings().find(b=>norm(b.alias)===norm(decision.target)||norm(this.store.get(`name:${b.id}`)??'')===norm(decision.target)),names=[decision.target,...(found?[found.alias,this.store.get(`name:${found.id}`)??'']:[])].filter(Boolean);
         const said=names.find(n=>containsExact(text,n)&&explicitSessionDispatch(text,n,body)),directive=said?explicitSessionDispatch(text,said,body):undefined;
         if(!directive)throw new Error('To schedule work, explicitly say ask SESSION to do the task. A reminder alone will not send work.');
         timingText=directive.directive;body=directive.action;
-        binding=this.store.binding(decision.target);
+        binding=found;
       }else if(readOnlyPrStatus(body)&&cleanAction(text).endsWith(cleanAction(body))&&!/\b(?:remind\s+me|do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(text)){
         const match=/(?:please\s+)?check\s+(?:whether|if)\s+(?:pr|pull request)\s+#?\d{1,9}\s+is\s+green\s+and\s+tell\s+me[.!?]*\s*$/i.exec(text);
         if(!match||cleanAction(match[0])!==cleanAction(body))throw new Error('Please state the complete PR status request.');

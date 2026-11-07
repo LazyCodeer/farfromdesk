@@ -118,7 +118,7 @@ test('scheduled session is bound to exact explicit session and cannot dispatch a
 test('scheduled session work accepts the name the owner sees',async()=>{
   const f=fixture();try{
     const {binding}=f.store.register('cloud-srv','codex','22222222-2222-4222-8222-222222222222','/tmp/cloud');f.store.set(`name:${binding.id}`,'FarFromDesk cloud server');
-    f.setDecision({action:'session',text:'run the tests',target:'cloud-srv'});
+    f.setDecision({action:'session',text:'run the tests',target:'FarFromDesk cloud server'});
     await f.send('1','At 6 PM ask the FarFromDesk cloud server session to run the tests');
     assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as {text:string}|undefined)?.text,'run the tests');
   }finally{f.close();}

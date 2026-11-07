@@ -1,3 +1,4 @@
+import './brain-fixture-isolation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chmodSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';

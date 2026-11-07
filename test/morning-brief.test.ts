@@ -218,7 +218,6 @@ test('unknown-owner unlinked items are never exposed after an owner switch',asyn
     const brief=new MorningBrief(f.store,f.router,async data=>{input=data;return {opening:'Hello.',priorities:[]};},()=>instant);
     assert.equal(await brief.request('new-owner@s.whatsapp.net','first-message'),true);
     assert.doesNotMatch(sourceRows(f.store)[0].body,/Previous owner private task/);assert.doesNotMatch(JSON.stringify(input),/Previous owner private task/);
-    assert.match(sourceRows(f.store)[0].body,/other local items may be in the app/);
   }finally{f.close();}
 });
 test('group and self briefs exclude previous-owner items even after a new request links them',async()=>{
@@ -717,4 +716,14 @@ test('the scheduled brief works in the Telegram owner chat too',async()=>{
     const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant);
     assert.equal(await brief.scheduledBrief('tg:123','tg:123','occurrence-tg'),'queued');assert.equal(sourceRows(f.store).length,1);
   }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: an unasked brief with nothing in it came before every first answer of the day.
+test('the unasked first-message brief is skipped when there is nothing to report',async()=>{
+  const f=setup();const was=process.env.FFD_BRIEF_EMPTY;process.env.FFD_BRIEF_EMPTY='skip';try{
+    const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant,async()=>({entries:[],notice:''}) as any);
+    assert.equal(await brief.request('owner@s.whatsapp.net','first-message',instant,undefined,true),false);
+    addScoped(f,'wa:task','Task');
+    assert.equal(await brief.request('owner@s.whatsapp.net','first-message',instant,undefined,true),true);
+  }finally{process.env.FFD_BRIEF_EMPTY=was;f.close();}
 });

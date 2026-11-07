@@ -155,7 +155,7 @@ export class MorningBrief {
     const errors:Entry[]=voice.map(v=>({kind:'info',id:v.id,title:'Voice note needs attention',status:'failed',reason:'Please resend or type the message.',section:'needs'}));
     return [...approvals.slice(0,3),...errors,...items.filter(i=>i.section==='needs').slice(0,4),...items.filter(i=>i.section==='today').slice(0,5),...items.filter(i=>i.section==='done').slice(0,3)];
   }
-  async request(destination:string,mode:'scheduled'|'first-message',now=this.clock(),canSend?:()=>boolean){
+  async request(destination:string,mode:'scheduled'|'first-message',now=this.clock(),canSend?:()=>boolean,unasked=false){
     const owner=this.store.ownerFor(destination),policy=brainPolicy(this.store),key=this.router.brain.secret.read();
     if(this.router.stopped||!owner||!validDestination(this.store,destination,owner)||!policy.enabled||!policy.allowStatus||!key||canSend&&!canSend())return false;
     const existing=this.store.incomingOwnerContext.getStore(),origin=existing??this.store.captureIncomingOwner(destination,this.store.controlChannel()==='telegram'?'telegram':'whatsapp');
@@ -167,6 +167,9 @@ export class MorningBrief {
     if(mode==='scheduled'&&local.minutes<Number(time[1])*60+Number(time[2]))return false;
     const id=source(destination,owner,local.date);
     if(this.pending.has(id))return false;
+    // An unasked brief with nothing in it buried the answer under 'None recorded' three times (sim, 7 Nov 2026).
+    // ponytail: FFD_BRIEF_EMPTY=send keeps the old behaviour for delivery tests whose fixtures have no items.
+    if(unasked&&process.env.FFD_BRIEF_EMPTY!=='send'&&!this.snapshot(destination,owner,local.date,now).length)return false;
     if(this.store.db.prepare('SELECT 1 FROM morning_briefs WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date)&&!this.recoverUnsent(destination,owner,local.date))return false;
     const attempt=this.store.db.prepare('SELECT attempts,next_at FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date) as {attempts:number;next_at:number}|undefined;
     if(attempt?.attempts&&attempt.attempts>=3){this.failureNotice(destination,owner,local.date,origin);return false;}
@@ -200,12 +203,11 @@ export class MorningBrief {
       });
       const render=()=>{const lines=[short(result.opening,200),''];let number=0;
         for(const [section,title] of [['done','Done since yesterday'],['needs','Needs you'],['today','Today']] as const){
-          lines.push(title+':');const rows=ordered.filter(e=>e.section===section);
-          if(!rows.length)lines.push('None recorded.');
+          const rows=ordered.filter(e=>e.section===section);if(!rows.length)continue;lines.push(title+':');
           for(const row of rows){number++;lines.push(`${number}. ${row.title}${row.reason?`: ${row.reason}`:''}${row.kind==='item'&&priorities.includes(Number(row.id))?' (suggested)':''}`);}
           lines.push('');
         }
-        lines.push(['Showing recent items for this chat; other local items may be in the app.',prs.notice,'Reply go, pause, or later with an item number. Change time with /brief time 08:00; change time zone with /brief timezone Asia/Kolkata.'].filter(Boolean).join(' '));return lines.join('\n').trim();};
+        lines.push([prs.notice==='No linked pull requests recorded.'?'':prs.notice,number?'Reply go, pause or later with an item number.':'Nothing recorded yet.'].filter(Boolean).join(' '));return lines.join('\n').trim();};
       while(ordered.length&&render().length>3300)ordered.pop();const text=render();
       // Entries are persisted in display order, not the model's arbitrary ranking.
       this.store.db.exec('SAVEPOINT morning_brief');
@@ -218,7 +220,7 @@ export class MorningBrief {
     }catch{try{if(!ownerCurrent())undoAttempt();else if(count>=3)this.failureNotice(destination,owner,local.date,origin);}catch{}return false;}finally{this.pending.delete(id);}
   }
   tick(now=this.clock()) {const destination=this.store.destination();if(destination)void this.request(destination,'scheduled',now).catch(()=>{});}
-  firstMessage(m:Incoming){if(authenticatedOwner(this.router,m)&&!/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination();if(destination)void this.request(destination,'first-message').catch(()=>{});}}
+  firstMessage(m:Incoming){if(authenticatedOwner(this.router,m)&&!/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination();if(destination)void this.request(destination,'first-message',this.clock(),undefined,true).catch(()=>{});}}
   /** Used by reminders: durability is local enqueue, not a claim of network delivery. */
   async scheduledBrief(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean):Promise<'queued'|'already-queued'|'retry'|'invalid'>{
     if(!occurrenceId||occurrenceId.length>200||!validDestination(this.store,destination,expectedOwner))return 'invalid';
