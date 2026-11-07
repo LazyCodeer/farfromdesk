@@ -81,6 +81,12 @@ export class Store {
     this.db.exec(`CREATE INDEX IF NOT EXISTS inbox_binding_created ON inbox(binding_id,created_at);
       CREATE INDEX IF NOT EXISTS outbox_request_created ON outbox(request_id,created_at);`);
     initializeOptions(this);
+    // The task review card blocked simple phone asks (2026-11-06). Switch it off once on
+    // existing installs; the owner can still turn it back on in Settings.
+    if(this.get('task-contracts-off')!=='1'){
+      try{const p=JSON.parse(this.get('meta-brain-policy')??'null');if(p&&typeof p==='object'){p.taskContracts=false;this.set('meta-brain-policy',JSON.stringify(p));}}catch{}
+      this.set('task-contracts-off','1');
+    }
     // A durable epoch also changes when settings are removed directly, and
     // makes change-away-and-back invalidate work that was already in flight.
     for(const operation of ['INSERT','UPDATE','DELETE'] as const){

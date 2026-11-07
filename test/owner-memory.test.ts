@@ -95,7 +95,7 @@ test('the first hi goes to the model for an intro, and what it saves is announce
   assert.deepEqual(Object.keys(f.inputs[0].memory),['MEMORY.md','about-me.md','collaboration.md','preferences.md']);
   await f.say('Sam');
   assert.match(f.router.brain.owner.read('about-me.md')!,/^- Call me: Sam$/m);
-  assert.ok(f.out().some(b=>/Saved "Call me: Sam" in about-me\.md[\s\S]*undo/.test(b)));
+  assert.ok(f.out().some(b=>/Saved "Call me: Sam"[\s\S]*undo/.test(b)));
   const calls=f.inputs.length;
   await f.say('hello');
   assert.equal(f.inputs.length,calls+1,'greetings go to the model too; nothing is matched before it');

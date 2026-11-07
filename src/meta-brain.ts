@@ -1,3 +1,5 @@
+import {openPrStatus} from './github-prs.js';
+import {generateMetaImage} from './social-meta-image.js';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -74,6 +76,8 @@ function namedPlatforms(text:string):BrainProvider[] {
 
 type Task={id:string;original:string;normalized:string|null;source:string;destination:string|null;coordinator_id:string|null;target_session_id:string|null;state:string;permission:string;reason:string|null;verified_at:number|null;created_at:number};
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
+// Title words too common to pick a session by themselves.
+const LOOSE_STOP=new Set(['client','session','sessions','with','from','this','that','work','task','tasks','project','repo','code','data','fixes','update','about','into','the']);
 export class MetaBrain {
   readonly memory:BrainMemory;
   readonly owner:OwnerMemory;
@@ -188,15 +192,15 @@ export class MetaBrain {
     const answer=(s:string)=>{this.answer(m.id,s);return true;};
     const policy=brainPolicy(this.store);
     // Model intent is advisory. Explicit negation and quoted instructions cannot authorize a dispatch.
-    if(/\b(?:don['’]?t|do not|never|stop|cancel|not to)\b/i.test(original)||/["“][^"”]*\b(?:ask|ping|check with|request)\b/i.test(original))return answer('No update request was sent. If you want a fresh report, ask me to contact the owning session.');
+    if(/\b(?:don['’]?t|do not|never|not to)\s+(?:ask|ping|contact|check with|bother|disturb|message|request)\b/i.test(original)||/["“][^"”]*\b(?:ask|ping|check with|request)\b/i.test(original))return answer('No update request was sent. If you want a fresh report, ask me to contact the owning session.');
     if(!policy.allowRouting)return answer('Asking sessions for updates is disabled in Meta Settings. Here is the saved status:\n'+this.statusText([item],router));
     const stale=this.memory.attention(item);if(stale)return answer(stale);
     if(!item.jobs.length)return answer(`#${item.id} ${item.title} hasn't been sent to a session yet, so there's no one to ask. Tell me what you want done and I'll send it.`);
     const c=router.coordinator;if(!c)return answer('Connect a proxy in Coding platforms before asking for updates.');
     let target:Binding|undefined;
     try{target=this.memory.owner(item,router);}catch(e){return answer(`#${item.id} ${item.title}: ${(e as Error).message}`);}
-    if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider)||(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id)))
-      return answer(`#${item.id} ${item.title}: its session isn't connected, so I can't ask it. Connect it in the app, or send the task again.`);
+    if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))
+      return answer(`#${item.id} ${item.title}: its session is paused or its platform is off, so I can't ask it. Turn it back on in the app, or send the task again.`);
     // A platform the brain carried over from an earlier turn ("ask claude", then "1") constrains it too.
     const named=[...new Set([...namedPlatforms(original),...(provider&&provider!=='unspecified'?[provider]:[])])];
     if(named.length>1||(named.length===1&&named[0]!==target.provider))return answer('This item belongs to another platform. Please clarify which owning session you want to ask. Nothing was sent.');
@@ -221,7 +225,7 @@ export class MetaBrain {
   private announce(m:Incoming) {
     const source=`brain:${m.id}`,saved=this.owner.changes(source);if(!saved.length)return;
     this.store.set(`memory-last:${this.store.destination()}`,JSON.stringify({source,at:Date.now()}));
-    this.store.outputBrain(m.id,`🧠 ${saved.map(c=>c.summary).join('\n').slice(0,600)}\nReply *undo* to take it back.`,`brain-memory:${m.id}`);
+    this.store.outputBrain(m.id,`🧠 ${saved.map(c=>c.summary).join('\n').slice(0,600)}\nSay "undo" to take it back.`,`brain-memory:${m.id}`);
   }
   private answer(id:string,text:string) {
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(id);
@@ -288,9 +292,10 @@ export class MetaBrain {
     if(!policy.allowStatus){this.stop(m.id,'Status summaries and follow-up notifications are disabled in Meta Settings.');return true;}
     if(op==='recent_sessions'){
       const provider=decision.provider==='unspecified'?undefined:decision.provider,hours=decision.hours??24;
-      if(!provider)return answer('Which coding platform should I list sessions for?');
-      if(!policy.providers.includes(provider)||!router.coordinator?.enabled().includes(provider))return answer('That coding platform is disabled in Settings.');
-      try{return answer(await router.coordinator.recentSessions(provider,Date.now()-hours*3600000));}
+      // No platform named means all of them: "which platform?" after "all of them" was a dead end (sim, 7 Nov 2026).
+      const providers=provider?[provider]:policy.providers.filter(p=>router.coordinator?.enabled().includes(p));
+      if(!providers.length||(provider&&(!policy.providers.includes(provider)||!router.coordinator?.enabled().includes(provider))))return answer('That coding platform is disabled in Settings.');
+      try{return answer((await Promise.all(providers.map(p=>router.coordinator!.recentSessions(p,Date.now()-hours*3600000)))).join('\n\n'));}
       catch{return answer('Session discovery is unavailable. Nothing was dispatched; check the native app connection.');}
     }
     // The coded list (P1, D2) the owner reads is what later "update on P1" resolves against.
@@ -473,6 +478,12 @@ export class MetaBrain {
    * Downloads, Desktop, Documents, Pictures, Movies and Music; never hidden folders or Library,
    * never a link that leads outside them, at most 50 MB ("Send me 3.jpg from downloads", live).
    */
+  private async makeImageFor(m:Incoming,key:string,prompt:string):Promise<string>{
+    const list=this.files.get(m.id)??[];if(list.length>=3)return 'At most three pictures per message.';
+    try{const image=await generateMetaImage({prompt,apiKey:key},fetch);list.push({bytes:Buffer.from(image.bytes),name:'image.jpg'});this.files.set(m.id,list);}
+    catch(e){return `The picture could not be made: ${(e as Error).message} Say so plainly.`;}
+    return JSON.stringify({queued:'image.jpg',note:'It is sent to the owner right after your reply. Say it follows.'});
+  }
   private sendFileFor(m:Incoming,raw:string):string{
     const home=userInfo().homedir;
     const asked=raw.trim().replace(process.platform==='win32'?/^~(?=[\\/]|$)/:/^~(?=\/|$)/,home);
@@ -733,7 +744,7 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),...(mine?{now:localStamp()}:{}),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.owner.introNeeded()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
+      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled,...this.lastActive(b.id)})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),now:localStamp(),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.introOnce()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
         // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
         // model can say why and what to switch on, instead of the loop failing.
         run:async(tool,args)=>{const found=platformToolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
@@ -757,8 +768,11 @@ export class MetaBrain {
         openApp:async app=>{this.ack(m,app);const outcome=await runDevicePlan(this.deviceControl(),{action:'open_app',app},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'open_app',outcome:outcome.ok?'done':'blocked'});return outcome.ok?outcome.line:`Refused: ${outcome.line}`;},
         openPage:async(url,browser)=>{this.ack(m,browser);this.armed.delete(m.id);const r=await this.openPageFor(m,url,browser);if(r.startsWith('{'))this.focused.set(m.id,browser.toLowerCase());return r;},
         focusTab:match=>{this.ack(m,`the ${match} tab`);this.armed.delete(m.id);return this.focusTabFor(m,match);},
-        reminders:{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},
-      }:undefined));
+      }:undefined,{create:i=>router.schedules.brainCreate(router,m,i),list:()=>router.schedules.brainList(),cancel:id=>router.schedules.brainCancel(id),session:i=>router.schedules.brainScheduleSession(router,m,i)},mode?.kind==='social'?undefined:prompt=>this.makeImageFor(m,key,prompt),policy.allowManagement?{
+        add:t=>{const i=this.memory.add(`${m.id}#${t.slice(0,40)}`,t);return `Saved #${i.id}: ${i.title}`;},
+        set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
+        list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined,
+        (sessionId,text)=>this.fanOut(router,m,policy,sessionId,text),openPrStatus));
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;
@@ -784,6 +798,8 @@ export class MetaBrain {
     // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
     // once. A second copy would silently stop applying when that one changes.
     // Room for an answer built from tool results (a tab list was cut mid-word at 400).
+    // Parts already went out through send_to_session; a final task would send the whole message again.
+    if(this.fanned.has(m.id)){this.fanned.delete(m.id);if(decision.intent!=='chat')decision={...decision,intent:'chat',reply:decision.reply||'Sent. I\'ll tell you as each one answers.'};}
     const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,3800);
     if(decision.intent==='clarify') {this.stop(m.id,said||'Please clarify the task and which coding platform you want. Nothing has been dispatched.','clarification');return true;}
     if(decision.intent==='chat') {this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(m.id);// The screenshot is the fact. Live on build 2423 the image was taken and sent while the
@@ -818,8 +834,9 @@ export class MetaBrain {
     if(decision.intent==='update') {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
       const picked=decision.taskIds.length===1?this.memory.board().find(i=>i.ref===decision.taskIds[0]||this.store.itemOf(decision.taskIds[0])===i.id):undefined;
-      if(!picked){this.stop(m.id,'Which item should I ask about? Ask for your items and name its code, like P1.','clarification');return true;}
-      return this.requestUpdate(router,m,picked,m.text,decision.provider);
+      // No tracked item: the owner never sees item codes, so ask the session itself ("check the cloud server session", sim 7 Nov 2026).
+      if(picked)return this.requestUpdate(router,m,picked,m.text,decision.provider);
+      decision={...decision,intent:'task',taskIds:[]};
     }
     if(decision.intent==='status') {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
@@ -839,11 +856,11 @@ export class MetaBrain {
       // Same reason as `statusText`: the facts are unchanged, the layout is the owner's.
       const listed=rows.map(t=>{
         const title=t.original.replace(/\s+/g,' ').slice(0,100);
-        const alias=t.coordinator_id?this.store.binding(t.coordinator_id)?.alias??'a saved session':undefined;
-        const child=t.evidence.children.map(c=>`${this.store.binding(String(c.binding_id))?.alias??'a saved session'} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
+        const alias=t.coordinator_id?(()=>{const b=this.store.binding(t.coordinator_id!);return b?this.label(b):'a saved session';})():undefined;
+        const child=t.evidence.children.map(c=>`${(()=>{const b=this.store.binding(String(c.binding_id));return b?this.label(b):'a saved session';})()} ${c.status}${c.outcome?` (${c.outcome}, reported)`:''}`).join(', ');
         return `- ${title}${title.length>=100?'...':''} · ${t.status}${alias?` · ${alias}`:''}${child?` · delegated to ${child}`:''}`;
       });
-      this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):'No matching tracked tasks.');return true;
+      this.store.outputBrain(m.id,rows.length?[`📋 *${rows.length===1?'1 task':`${rows.length} tasks`}*`,...listed].join('\n'):this.noTasksText(router));return true;
     }
     if(!policy.allowRouting){this.stop(m.id,'Routing is disabled by your Meta brain policy.');return true;}
     const c=router.coordinator;if(!c){this.stop(m.id,'Connect an existing coordinator in Coding platforms first.');return true;}
@@ -852,6 +869,8 @@ export class MetaBrain {
       // The original text, never cleaned-up consent, controls explicit platform constraints.
       // A Social brief names platforms as its subject ("a post about Claude and Codex"), so there
       // a name routes only when the model also read it as the destination. Still owner-named.
+      // "Actually, pause that, don't change anything yet" was still sent (sim, 7 Nov 2026). A hold from the owner sends nothing.
+      if(/\b(?:don'?t|do not)\s+(?:change|touch|do|send|start)\s+anything\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
       const named=namedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
@@ -859,14 +878,24 @@ export class MetaBrain {
       const norm=(t:string)=>t.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
       const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
       const hit=(n:string)=>/[^\x00-\x7f]/.test(n)?said.includes(n):new RegExp(`(?:^|[^a-z0-9])${esc(n)}(?:[^a-z0-9]|$)`).test(said);
-      const mentioned=this.memory.candidates(router).filter(b=>[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
-      if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
+      // Any enabled session the owner can see by name counts, connected or not: naming it is as exact as /to (sim, 7 Nov 2026).
+      const mentioned=this.store.bindings().filter(b=>b.enabled&&[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
+      // Owners say "the thesis run" or "Acme storefront" for "Thesis plots and data run" / "Client: Acme storefront".
+      // No exact title hit: the one session whose distinctive title words the owner used most wins (sim, 7 Nov 2026).
+      // ponytail: plain word overlap, no stemming or fuzzy spelling; add when typos in names show up in the sim.
+      if(!mentioned.length){
+        const words=(b:Binding)=>[...new Set(norm(this.label(b)).split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4&&!LOOSE_STOP.has(w)&&!PLATFORM_WORDS.some(([,ws])=>ws.includes(w))))];
+        // Paused sessions are scored too, so a paused "invoice-a" never hands its work to "invoice-b".
+        const scored=this.store.bindings().map(b=>({b,n:words(b).filter(hit).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
+        if(scored.length&&scored[0].b.enabled&&(scored.length===1||scored[0].n>scored[1].n))mentioned.push(scored[0].b);
+      }
+      if(mentioned.length>1)throw new Error(`Your message names more than one session (${[...new Set(mentioned.map(b=>this.label(b)))].join(', ')}). Send each one its own message and I'll pass it on. Nothing was sent.`);
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
       const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
       const destinationWord=new RegExp(`\\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
-      const ambiguous=mentioned.length>0||said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
+      const ambiguous=said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
@@ -875,9 +904,11 @@ export class MetaBrain {
       const earlier=()=>this.conversation(m.id).slice(-3).flatMap(t=>namedPlatforms(t.original));
       if(!named.length&&!mentioned.length&&decision.provider!=='unspecified'&&!ruled().includes(decision.provider)&&!earlier().includes(decision.provider))throw new Error('Please name the coding platform you want, or use your default coordinator.');
       if(decision.taskIds.length>1)throw new Error('Please choose one topic before forwarding this follow-up.');
-      if(decision.taskIds.length)topic=this.memory.resolve(decision.taskIds[0]);
+      // A topic id the model guessed wrong, or one owned by another session than the owner now names, starts fresh:
+      // the owner's latest words win over the model's guess (sim, 7 Nov 2026).
+      if(decision.taskIds.length)try{topic=this.memory.resolve(decision.taskIds[0]);}catch{topic=undefined;}
       target=topic?this.memory.owner(topic,router):undefined;
-      if(mentioned.length&&target&&target.id!==mentioned[0].id)throw new Error('That task belongs to another session. Please clarify whether you want to change its assignment.');
+      if(target&&((mentioned.length&&target.id!==mentioned[0].id)||(provider&&target.provider!==provider))){topic=undefined;target=undefined;}
       // An item nobody owns yet goes to the session the owner named, never the default coordinator.
       target??=mentioned[0];
       // A replaced or paused owner is never silently swapped for the current proxy.
@@ -887,16 +918,38 @@ export class MetaBrain {
       if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error('The selected platform is paused or denied by your routing policy.');
       coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
-      if(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id))throw new Error('The owning session is not connected. Connect that exact session first.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
-      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);
-    }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
-    this.send(router,m.id,m.text,target,coordinator,topic,m);
+      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, send it again with that session's name in it${topic?` (it won't be filed under item #${topic.id})`:''}. Nothing was sent.`);
+    }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send|^Holding off/i.test(reason)?'clarification':'blocked');return true;}
+    // Typing stops once the work is queued; without a line the owner can't tell it went anywhere (sim, 7 Nov 2026).
+    // Plain output, not outputBrain: it is a receipt, not an answer, so the silence notice still fires.
+    if(this.send(router,m.id,m.text,target,coordinator,topic,m,decision.title))this.store.output(undefined,`✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${m.id}`,this.store.job(m.id)?.destination??this.store.destination());
     return true;
   }
+  // "When did each session last do something, in Singapore time?" was sent to a session; the app already knows (sim, 7 Nov 2026).
+  private lastActive(id:string){const r=this.store.db.prepare('SELECT MAX(COALESCE(final_reply_at,first_reply_at,updated_at,created_at)) AS at FROM inbox WHERE binding_id=?').get(id) as {at:number|null}|undefined;return r?.at?{lastActiveUtc:new Date(r.at).toISOString()}:{};}
+  private fanned=new Map<string,number>();
+  /** One part of a message meant for several sessions, sent under its own request id so each answer comes back on its own. */
+  private fanOut(router:Router,m:Incoming,policy:BrainPolicy,sessionId:string,text:string):string{
+    if(/\b(?:don'?t|do not)\s+(?:change|touch|do|send|start)\s+anything\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text))return 'Refused: the owner said to hold off. Nothing was sent.';
+    const n=(this.fanned.get(m.id)??0)+1;if(n>6)return 'Refused: at most six sessions per message.';
+    const c=router.coordinator,target=this.memory.candidates(router).find(b=>b.id===sessionId);
+    if(!c||!target)return `No session with id ${sessionId}. Use an id from sessions.`;
+    if(!target.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))return `${this.label(target)} is paused or its platform is off. Nothing was sent to it.`;
+    const coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
+    if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)return `${this.label(target)}: its platform connection changed. Nothing was sent.`;
+    this.fanned.set(m.id,n);const id=`${m.id}~${n}`;
+    try{this.send(router,id,text,target,coordinator);}catch(e){return `${this.label(target)}: ${(e as Error).message}`;}
+    this.store.output(undefined,`✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${id}`,this.store.destination());
+    return `Sent to ${this.label(target)}.`;
+  }
+  // The intro asked "What should I call you?" on every message until the owner answered (sim, 7 Nov 2026). Once per chat.
+  private introOnce(){const k=`intro-shown:${this.store.destination()}`;if(!this.owner.introNeeded()||this.store.get(k))return false;this.store.set(k,'1');return true;}
+  // "Status of my sessions" with nothing tracked yet answered "No matching tracked tasks." and never named a session (sim, 7 Nov 2026).
+  private noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?['No tracked work yet. Your sessions:',...names,'Ask any of them for an update by name.'].join('\n'):'No tracked work and no sessions connected yet.';}
   private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}
-  private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming) {
+  private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming,title?:string) {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
       // Queue original verbatim. Normalized wording is advisory ledger data, never an authorization source.
@@ -914,7 +967,8 @@ export class MetaBrain {
         if(mode.kind==='social'){mode.imageProvider=provider;router.guidedModes.end(mode,router,incoming!);}
       }
       const existing=this.store.itemOf(id);
-      const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,text));
+      // A short model title beats the owner's whole voice note as the item name (sim, 7 Nov 2026).
+      const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,title?.trim()||text));
       this.memory.link(id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
       // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.

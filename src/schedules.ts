@@ -27,7 +27,8 @@ const candidate=(s:string)=>{
   if(past&&!/\b(?:at|on)\s+\d|\b(?:later|tomorrow|tonight|next\s+\w+|after|before|remind|schedule)\b/i.test(s.slice(past[0].length)))return false;
   return /^(?:(?:tomorrow|tonight)\s+)?(?:at|on)\s+\d/i.test(s);
 };
-const listCommand=(s:string)=>/^(?:please\s+)?(?:list|show)(?:\s+me)?(?:\s+my)?\s+(?:reminders|schedules)\s*[.!?]*$/i.test(s);
+// "What reminders have I got?" got "I could not confirm that schedule" (sim, 7 Nov 2026).
+const listCommand=(s:string)=>/^(?:please\s+)?(?:(?:list|show)(?:\s+me)?(?:\s+(?:my|all))?|what(?:\s+are)?(?:\s+my)?|which|any)\s+(?:reminders|schedules)(?:\s+(?:do\s+i\s+have|have\s+i\s+got|are\s+set|are\s+there|i\s+have))?(?:\s+(?:today|tomorrow|set))?\s*[.!?]*$/i.test(s.trim().replace(/[.!?]+$/,''));
 const cancelCommand=(s:string)=>/^(?:please\s+)?cancel\s+(?:(?:reminder|schedule)\s+)?(\d{1,3})\s*[.!?]*$/i.exec(s);
 const readOnlyPrStatus=(s:string)=>/^(?:please\s+)?check\s+(?:whether|if)\s+(?:pr|pull request)\s+#?\d{1,9}\s+is\s+green\s+and\s+tell\s+me[.!?]*$/i.test(s.trim());
 const cleanAction=(s:string)=>normalized(s).replace(/[.!?]+$/,'');
@@ -53,15 +54,18 @@ function reminderDirective(original:string,body:string):{directive:string;action
   const action=original.slice(at,at+want.length).trim();
   if(cleanAction(action)!==cleanAction(want))return;
   const directive=(original.slice(0,at).replace(/\b(?:to|for|about|that|of)\s*$/i,'')+' '+original.slice(at+want.length)).replace(/\s+/g,' ').trim();
+  // A trailing aside with no time and no negation is chatter, not part of the reminder:
+  // "remind me school pickup tomorrow at 3:15pm pls, got to run" (sim, 7 Nov 2026).
+  const timing=directive.replace(/,(?![^,]*\d)(?![^,]*\b(?:not|no|never|don'?t|cancel|stop|every|daily|weekdays?)\b)[^,]*$/i,'').trim();
   // Everything left must be timing or filler. A content word left over means the model dropped
   // part of the owner's request ("check whether it is safe to" + "deploy production"), so refuse.
-  const leftover=directive.toLowerCase()
+  const leftover=timing.toLowerCase()
     .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?(?![\w:])/g,' ')
     .replace(/\b[a-z_]+\/[a-z_]+(?:\/[a-z_]+)?\b/g,' ')
     .replace(/\b(?:please|remind|me|at|on|by|in|the|a|an|to|for|about|that|of|today|tonight|tomorrow|morning|evening|afternoon|every|each|day|daily|weekday|weekdays|o'?clock|hey|atlas|can|could|you|pls|do|not|don|t|never|stop|add|set|create|make|put|schedule|reminder|new)\b/g,' ')
     .replace(/[^a-z]+/g,' ').trim();
   if(leftover)return;
-  return {directive,action};
+  return {directive:timing,action};
 }
 /** "remind me", or asking for a reminder: "add a reminder", "set me a reminder" (live, 4 November 2026). */
 const REMIND=/\bremind\s+me\b|\b(?:add|set|create|make|put|schedule)\s+(?:me\s+)?(?:a\s+|an\s+)?reminder\b/i;
@@ -83,7 +87,7 @@ function explicitSessionDispatch(original:string,target:string,body:string):{dir
   if(/\bremind\s+me\b/i.test(original))return;
   const name=normalized(target).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   if(!name)return;
-  const match=new RegExp(`\\b(?:ask|tell)\\s+(?:session\\s+)?${name}\\s+to\\s+`,'iu').exec(original);
+  const match=new RegExp(`\\b(?:ask|tell)\\s+(?:the\\s+)?(?:session\\s+)?${name}(?:\\s+session)?\\s+to\\s+`,'iu').exec(original);
   // Every qualifier after "ask SESSION to" remains part of the task. A substring
   // such as "deploy" must not replace "check whether it is safe to deploy".
   if(!match||/\b(?:do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(original.slice(0,match.index+match[0].length))||cleanAction(original.slice(match.index+match[0].length))!==cleanAction(body))return;
@@ -231,14 +235,16 @@ export class Schedules {
     }
     if(action==='brief'){
       const directive=briefDirective(text);if(directive===undefined)throw new Error('Please explicitly ask me to send your brief. A reminder alone will not send it.');timingText=directive;
-      if(channel!=='whatsapp')throw new Error('Scheduled briefs are available in your WhatsApp self-chat.');
+      if(channel!=='whatsapp'&&channel!=='telegram')throw new Error('Scheduled briefs are available in your own chat.');
       if(!router.scheduledBrief)throw new Error('Scheduled briefs are not available yet. No reminder was created.');
     }
     let binding:Binding|undefined;
     if(action==='session'){
       if(decision.target){
-        const directive=explicitSessionDispatch(text,decision.target,body);
-        if(!containsExact(text,decision.target)||!directive)throw new Error('To schedule work, explicitly say ask SESSION to do the task. A reminder alone will not send work.');
+        // The owner says the name they see ("ask the FarFromDesk cloud server session to"), not the alias (sim, 7 Nov 2026).
+        const found=this.store.binding(decision.target),names=[decision.target,...(found?[found.alias,this.store.get(`name:${found.id}`)??'']:[])].filter(Boolean);
+        const said=names.find(n=>containsExact(text,n)&&explicitSessionDispatch(text,n,body)),directive=said?explicitSessionDispatch(text,said,body):undefined;
+        if(!directive)throw new Error('To schedule work, explicitly say ask SESSION to do the task. A reminder alone will not send work.');
         timingText=directive.directive;body=directive.action;
         binding=this.store.binding(decision.target);
       }else if(readOnlyPrStatus(body)&&cleanAction(text).endsWith(cleanAction(body))&&!/\b(?:remind\s+me|do\s+not|don['’]?t|never|not|cancel|avoid)\b/i.test(text)){
@@ -359,7 +365,7 @@ export class Schedules {
     if(!destination||!this.context(destination,owner,channel))return 'Reminders work only in your own chat. Nothing was scheduled.';
     const kind=input.kind==='brief'?'brief':'message',text=input.text.trim().replace(/\s+/g,' ');
     if(kind==='message'&&(!text||text.length>MAX_TEXT))return 'Say what the reminder should say. Nothing was scheduled.';
-    if(kind==='brief'&&(channel!=='whatsapp'||!router.scheduledBrief))return 'Scheduled briefs work only in your WhatsApp self-chat. Nothing was scheduled.';
+    if(kind==='brief'&&(!['whatsapp','telegram'].includes(channel??'')||!router.scheduledBrief))return 'Scheduled briefs work only in your own chat. Nothing was scheduled.';
     const t=this.brainTime(input.at,input.repeat);if(typeof t==='string')return t;
     const {date,time,zone,repeat,next}=t,now=this.now();
     if(Number((this.store.db.prepare("SELECT count(*) AS n FROM schedules WHERE owner=? AND destination=? AND status='active'").get(owner,destination) as {n:number}).n)>=MAX_SCHEDULES)return 'You have 100 active reminders. Cancel one first.';
