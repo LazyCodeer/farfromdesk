@@ -901,7 +901,10 @@ export class MetaBrain {
       if(!policy.allowStatus){this.stop(m.id,'Status summaries are disabled by your Meta brain policy.');return true;}
       const picked=decision.taskIds.length===1?this.memory.board().find(i=>i.ref===decision.taskIds[0]||this.store.itemOf(decision.taskIds[0])===i.id):undefined;
       // No tracked item: the owner never sees item codes, so ask the session itself ("check the cloud server session", sim 7 Nov 2026).
-      if(picked)return this.requestUpdate(router,m,picked,m.text,decision.provider);
+      // "Ask it for the actual patch and test file names" is a request, not a status check; wrapping it as one
+      // got a progress summary back (sim, 7 Nov 2026). Those words go to the session as written.
+      const asks=!/\bfor\s+(?:an?\s+)?(?:update|status|progress)\b/i.test(m.text)&&/\b(?:ask|tell|have|get)\s+(?:it|them|the session|\w+)\s+(?:to|for)\b|\b(?:show|send|share|paste|give)\s+(?:me\s+)?(?:the\s+)?(?:actual\s+)?(?:diff|patch|files?|logs?|output|tests?|screenshot)\b/i.test(m.text);
+      if(picked&&!asks)return this.requestUpdate(router,m,picked,m.text,decision.provider);
       decision={...decision,intent:'task',taskIds:[]};
     }
     if(decision.intent==='status') {

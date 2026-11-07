@@ -184,7 +184,9 @@ export class Schedules {
     try{
       const result=this.store.db.prepare("UPDATE schedules SET status='cancelled' WHERE id=? AND owner=? AND destination=? AND status IN ('active','done')").run(id,owner,destination);
       this.store.set(scheduleKey(destination),'null');
-      this.answer(m,result.changes?'Reminder cancelled. Work already submitted may still run.':'That reminder is no longer active.');
+      // "Work already submitted may still run" read as noise on a pick-up-the-kids reminder (sim, 7 Nov 2026).
+      const row=this.store.db.prepare('SELECT text,binding_id FROM schedules WHERE id=?').get(id) as {text:string;binding_id:string|null}|undefined;
+      this.answer(m,result.changes?`Cancelled: ${row?.text??'that reminder'}.${row?.binding_id?' Work the session already started may still finish.':''}`:'That reminder is no longer active.');
       this.store.db.exec('RELEASE schedule_cancel');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_cancel; RELEASE schedule_cancel');throw e;}
   }
