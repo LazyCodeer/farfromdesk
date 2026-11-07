@@ -6,6 +6,7 @@ import {join} from 'node:path';
 
 const isolated=mkdtempSync(join(tmpdir(),'ffd-brain-fixture-'));
 process.env.WSB_STATE_DIR=isolated;
+process.env.FFD_BRIEF_EMPTY??='send';
 process.once('exit',()=>{try{rmSync(isolated,{recursive:true,force:true});}catch{}});
 
 const localFetch=globalThis.fetch;

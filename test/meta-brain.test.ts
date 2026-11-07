@@ -9,7 +9,7 @@ import { Store } from '../src/store.js';
 import { Router } from '../src/router.js';
 import { Coordinator } from '../src/coordinator.js';
 import { Approvals } from '../src/approvals.js';
-import { MetaBrain } from '../src/meta-brain.js';
+import { MetaBrain,briefNow } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN, saveBrainConfig, brainPolicy, brainView, META_ENDPOINT } from '../src/meta-brain-config.js';
 import { MetaModel, type Interpretation } from '../src/meta-model.js';
 import { BrainMemory } from '../src/brain-memory.js';
@@ -94,7 +94,7 @@ test('task, transport evidence and owner verification persist through restart',a
 });
 test('status selects saved evidence, ignores fabricated task IDs and scopes recipient routes',async()=>{
   const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/\*#1 Fix it\*[^"]*- Session: codex-proxy[^"]*- State: in progress, queued/);
-    await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task)/);
+    await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task|tracked work)/);
   }finally{f.close();}
 });
 test('direct worker replies, quoted follow-ups and report updates do not loop through Meta',async()=>{
@@ -144,6 +144,14 @@ test('Meta reads memory through the tool before deciding',async()=>{
     seen.push(body.messages.find((m:any)=>m.role==='tool').content);return call('decide',decision(),'d1');}) as typeof fetch);
   const r=await model.interpret('k',DEFAULT_BRAIN,{original:'read ATC',source:'text',tasks:[]},i=>`${i.command} ${i.path}: ATC means air traffic`);
   assert.equal(n,2);assert.match(seen[0],/view words\.md: ATC means air traffic/);assert.deepEqual(r,decision());
+});
+// Sim, 7 Nov 2026: "add X, mark #1 done and show my list" did only the first change.
+test('several to-do changes in one message all run before the answer',async()=>{
+  const steps=[call('todo_add',{title:'book flights'},'t1'),call('todo_set',{id:1,status:'done'},'t2'),call('todo_list',{},'t3'),call('decide',{...decision(),intent:'chat',reply:'Done.'},'d1')];let n=0;const log:string[]=[];
+  const model=new MetaModel((async()=>steps[n++]) as typeof fetch);
+  await model.interpret('k',DEFAULT_BRAIN,{original:'add book flights, mark 1 done, show list',source:'text',tasks:[]},undefined,undefined,undefined,undefined,undefined,undefined,
+    {add:t=>{log.push('add '+t);return 'ok';},set:(id,st)=>{log.push(`set ${id} ${st}`);return 'ok';},list:()=>{log.push('list');return '';}});
+  assert.deepEqual(log,['add book flights','set 1 done','list']);
 });
 test('Meta timeout, malformed output, extra authority fields and HTTP errors redact raw content',async()=>{
   for(const kind of ['timeout','malformed','authority','http']) {
@@ -226,6 +234,8 @@ test('owner can save a todo without dispatch, update it, and recover it from dis
     saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
     await f.router.receive({id:'wa:todo',text:'Add todo: improve invoice export'});
     assert.equal(f.store.jobs().length,0);const item=f.router.brain.memory.board()[0];assert.equal(item.title,'improve invoice export');assert.equal(item.status,'not started');
+    await f.router.receive({id:'wa:todos',text:'Add todo: book flights; renew passport'});
+    assert.deepEqual(f.router.brain.memory.board().map(i=>i.title).filter(t=>/flights|passport/.test(t)).sort(),['book flights','renew passport']);
     // The same operation, said the way the owner actually says it. Live on 2393 the phrase below
     // answered 'To save without starting work, say "Add todo: …".', because the model read the
     // intent and this literal check refused the wording.
@@ -345,7 +355,7 @@ test('notify-on-completion persists, waits for evidence and queues once without 
   await f.router.receive({id:'wa:work',text:'Fix CSV export'});
   f.respond(async()=>({...decision(),intent:'manage',operation:'watch',taskIds:[itemRef(f,'wa:work')]}));
   await f.router.receive({id:'wa:watch',text:'Okay let me know once itls done'});
-  assert.match(String(f.out().at(-1)?.body),/notify/i);assert.equal(f.store.jobs().length,1);
+  assert.match(String(f.out().at(-1)?.body),/message you when .+ answers or needs you/i);assert.equal(f.store.jobs().length,1);
   const before=f.out().length;f.router.brain.tick(f.router);assert.equal(f.out().length,before);
   f.store.jobState('wa:work','completed',null,'done'); // an outcome marker alone is insufficient
   f.router.brain.tick(f.router);assert.equal(f.out().length,before);
@@ -501,7 +511,7 @@ test('a session named in free text never gets the task, whatever the model picks
       f.respond(async()=>({...decision(),taskIds:i===3?['item:1']:[],sessionId:pick.id}));
       await f.router.receive({id,text});
       assert.equal(f.store.job(id),undefined,text);
-      assert.match(String((f.out().at(-1) as any).body),/\/claude list or \/codex list.*Nothing was sent/s,text);
+      assert.match(String((f.out().at(-1) as any).body),/(own message|session.s name).*Nothing was sent/s,text);
     }
     assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,null);
     // A model naming a session the owner never mentioned doesn't route there either.
@@ -634,4 +644,120 @@ test('Brain rejects a result after task mode is changed while interpreting',asyn
   await f.router.receive({id:'wa:old-mode',text:'Create a carousel about cart recovery',ownerCommand:true,ownerIntent:true});
   assert.equal(f.store.job('wa:old-mode'),undefined);assert.match(f.router.brain.get('wa:old-mode')?.reason??'',/task mode changed/);
  }finally{f.close();}
+});
+test('naming a session by the title the owner sees sends it there, connected or not',async()=>{
+  const f=fixture(decision('unspecified','Check the FarFromDesk cloud server session.'));try{
+    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
+    await f.router.receive({id:'wa:named',text:'Can you check the FarFromDesk cloud server session?'});
+    assert.equal(f.store.job('wa:named')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
+test('a status check with no tracked item, a guessed topic id, or a topic owned elsewhere goes to the session the owner names',async()=>{
+  const f=fixture();try{
+    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
+    f.respond(async()=>({...decision('unspecified','Check the cloud server.'),intent:'update'}));
+    await f.router.receive({id:'wa:upd',text:'How is the FarFromDesk cloud server session doing?'});
+    assert.equal(f.store.job('wa:upd')?.binding_id,f.claude.id);
+    f.respond(async()=>({...decision('unspecified','Fix it.'),taskIds:['P99']}));
+    await f.router.receive({id:'wa:guess',text:'FarFromDesk cloud server, fix the build'});
+    assert.equal(f.store.job('wa:guess')?.binding_id,f.claude.id);
+    f.respond(async()=>decision('codex','Fix the export.'));
+    await f.router.receive({id:'wa:first',text:'codex, fix the export'});
+    assert.equal(f.store.job('wa:first')?.binding_id,f.codex.id);
+    const ref=(f.router.brain as any).memory.board()[0].ref;
+    f.respond(async()=>({...decision('unspecified','Do it there instead.'),taskIds:[ref]}));
+    await f.router.receive({id:'wa:move',text:'I meant the FarFromDesk cloud server session, do it there'});
+    assert.equal(f.store.job('wa:move')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
+test('a loose session name ("the thesis run") reaches the one session whose title words match, and "do not publish" still asks it',async()=>{
+  const f=fixture(decision('unspecified','Check the thesis run.'));try{
+    f.store.set(`name:${f.claude.id}`,'Thesis plots and data run');
+    await f.router.receive({id:'wa:loose',text:'how is the thesis run going?'});
+    assert.equal(f.store.job('wa:loose')?.binding_id,f.claude.id);
+    assert.match(JSON.stringify(f.store.db.prepare('SELECT source,body FROM outbox').all()),/Sent to Thesis plots and data run/);
+    f.respond(async()=>({...decision('unspecified','Check thesis, do not publish.'),intent:'update'}));
+    await f.router.receive({id:'wa:np',text:'check the thesis plots, do not publish anything'});
+    assert.equal(f.store.job('wa:np')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: "Actually, pause that, don't change anything yet" still went to a session.
+test('a hold from the owner sends nothing, even when the model picks a task',async()=>{
+  const f=fixture({...decision(),sessionId:''});try{
+    await f.router.receive({id:'wa:hold',text:"Actually wait, don't change anything yet"});
+    assert.equal(f.store.job('wa:hold'),undefined);assert.match(String((f.out().at(-1) as any).body),/nothing was sent/i);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: "ask each session where it is" was refused or went to one proxy.
+test('one message can ask several sessions, each under its own request',async()=>{
+  const f=fixture();try{
+    (f.model as any).interpret=async(...a:any[])=>{const send=a[10];send(f.codex.id,'where are you?');send(f.claude.id,'where are you?');return {...decision(),intent:'task'};};
+    await f.router.receive({id:'wa:fan',text:'ask each session where it is'});
+    assert.ok(f.store.job('wa:fan~1'));assert.ok(f.store.job('wa:fan~2'));assert.equal(f.store.job('wa:fan'),undefined,'the whole message is not sent again');
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: "Resume Client: Acme storefront." was sent to Codex as a task.
+test('pause or resume naming one session is done, even when the model picks a task',async()=>{
+  const f=fixture({...decision(),sessionId:''});try{
+    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
+    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');f.store.enable(acme.id,false);
+    await f.router.receive({id:'wa:resume',text:'Resume Client: Acme storefront.'});
+    assert.equal(f.store.job('wa:resume'),undefined);assert.equal(!!f.store.binding(acme.id)?.enabled,true);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: a picture request went to the closed Codex coordinator.
+test('a picture or writing request bound for a platform gets a second look and is done here',async()=>{
+  const f=fixture();try{let n=0;
+    (f.model as any).interpret=async()=>++n===1?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Here it is.'};
+    await f.router.receive({id:'wa:pic',text:'Can you make me an image for a coffee shop launch?'});
+    assert.equal(n,2);assert.equal(f.store.job('wa:pic'),undefined);
+  }finally{f.close();}
+});
+test('"brief now" is never read as a schedule',()=>{
+  assert.ok(briefNow('brief now'));assert.ok(briefNow('send me the brief now please'));
+  assert.ok(!briefNow('send my brief every weekday at 8am'));assert.ok(!briefNow('what is a brief'));
+});
+// Sim, 7 Nov 2026: follow-ups to a chat answer went to the closed Codex coordinator.
+test('a follow-up to a chat answer bound for a platform gets a second look',async()=>{
+  const f=fixture();try{let n=0;
+    (f.model as any).interpret=async()=>{n++;return n===1?{...decision(),intent:'chat',reply:'Tokyo is UTC+9.'}:n===2?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Sydney is UTC+11.'};};
+    await f.router.receive({id:'wa:tz1',text:'What time zone is Tokyo?'});
+    await f.router.receive({id:'wa:tz2',text:'And Sydney?'});
+    assert.equal(n,3);assert.equal(f.store.job('wa:tz2'),undefined);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: "send me a short summary" was read as a destination and the task was refused as ambiguous.
+test('"send me" in a task is not read as naming a destination',async()=>{
+  const f=fixture();try{
+    await f.router.receive({id:'wa:sendme',text:'Fix the flaky login test — then send me a short summary.'});
+    assert.ok(f.store.job('wa:sendme')||f.store.db.prepare("SELECT 1 FROM inbox WHERE body LIKE '%flaky login%'").get());
+  }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: "ask Claude, not Codex" was refused as naming two platforms.
+test('a platform named only to rule it out is dropped unless nothing else is chosen',async()=>{
+  const {wantedPlatforms}=await import('../src/meta-brain.js');
+  assert.deepEqual(wantedPlatforms('Ask Claude about it, not Codex'),['claude']);
+  assert.deepEqual(wantedPlatforms('Send it to claude instead of codex'),['claude']);
+  assert.deepEqual(wantedPlatforms('Do not send this to Claude'),['claude']);
+});
+
+// Sim, 7 Nov 2026: "Start with the deploy checks, keep Acme queued" went to Acme.
+test('a session named only to put it off is not where the work goes',async()=>{
+  const f=fixture(decision('unspecified','Verify the deploy and rollback paths.'));try{
+    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
+    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');
+    await f.router.receive({id:'wa:defer',text:'Start with the cloud server deploy and rollback checks, keep Acme queued for later'});
+    assert.equal(f.store.job('wa:defer')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: a rate-limited interpretation fell back to the closed Codex coordinator.
+test('a transient model failure is retried once before any fallback',async()=>{
+  const f=fixture();try{
+    let n=0;f.respond(async()=>{if(n++===0)throw Object.assign(new Error('rate limited'),{code:'provider_rejected'});return {...decision(),intent:'chat',reply:'Here you go.'} as any;});
+    await f.router.receive({id:'wa:retry',text:'what is a good eval tool?'});
+    assert.equal(n,2);assert.equal(f.store.job('wa:retry'),undefined);
+  }finally{f.close();}
 });

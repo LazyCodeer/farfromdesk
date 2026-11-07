@@ -167,10 +167,24 @@ test('outbox leads with the answer, tails with provenance, and still deduplicate
   assert.equal(f.store.output(f.master,'Unable to proceed.','plain-event','owner@s.whatsapp.net',context),true);
   assert.equal(f.store.output(f.master,'Unable to proceed.','plain-event','owner@s.whatsapp.net',context),false);
   const out=f.store.outbound();
-  assert.equal(out.body,'Unable to proceed.\n\n🤖 Provider: Codex Desktop\n💬 Session Name: Billing API');
+  assert.equal(out.body,'Unable to proceed.\n\n🤖 Codex Desktop · Billing API');
   const next=f.store.output(f.master,'Second answer.','plain-event-2','owner@s.whatsapp.net',context);
   assert.equal(next,true);
   const rows=f.store.db.prepare('SELECT body FROM outbox ORDER BY created_at').all() as {body:string}[];
-  assert.equal(rows[1].body,'Second answer.\n\n🤖 Codex Desktop');
+  assert.equal(rows[1].body,'Second answer.','the same speaker again needs no header');
  }finally{f.close();}
+});
+
+// Owner, 7 Nov 2026: a long session answer arrives as a few short bubbles, header on the first only.
+test('a long session reply goes out as short bubbles split at paragraphs', () => {
+  const f = fixture(); try {
+    const store = f.store, b = f.master;
+    store.enqueue('wa:1', b, 'status?');
+    const para = (n: number) => `Paragraph ${n} ` + 'words '.repeat(50);
+    store.output(b, [para(1), para(2), '```\ncode\n\nmore\n```', para(3)].join('\n\n'), 'long', 'owner@s.whatsapp.net', { requestId: 'wa:1', kind: 'final', origin: 'agent' });
+    const rows = store.db.prepare("SELECT body FROM outbox WHERE source LIKE 'long:%' ORDER BY source").all() as { body: string }[];
+    assert.ok(rows.length >= 3, `${rows.length} bubbles`);
+    assert.match(rows[0].body, /· /); assert.ok(rows.slice(1).every(r => !/·|\(\d\/\d\)/.test(r.body)));
+    assert.ok(rows.some(r => /```\ncode\n\nmore\n```/.test(r.body)), 'a code block stays whole');
+  } finally { f.close(); }
 });

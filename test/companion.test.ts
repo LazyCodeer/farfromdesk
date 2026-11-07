@@ -74,7 +74,7 @@ test('a fresh update asks the owning worker once, status only, and its reply is 
     const ask=f.store.job('tg:2')!;
     assert.equal(ask.binding_id,f.worker.id);
     assert.match(ask.body,/^Status check from the owner for #1 /);assert.match(ask.body,/Do not resume, rerun or continue the task/);
-    assert.match(f.last(),/Asking Billing API/);assert.equal(f.store.itemOf('tg:2'),1);
+    assert.match(f.last(),/Asked Billing API/);assert.equal(f.store.itemOf('tg:2'),1);
     // An uncertain status question never marks the work itself blocked, and is never resent.
     f.store.jobState('tg:2','uncertain','Native submission unconfirmed');f.router.brain.memory.synchronize();
     assert.equal(f.c.items().get(1).status,'in progress');
@@ -107,9 +107,13 @@ test('a proxy that owns its item is asked; ambiguous, undispatched and unconnect
     f.store.db.prepare('INSERT INTO brain_item_routes VALUES(?,?)').run(3,f.store.destination());
     await f.send('tg:6','ask for an update on #3',update(['item:3']));
     assert.match(f.last(),/hasn't been sent to a session yet/);assert.equal(f.store.job('tg:6'),undefined);
+    // An empty selection no longer blocks a status question to the owning session (prod has none selected); a paused one does.
     f.store.set('selected','[]');
     await f.send('tg:7','check with it for an update on #2',update(['item:2']));
-    assert.match(f.last(),/isn't connected/);assert.equal(f.store.job('tg:7'),undefined);
+    assert.ok(f.store.job('tg:7'));
+    f.store.enable(f.worker.id,false);
+    await f.send('tg:8','check with it for an update on #2',update(['item:2']));
+    assert.match(f.last(),/is paused/);assert.equal(f.store.job('tg:8'),undefined);
   }finally{f.close();}
 });
 

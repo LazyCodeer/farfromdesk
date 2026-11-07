@@ -95,7 +95,7 @@ test('the first hi goes to the model for an intro, and what it saves is announce
   assert.deepEqual(Object.keys(f.inputs[0].memory),['MEMORY.md','about-me.md','collaboration.md','preferences.md']);
   await f.say('Sam');
   assert.match(f.router.brain.owner.read('about-me.md')!,/^- Call me: Sam$/m);
-  assert.ok(f.out().some(b=>/Saved "Call me: Sam" in about-me\.md[\s\S]*undo/.test(b)));
+  assert.ok(f.out().some(b=>/Saved "Call me: Sam"[\s\S]*undo/.test(b)));
   const calls=f.inputs.length;
   await f.say('hello');
   assert.equal(f.inputs.length,calls+1,'greetings go to the model too; nothing is matched before it');
@@ -117,7 +117,7 @@ test('the brain may pick an unnamed platform only by following collaboration.md'
   f.router.brain.owner.write('about-me.md','# About you\n- Call me: Sam\n','owner');
   await f.say('Plan the invoice export');
   assert.equal(f.store.jobs().length,0);
-  assert.match(f.out().at(-1)!,/name the coding platform/);
+  assert.match(f.out().at(-1)!,/Which session should do this/);
   f.router.brain.owner.write('collaboration.md','# Collaboration\n- Planning and review: Codex\n','owner');
   await f.say('Plan the invoice export again');
   assert.equal(f.store.jobs().length,1);
@@ -129,7 +129,7 @@ test('a collaboration rule for one platform does not let the brain pick another'
   f.router.brain.owner.write('collaboration.md','# Collaboration\n- Planning and review: Codex\n','owner');
   await f.say('Plan the invoice export');
   assert.equal(f.store.jobs().length,0);
-  assert.match(f.out().at(-1)!,/name the coding platform/);
+  assert.match(f.out().at(-1)!,/Which session should do this/);
   f.close();
 });
 
@@ -138,7 +138,19 @@ test('a platform the owner named in the message just before counts, so "yes" aft
   await f.say('hey codex, can you take something for me?');
   const before=f.store.jobs().length;
   await f.say('yes, say hi');
-  assert.doesNotMatch(f.out().at(-1)!,/name the coding platform/);
+  assert.doesNotMatch(f.out().at(-1)!,/Which session should do this/);
   assert.equal(f.store.jobs().length,before+1);
+  f.close();
+});
+
+// Sim, 7 Nov 2026: answering "Which session should do this?" with just the name sent the session its own name.
+test('a bare session name after "Which session should do this?" sends the held request there', async () => {
+  const f=brain((_t,i)=>({intent:'task',provider:/Billing/.test(i.original)?'codex':'claude',normalized:'Plan the export'}));
+  {const b=f.store.register('billing-api','codex',randomUUID(),'/tmp').binding;f.store.set('name:'+b.id,'Billing API');}
+  await f.say('Plan the invoice export');
+  assert.match(f.out().at(-1)!,/Which session should do this/);
+  await f.say('Billing API.');
+  const job=f.store.jobs().at(-1) as any;
+  assert.ok(job,'a job was queued');assert.match(String(job.body),/Plan the invoice export/);
   f.close();
 });

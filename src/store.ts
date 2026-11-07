@@ -81,6 +81,12 @@ export class Store {
     this.db.exec(`CREATE INDEX IF NOT EXISTS inbox_binding_created ON inbox(binding_id,created_at);
       CREATE INDEX IF NOT EXISTS outbox_request_created ON outbox(request_id,created_at);`);
     initializeOptions(this);
+    // The task review card blocked simple phone asks (2026-11-06). Switch it off once on
+    // existing installs; the owner can still turn it back on in Settings.
+    if(this.get('task-contracts-off')!=='1'){
+      try{const p=JSON.parse(this.get('meta-brain-policy')??'null');if(p&&typeof p==='object'){p.taskContracts=false;this.set('meta-brain-policy',JSON.stringify(p));}}catch{}
+      this.set('task-contracts-off','1');
+    }
     // A durable epoch also changes when settings are removed directly, and
     // makes change-away-and-back invalidate work that was already in flight.
     for(const operation of ['INSERT','UPDATE','DELETE'] as const){
@@ -399,8 +405,12 @@ export class Store {
     const formatted=toWhatsApp(text+optionText);
     const chunks:string[]=[];let chunk='';
     // Bound UTF-16 length too: emoji occupy two units in Telegram entity offsets.
-    for(const character of formatted){if(chunk.length+character.length>3500){chunks.push(chunk);chunk='';}chunk+=character;}
-    if(chunk)chunks.push(chunk);
+    // Like a person texting: a long answer goes as a few short bubbles split at paragraphs, never mid code block (owner, 7 Nov 2026).
+    const parts:string[]=[];
+    const chatty=!options&&!context.plain&&(!!binding&&(context.kind==='final'||context.kind==='progress')||!binding&&source.startsWith('brain:'));
+    for(const para of chatty?formatted.split(/\n{2,}/):[formatted]){const last=parts.at(-1);
+      if(last!==undefined&&((last.match(/```/g)??[]).length%2===1||last.length+para.length<240||parts.length>=6))parts[parts.length-1]=last+'\n\n'+para;else parts.push(para);}
+    for(const part of parts){for(const character of part){if(chunk.length+character.length>3500){chunks.push(chunk);chunk='';}chunk+=character;}if(chunk.trim())chunks.push(chunk);chunk='';}
     const insert = this.db.prepare('INSERT OR IGNORE INTO outbox(id,binding_id,body,source,wa_id,created_at,destination,request_id,reply_kind,turn_id) VALUES(?,?,?,?,?,?,?,?,?,?)');
     const item=binding?this.itemOf(context.requestId):undefined;
     // Provenance trails the answer: provider line, then chat title, and only on the first bubble of a run.
@@ -412,13 +422,12 @@ export class Store {
     const continuing=!!lastHeading&&lastHeading.label===identityKey&&chromeAt-lastHeading.at<10*60_000;
     // The item number stays on every bubble: the owner follows up by quoting it.
     const tag=item?` · 🔖 #${item}`:'';
-    const meta=[...(!identity?[]
-      :continuing?[`${identity.icon} ${identity.provider}${tag}`]
-      :[`${identity.icon} Provider: ${identity.provider}${tag}`,`💬 Session Name: ${identity.name}`]),
+    // One short line, only when the chat changes speaker: who is talking is clear after that (owner, 7 Nov 2026).
+    const meta=[...(!identity||continuing?[]:[`${identity.icon} ${identity.provider} · ${identity.name}${tag}`]),
       ...(!context.plain&&modeChanged?[modeText]:[])];
     // Owner command replies are short confirmations: no metadata tail at all.
     const present=(chunk:string,i:number)=>context.plain?`${chunk}${chunks.length>1?`\n\n(${i+1}/${chunks.length})`:''}`
-      :formatWhatsAppMessage(chunk,'',false,i+1,chunks.length,context.kind,{meta});
+      :formatWhatsAppMessage(chunk,'',false,chatty?1:i+1,chatty?1:chunks.length,context.kind,{meta:i===0?meta:[]});
     this.db.exec('SAVEPOINT reply_output');
     try {
       const now=Date.now();

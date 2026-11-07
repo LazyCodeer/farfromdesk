@@ -113,7 +113,7 @@ test('choices preserve the original item across both transports and later worker
    assert.equal(f.store.get(`brain-topic:${f.destination}`),'item:17');
    f.router.channelReply(f.b,'Inspection complete','final','item-choice','choice-result');
    const result=f.store.db.prepare('SELECT body FROM outbox WHERE request_id=?').get('item-choice') as any;
-   assert.match(result.body,/#17/);
+   assert.equal(String(f.store.itemOf('item-choice')),'17');assert.equal(result.body,'Inspection complete','a follow-on bubble carries no header');
   }finally{f.close();}
  }
 });

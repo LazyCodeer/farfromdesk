@@ -26,8 +26,9 @@ function classify(title:string){
   const urgent=/^(?:urgent|asap|critical|high priority)\s*[:!-]\s+/i.test(title.trim())&&!/\b(?:not|never|no|isn.t|don.t|doesn.t|without)\b/i.test(title);
   return {category,urgency:urgent?'stated urgent':'not stated'};
 }
-const validDestination=(store:Store,destination:string,owner:string)=>store.controlChannel()==='whatsapp'&&!!owner&&store.ownerFor(destination)===owner&&
-  (destination===owner||destination===store.get('destination-jid')&&!!store.get(`owned-group:${destination}`));
+// Telegram is the main channel now; the brief was WhatsApp-only and refused there (sim, 7 Nov 2026).
+const validDestination=(store:Store,destination:string,owner:string)=>!!owner&&store.ownerFor(destination)===owner&&
+  (store.controlChannel()==='telegram'?destination===owner:store.controlChannel()==='whatsapp'&&(destination===owner||destination===store.get('destination-jid')&&!!store.get(`owned-group:${destination}`)));
 async function readPr(owner:string,repo:string,number:number):Promise<PullRequest>{
   const r=await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`,{redirect:'error',signal:AbortSignal.timeout(4000),headers:{Accept:'application/vnd.github+json','User-Agent':'FarFromDesk'}});
   if(!r.ok||!r.body)throw new Error('PR unavailable');
@@ -154,11 +155,11 @@ export class MorningBrief {
     const errors:Entry[]=voice.map(v=>({kind:'info',id:v.id,title:'Voice note needs attention',status:'failed',reason:'Please resend or type the message.',section:'needs'}));
     return [...approvals.slice(0,3),...errors,...items.filter(i=>i.section==='needs').slice(0,4),...items.filter(i=>i.section==='today').slice(0,5),...items.filter(i=>i.section==='done').slice(0,3)];
   }
-  async request(destination:string,mode:'scheduled'|'first-message',now=this.clock(),canSend?:()=>boolean){
+  async request(destination:string,mode:'scheduled'|'first-message',now=this.clock(),canSend?:()=>boolean,unasked=false){
     const owner=this.store.ownerFor(destination),policy=brainPolicy(this.store),key=this.router.brain.secret.read();
     if(this.router.stopped||!owner||!validDestination(this.store,destination,owner)||!policy.enabled||!policy.allowStatus||!key||canSend&&!canSend())return false;
-    const existing=this.store.incomingOwnerContext.getStore(),origin=existing??this.store.captureIncomingOwner(destination,'whatsapp');
-    if(!origin||!origin.generation||origin.channel!=='whatsapp'||origin.owner!==owner||origin.destination!==destination||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return false;
+    const existing=this.store.incomingOwnerContext.getStore(),origin=existing??this.store.captureIncomingOwner(destination,this.store.controlChannel()==='telegram'?'telegram':'whatsapp');
+    if(!origin||!origin.generation||origin.channel!==this.store.controlChannel()||origin.owner!==owner||origin.destination!==destination||!this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent()))return false;
     const ownerCurrent=()=>this.store.incomingOwnerContext.run(origin,()=>this.store.incomingOwnerCurrent())&&validDestination(this.store,destination,owner);
     const cfg=this.config();let local:ReturnType<typeof localTime>;
     try {local=localTime(now,cfg.zone);}catch{return false;}
@@ -166,6 +167,11 @@ export class MorningBrief {
     if(mode==='scheduled'&&local.minutes<Number(time[1])*60+Number(time[2]))return false;
     const id=source(destination,owner,local.date);
     if(this.pending.has(id))return false;
+    // An unasked brief with nothing in it buried the answer under 'None recorded' three times (sim, 7 Nov 2026).
+    // ponytail: FFD_BRIEF_EMPTY=send keeps the old behaviour for delivery tests whose fixtures have no items.
+    // The unasked brief is considered once a day: skipped empty on the first message, it must not pop up mid-conversation later (sim, 7 Nov 2026).
+    const considered=`brief-considered:${destination}:${local.date}`;
+    if(unasked&&process.env.FFD_BRIEF_EMPTY!=='send'){if(this.store.get(considered))return false;this.store.set(considered,'1');if(!this.snapshot(destination,owner,local.date,now).length)return false;}
     if(this.store.db.prepare('SELECT 1 FROM morning_briefs WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date)&&!this.recoverUnsent(destination,owner,local.date))return false;
     const attempt=this.store.db.prepare('SELECT attempts,next_at FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date) as {attempts:number;next_at:number}|undefined;
     if(attempt?.attempts&&attempt.attempts>=3){this.failureNotice(destination,owner,local.date,origin);return false;}
@@ -199,12 +205,11 @@ export class MorningBrief {
       });
       const render=()=>{const lines=[short(result.opening,200),''];let number=0;
         for(const [section,title] of [['done','Done since yesterday'],['needs','Needs you'],['today','Today']] as const){
-          lines.push(title+':');const rows=ordered.filter(e=>e.section===section);
-          if(!rows.length)lines.push('None recorded.');
+          const rows=ordered.filter(e=>e.section===section);if(!rows.length)continue;lines.push(title+':');
           for(const row of rows){number++;lines.push(`${number}. ${row.title}${row.reason?`: ${row.reason}`:''}${row.kind==='item'&&priorities.includes(Number(row.id))?' (suggested)':''}`);}
           lines.push('');
         }
-        lines.push(['Showing recent items for this chat; other local items may be in the app.',prs.notice,'Reply go, pause, or later with an item number. Change time with /brief time 08:00; change time zone with /brief timezone Asia/Kolkata.'].filter(Boolean).join(' '));return lines.join('\n').trim();};
+        lines.push([prs.notice==='No linked pull requests recorded.'?'':prs.notice,number?'Reply go, pause or later with an item number.':this.router.brain.noTasksText(this.router)].filter(Boolean).join(' '));return lines.join('\n').trim();};
       while(ordered.length&&render().length>3300)ordered.pop();const text=render();
       // Entries are persisted in display order, not the model's arbitrary ranking.
       this.store.db.exec('SAVEPOINT morning_brief');
@@ -217,7 +222,7 @@ export class MorningBrief {
     }catch{try{if(!ownerCurrent())undoAttempt();else if(count>=3)this.failureNotice(destination,owner,local.date,origin);}catch{}return false;}finally{this.pending.delete(id);}
   }
   tick(now=this.clock()) {const destination=this.store.destination();if(destination)void this.request(destination,'scheduled',now).catch(()=>{});}
-  firstMessage(m:Incoming){if(authenticatedOwner(this.router,m)&&!/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination();if(destination)void this.request(destination,'first-message').catch(()=>{});}}
+  firstMessage(m:Incoming){if(authenticatedOwner(this.router,m)&&!/^\/brief\s+retry\s*$/i.test(m.text)){const destination=this.store.destination();if(destination)void this.request(destination,'first-message',this.clock(),undefined,true).catch(()=>{});}}
   /** Used by reminders: durability is local enqueue, not a claim of network delivery. */
   async scheduledBrief(destination:string,expectedOwner:string,occurrenceId:string,canSend?:()=>boolean):Promise<'queued'|'already-queued'|'retry'|'invalid'>{
     if(!occurrenceId||occurrenceId.length>200||!validDestination(this.store,destination,expectedOwner))return 'invalid';

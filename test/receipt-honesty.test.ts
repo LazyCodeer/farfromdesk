@@ -25,7 +25,8 @@ test('a request that is accepted but never answered is reported, not left as a p
   try {
     f.router.silenceNoticeMs=5;f.router.silenceEscalateMs=5;
     await f.router.receive({id:'wa:quiet',text:'Build the report'});
-    await wait(40);
+    // Poll: a fixed 40ms lost the race under full-suite load.
+    for(let i=0;i<100&&outbox(f.store).filter(row=>row.source.startsWith('silence:')).length<2;i++)await wait(20);
     const notices=outbox(f.store).filter(row=>row.source.startsWith('silence:'));
     assert.equal(notices.length,2);
     assert.match(notices[0].body,/has not started this yet/);

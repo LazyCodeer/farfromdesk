@@ -92,7 +92,9 @@ export class Items {
     const progress=rows.filter(i=>i.status!=='not started'&&i.status!=='done').sort((a,b)=>Number(b.status!=='in progress')-Number(a.status!=='in progress')||a.id-b.id);
     const done=rows.filter(i=>i.status==='done').sort((a,b)=>b.updated_at-a.updated_at||b.id-a.id);
     const shownDone=all?done:done.slice(0,5),codes:Record<string,number>={};
-    const section=(title:string,letter:string,items:Item[])=>items.length?[`*${title}*`,...items.map((item,n)=>{codes[`${letter}${n+1}`]=item.id;return `${letter}${n+1} ${icon[item.status]} ${item.title} · ${item.status==='in progress'||item.status==='not started'||item.status==='done'?'':item.status+' · '}${this.sessionName(item)} (#${item.id})`;})].join('\n'):'';
+    const section=(title:string,letter:string,items:Item[])=>items.length?[`*${title}*`,...items.map((item,n)=>{codes[`${letter}${n+1}`]=item.id;// Phone list stays plain: no "no session", no second number beside the code (sim, 7 Nov 2026).
+        const extra=[item.status==='in progress'||item.status==='not started'||item.status==='done'?'':item.status,item.binding_id?this.sessionName(item):''].filter(Boolean).join(' · ');
+        return `${letter}${n+1} ${icon[item.status]} ${item.title}${extra?` · ${extra}`:''}`;})].join('\n'):'';
     const needs=progress.filter(i=>i.status!=='in progress').length;
     const text=[`${todo.length} to do, ${progress.length} in progress${needs?` (${needs} need the owner or are blocked)`:''}, ${done.length} done.`,
       section('To do','T',todo),section('In progress','P',progress),
