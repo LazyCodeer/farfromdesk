@@ -126,7 +126,7 @@ export class OwnerMemory {
       if(next===undefined)return 'Unknown memory command.';
       const added=next.split('\n').filter(l=>!(before??'').split('\n').includes(l)).join(' ').trim();
       if(SECRET.test(added))return 'That looks like a key, password or code, so it was not saved.';
-      this.write(path,next,source,added?`Saved "${added.replace(/^[-*]\s*/,'').slice(0,160)}" in ${path}`:`Edited ${path}`);
+      this.write(path,next,source,added?`Saved "${added.replace(/^[-*]\s*/,'').slice(0,160)}"`:`Updated my notes`);
       return `Saved ${path}.`;
     }catch(e){return (e as Error).message;}
   }

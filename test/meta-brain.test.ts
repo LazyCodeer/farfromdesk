@@ -501,7 +501,7 @@ test('a session named in free text never gets the task, whatever the model picks
       f.respond(async()=>({...decision(),taskIds:i===3?['item:1']:[],sessionId:pick.id}));
       await f.router.receive({id,text});
       assert.equal(f.store.job(id),undefined,text);
-      assert.match(String((f.out().at(-1) as any).body),/\/claude list or \/codex list.*Nothing was sent/s,text);
+      assert.match(String((f.out().at(-1) as any).body),/(own message|session.s name).*Nothing was sent/s,text);
     }
     assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,null);
     // A model naming a session the owner never mentioned doesn't route there either.

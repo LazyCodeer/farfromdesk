@@ -223,7 +223,7 @@ export class MetaBrain {
   private announce(m:Incoming) {
     const source=`brain:${m.id}`,saved=this.owner.changes(source);if(!saved.length)return;
     this.store.set(`memory-last:${this.store.destination()}`,JSON.stringify({source,at:Date.now()}));
-    this.store.outputBrain(m.id,`🧠 ${saved.map(c=>c.summary).join('\n').slice(0,600)}\nReply *undo* to take it back.`,`brain-memory:${m.id}`);
+    this.store.outputBrain(m.id,`🧠 ${saved.map(c=>c.summary).join('\n').slice(0,600)}\nSay "undo" to take it back.`,`brain-memory:${m.id}`);
   }
   private answer(id:string,text:string) {
     this.store.db.prepare("UPDATE brain_tasks SET state='answered',permission='allowed' WHERE id=?").run(id);
@@ -870,7 +870,7 @@ export class MetaBrain {
         const scored=this.store.bindings().map(b=>({b,n:words(b).filter(hit).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
         if(scored.length&&scored[0].b.enabled&&(scored.length===1||scored[0].n>scored[1].n))mentioned.push(scored[0].b);
       }
-      if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
+      if(mentioned.length>1)throw new Error(`Your message names more than one session (${[...new Set(mentioned.map(b=>this.label(b)))].join(', ')}). Send each one its own message and I'll pass it on. Nothing was sent.`);
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
@@ -901,7 +901,7 @@ export class MetaBrain {
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
-      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${this.label(target)} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);
+      if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, send it again with that session's name in it${topic?` (it won't be filed under item #${topic.id})`:''}. Nothing was sent.`);
     }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send/i.test(reason)?'clarification':'blocked');return true;}
     // Typing stops once the work is queued; without a line the owner can't tell it went anywhere (sim, 7 Nov 2026).
     // Plain output, not outputBrain: it is a receipt, not an answer, so the silence notice still fires.
