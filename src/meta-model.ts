@@ -32,7 +32,7 @@ export const BRAIN_PROMPT=`You are the FarFromDesk brain. The owner sends short 
 # Intents (pick exactly one)
 - chat: greetings, thanks, "ok", "what can you do", questions about you, and anything you can answer well yourself without looking at the owner's files, repos or sessions: explaining something, general knowledge and research questions you can answer from what you know, with sources you are sure of ("best open-source LLM eval tools"), advice ("what should I focus on first?" from the items and priorities you were given), and short writing they asked for here (a LinkedIn post, an email, a caption). Nothing needs a session. Write the answer in reply. When the owner says "you", "here", "not the session" or "not a coding task", it is chat unless it needs their files. A follow-up on something you wrote in conversation ("make it punchier", "shorter", "another version") is chat: write the new version.
 - "Ping me when it finishes" alone is a watch. When the same message also gives the session a new instruction ("no deploy even if tests pass", "also run lint"), send that message to the session as a task; its finish reaches the owner anyway.
-- When the owner asks when sessions last did something, answer as chat from sessions lastActiveUtc, converted to the time zone they name (else the zone in now); a session without it has no activity recorded here yet; say exactly that, never "never active".
+- When the owner asks when sessions last did something, answer as chat from sessions lastActiveUtc, converted to the time zone they name (else the zone in now); a session without it has no activity recorded here yet; say exactly that once (one line for all of them, never "never active"), then offer to ask those sessions directly. If the owner asked you to find out, ask them with send_to_session instead of offering.
 - status: the owner wants what is already known ("where are we", "any update", "what's pending", "list my items"). Select relevant taskIds, or [] for all.
 - update: the owner wants a session asked right now ("ask codex for an update", "check with that session", "ping it"). Select exactly one taskId. This only asks for a report and never restarts or continues work.
 - task: new work, a follow-up instruction for an existing item ("also add tests to P1"), or any question that needs a look at the owner's sessions, files, repos, builds, tests or PRs ("list my codex sessions", "is the build passing"). Those need a session to look. For a follow-up select exactly one taskId. For new work use []. Set sessionId to the id (from sessions) of the session that should do it: the one the owner names, or the one this conversation is already working with. If neither the message nor the conversation makes it clear, use clarify and ask which session.
@@ -143,9 +143,9 @@ export class MetaModel {
     return this.send(key,policy,{system,facts},timeoutMs);
   }
   async interpret(key:string,policy:BrainPolicy,input:InterpretInput,memory?:MemoryTool,authorize?:()=>void,observe?:MetaObserver,apps?:AppExecutor,reminders=apps?.reminders,makeImage?:(prompt:string)=>Promise<string>,todos?:{add(title:string):string;set(id:number,status:string):string;list():string},dispatch?:(sessionId:string,text:string)=>string,prs?:()=>Promise<string>,check?:(decision:Interpretation)=>string|undefined):Promise<Interpretation> {
-    // Tool calls run inside this budget (a Notes read alone can take ten seconds), so a loop with app tools gets longer.
-    // Real work (open a web sheet, read it, type rows, check) took longer than 90 s live (4 Nov 2026).
-    const signal=AbortSignal.timeout(apps?Math.max(this.timeoutMs,360000):this.timeoutMs);let status=0;
+    // timeoutMs bounds each model call; tools (an image edit, a Notes read, typing rows) run outside it, within one
+    // overall budget. Sim, 7 Nov 2026: an image edit inside a 30 s whole-turn budget timed out and fell back to a session.
+    const signal=AbortSignal.timeout(Math.max(this.timeoutMs,360000));let status=0,timedOut=false;
     // Bound streamed bytes and never follow redirects with the key attached.
     const request:typeof fetch=async(url,init)=>{
       authorize?.();const response=await this.fetcher(url,{...init,redirect:'error'});authorize?.();status=response.status;
@@ -209,7 +209,7 @@ export class MetaModel {
       // Earlier turns go in as the real conversation, newest kept within budget, so the model reads them as history.
       // ponytail: older turns are dropped, not summarised; add a summary call when owners need longer memory here.
       const history=prune((conversation??[]).flatMap((c):Message[]=>[{role:'user',content:c.original},{role:'assistant',content:c.response?`${c.response} [${c.state}]`:`[${c.state}]`}]),24000);
-      const post=async(body:unknown)=>(await guarded(META_ENDPOINT,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:JSON.stringify(body),signal})).json();
+      const post=async(body:unknown)=>(await guarded(META_ENDPOINT,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.any([signal,AbortSignal.timeout(this.timeoutMs)])}).catch(e=>{timedOut||=e?.name==='TimeoutError';throw e;})).json();
       let decision:Interpretation|undefined;
       const result=await runLoop<Interpretation>({post,model:policy.model,end:'decide',tools,maxSteps:apps?48:10,extra:{reasoning_effort:'low'},guard:()=>authorize?.(),
         messages:[{role:'system',content:BRAIN_PROMPT},...history,{role:'user',content:JSON.stringify(facts)}],
@@ -224,7 +224,7 @@ export class MetaModel {
       decision=result.value;
       return decision;
     } catch(e) {
-      if(signal.aborted)throw new Error('Meta interpretation timed out.');
+      if(signal.aborted||timedOut)throw new Error('Meta interpretation timed out.');
       // Fetch exceptions and validation errors may contain credentials or raw model text, so only a code leaves here.
       const failure=new Error('Meta interpretation unavailable. Check configuration or try a new message.') as Error&{code:string;field?:string};
       failure.field=field??(status===200?'no_decision':undefined);

@@ -339,6 +339,8 @@ export class MetaBrain {
   tick(router:Router) {
     const policy=brainPolicy(this.store);if(router.stopped||!policy.enabled||!policy.allowStatus)return;
     this.memory.synchronize();
+    // A session that never answers must not hold the others' answers back for long.
+    for(const r of this.store.db.prepare("SELECT key,value FROM settings WHERE key LIKE 'fan-at:%'").all() as {key:string;value:string}[])if(Date.now()-Number(r.value)>15*60_000)this.store.flushFan(r.key.slice(7));
     // Filtered and retired before the limit, so rows that can never fire don't hold back current ones.
     this.store.db.prepare("UPDATE brain_watches SET state='gone' WHERE state='waiting' AND (NOT EXISTS(SELECT 1 FROM items i WHERE i.id=item_id) OR NOT EXISTS(SELECT 1 FROM inbox j WHERE j.id=job_id))").run();
     // 100 per tick, taking turns, so unfinished watches never hold back the ones after them.
@@ -960,6 +962,7 @@ export class MetaBrain {
     if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)return `${this.label(target)}: its platform connection changed. Nothing was sent.`;
     this.fanned.set(m.id,n);const id=`${m.id}~${n}`;
     try{this.send(router,id,text,target,coordinator);}catch(e){return `${this.label(target)}: ${(e as Error).message}`;}
+    this.store.set(`fan-n:${m.id}`,String(n));this.store.set(`fan-at:${m.id}`,String(Date.now()));
     // The final reply lists who was asked; one receipt per session repeated it (sim, 7 Nov 2026).
     return `Sent to ${this.label(target)}.`;
   }
