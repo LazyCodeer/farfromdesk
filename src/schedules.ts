@@ -290,8 +290,8 @@ export class Schedules {
       this.store.set(clarifyKey(destination),'null');
       const when=new Intl.DateTimeFormat('en-IN',{timeZone:decision.zone,dateStyle:'medium',timeStyle:'short'}).format(next);
       // A confirmation reads back what and when, so the owner can catch a wrong guess at a glance.
-      const what=action==='brief'?'send your brief':action==='session'?`ask ${binding?.alias??'the session'} to: ${body}`:body;
-      this.answer(m,`Done. I will remind you ${when}${repeat==='once'?'':` (${repeat})`}${decision.zone==='Asia/Kolkata'?'':` ${decision.zone}`}: ${what}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`);
+      const what=action==='brief'?'send your brief':action==='session'?`ask ${(binding&&this.store.get('name:'+binding.id))||binding?.alias||'the session'} to: ${body}`:body;
+      this.answer(m,`Done. ${action==='session'?'I will':'I will remind you'} ${when}${repeat==='once'?'':` (${repeat})`}${decision.zone==='Asia/Kolkata'?'':` ${decision.zone}`}: ${what}.${schedule&&repeat!=='once'?` Authorization expires ${new Date(schedule.valid_until).toISOString().slice(0,10)}.`:''}`);
       this.store.db.exec('RELEASE schedule_create');
     }catch(e){this.store.db.exec('ROLLBACK TO schedule_create; RELEASE schedule_create');throw e;}
     return true;

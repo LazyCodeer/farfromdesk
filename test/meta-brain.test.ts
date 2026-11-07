@@ -355,7 +355,7 @@ test('notify-on-completion persists, waits for evidence and queues once without 
   await f.router.receive({id:'wa:work',text:'Fix CSV export'});
   f.respond(async()=>({...decision(),intent:'manage',operation:'watch',taskIds:[itemRef(f,'wa:work')]}));
   await f.router.receive({id:'wa:watch',text:'Okay let me know once itls done'});
-  assert.match(String(f.out().at(-1)?.body),/notify/i);assert.equal(f.store.jobs().length,1);
+  assert.match(String(f.out().at(-1)?.body),/message you when #1/i);assert.equal(f.store.jobs().length,1);
   const before=f.out().length;f.router.brain.tick(f.router);assert.equal(f.out().length,before);
   f.store.jobState('wa:work','completed',null,'done'); // an outcome marker alone is insufficient
   f.router.brain.tick(f.router);assert.equal(f.out().length,before);
@@ -733,4 +733,12 @@ test('"send me" in a task is not read as naming a destination',async()=>{
     await f.router.receive({id:'wa:sendme',text:'Fix the flaky login test — then send me a short summary.'});
     assert.ok(f.store.job('wa:sendme')||f.store.db.prepare("SELECT 1 FROM inbox WHERE body LIKE '%flaky login%'").get());
   }finally{f.close();}
+});
+
+// Sim, 7 Nov 2026: "ask Claude, not Codex" was refused as naming two platforms.
+test('a platform named only to rule it out is dropped unless nothing else is chosen',async()=>{
+  const {wantedPlatforms}=await import('../src/meta-brain.js');
+  assert.deepEqual(wantedPlatforms('Ask Claude about it, not Codex'),['claude']);
+  assert.deepEqual(wantedPlatforms('Send it to claude instead of codex'),['claude']);
+  assert.deepEqual(wantedPlatforms('Do not send this to Claude'),['claude']);
 });

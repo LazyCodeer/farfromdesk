@@ -70,6 +70,14 @@ function platformProvider(word:string|undefined):BrainProvider|undefined {
   return PLATFORM_WORDS.find(([,words])=>words.includes(w))?.[0];
 }
 /** Every distinct platform named in owner text, in the order first mentioned. */
+// "Ask Claude, not Codex" names Codex only to rule it out (sim, 7 Nov 2026).
+const RULED_OUT=/\b(?:not|never|except|instead of|other than|rather than)\b|n't\b/i;
+export function wantedPlatforms(text:string):BrainProvider[] {
+  const clauses=text.split(/[.,;:!?\n。，；！？—–]+/);
+  const all=namedPlatforms(text),kept=all.filter(p=>clauses.some(c=>namedPlatforms(c).includes(p)&&!RULED_OUT.test(c.split(new RegExp(`\\b${p}\\b`,'i'))[0].slice(-25))));
+  // Only ruling out ("not Claude") with nothing chosen stays ambiguous and is asked.
+  return kept.length?kept:all;
+}
 function namedPlatforms(text:string):BrainProvider[] {
   return [...new Set((text.match(PLATFORM_RE_ALL)??[]).map(w=>platformProvider(w)).filter((p):p is BrainProvider=>!!p))];
 }
@@ -205,7 +213,7 @@ export class MetaBrain {
     if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))
       return answer(`#${item.id} ${item.title}: its session is paused or its platform is off, so I can't ask it. Turn it back on in the app, or send the task again.`);
     // A platform the brain carried over from an earlier turn ("ask claude", then "1") constrains it too.
-    const named=[...new Set([...namedPlatforms(original),...(provider&&provider!=='unspecified'?[provider]:[])])];
+    const named=[...new Set([...wantedPlatforms(original),...(provider&&provider!=='unspecified'?[provider]:[])])];
     if(named.length>1||(named.length===1&&named[0]!==target.provider))return answer('This item belongs to another platform. Please clarify which owning session you want to ask. Nothing was sent.');
     const proxy=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
     if(!proxy?.enabled||c.registry.identity(proxy).key!==c.registry.entry(proxy.id)?.key)return answer(`#${item.id} ${item.title}: the account or app behind its session changed, so I didn't ask it. Review it in Coding platforms first.`);
@@ -310,7 +318,7 @@ export class MetaBrain {
     if(!job)return answer('This task has not been sent to a session yet. I cannot watch for completion until it starts.');
     if(this.store.db.prepare('SELECT 1 FROM brain_watches WHERE destination=? AND item_id=?').get(destination,item.id))return answer(`Already watching #${item.id}. I'll message you when it finishes or needs you.`);
     this.store.db.prepare("INSERT OR IGNORE INTO brain_watches(request_id,destination,item_id,job_id,created_at) VALUES(?,?,?,?,?)").run(m.id,destination,item.id,job.id,Date.now());
-    return answer(`I’ll notify you when #${item.id} has a completion report or needs attention. The app must be running and connected.`);
+    return answer(`I’ll message you when #${item.id} ${item.title} finishes or needs you. The app must be running and connected.`);
   }
   /** Persisted watches only observe saved execution evidence. They never restart native work. */
   tick(router:Router) {
@@ -797,7 +805,8 @@ export class MetaBrain {
       if(this.get(m.id)?.state!=='interpreting')return true;
       // Policy changes during an HTTP call revoke its result; never silently resume under old consent.
       if(JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy)||router.stopped){this.stop(m.id,'Meta routing stopped because Settings changed or forwarding paused.');return true;}
-      if(policy.failure==='legacy'&&!strict){
+      // Work already fanned out must not go to the main session a second time (sim, 7 Nov 2026).
+      if(policy.failure==='legacy'&&!strict&&!this.fanned.has(m.id)){
         this.store.db.prepare("UPDATE brain_tasks SET state='legacy',permission='legacy',reason='Meta unavailable; owner-selected legacy fallback' WHERE id=?").run(m.id);
         return false;
       }
@@ -895,7 +904,7 @@ export class MetaBrain {
       // a name routes only when the model also read it as the destination. Still owner-named.
       // "Actually, pause that, don't change anything yet" was still sent (sim, 7 Nov 2026). A hold from the owner sends nothing.
       if(/\b(?:don'?t|do not)\s+(?:change|touch|do|send|start)\s+anything\b|\b(?:hold off|wait for now|not yet|on hold|hold on)\b/i.test(m.text))throw new Error('Holding off: nothing was sent. Tell me when you want it to go ahead.');
-      const named=namedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
+      const named=wantedPlatforms(m.text).filter(p=>mode?.kind!=='social'||p===decision.provider);
       if(named.length>1)throw new Error('Please choose one coding platform for this request.');
       if(named.length&&decision.provider!=='unspecified'&&named[0]!==decision.provider)throw new Error('The platform interpretation conflicts with your original message. Please clarify.');
       // Display names and aliases of any length name a session: "UX", "开发", "claude-proxy" as surely as "Payments API".
@@ -919,7 +928,9 @@ export class MetaBrain {
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
       const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
       const destinationWord=new RegExp(`\\b(?:send(?!\\s+(?:me|us)\\b)|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
-      const ambiguous=said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
+      // A session named outside any negation is a clear destination even if another clause says "don't" (sim, 7 Nov 2026).
+      const chosen=mentioned.some(b=>said.split(/[.,;:!?\n。，；！？—–]+/).some(c=>!negated.test(c)&&norm(c).includes(norm(this.label(b)))));
+      const ambiguous=!chosen&&said.split(/[.,;:!?\n。，；！？—–]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
@@ -950,7 +961,7 @@ export class MetaBrain {
     }catch(e){const reason=(e as Error).message;this.stop(m.id,reason,/clarify|choose|name the coding platform|again" to send|^Holding off/i.test(reason)?'clarification':'blocked');return true;}
     // Typing stops once the work is queued; without a line the owner can't tell it went anywhere (sim, 7 Nov 2026).
     // Plain output, not outputBrain: it is a receipt, not an answer, so the silence notice still fires.
-    if(this.send(router,m.id,m.text,target,coordinator,topic,m,decision.title))this.store.output(undefined,`✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${m.id}`,this.store.job(m.id)?.destination??this.store.destination());
+    if(this.send(router,m.id,m.text,target,coordinator,topic,m,decision.title))this.store.output(undefined,`${decision.intent==='task'&&decision.reply?.trim()?decision.reply.trim()+'\n':''}✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${m.id}`,this.store.job(m.id)?.destination??this.store.destination());
     return true;
   }
   // "When did each session last do something, in Singapore time?" was sent to a session; the app already knows (sim, 7 Nov 2026).

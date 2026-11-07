@@ -119,7 +119,7 @@ export class BrainMemory {
         :`Saved ${items.length} to-dos:\n${items.map(i=>`#${i.id}: ${i.title}`).join('\n')}\nStatus: not started. No session was dispatched.`;
     }
     if(d.operation==='set_todo') {
-      const match=/^(?:please\s+)?(?:mark|set) (.+?) (?:as|to) (not started|in progress|waiting on owner|blocked|done)[.!]?$/i.exec(m.text.trim());
+      const match=/^(?:please\s+)?(?:mark|set) ["“]?(.+?)["”]?(?:\s+(?:as|to))?\s+(not started|in progress|waiting on owner|blocked|done)[.!]?$/i.exec(m.text.trim());
       if(!match||d.taskIds.length!==1||match[2].toLowerCase()!==d.itemStatus)throw new Error('Name one task and its status, for example “Mark invoice export as blocked”.');
       const item=this.resolve(d.taskIds[0]);this.link(m.id,item.id);
       this.items.setStatus(item.id,d.itemStatus,'Owner');
@@ -138,7 +138,7 @@ export class BrainMemory {
       const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
       if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
-      if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error('This platform is disabled or denied by your policy.');
+      if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error(`${b.provider[0].toUpperCase()+b.provider.slice(1)} is switched off for the brain in Settings. Turn it on there; I can't change that from chat.`);
       const coordinator=router.coordinator.registry.bindingFor(b);
       // A paused coordinator can resume itself; its own pause must not lock it out.
       if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error('Review the saved coordinator connection before changing this session.');
