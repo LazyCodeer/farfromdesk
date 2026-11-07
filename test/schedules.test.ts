@@ -594,3 +594,7 @@ test('a reminders question in any wording lists them, and list-plus-cancel goes 
     assert.doesNotMatch(String(f.store.db.prepare("SELECT body FROM outbox ORDER BY rowid DESC").get()?.body),/could not confirm/);
   }finally{f.close();}
 });
+test('zone aliases are the same zone',async()=>{
+  const {sameZone}=await import('../src/schedules.js');
+  assert.ok(sameZone('Asia/Calcutta','Asia/Kolkata'));assert.ok(!sameZone('Europe/London','Asia/Kolkata'));assert.ok(!sameZone('Nope/Zone','Asia/Kolkata'));assert.ok(!sameZone(undefined,'Asia/Kolkata'));
+});

@@ -291,7 +291,7 @@ export class Schedules {
     }
     const zoneNames=[...timingText.matchAll(/\b[A-Za-z_]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?\b/g)].map(m=>m[0]);
     if(!zoneNames.length&&/\b(?:IST|PST|PDT|CST|CDT|EST|EDT|MST|MDT|UTC|GMT)\b/i.test(timingText))throw new Error('Please specify the time zone using an IANA name such as Asia/Kolkata.');
-    if(zoneNames.length>1||zoneNames.length===1&&decision.zone!==zoneNames[0]||zoneNames.length===0&&decision.zone!==zone&&!(decision.zone?.includes('/')&&new RegExp(`\\b${decision.zone.split('/').pop()!.replace(/_/g,' ')}\\s+time\\b`,'i').test(text)))throw new Error('Please name the time zone explicitly in the time directive.');
+    if(zoneNames.length>1||zoneNames.length===1&&!sameZone(decision.zone,zoneNames[0])||zoneNames.length===0&&!sameZone(decision.zone,zone)&&!(decision.zone?.includes('/')&&new RegExp(`\\b${decision.zone.split('/').pop()!.replace(/_/g,' ')}\\s+time\\b`,'i').test(text)))throw new Error('Please name the time zone explicitly in the time directive.');
     if(!validZone(decision.zone))throw new Error('Please choose a valid time zone.');
     const now=this.now(),{date,time,repeat,next}=checkedTiming(timingText,decision,now,decision.zone);
     if(repeat==='once'&&!localInstants(date,time,decision.zone).length)throw new Error('That local time does not exist. Please choose another time.');
@@ -564,3 +564,5 @@ export function scheduleDeliveryState(store:Store,id:string):'ready'|'hold'|'inv
   if(!validScheduleOwner(store,row.owner,row.destination,row.channel))return 'invalid';
   return store.controlChannel()===row.channel?'ready':'hold';
 }
+// Asia/Calcutta and Asia/Kolkata are one zone; the laptop reports one, settings default to the other (sim, 7 Nov 2026).
+export function sameZone(a:string|undefined,b:string){try{const r=(z:string)=>new Intl.DateTimeFormat('en',{timeZone:z}).resolvedOptions().timeZone;return !!a&&r(a)===r(b);}catch{return false;}}

@@ -943,6 +943,8 @@ export class MetaBrain {
   private refuse(router:Router,policy:BrainPolicy,d:Interpretation):string|undefined {
     const c=router.coordinator;
     // An update with no tracked item is sent to a session as a task, so it needs a session too (sim, 7 Nov 2026).
+    // manage without one of its operations reached the owner as "Please clarify which task or session change you want" after a tool had already done the work (sim, 7 Nov 2026).
+    if(d.intent==='manage'&&!['add_todo','set_todo','pause_session','resume_session'].includes(d.operation??''))return 'intent manage needs operation add_todo, set_todo, pause_session or resume_session. If a tool already did what the owner asked, use intent chat and say what was done.';
     // An update's taskIds that match no tracked item are dropped before sending, so they don't pick a session (sim, 7 Nov 2026).
     const tracked=d.intent==='update'?d.taskIds.length===1&&this.memory.board().some(i=>i.ref===d.taskIds[0]||this.store.itemOf(d.taskIds[0])===i.id):d.taskIds.length>0;
     if(!(d.intent==='task'||d.intent==='update')||tracked||!c||this.decidesContracts(router)&&this.pendingContract(router))return;

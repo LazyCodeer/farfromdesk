@@ -646,5 +646,6 @@ test('an update about something untracked asks the model for a session, not the 
     assert.ok(sessions.length>1,'fixture has two plain sessions');
     assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:['cloud-server']})),/Set sessionId/);
     assert.equal(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:[],sessionId:sessions[0].id}),undefined);
+    assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'manage',operation:'none'})),/intent chat/);
   }finally{f.close();}
 });
