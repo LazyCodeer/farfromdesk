@@ -856,14 +856,15 @@ export class MetaBrain {
       const norm=(t:string)=>t.normalize('NFKC').replace(/[‘’]/g,"'").replace(/\s+/g,' ').trim().toLowerCase();
       const esc=(t:string)=>t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),said=norm(m.text);
       const hit=(n:string)=>/[^\x00-\x7f]/.test(n)?said.includes(n):new RegExp(`(?:^|[^a-z0-9])${esc(n)}(?:[^a-z0-9]|$)`).test(said);
-      const mentioned=this.memory.candidates(router).filter(b=>[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
+      // Any enabled session the owner can see by name counts, connected or not: naming it is as exact as /to (sim, 7 Nov 2026).
+      const mentioned=this.store.bindings().filter(b=>b.enabled&&[this.label(b),b.alias].map(norm).some(n=>n&&!PLATFORM_WORDS.some(([,words])=>words.includes(n))&&hit(n)));
       if(mentioned.length>1)throw new Error('Your message names more than one session. Please choose one with /claude list or /codex list. Nothing was sent.');
       // Wording can exclude a destination without naming it ("not the session that worked on this"), so a named session, or a negation
       // next to destination words, is ambiguous: the owner is asked and nothing is sent.
       // Checked per clause, so "Codex, fix it. Do not publish" still goes straight to Codex.
       const negated=/\b(?:not|no|never|except|avoid|instead|without|exclude|nobody|nowhere|other than|anyone but|away from)\b|n't\b|[不别勿]/;
       const destinationWord=new RegExp(`\\b(?:send|sent|forward|route|give|assign|pass|hand|session|coordinator|agent|worker|platform|${PLATFORM_ALTERNATION}|anywhere|anyone|someone|elsewhere)\\b|[发给派]`,'i');
-      const ambiguous=mentioned.length>0||said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
+      const ambiguous=said.split(/[.,;:!?\n。，；！？]+/).some(clause=>negated.test(clause)&&destinationWord.test(clause));
       const provider=named[0]??(decision.provider==='unspecified'?undefined:decision.provider);
       // A model may pick a platform the owner didn't name only by following the owner's collaboration.md rules.
       // "Yes" to "pass this to Cursor?" names Cursor through the owner's own message just before it (live, 4 Nov 2026).
@@ -884,7 +885,7 @@ export class MetaBrain {
       if(!target?.enabled||!policy.providers.includes(target.provider)||!c.enabled().includes(target.provider))throw new Error('The selected platform is paused or denied by your routing policy.');
       coordinator=c.isCoordinator(target.id)?target:c.registry.bindingFor(target);
       if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)throw new Error('Coordinator account or runtime changed. Review Coding platforms.');
-      if(!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id))throw new Error('The owning session is not connected. Connect that exact session first.');
+      if(target.id!==mentioned[0]?.id&&!c.isCoordinator(target.id)&&!c.selected().some(b=>b.id===target!.id))throw new Error('The owning session is not connected. Connect that exact session first.');
       if(this.store.get(`native-history-error:${target.id}`))throw new Error('The coordinator connection needs attention in Coding platforms.');
       // Asking is the whole answer: a later "yes" can't be tied safely to this question, the session or the item, so nothing is held for it.
       if(ambiguous)throw new Error(`Please clarify where this should go. Did you mean ${this.label(target)}? To send it there, use /to ${target.alias} and your message${topic?` (it won't be filed under item #${topic.id})`:''}, or choose with /claude list or /codex list. Nothing was sent.`);

@@ -635,3 +635,10 @@ test('Brain rejects a result after task mode is changed while interpreting',asyn
   assert.equal(f.store.job('wa:old-mode'),undefined);assert.match(f.router.brain.get('wa:old-mode')?.reason??'',/task mode changed/);
  }finally{f.close();}
 });
+test('naming a session by the title the owner sees sends it there, connected or not',async()=>{
+  const f=fixture(decision('unspecified','Check the FarFromDesk cloud server session.'));try{
+    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
+    await f.router.receive({id:'wa:named',text:'Can you check the FarFromDesk cloud server session?'});
+    assert.equal(f.store.job('wa:named')?.binding_id,f.claude.id);
+  }finally{f.close();}
+});
