@@ -72,7 +72,8 @@ export class BrainMemory {
     for(const b of router.coordinator?.selected()??[])ids.add(b.id);
     // Every enabled session the owner can see counts too: prod 'selected' is often empty, so the brain
     // couldn't list, pause or schedule sessions the owner named (sim, 7 Nov 2026).
-    return this.store.bindings().filter(b=>b.enabled||ids.has(b.id)||router.coordinator?.isCoordinator(b.id));
+    // A paused session the owner has named stays reachable, or "resume X" could never find it.
+    return this.store.bindings().filter(b=>b.enabled||ids.has(b.id)||router.coordinator?.isCoordinator(b.id)||!!this.store.get(`name:${b.id}`));
   }
   resolve(ref:string):Item {
     const id=/^item:(\d+)$/.exec(ref)?.[1];

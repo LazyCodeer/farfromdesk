@@ -244,7 +244,10 @@ export class Schedules {
         // The owner says the name they see ("ask the FarFromDesk cloud server session to"), not the alias (sim, 7 Nov 2026).
         const norm=(v:string)=>v.trim().toLowerCase();
         // The model may hand back the display name or alias instead of the id.
-        const found=this.store.binding(decision.target)??this.store.bindings().find(b=>norm(b.alias)===norm(decision.target)||norm(this.store.get(`name:${b.id}`)??'')===norm(decision.target)),names=[decision.target,...(found?[found.alias,this.store.get(`name:${found.id}`)??'']:[])].filter(Boolean);
+        const exact=this.store.binding(decision.target)??this.store.bindings().find(b=>norm(b.alias)===norm(decision.target)||norm(this.store.get(`name:${b.id}`)??'')===norm(decision.target));
+        // "the cloud server session" names part of "FarFromDesk cloud server"; take it only when one session matches (sim, 7 Nov 2026).
+        const partial=norm(decision.target).length>=4?this.store.bindings().filter(b=>b.enabled&&norm(this.store.get(`name:${b.id}`)??b.alias).includes(norm(decision.target))):[];
+        const found=exact??(partial.length===1?partial[0]:undefined),names=[decision.target,...(found?[found.alias,this.store.get(`name:${found.id}`)??'']:[])].filter(Boolean);
         const said=names.find(n=>containsExact(text,n)&&explicitSessionDispatch(text,n,body)),directive=said?explicitSessionDispatch(text,said,body):undefined;
         if(!directive)throw new Error('To schedule work, explicitly say ask SESSION to do the task. A reminder alone will not send work.');
         timingText=directive.directive;body=directive.action;

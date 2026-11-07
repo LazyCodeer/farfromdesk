@@ -697,3 +697,12 @@ test('one message can ask several sessions, each under its own request',async()=
     assert.ok(f.store.job('wa:fan~1'));assert.ok(f.store.job('wa:fan~2'));assert.equal(f.store.job('wa:fan'),undefined,'the whole message is not sent again');
   }finally{f.close();}
 });
+// Sim, 7 Nov 2026: "Resume Client: Acme storefront." was sent to Codex as a task.
+test('pause or resume naming one session is done, even when the model picks a task',async()=>{
+  const f=fixture({...decision(),sessionId:''});try{
+    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
+    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');f.store.enable(acme.id,false);
+    await f.router.receive({id:'wa:resume',text:'Resume Client: Acme storefront.'});
+    assert.equal(f.store.job('wa:resume'),undefined);assert.equal(!!f.store.binding(acme.id)?.enabled,true);
+  }finally{f.close();}
+});

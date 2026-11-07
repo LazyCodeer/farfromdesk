@@ -724,6 +724,6 @@ test('the unasked first-message brief is skipped when there is nothing to report
     const brief=new MorningBrief(f.store,f.router,async()=>({opening:'Hello.',priorities:[]}),()=>instant,async()=>({entries:[],notice:''}) as any);
     assert.equal(await brief.request('owner@s.whatsapp.net','first-message',instant,undefined,true),false);
     addScoped(f,'wa:task','Task');
-    assert.equal(await brief.request('owner@s.whatsapp.net','first-message',instant,undefined,true),true);
+    assert.equal(await brief.request('owner@s.whatsapp.net','first-message',instant,undefined,true),false,'never mid-conversation the same day');
   }finally{process.env.FFD_BRIEF_EMPTY=was;f.close();}
 });

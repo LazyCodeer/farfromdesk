@@ -78,6 +78,8 @@ type Task={id:string;original:string;normalized:string|null;source:string;destin
 /** Only Router's authenticated owner ingress calls handle. Reports and attachments never do. */
 // Title words too common to pick a session by themselves.
 const LOOSE_STOP=new Set(['client','session','sessions','with','from','this','that','work','task','tasks','project','repo','code','data','fixes','update','about','into','the']);
+// ponytail: first sentence, cut at 60 chars on a word; a model title is preferred when given.
+const shortTitle=(t:string)=>{const first=t.trim().split(/(?<=[.?!])\s|\n/)[0];return first.length<=60?first:first.slice(0,60).replace(/\s+\S*$/,'')+'…';};
 export class MetaBrain {
   readonly memory:BrainMemory;
   readonly owner:OwnerMemory;
@@ -741,7 +743,7 @@ export class MetaBrain {
       // Consent is read when the model calls the tool, not when the request began: switching learning off mid-call stops writes.
       const authorize=()=>{this.store.assertIncomingOwner();if(router.stopped||JSON.stringify(brainPolicy(this.store))!==JSON.stringify(policy))throw new Error('Brain authority changed.');};
       const memoryTool=(i:Parameters<MemoryTool>[0])=>{authorize();return this.owner.command(i,`brain:${m.id}`,policy.learn);};
-      decision=Interpretation.parse(await this.model.interpret(key,policy,{original:m.text,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled,...this.lastActive(b.id)})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),now:localStamp(),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.introOnce()?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
+      const ask=async(original:string)=>Interpretation.parse(await this.model.interpret(key,policy,{original,taskMode:mode?.kind,imageProvider:mode?.imageProvider,conversation:this.conversation(m.id),source:m.source??'text',tasks:[...board.slice(0,60).map(i=>({id:i.ref,title:i.title,status:`${i.status}; execution: ${i.executionState}`})),...this.tasks(this.store.destination()).filter(t=>t.id!==m.id&&!this.store.itemOf(t.id)&&!['answered','managed'].includes(t.state)).slice(0,20).map(t=>({id:t.id,title:t.original.slice(0,300),status:t.status}))],sessions:this.memory.candidates(router).filter(b=>!router.coordinator?.isCoordinator(b.id)).map(b=>({id:b.id,name:this.store.get(`name:${b.id}`)??b.alias,provider:b.provider,enabled:!!b.enabled,...this.lastActive(b.id)})),deviceControl:mine?'brain' as const:'session' as const,...(mine&&last?{lastDeviceApp:last}:{}),...(appTools?.length?{appTools}:{}),now:localStamp(),...(devices?.length?{devices}:{}),activeTaskId:this.store.get(topicKey),...(this.decidesContracts(router)&&this.pendingContract(router)?{pendingContract:true}:{}),memory:this.owner.always(),...(this.introOnce(m.text)?{intro:'needed' as const}:{}),itemCodes:Object.fromEntries(Object.entries(JSON.parse(this.store.get(`item-codes:${this.store.destination()}`)??'{}') as Record<string,number>).map(([k,v])=>[k,`item:${v}`])),needsOwner:board.filter(i=>i.status==='waiting on owner'||i.status==='blocked').slice(0,10).map(i=>({id:i.ref,title:i.title,why:this.memory.gone(i.jobs[0])??i.executionState}))},memoryTool,authorize,observeMeta,mine?{
         // The model's own tool calls. A refusal comes back as the sentence for the owner, so the
         // model can say why and what to switch on, instead of the loop failing.
         run:async(tool,args)=>{const found=toolByName(tool);if(!found)return `No tool named ${tool}. Use a name from appTools.`;this.ack(m,found.app);const outcome=await runDevicePlan(this.deviceControl(),{action:'app_tool',tool,app:found.app,args},`brain:${m.id}`,authorize);this.store.event(m.id,'device_action',{action:'app_tool',outcome:outcome.ok?'done':'blocked',...(outcome.code?{code:outcome.code}:{})});return (outcome.ok?(outcome.evidence??outcome.line):`Refused: ${outcome.line}`).slice(0,14000);},
@@ -770,6 +772,11 @@ export class MetaBrain {
         set:(id,st)=>{const i=this.memory.item(id);if(!i)return `No item #${id}.`;this.memory.items.setStatus(id,st,'Owner');return `#${id} ${i.title}: ${st}`;},
         list:()=>this.memory.board().map(i=>`#${i.id} ${i.title}: ${i.status}`).join('\n')||'No items yet.'}:undefined,
         (sessionId,text)=>this.fanOut(router,m,policy,sessionId,text),openPrStatus));
+      decision=await ask(m.text);
+      // The owner asked for the answer here, not from a session ("I meant you, just answer here"); the model still queued it (sim, 7 Nov 2026).
+      if(decision.intent==='task'&&!decision.taskIds.length&&/\b(?:answer (?:it |this )?here|you answer|i meant you|not (?:the |a |to )?(?:\w+ )?(?:session|codex|claude|cursor)|don'?t (?:want to )?queue)\b/i.test(m.text)){
+        const again=await ask(`${m.text}\n\n(The owner wants you to answer this yourself in chat. Use intent chat.)`).catch(()=>undefined);if(again?.intent==='chat')decision=again;
+      }
       this.store.event(m.id,'brain_interpreted',{durationMs:Date.now()-interpretationStarted});
     }catch(e) {
       if(revoked()||routingChanged())return true;
@@ -795,6 +802,14 @@ export class MetaBrain {
     // No dash rule here: both branches below go through outputBrain, where ownerReply applies it
     // once. A second copy would silently stop applying when that one changes.
     // Room for an answer built from tool results (a tab list was cut mid-word at 400).
+    // "Resume Client: Acme storefront." was sent to Codex as a task (sim, 7 Nov 2026). A message that starts with
+    // pause/resume and names exactly one session is that manage operation, whatever the model picked.
+    const verb=/^\W*(?:please\s+)?(pause|resume|unpause)\b/i.exec(m.text)?.[1]?.toLowerCase();
+    if(verb&&decision.intent==='task'){
+      const said=m.text.toLowerCase(),hits=this.memory.candidates(router).filter(b=>!router.coordinator?.isCoordinator(b.id))
+        .map(b=>({b,n:[this.label(b),b.alias].flatMap(n=>n.toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(w=>w.length>=4&&said.includes(w)).length})).filter(x=>x.n).sort((x,y)=>y.n-x.n);
+      if(hits.length===1||hits.length>1&&hits[0].n>hits[1].n)decision={...decision,intent:'manage',operation:verb==='pause'?'pause_session':'resume_session',sessionId:hits[0].b.id};
+    }
     // Parts already went out through send_to_session; a final task would send the whole message again.
     if(this.fanned.has(m.id)){this.fanned.delete(m.id);if(decision.intent!=='chat')decision={...decision,intent:'chat',reply:decision.reply||'Sent. I\'ll tell you as each one answers.'};}
     const said=this.deviceFactLine(m,decision.reply??'')??(decision.reply??'').trim().slice(0,3800);
@@ -938,14 +953,17 @@ export class MetaBrain {
     if(!coordinator?.enabled||c.registry.identity(coordinator).key!==c.registry.entry(coordinator.id)?.key)return `${this.label(target)}: its platform connection changed. Nothing was sent.`;
     this.fanned.set(m.id,n);const id=`${m.id}~${n}`;
     try{this.send(router,id,text,target,coordinator);}catch(e){return `${this.label(target)}: ${(e as Error).message}`;}
-    this.store.output(undefined,`✅ Sent to ${this.label(target)}. I'll tell you when it answers.`,`brain-sent:${id}`,this.store.destination());
+    // The final reply lists who was asked; one receipt per session repeated it (sim, 7 Nov 2026).
     return `Sent to ${this.label(target)}.`;
   }
   // The intro asked "What should I call you?" on every message until the owner answered (sim, 7 Nov 2026). Once per chat.
-  private introOnce(){const k=`intro-shown:${this.store.destination()}`;if(!this.owner.introNeeded()||this.store.get(k))return false;this.store.set(k,'1');return true;}
+  // Only a greeting gets the intro; a real request is just answered and the intro waits (sim, 7 Nov 2026).
+  private introOnce(text=''){const k=`intro-shown:${this.store.destination()}`;if(!this.owner.introNeeded()||this.store.get(k))return false;
+    if(!/^\W*(?:hi+|hello|hey+|hiya|yo|namaste|good (?:morning|afternoon|evening)|what can you do|who are you)\b[^?]{0,30}[.!?\s\p{Emoji}]*$/iu.test(text.trim()))return false;this.store.set(k,'1');return true;}
   // "Status of my sessions" with nothing tracked yet answered "No matching tracked tasks." and never named a session (sim, 7 Nov 2026).
   private noTasksText(router:Router){const names=this.memory.candidates(router).filter(b=>b.enabled&&!router.coordinator?.isCoordinator(b.id)).map(b=>`- ${this.label(b)} (${b.provider})`);return names.length?['No tracked work yet. Your sessions:',...names,'Ask any of them for an update by name.'].join('\n'):'No tracked work and no sessions connected yet.';}
-  private label(b:Binding){return this.store.get(`name:${b.id}`)??b.alias;}
+  // A platform's coordinator is plumbing; the owner knows it as the platform ("Codex"), never "codex-proxy" (sim, 7 Nov 2026).
+  private label(b:Binding){return this.store.get(`name:${b.id}`)??((JSON.parse(this.store.get('coordinator-registry')??'[]') as {bindingId:string}[]).some(r=>r.bindingId===b.id)?b.provider[0].toUpperCase()+b.provider.slice(1):b.alias);}
   private send(router:Router,id:string,text:string,target:Binding,coordinator:Binding,topic?:ReturnType<BrainMemory['resolve']>,incoming?:Incoming,title?:string) {
     this.store.db.exec('SAVEPOINT brain_dispatch');
     try {
@@ -965,7 +983,7 @@ export class MetaBrain {
       }
       const existing=this.store.itemOf(id);
       // A short model title beats the owner's whole voice note as the item name (sim, 7 Nov 2026).
-      const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,title?.trim()||text));
+      const item=topic??(existing?this.memory.items.get(existing):this.memory.add(id,title?.trim()||shortTitle(text)));
       this.memory.link(id,item.id);
       if(!item.binding_id)this.memory.items.setSession(item.id,target.id,'Brain');
       // The owner's follow-up answers a block the Brain recorded from job evidence; blocks set by the owner, a coordinator or anyone else stay.

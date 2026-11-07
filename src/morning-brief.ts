@@ -169,7 +169,9 @@ export class MorningBrief {
     if(this.pending.has(id))return false;
     // An unasked brief with nothing in it buried the answer under 'None recorded' three times (sim, 7 Nov 2026).
     // ponytail: FFD_BRIEF_EMPTY=send keeps the old behaviour for delivery tests whose fixtures have no items.
-    if(unasked&&process.env.FFD_BRIEF_EMPTY!=='send'&&!this.snapshot(destination,owner,local.date,now).length)return false;
+    // The unasked brief is considered once a day: skipped empty on the first message, it must not pop up mid-conversation later (sim, 7 Nov 2026).
+    const considered=`brief-considered:${destination}:${local.date}`;
+    if(unasked&&process.env.FFD_BRIEF_EMPTY!=='send'){if(this.store.get(considered))return false;this.store.set(considered,'1');if(!this.snapshot(destination,owner,local.date,now).length)return false;}
     if(this.store.db.prepare('SELECT 1 FROM morning_briefs WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date)&&!this.recoverUnsent(destination,owner,local.date))return false;
     const attempt=this.store.db.prepare('SELECT attempts,next_at FROM morning_brief_attempts WHERE destination=? AND owner=? AND day=?').get(destination,owner,local.date) as {attempts:number;next_at:number}|undefined;
     if(attempt?.attempts&&attempt.attempts>=3){this.failureNotice(destination,owner,local.date,origin);return false;}

@@ -121,6 +121,9 @@ test('scheduled session work accepts the name the owner sees',async()=>{
     f.setDecision({action:'session',text:'run the tests',target:'FarFromDesk cloud server'});
     await f.send('1','At 6 PM ask the FarFromDesk cloud server session to run the tests');
     assert.equal((f.store.db.prepare('SELECT text FROM schedules').get() as {text:string}|undefined)?.text,'run the tests');
+    f.setDecision({action:'session',text:'run the lint',target:'cloud server'});
+    await f.send('2','At 6 PM ask the cloud server session to run the lint');
+    assert.ok(f.store.db.prepare("SELECT 1 FROM schedules WHERE text='run the lint'").get());
   }finally{f.close();}
 });
 
