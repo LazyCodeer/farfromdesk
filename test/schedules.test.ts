@@ -242,8 +242,9 @@ test('channel polling skips held work and refuses changed-owner scheduled jobs',
 test('model may not invent reminder contents, target, or timezone',async()=>{
   const f=fixture();try{
     f.setDecision({text:'send money'});await assert.rejects(f.send('1','Remind me at 6 PM to call the bank'),/exact reminder/);
-    f.setDecision({text:'call the bank',zone:'America/New_York'});await assert.rejects(f.send('2','Remind me at 6 PM to call the bank'),/time zone explicitly/);
-    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('3','Remind me at 6 PM New York time to call the bank');assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,1);
+    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('2','Remind me at 6 PM to call the bank');
+    f.setDecision({text:'call the bank',zone:'America/New_York'});await f.send('3','Remind me at 6 PM New York time to call the bank');
+    assert.deepEqual(f.store.db.prepare('SELECT zone FROM schedules ORDER BY rowid').all().map((r:any)=>r.zone),['Asia/Kolkata','America/New_York'],'an unnamed zone falls back to the default');
     f.store.db.prepare('DELETE FROM schedules').run();
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
   }finally{f.close();}
@@ -291,7 +292,8 @@ test('scheduled action is the exact owner text, preserving case and whitespace',
 test('a timezone named only in the action cannot alter the reminder zone',async()=>{
   const f=fixture();try{
     f.setDecision({text:'call America/New_York office',zone:'America/New_York'});
-    await assert.rejects(f.send('1','Remind me at 6 PM to call America/New_York office'),/time zone explicitly/);
+    await f.send('1','Remind me at 6 PM to call America/New_York office');
+    assert.equal((f.store.db.prepare('SELECT zone FROM schedules').get() as any)?.zone,'Asia/Kolkata');
   }finally{f.close();}
 });
 
@@ -547,7 +549,7 @@ test('brain-scheduled session work is checked, held for review when reviews are 
     assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM schedules').get()?.n,0);
     Object.assign(c,real);
     // Reviews off: saved straight away, and the tick sends it to that exact session.
-    assert.match(await f.schedules.brainScheduleSession(f.router,m('s2'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/^Saved\. 29 Oct 2026, 6:00 pm I will ask Site Repo to: check PR 20\./);
+    assert.match(await f.schedules.brainScheduleSession(f.router,m('s2'),{sessionId:binding.id,text:'check PR 20',at:'2026-10-29 18:00'}),/^Saved\. 29 Oct 2026, 6:00 pm \(Asia\/Kolkata\) I will ask Site Repo to: check PR 20\./);
     assert.match(f.schedules.brainList(),/"session":true/);
     f.setNow(Date.parse('2026-10-29T12:30:00Z'));await f.schedules.tick(f.router);
     const job=f.store.db.prepare('SELECT binding_id,body FROM inbox').get() as {binding_id:string;body:string};
@@ -592,5 +594,32 @@ test('a reminders question in any wording lists them, and list-plus-cancel goes 
     assert.equal(ask('can you show me what reminders I have? And cancel the school pickup one at 3:15pm'),false);
     await f.send('1','Thanks! What reminders have I got at the moment?');
     assert.doesNotMatch(String(f.store.db.prepare("SELECT body FROM outbox ORDER BY rowid DESC").get()?.body),/could not confirm/);
+  }finally{f.close();}
+});
+test('zone aliases are the same zone',async()=>{
+  const {sameZone,zoneSaid}=await import('../src/schedules.js');
+  assert.ok(zoneSaid('at 6pm Pacific Time','America/Los_Angeles'));assert.ok(zoneSaid('9am PST','America/Los_Angeles'));assert.ok(zoneSaid('9am Singapore time','Asia/Singapore'));assert.ok(!zoneSaid('at 6pm','America/Los_Angeles'));assert.ok(!zoneSaid('9am Spacific','America/Los_Angeles'));
+  assert.ok(sameZone('Asia/Calcutta','Asia/Kolkata'));assert.ok(!sameZone('Europe/London','Asia/Kolkata'));assert.ok(!sameZone('Nope/Zone','Asia/Kolkata'));assert.ok(!sameZone(undefined,'Asia/Kolkata'));
+});
+// Sim, 7 Nov 2026: "At 6pm, ask the cloud server session to run the tests" got "resend the complete reminder".
+test('session work the fixed parser cannot read goes to the brain',async()=>{
+  const f=fixture();try{
+    f.setDecision({kind:'clarify'});
+    assert.equal(await f.send('1','At 6pm, ask the cloud server session to run the tests'),false);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM schedules').get()?.n,0);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: a post draft that mentions reminders got "I could not confirm that schedule".
+test('a not-schedule message with no clock time goes to the brain',async()=>{
+  const f=fixture();try{
+    f.setDecision({kind:'not_schedule'});
+    assert.equal(await f.send('1','Draft a LinkedIn post: tasks, status, reminders, all in one chat'),false);
+  }finally{f.close();}
+});
+// Sim, 7 Nov 2026: list/cancel matchers caught a task brief and missed a polite cancel.
+test('reminder list and cancel match only what they mean',async()=>{
+  const f=fixture();try{
+    assert.equal(f.schedules.shouldHandle(f.router,{id:'wa:1',text:'Please start these three:\n1. Splice: check any reminders code\n2. Cloud: what changed',ownerCommand:true} as any,true),false);
+    assert.equal(f.schedules.shouldHandle(f.router,{id:'wa:2',text:'What reminders do I have?',ownerCommand:true} as any,true),true);
   }finally{f.close();}
 });

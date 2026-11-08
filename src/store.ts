@@ -361,6 +361,15 @@ export class Store {
       this.remember(row.id);this.db.prepare("UPDATE audio_inbox SET status='interrupted' WHERE id=?").run(row.id);
     }
   }
+  fanAnswers(parent:string){return (this.db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key").all(`fan-reply:${parent}~%`) as {key:string;value:string}[]).map(r=>JSON.parse(r.value) as {name:string;text:string});}
+  /** Sends the held answers of one fan-out as a single message. Late ones then arrive on their own. */
+  flushFan(parent:string,destination=this.job(parent)?.destination??this.destination()){
+    const answers=this.fanAnswers(parent),n=Number(this.get(`fan-n:${parent}`)??0);
+    this.db.prepare("DELETE FROM settings WHERE key=? OR key=? OR key LIKE ?").run(`fan-n:${parent}`,`fan-at:${parent}`,`fan-reply:${parent}~%`);
+    if(!answers.length)return;
+    const missing=n-answers.length;
+    this.output(undefined,[...answers.map(a=>`*${a.name}*\n${a.text.trim()}`),...(missing>0?[`${missing} more ${missing===1?'has':'have'} not answered yet; I'll pass ${missing===1?'it':'them'} on when they do.`]:[])].join('\n\n'),`brain:fan:${parent}`,destination);
+  }
   output(binding: Binding | undefined, text: string, source: string = randomUUID(), destination:string|null=this.destination(), context:ReplyContext={}) {
     this.assertIncomingOwner();
     const capturedOwner=this.incomingOwnerContext.getStore();
@@ -393,6 +402,16 @@ export class Store {
         this.event(context.requestId,'duplicate_agent_suppressed',{},context.turnId);
         this.db.exec('RELEASE reply_output');return false;
       }catch(e){this.db.exec('ROLLBACK TO reply_output; RELEASE reply_output');throw e;}
+    }
+    // Several sessions asked the same thing answer as one message, not one bubble each (sim, 7 Nov 2026).
+    const fanId=context.requestId??'',fan=/^(.+)~\d+$/.exec(fanId)?.[1];
+    if(fan&&!options&&binding&&context.kind==='final'&&this.get(`fan-n:${fan}`)) {
+      const now=Date.now();
+      this.db.prepare('INSERT INTO reply_receipts VALUES(?,?,?,?,?,?,?,?)').run(source,fanId,binding.id,context.kind,context.origin??null,context.turnId??null,receiptHash,now);
+      this.db.prepare('UPDATE inbox SET first_reply_at=COALESCE(first_reply_at,?),final_reply_at=COALESCE(final_reply_at,?) WHERE id=?').run(now,now,fanId);
+      this.set(`fan-reply:${fanId}`,JSON.stringify({name:sessionMeta(this,binding).name,text}));
+      if(this.fanAnswers(fan).length>=Number(this.get(`fan-n:${fan}`)))this.flushFan(fan,destination);
+      return true;
     }
     // Stable message IDs are recorded before network I/O. Retries reuse them.
     const optionText=options?'\n\n'+options.choices.map((c,i)=>`${i+1}. ${c.label}`).join('\n')+'\nReply to this message with a number. Choices expire in '+options.expiresInSeconds+' seconds. Native permissions still need the app.':'';

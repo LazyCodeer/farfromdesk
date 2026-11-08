@@ -1,4 +1,4 @@
-import {unreachable} from './meta-brain.js';
+import {unreachable,coordinatorProblem} from './meta-brain.js';
 import { itemSessionLabel } from './item-session-label.js';
 import { Items, type Item } from './items.js';
 import type { Store, Binding } from './store.js';
@@ -29,7 +29,7 @@ export class BrainMemory {
         if(restart>=0)jobs=jobs.slice(0,restart+1);
         const latest=jobs[0];
         const gone=this.gone(latest);
-        const executionState=!latest?'not dispatched':gone?gone:latest.outcome==='blocked'||['failed','uncertain'].includes(String(latest.status))?'blocked':latest.outcome==='done'?'reported done, not owner verified':latest.status==='completed'?'reported finished':latest.first_reply_at?'in progress':latest.status==='submitted'?'sent to session; no reply yet':String(latest.status);
+        const executionState=!latest?'not dispatched':gone?gone:latest.outcome==='blocked'||['failed','uncertain'].includes(String(latest.status))?'blocked':latest.outcome==='done'?'the session says it is done':latest.status==='completed'?'reported finished':latest.first_reply_at?'in progress':latest.status==='submitted'?'sent to session; no reply yet':String(latest.status);
         return {...item,executionState,ref:`item:${item.id}`,jobs,session:item.binding_id&&this.store.binding(item.binding_id)?itemSessionLabel(this.store,this.store.binding(item.binding_id)!):null};
       });
   }
@@ -133,20 +133,25 @@ export class BrainMemory {
     if(d.operation==='pause_session'||d.operation==='resume_session') {
       // Owners say "pause the Acme one" or "Client: Acme storefront ko pause karo". The model picks the session;
       // code only checks the verb matches and the owner's words name that session (sim, 7 Nov 2026).
-      const said=m.text.toLowerCase(),resume=d.operation==='resume_session';
+      // "Yes, resume it" answers the bot's own "Want me to resume final testing first?" (live, 7 Nov 2026): the session
+      // name, and for a bare yes the verb, may come from that question if it was the last thing sent, within 10 minutes.
+      const last=this.store.db.prepare('SELECT body,created_at FROM outbox WHERE destination IS ? ORDER BY rowid DESC LIMIT 1').get(this.store.destination()) as {body?:string;created_at?:number}|undefined;
+      const prev=String(last?.body??''),recent=Number(last?.created_at??0)>Date.now()-600000&&prev.split('\n\n')[0]!.trim().endsWith('?');
+      const own=m.text.toLowerCase(),yes=recent&&own.length<=40&&/^(?:yes|yeah|yep|ok(?:ay)?|sure|haan?|do it|go ahead)\b/.test(own);
+      const said=yes?prev.toLowerCase():own,named=recent?own+' '+prev.toLowerCase():own,resume=d.operation==='resume_session';
       // The first verb decides: "Pause X. I'll ask you to resume it shortly" is a pause (sim, 7 Nov 2026).
       const first=/\b(resume|reconnect|connect|unpause|start again|pause|disconnect|stop|hold)\b/.exec(said)?.[1];
       const verb=first?(/^(pause|disconnect|stop|hold)$/.test(first)?'pause':'resume'):undefined;
       // "Mark Portfolio as paused" in a status line is not a pause (sim, 7 Nov 2026).
       if(verb!==(resume?'resume':'pause'))throw new Error(`I didn't ${resume?'resume':'pause'} anything. To change a session, say “${resume?'Resume':'Pause'}” and its name.`);
       const words=(b:Binding)=>[b.alias,this.store.get(`name:${b.id}`)??b.alias].flatMap(n=>[n.toLowerCase(),...n.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=4)]);
-      const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>said.includes(w)));
+      const matches=this.candidates(router).filter(b=>b.id===d.sessionId&&words(b).some(w=>named.includes(w)));
       if(matches.length!==1)throw new Error('Please name one session already associated with this chat.');
       const b=matches[0],policy=JSON.parse(this.store.get('meta-brain-policy')??'{}');
       if(!policy.providers?.includes(b.provider)||!router.coordinator?.enabled().includes(b.provider))throw new Error(unreachable(this.store.get(`name:${b.id}`)??b.alias,{...b,enabled:1},policy.providers??[],router.coordinator?.enabled()??[]));
       const coordinator=router.coordinator.registry.bindingFor(b);
       // A paused coordinator can resume itself; its own pause must not lock it out.
-      if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error('Review the saved coordinator connection before changing this session.');
+      if(!coordinator||!(coordinator.enabled||resume&&coordinator.id===b.id)||router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key)throw new Error(coordinatorProblem(this.store,b.provider,coordinator,!!coordinator&&router.coordinator.registry.identity(coordinator).key!==router.coordinator.registry.entry(coordinator.id)?.key));
       if(resume){const selected=JSON.parse(this.store.get('selected')??'[]') as string[];this.store.set('selected',JSON.stringify([...new Set([...selected,b.id])]));}
       this.store.enable(b.id,resume);
       // Pausing forwarding does not terminate native work or disconnect the owner messaging account.

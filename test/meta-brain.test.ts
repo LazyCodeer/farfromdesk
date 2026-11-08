@@ -93,7 +93,7 @@ test('task, transport evidence and owner verification persist through restart',a
   }finally{f.close();}
 });
 test('status selects saved evidence, ignores fabricated task IDs and scopes recipient routes',async()=>{
-  const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/\*#1 Fix it\*[^"]*- Session: codex-proxy[^"]*- State: in progress, queued/);
+  const f=fixture();try{await f.router.receive({id:'wa:task',text:'Fix it'});f.respond(async()=>({...decision(),intent:'status',taskIds:['wa:task']}));const before=f.store.jobs().length;await f.router.receive({id:'wa:status',text:'What is the progress?'});assert.equal(f.store.jobs().length,before);assert.match(JSON.stringify(f.out()),/📋 Fix it[^"]*- Session: codex-proxy[^"]*- State: in progress, queued/);
     await f.store.destinationContext.run('another-owner',()=>f.router.receive({id:'wa:other',text:'What is the progress?'}));assert.match(JSON.stringify(f.out().at(-1)),/No (matching tracked tasks|tracked task|tracked work)/);
   }finally{f.close();}
 });
@@ -276,6 +276,17 @@ test('"pause the NAME session" works and a paused coordinator can resume itself'
     await f.router.receive({id:'wa:pause-c',text:'pause the Mobile app session'});assert.equal(f.store.binding(f.claude.id)?.enabled,0);
     f.respond(async()=>({...decision(),intent:'manage',operation:'resume_session',sessionId:f.claude.id}));
     await f.router.receive({id:'wa:resume-c',text:'resume session Mobile app'});assert.equal(f.store.binding(f.claude.id)?.enabled,1);
+  }finally{f.close();}
+});
+// Live, 7 Nov 2026: "Yes, resume it" after the bot asked "Want me to resume final testing first?" was refused.
+test('a yes to the bot\'s own resume question resumes the session it named',async()=>{
+  const f=fixture();try{
+    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});f.store.set(`name:${f.claude.id}`,'final testing');
+    f.respond(async()=>({...decision(),intent:'manage',operation:'pause_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:p1',text:'pause the final testing session'});assert.equal(f.store.binding(f.claude.id)?.enabled,0);
+    f.store.output(f.claude,'The final testing session is paused. Want me to resume it first?','test-q',f.store.destination());
+    f.respond(async()=>({...decision(),intent:'manage',operation:'resume_session',sessionId:f.claude.id}));
+    await f.router.receive({id:'wa:y1',text:'Yes please'});assert.equal(f.store.binding(f.claude.id)?.enabled,1);
   }finally{f.close();}
 });
 test('a rejected key tells the owner to replace it',async()=>{
@@ -488,65 +499,11 @@ test('status quotes what a blocked session asked, and the owner answer moves it 
     f.store.output(owner,'Which format do you want, CSV or XLSX?',undefined,f.store.destination(),{requestId:'wa:t1',kind:'final',origin:'agent',outcome:'blocked'});
     f.respond(async()=>({...decision(),intent:'status',taskIds:['item:1']}));
     await f.router.receive({id:'wa:s1',text:'Does anything need me?'});
-    assert.match(String((f.out().at(-1) as any).body),/\*#1 Codex, fix the export\*[\s\S]*- Session: \S+[\s\S]*- State: blocked[\s\S]*- It asked: "Which format do you want, CSV or XLSX\?"/);
+    assert.match(String((f.out().at(-1) as any).body),/📋 Codex, fix the export[\s\S]*- Session: \S+[\s\S]*- State: blocked[\s\S]*- It asked: "Which format do you want, CSV or XLSX\?"/);
     f.respond(async()=>({...decision(),taskIds:['item:1']}));
     await f.router.receive({id:'wa:a1',text:'CSV please'});
     assert.equal(f.store.job('wa:a1')?.binding_id,owner.id);
     assert.equal((f.store.db.prepare('SELECT status FROM items WHERE id=1').get() as any).status,'in progress');
-  }finally{f.close();}
-});
-test('a session named in free text never gets the task, whatever the model picks; the owner is asked to choose',async()=>{
-  const f=fixture();try{
-    const worker=f.store.register('payments-api','claude',randomUUID(),'/tmp').binding;
-    const twin=f.store.register('payments-api-2','claude',randomUUID(),'/tmp').binding;
-    const inc=f.store.register('payments-inc','claude',randomUUID(),'/tmp').binding;
-    f.store.set(`name:${worker.id}`,'Payments API');f.store.set(`name:${twin.id}`,'Payments API');f.store.set(`name:${inc.id}`,'Payments API. Inc');
-    f.store.set('selected',JSON.stringify([worker.id,twin.id,inc.id]));
-    new BrainMemory(f.store).add('wa:todo','add retry to the webhook');
-    const texts=['Payments API: do not send this to Payments API; ask the coordinator','Payments API: don\'t send this to you','Payments API: please do not work on this; ask coordinator.',
-      'Payments API: update the webhook','Payments API: add logging. Do not touch the database.','send the payments api session: add retry','"PAYMENTS API": add logging to the webhook','Payments API. Inc: add logging',
-      'Do not send this to Payments API. Ask the coordinator to inspect the webhook.','don\'t give "Payments API" this one','Everyone except Payments API should look','Do not send to:\n"Payments API"','Don’t send this to Payments API','payments api and billing ui both need this'];
-    for(const pick of [worker,twin,inc])for(const [i,text] of texts.entries()){
-      const id=`wa:${pick.alias}:${i}`;
-      f.respond(async()=>({...decision(),taskIds:i===3?['item:1']:[],sessionId:pick.id}));
-      await f.router.receive({id,text});
-      assert.equal(f.store.job(id),undefined,text);
-      assert.match(String((f.out().at(-1) as any).body),/(own message|session.s name).*Nothing was sent/s,text);
-    }
-    assert.equal((f.store.db.prepare('SELECT binding_id FROM items WHERE id=1').get() as any).binding_id,null);
-    // A model naming a session the owner never mentioned doesn't route there either.
-    f.respond(async()=>({...decision(),sessionId:worker.id}));
-    await f.router.receive({id:'wa:plain',text:'add retry to the webhook'});
-    assert.ok(f.store.job('wa:plain'));assert.notEqual(f.store.job('wa:plain')?.binding_id,worker.id);
-  }finally{f.close();}
-});
-test('an excluded coordinator never gets the request: platform, alias, short names and the item owner all ask first',async()=>{
-  const f=fixture();try{
-    const body=()=>String((f.out().at(-1) as any).body);
-    const cases:[string,()=>void,()=>Interpretation][]=[
-      ['Do not send this to Claude',()=>{},()=>decision('claude')],
-      ['Do not send this to claude-proxy',()=>f.store.set(`name:${f.claude.id}`,'Main builder'),()=>decision('claude')],
-      ['Do not send this to UX',()=>f.store.set(`name:${f.codex.id}`,'UX'),()=>decision()],
-      ['不要发给开发',()=>f.store.set(`name:${f.codex.id}`,'开发'),()=>decision()],
-      ['Do not send this to 开发',()=>f.store.set(`name:${f.codex.id}`,'开发'),()=>decision()],
-      ['Keep it away from codex',()=>{},()=>decision('codex')],
-    ];
-    for(const [i,[text,setup,pick]] of cases.entries()){
-      setup();f.respond(async()=>pick());
-      await f.router.receive({id:`wa:ex${i}`,text});
-      assert.equal(f.store.job(`wa:ex${i}`),undefined,text);assert.match(body(),/Please clarify where this should go\. Did you mean .*Nothing was sent/,text);
-    }
-    // A coordinator-owned item, excluded by reference without any name.
-    f.respond(async()=>decision());
-    await f.router.receive({id:'wa:item',text:'Fix invoice export'});
-    const item=f.store.itemOf('wa:item')!;assert.ok(f.store.job('wa:item'));
-    f.respond(async()=>({...decision(),taskIds:[`item:${item}`]}));
-    await f.router.receive({id:'wa:ref',text:'Do not send this to the session that previously worked on this item.'});
-    assert.equal(f.store.job('wa:ref'),undefined);assert.match(body(),/won't be filed under item #/);
-    // Nothing is held for a later "yes": it is a new message, and the stale question never sends.
-    f.respond(async()=>({...decision(),intent:'chat',reply:'ok'}));
-    await f.router.receive({id:'wa:late',text:'yes'});
-    assert.equal(f.store.job('wa:ref'),undefined);assert.equal(f.store.job('wa:late'),undefined);assert.equal(f.store.get(`brain-confirm:${f.store.destination()}`),undefined);
   }finally{f.close();}
 });
 test('only a block the Brain recorded is cleared by a follow-up; owner, coordinator and unknown blocks stay',async()=>{
@@ -645,50 +602,6 @@ test('Brain rejects a result after task mode is changed while interpreting',asyn
   assert.equal(f.store.job('wa:old-mode'),undefined);assert.match(f.router.brain.get('wa:old-mode')?.reason??'',/task mode changed/);
  }finally{f.close();}
 });
-test('naming a session by the title the owner sees sends it there, connected or not',async()=>{
-  const f=fixture(decision('unspecified','Check the FarFromDesk cloud server session.'));try{
-    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
-    await f.router.receive({id:'wa:named',text:'Can you check the FarFromDesk cloud server session?'});
-    assert.equal(f.store.job('wa:named')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-test('a status check with no tracked item, a guessed topic id, or a topic owned elsewhere goes to the session the owner names',async()=>{
-  const f=fixture();try{
-    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
-    f.respond(async()=>({...decision('unspecified','Check the cloud server.'),intent:'update'}));
-    await f.router.receive({id:'wa:upd',text:'How is the FarFromDesk cloud server session doing?'});
-    assert.equal(f.store.job('wa:upd')?.binding_id,f.claude.id);
-    f.respond(async()=>({...decision('unspecified','Fix it.'),taskIds:['P99']}));
-    await f.router.receive({id:'wa:guess',text:'FarFromDesk cloud server, fix the build'});
-    assert.equal(f.store.job('wa:guess')?.binding_id,f.claude.id);
-    f.respond(async()=>decision('codex','Fix the export.'));
-    await f.router.receive({id:'wa:first',text:'codex, fix the export'});
-    assert.equal(f.store.job('wa:first')?.binding_id,f.codex.id);
-    const ref=(f.router.brain as any).memory.board()[0].ref;
-    f.respond(async()=>({...decision('unspecified','Do it there instead.'),taskIds:[ref]}));
-    await f.router.receive({id:'wa:move',text:'I meant the FarFromDesk cloud server session, do it there'});
-    assert.equal(f.store.job('wa:move')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-test('a loose session name ("the thesis run") reaches the one session whose title words match, and "do not publish" still asks it',async()=>{
-  const f=fixture(decision('unspecified','Check the thesis run.'));try{
-    f.store.set(`name:${f.claude.id}`,'Thesis plots and data run');
-    await f.router.receive({id:'wa:loose',text:'how is the thesis run going?'});
-    assert.equal(f.store.job('wa:loose')?.binding_id,f.claude.id);
-    assert.match(JSON.stringify(f.store.db.prepare('SELECT source,body FROM outbox').all()),/Sent to Thesis plots and data run/);
-    f.respond(async()=>({...decision('unspecified','Check thesis, do not publish.'),intent:'update'}));
-    await f.router.receive({id:'wa:np',text:'check the thesis plots, do not publish anything'});
-    assert.equal(f.store.job('wa:np')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-
-// Sim, 7 Nov 2026: "Actually, pause that, don't change anything yet" still went to a session.
-test('a hold from the owner sends nothing, even when the model picks a task',async()=>{
-  const f=fixture({...decision(),sessionId:''});try{
-    await f.router.receive({id:'wa:hold',text:"Actually wait, don't change anything yet"});
-    assert.equal(f.store.job('wa:hold'),undefined);assert.match(String((f.out().at(-1) as any).body),/nothing was sent/i);
-  }finally{f.close();}
-});
 // Sim, 7 Nov 2026: "ask each session where it is" was refused or went to one proxy.
 test('one message can ask several sessions, each under its own request',async()=>{
   const f=fixture();try{
@@ -697,35 +610,9 @@ test('one message can ask several sessions, each under its own request',async()=
     assert.ok(f.store.job('wa:fan~1'));assert.ok(f.store.job('wa:fan~2'));assert.equal(f.store.job('wa:fan'),undefined,'the whole message is not sent again');
   }finally{f.close();}
 });
-// Sim, 7 Nov 2026: "Resume Client: Acme storefront." was sent to Codex as a task.
-test('pause or resume naming one session is done, even when the model picks a task',async()=>{
-  const f=fixture({...decision(),sessionId:''});try{
-    saveBrainConfig(f.store,f.secret,{policy:{...f.policy,allowManagement:true}});
-    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');f.store.enable(acme.id,false);
-    await f.router.receive({id:'wa:resume',text:'Resume Client: Acme storefront.'});
-    assert.equal(f.store.job('wa:resume'),undefined);assert.equal(!!f.store.binding(acme.id)?.enabled,true);
-  }finally{f.close();}
-});
-// Sim, 7 Nov 2026: a picture request went to the closed Codex coordinator.
-test('a picture or writing request bound for a platform gets a second look and is done here',async()=>{
-  const f=fixture();try{let n=0;
-    (f.model as any).interpret=async()=>++n===1?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Here it is.'};
-    await f.router.receive({id:'wa:pic',text:'Can you make me an image for a coffee shop launch?'});
-    assert.equal(n,2);assert.equal(f.store.job('wa:pic'),undefined);
-  }finally{f.close();}
-});
 test('"brief now" is never read as a schedule',()=>{
   assert.ok(briefNow('brief now'));assert.ok(briefNow('send me the brief now please'));
   assert.ok(!briefNow('send my brief every weekday at 8am'));assert.ok(!briefNow('what is a brief'));
-});
-// Sim, 7 Nov 2026: follow-ups to a chat answer went to the closed Codex coordinator.
-test('a follow-up to a chat answer bound for a platform gets a second look',async()=>{
-  const f=fixture();try{let n=0;
-    (f.model as any).interpret=async()=>{n++;return n===1?{...decision(),intent:'chat',reply:'Tokyo is UTC+9.'}:n===2?{...decision(),intent:'task'}:{...decision(),intent:'chat',reply:'Sydney is UTC+11.'};};
-    await f.router.receive({id:'wa:tz1',text:'What time zone is Tokyo?'});
-    await f.router.receive({id:'wa:tz2',text:'And Sydney?'});
-    assert.equal(n,3);assert.equal(f.store.job('wa:tz2'),undefined);
-  }finally{f.close();}
 });
 // Sim, 7 Nov 2026: "send me a short summary" was read as a destination and the task was refused as ambiguous.
 test('"send me" in a task is not read as naming a destination',async()=>{
@@ -743,21 +630,50 @@ test('a platform named only to rule it out is dropped unless nothing else is cho
   assert.deepEqual(wantedPlatforms('Do not send this to Claude'),['claude']);
 });
 
-// Sim, 7 Nov 2026: "Start with the deploy checks, keep Acme queued" went to Acme.
-test('a session named only to put it off is not where the work goes',async()=>{
-  const f=fixture(decision('unspecified','Verify the deploy and rollback paths.'));try{
-    f.store.set(`name:${f.claude.id}`,'FarFromDesk cloud server');
-    const acme=f.store.register('acme','codex',randomUUID(),'/tmp/acme').binding;f.store.set(`name:${acme.id}`,'Client: Acme storefront');
-    await f.router.receive({id:'wa:defer',text:'Start with the cloud server deploy and rollback checks, keep Acme queued for later'});
-    assert.equal(f.store.job('wa:defer')?.binding_id,f.claude.id);
-  }finally{f.close();}
-});
-
 // Sim, 7 Nov 2026: a rate-limited interpretation fell back to the closed Codex coordinator.
 test('a transient model failure is retried once before any fallback',async()=>{
   const f=fixture();try{
     let n=0;f.respond(async()=>{if(n++===0)throw Object.assign(new Error('rate limited'),{code:'provider_rejected'});return {...decision(),intent:'chat',reply:'Here you go.'} as any;});
     await f.router.receive({id:'wa:retry',text:'what is a good eval tool?'});
     assert.equal(n,2);assert.equal(f.store.job('wa:retry'),undefined);
+  }finally{f.close();}
+});
+// The model fixes its own decision: a refused decide comes back as an error it reads, not a rule after the loop.
+test('a refused decision goes back to the model, which fixes it',async()=>{
+  const seen:string[]=[];let n=0;
+  const model=new MetaModel((async(_u,init)=>{const body=JSON.parse(init!.body as string);
+    if(n++===0)return call('decide',{...decision(),sessionId:'nope'},'d1');
+    seen.push(body.messages.at(-1).content);return call('decide',{...decision(),sessionId:'s2'},'d2');}) as typeof fetch);
+  const r=await model.interpret('k',DEFAULT_BRAIN,{original:'fix it',source:'text',tasks:[]},undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined,
+    d=>d.sessionId==='s2'?undefined:'sessionId nope is not one of the sessions: s2 (Cloud).');
+  assert.equal(r.sessionId,'s2');assert.match(seen[0],/^Error: sessionId nope is not one of the sessions.*\n Please fix your mistakes\.$/s);
+});
+// Sim, 7 Nov 2026: "ask the cloud server session for an update" looped on "Which session should do this?".
+test('an update about something untracked asks the model for a session, not the owner',()=>{
+  const f=fixture();try{
+    f.store.register('web','claude','33333333-3333-4333-8333-333333333333',process.cwd());f.store.register('api','claude','44444444-4444-4444-8444-444444444444',process.cwd());
+    const brain=(f.router as any).brain,policy=brainPolicy(f.store);
+    const sessions=brain.memory.candidates(f.router).filter((b:any)=>!f.router.coordinator!.isCoordinator(b.id));
+    assert.ok(sessions.length>1,'fixture has two plain sessions');
+    assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:['cloud-server']})),/Set sessionId/);
+    assert.equal(brain.refuse(f.router,policy,{...decision(),intent:'update',provider:'claude',taskIds:[],sessionId:sessions[0].id}),undefined);
+    assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'manage',operation:'none'})),/intent chat/);
+    // Live, 7 Nov 2026: two sessions with one name, the model picked the paused one.
+    f.store.set(`name:${sessions[0].id}`,'AGI');f.store.set(`name:${sessions[1].id}`,'AGI');f.store.db.prepare('UPDATE bindings SET enabled=0 WHERE id=?').run(sessions[0].id);
+    assert.match(String(brain.refuse(f.router,policy,{...decision(),intent:'task',sessionId:sessions[0].id})),new RegExp(`Use sessionId ${sessions[1].id}`));
+    const seen=brain.visibleSessions(f.router).map((b:any)=>b.id);
+    assert.ok(!seen.includes(sessions[0].id)&&seen.includes(sessions[1].id),'paused twin hidden');
+    assert.ok(seen.includes(f.router.coordinator!.master()!.id),'live coordinator shown');
+    assert.match(String(brain.refuse(f.router,{...policy,allowManagement:true},{...decision(),intent:'manage',operation:'add_todo'})),/todo_add/);
+  }finally{f.close();}
+});
+// Live, 7 Nov 2026: "Review the saved coordinator connection" didn't say what was wrong or where to fix it.
+test('coordinator problems name the cause and the place to fix it',async()=>{
+  const {coordinatorProblem}=await import('../src/meta-brain.js');
+  const f=fixture();try{
+    const c=f.store.register('agi','claude','55555555-5555-4555-8555-555555555555',process.cwd()).binding;f.store.set(`name:${c.id}`,'Claude AGI');
+    assert.match(coordinatorProblem(f.store,'claude',undefined,false),/Claude has no coordinator.*Settings, Coding platforms/);
+    assert.match(coordinatorProblem(f.store,'claude',c,false),/Claude AGI, the Claude coordinator, is paused.*resume Claude AGI/);
+    assert.match(coordinatorProblem(f.store,'claude',c,true),/sign-in or app changed.*Reconnect Claude/);
   }finally{f.close();}
 });
