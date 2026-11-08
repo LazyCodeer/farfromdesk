@@ -149,7 +149,7 @@ export class ServerMode {
   private batteryPercent: number | null = null;
   private lowWarned = false;
   /** Called once each time the Mac drops below the battery floor while server mode holds it awake. */
-  onLowBattery?: (percent:number,floor:number)=>void;
+  onLowBattery?: (percent:number,floor:number,lidClosed:boolean|null)=>void;
   private error: string | null = null;
   private statusChangedAt = 0;
   private guidance: string | null = null;
@@ -216,7 +216,13 @@ export class ServerMode {
       // Back on power: forget the low battery answer, so the next drop asks again.
       if(this.onAcPower===true&&this.lowBatteryOk){this.store.set('server-mode-low-battery-ok','false');if(this.enabled)this.writeState();}
       if(!this.lowBattery)this.lowWarned=false;
-      else if(!this.lowWarned&&!this.lowBatteryOk){this.lowWarned=true;try{this.onLowBattery?.(this.batteryPercent!,this.batteryFloor);}catch{}}
+      else if(!this.lowWarned&&!this.lowBatteryOk){
+        this.lowWarned=true;
+        // Live, 9 Nov 2026: the warning said "lid closed" with the lid open. Read the lid; unknown claims nothing.
+        const lid=await this.deps.run('/usr/sbin/ioreg',['-r','-k','AppleClamshellState','-d','4']).catch(()=>'');
+        const lidClosed=/"AppleClamshellState"\s*=\s*Yes/.test(lid)?true:/"AppleClamshellState"\s*=\s*No/.test(lid)?false:null;
+        try{this.onLowBattery?.(this.batteryPercent!,this.batteryFloor,lidClosed);}catch{}
+      }
     }catch(e){
       // A failed probe is a claim of nothing, not a claim of "off".
       this.lidSleepDisabled=null;this.onAcPower=null;this.error=(e as Error).message;

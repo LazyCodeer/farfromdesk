@@ -53,7 +53,7 @@ const coordinator=new Coordinator(store,native,router);router.coordinator=coordi
 const masters=new Masters(store,router),serverMode=new ServerMode(store),power=new PowerPolicy(store,router,wa,undefined,telegram,serverMode);
 router.serverMode=serverMode;
 // With the lid closed nobody sees the desktop, so the low battery question goes to the phone.
-serverMode.onLowBattery=(percent,floor)=>{try{store.output(undefined,`🔋 Battery is at ${percent}%, below ${floor}%. Your Mac is running with the lid closed on battery. Reply /keepawake to keep it running until 5%, or /letsleep to let it sleep and save power. If you don't answer, it will sleep to protect the battery.`,`low-battery:${Date.now()}`,store.destination(),{kind:'system',origin:'system',plain:true});}catch{}};
+serverMode.onLowBattery=(percent,floor,lidClosed)=>{try{store.output(undefined,`🔋 Battery is at ${percent}%, below ${floor}%. ${lidClosed?'Your Mac is running with the lid closed on battery.':'Your Mac is on battery and FarFromDesk is keeping it awake.'} Reply /keepawake to keep it running until 5%, or /letsleep to let it sleep and save power. If you don't answer, it will sleep to protect the battery.`,`low-battery:${Date.now()}`,store.destination(),{kind:'system',origin:'system',plain:true});}catch{}};
 const workers=new Workers(store,router,masters);router.hasPendingCreation=id=>workers.pending(id);
 router.workspaceCommand=args=>{if(args==='revoke')return workers.revoke();if(args)throw new Error('Use /workspace or /workspace revoke.');return workers.workspaceSummary();};
 native.beforeRun=b=>{if(store.get(`managed-worker:${b.id}`)==='true')workers.ensureRun(b);};
