@@ -322,3 +322,18 @@ test('review fixes: one login per connection, a login deadline, one transcriptio
   release();await v.wait(()=>v.messages.some(m=>m.t==='voice-text'&&(m as any).id==='a1'));
  }finally{host.stop('TEST_DONE');for(const x of ps)await x.pc.close();}
 });
+
+test('relay: Pro TURN logins join the ICE servers, and a failing relay still gives a link',{timeout:20_000},async()=>{
+ const a=await access(),seen:any[]=[];
+ // Records the config but connects without the fake TURN server, so the test never waits on it.
+ class Spy extends RTCPeerConnection{constructor(c:any){seen.push(c);super({...c,iceServers:c.iceServers.slice(0,1)});}}
+ const turn={urls:['turn:turn.example:3478?transport=udp'],username:'u',credential:'c'};
+ const host=new P2PHost({access:a,backend:fakeBackend,stun:[],rtc:Spy as any,relay:async()=>[turn]});
+ assert.ok((await host.createOffer()).link);
+ assert.deepEqual(seen[0].iceServers,[{urls:[]},turn]);
+ host.stop('OWNER_STOPPED');
+ const broken=new P2PHost({access:a,backend:fakeBackend,stun:[],rtc:Spy as any,relay:async()=>{throw Error('down');}});
+ assert.ok((await broken.createOffer()).link);
+ assert.deepEqual(seen[1].iceServers,[{urls:[]}]);
+ broken.stop('OWNER_STOPPED');
+});
