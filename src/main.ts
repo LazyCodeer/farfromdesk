@@ -5,7 +5,7 @@ import { AgentInstaller } from './agent-installer.js';
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { initializeState,stateDir,baseUrl,port } from './config.js';
-import { installBrainOverride } from './brain-override.js';
+import { installBrainOverride, installHostedBrain } from './brain-override.js';
 import { Cloud,CLOUD_URL } from './cloud.js';
 import { ALWAYS } from './owner-memory.js';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,9 @@ import { repairProviderHooks } from './hook-install.js';
 import { clearStage,recordStage } from './startup-stage.js';
 
 const token=initializeState();
-if(installBrainOverride(stateDir))console.log('Brain override active: Meta chat calls go to brain-override.json.');
+const brainOverride=installBrainOverride(stateDir);if(brainOverride)console.log('Brain override active: Meta chat calls go to brain-override.json.');
+// Before anything is built: MetaModel and others keep the fetch they see at construction. `cloud` is defined below and only used per call.
+else installHostedBrain((path,body)=>cloud.hosted(path,body as object));
 const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
 const store=new Store(join(stateDir,'bridge.sqlite'));
 const agentInstaller=new AgentInstaller(store);

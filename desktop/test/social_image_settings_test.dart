@@ -7,7 +7,7 @@ import 'social_live_workspace_test.dart' show FakeLocalSocial;
 
 class ImageSettingsGateway extends FakeLocalSocial {
   String provider = 'local';
-  bool configured = false;
+  bool configured = true; // hosted: the backend always reports configured
   Map<String, dynamic>? saved;
   @override
   Future<Map<String, dynamic>> get(String path) async {
@@ -36,7 +36,7 @@ class ImageSettingsGateway extends FakeLocalSocial {
 
 void main() {
   testWidgets(
-    'Social shows default source, configures Meta and passes it to Generate',
+    'Social shows default source, picks hosted images and passes it to Generate',
     (tester) async {
       tester.view.physicalSize = const Size(1400, 1100);
       tester.view.devicePixelRatio = 1;
@@ -54,25 +54,12 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('social-default-image-provider')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Meta API').last);
+      await tester.tap(find.text('FarFromDesk hosted').last);
       await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<FilledButton>(
-              find.byKey(const Key('social-save-image-settings')),
-            )
-            .onPressed,
-        isNull,
-      );
-      final field = find.byKey(const Key('social-meta-key'));
-      expect(tester.widget<TextField>(field).obscureText, isTrue);
-      await tester.enterText(field, 'synthetic-only-key-for-widget-test');
-      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('social-meta-key')), findsNothing);
       await tester.tap(find.byKey(const Key('social-save-image-settings')));
       await tester.pumpAndSettle();
       expect(api.saved?['imageProvider'], 'meta');
-      expect(find.text('Key saved'), findsOneWidget);
-      expect(find.textContaining('synthetic-only-key'), findsNothing);
       await tester.tap(find.widgetWithText(FilledButton, 'Generate'));
       await tester.pumpAndSettle();
       expect(
@@ -104,7 +91,7 @@ void main() {
   );
 
   testWidgets(
-    'switching to Local keeps the saved key and does not send it again',
+    'switching to Local saves the provider without a key',
     (tester) async {
       final api = ImageSettingsGateway()
         ..provider = 'meta'
@@ -115,13 +102,6 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<TextField>(find.byKey(const Key('social-meta-key')))
-            .controller!
-            .text,
-        isEmpty,
-      );
       await tester.tap(find.byKey(const Key('social-default-image-provider')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Local SVG skill').last);

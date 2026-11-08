@@ -22,8 +22,8 @@ export class Cloud {
   constructor(private store:Store,private telegram:Telegram,private memory:()=>string,private base=CLOUD_URL,private fetcher:typeof fetch=fetch) {}
   get registered(){return !!this.auth();}
   private auth(){const id=this.store.get('cloud-account'),key=this.store.get('cloud-key');return id&&key?`Bearer ${id}.${key}`:undefined;}
-  private async post(path:string,body:unknown,auth?:string):Promise<{status:number;body:any}> {
-    const r=await this.fetcher(this.base+path,{method:'POST',headers:{'Content-Type':'application/json',...(auth?{Authorization:auth}:{})},body:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(15_000)});
+  private async post(path:string,body:unknown,auth?:string,timeout=15_000):Promise<{status:number;body:any}> {
+    const r=await this.fetcher(this.base+path,{method:'POST',headers:{'Content-Type':'application/json',...(auth?{Authorization:auth}:{})},body:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(timeout)});
     return {status:r.status,body:await r.json().catch(()=>({}))};
   }
   private async register() {
@@ -65,12 +65,14 @@ export class Cloud {
     return this.backupView();
   }
   /** Posts with this computer's key, registering first or again when another computer took the bot over. */
-  private async authed(path:string,body:object){
+  private async authed(path:string,body:object,timeout?:number){
     if(!this.auth())await this.register();
-    const r=await this.post(path,body,this.auth());
+    const r=await this.post(path,body,this.auth(),timeout);
     if(r.status!==401)return r;
-    await this.register();return this.post(path,body,this.auth());
+    await this.register();return this.post(path,body,this.auth(),timeout);
   }
+  /** The hosted brain and images (/v1/brain, /v1/image). A model turn or an image can take a couple of minutes. */
+  hosted(path:string,body:object){return this.authed(path,body,180_000);}
   /** Optional second lock: the cloud hands the sealed backup only to someone with this authenticator. */
   async authenticator(action:unknown,code?:unknown){
     if(action!=='setup'&&action!=='confirm'&&action!=='off')throw new Error('Choose setup, confirm or off.');

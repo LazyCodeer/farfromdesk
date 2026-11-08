@@ -12,9 +12,8 @@ class SocialImageSettings extends StatefulWidget {
 }
 
 class _SocialImageSettingsState extends State<SocialImageSettings> {
-  final keyInput = TextEditingController();
   String provider = 'local';
-  bool loading = true, saving = false, configured = false;
+  bool loading = true, saving = false;
   String? error;
 
   @override
@@ -29,7 +28,6 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
       if (!mounted) return;
       setState(() {
         provider = data['imageProvider'] == 'meta' ? 'meta' : 'local';
-        configured = data['metaConfigured'] == true;
         loading = false;
         error = null;
       });
@@ -51,16 +49,13 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
     try {
       final result = await widget.gateway.post('/api/social/settings', {
         'imageProvider': provider,
-        if (provider == 'meta' && keyInput.text.trim().isNotEmpty)
-          'key': keyInput.text.trim(),
       });
-      keyInput.clear();
       if (mounted) Navigator.pop(context, result);
     } catch (_) {
       if (mounted) {
         setState(() {
           saving = false;
-          error = 'Could not save. Check your connection and Meta key, then try again.';
+          error = 'Could not save. Check your connection, then try again.';
         });
       }
     }
@@ -68,7 +63,6 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
 
   @override
   void dispose() {
-    keyInput.dispose();
     super.dispose();
   }
 
@@ -99,7 +93,7 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
                     value: 'local',
                     child: Text('Local SVG skill'),
                   ),
-                  DropdownMenuItem(value: 'meta', child: Text('Meta API')),
+                  DropdownMenuItem(value: 'meta', child: Text('FarFromDesk hosted')),
                 ],
                 onChanged: saving
                     ? null
@@ -112,33 +106,9 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
               Text(
                 provider == 'local'
                     ? 'Uses your Claude, Codex or Muse Code session and the bundled illustration skill. No image API key. Your session plan still applies.'
-                    : configured
-                    ? 'Meta key saved. Provider availability is checked when generating. Your session composes the text and logos.'
-                    : 'Add your Meta Model API key below to generate artwork. Your session composes the text and logos.',
+                    : 'Artwork is made by the image model FarFromDesk hosts. No key needed. Your session composes the text and logos.',
                 style: const TextStyle(color: muted),
               ),
-              if (provider == 'meta') ...[
-                const SizedBox(height: 14),
-                TextField(
-                  key: const Key('social-meta-key'),
-                  controller: keyInput,
-                  obscureText: true,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  enabled: !saving,
-                  decoration: InputDecoration(
-                    labelText: configured
-                        ? 'Replace Meta key (optional)'
-                        : 'Meta API key',
-                  ),
-                  onChanged: (_) => setState(() {}),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Shared with Brain settings and saved on this Mac. Never sent to the coding session. Meta usage may be billed.',
-                  style: TextStyle(color: muted, fontSize: 12),
-                ),
-              ],
             ],
             if (error != null) ...[
               const SizedBox(height: 12),
@@ -160,11 +130,7 @@ class _SocialImageSettingsState extends State<SocialImageSettings> {
       FilledButton(
         key: const Key('social-save-image-settings'),
         onPressed:
-            loading ||
-                saving ||
-                (provider == 'meta' &&
-                    !configured &&
-                    keyInput.text.trim().isEmpty)
+            loading || saving
             ? null
             : save,
         child: Text(saving ? 'Saving…' : 'Save'),

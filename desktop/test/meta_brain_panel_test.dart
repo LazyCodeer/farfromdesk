@@ -106,84 +106,26 @@ void main() {
     expect(tester.widget<SwitchListTile>(setting).value, isFalse);
   });
 
-  for (final savedModel in [null, 'muse-spark-1.2']) {
-    testWidgets(
-      'model selection ${savedModel ?? 'defaults to Wonder'} is retained',
-      (tester) async {
-        final api = MetaGateway();
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: SingleChildScrollView(
-                child: MetaBrainPanel(
-                  gateway: api,
-                  saved: {'enabled': true, 'configured': true, 'model': savedModel},
-                  onSaved: () async {},
-                ),
-              ),
+  testWidgets('brain shows the hosted model and asks for no key', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MetaBrainPanel(
+              gateway: MetaGateway(),
+              saved: const {'enabled': true, 'configured': true},
+              onSaved: () async {},
             ),
           ),
-        );
-        final dropdown = tester.widget<DropdownButton<String>>(
-          find.byType(DropdownButton<String>),
-        );
-        expect(dropdown.value, savedModel ?? 'muse-wonder-1.0');
-        expect(
-          dropdown.items!.map((item) => item.value).toList(),
-          containsAll([
-            'muse-spark-1.3',
-            'muse-spark-1.2',
-            'muse-spark-1.1',
-            'muse-wonder-1.0',
-          ]),
-        );
-        dropdown.onChanged!(dropdown.value);
-        await tester.pumpAndSettle();
-        expect(
-          api.submitted?['policy']['model'],
-          savedModel ?? 'muse-wonder-1.0',
-        );
-      },
+        ),
+      ),
     );
-  }
-  for (final fail in [false, true]) {
-    testWidgets(
-      'Meta settings obscure and clear secret after ${fail ? 'failure' : 'save'}',
-      (tester) async {
-        final api = MetaGateway()..fail = fail;
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: SingleChildScrollView(
-                child: MetaBrainPanel(
-                  gateway: api,
-                  saved: const {'enabled': true},
-                  onSaved: () async {},
-                ),
-              ),
-            ),
-          ),
-        );
-        final input = find.byWidgetPredicate(
-          (w) => w is TextField && w.obscureText,
-        );
-        expect(tester.widget<TextField>(input).obscureText, isTrue);
-        expect(tester.widget<TextField>(input).autocorrect, isFalse);
-        await tester.enterText(input, 'synthetic-widget-key');
-        final save = find.byKey(const Key('save-meta-key'));
-        await tester.ensureVisible(save);
-        await tester.tap(save);
-        await tester.pumpAndSettle();
-        expect(api.submitted?['key'], 'synthetic-widget-key');
-        expect(tester.widget<TextField>(input).controller!.text, isEmpty);
-        expect(find.textContaining('raw provider error'), findsNothing);
-        expect(
-          find.text('Could not save. Check the key and background service.'),
-          fail ? findsOneWidget : findsNothing,
-        );
-      },
-    );
-  }
+    expect(find.textContaining('GPT luna'), findsOneWidget);
+    expect(find.textContaining('Meta'), findsNothing);
+    expect(find.byWidgetPredicate((w) => w is TextField && w.obscureText), findsNothing);
+  });
   testWidgets(
     'turning the brain on lets it route, keep items and answer status',
     (tester) async {
