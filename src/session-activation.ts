@@ -1,3 +1,4 @@
+import { appLaunchEnvironment } from './cursor-paths.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpathSync } from 'node:fs';
@@ -28,7 +29,7 @@ export async function openCodexDesktop(id:string,wakeOnly=false) {
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Codex Desktop from a test run.');
   if(process.platform!=='darwin')throw new Error('Automatic Codex Desktop opening is not supported by this OS adapter.');
   const running=(await probeDesktopApps()).codex;
-  await exec('/usr/bin/open',codexOpenArguments(wakeOnly,running,url),{timeout:10000,maxBuffer:65536});
+  await exec('/usr/bin/open',codexOpenArguments(wakeOnly,running,url),{timeout:10000,maxBuffer:65536,env:appLaunchEnvironment()});
   if(running)return;
   // A closed app takes a moment to appear, and only a running Codex can process
   // the wake route. Wait briefly, then say what is actually true.
@@ -43,7 +44,7 @@ export async function openClaudeDesktop(session:Session) {
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
   if(process.platform!=='darwin')throw new Error('Automatic Claude Desktop reopening is not supported by this OS adapter.');
   if(!/^local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.desktopId??''))throw new Error('An exact native Desktop ID is required to reopen this chat.');
-  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://claude.ai/epitaxy/${session.desktopId}`],{timeout:10000,maxBuffer:65536});
+  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://claude.ai/epitaxy/${session.desktopId}`],{timeout:10000,maxBuffer:65536,env:appLaunchEnvironment()});
 }
 
 // Opens Claude's new-session page on a folder with a prefilled prompt. The owner presses Send,
@@ -51,12 +52,12 @@ export async function openClaudeDesktop(session:Session) {
 export async function openClaudeNewSession(folder:string,prompt:string) {
   // Tests must never open the owner's real Claude app.
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
-  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://code/new?${new URLSearchParams({folder,q:prompt})}`],{timeout:10000,maxBuffer:65536});
+  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop',`claude://code/new?${new URLSearchParams({folder,q:prompt})}`],{timeout:10000,maxBuffer:65536,env:appLaunchEnvironment()});
 }
 // Brings Claude to the front without opening another new-session page (that could start a second session).
 export async function focusClaudeDesktop() {
   if(process.env.NODE_TEST_CONTEXT)throw new Error('Refusing to open Claude Desktop from a test run.');
-  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop'],{timeout:10000,maxBuffer:65536});
+  await exec('/usr/bin/open',['-b','com.anthropic.claudefordesktop'],{timeout:10000,maxBuffer:65536,env:appLaunchEnvironment()});
 }
 export const CLAUDE_DESKTOP_READY_TIMEOUT_MS=180_000;
 /** Readiness failed before a native message was submitted. The router can report

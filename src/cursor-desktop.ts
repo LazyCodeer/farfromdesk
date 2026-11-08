@@ -3,7 +3,7 @@ import {join} from 'node:path';
 import {execFileSync,spawn} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import type {Session} from './session-catalog.js';
-import {cursorConversationDb,cursorOwnerHome,cursorProjectsDir,cursorProjectPath} from './cursor-paths.js';
+import {appLaunchEnvironment,cursorConversationDb,cursorOwnerHome,cursorProjectsDir,cursorProjectPath} from './cursor-paths.js';
 
 /**
  * Cursor's agent runs inside the app, and the app is reachable from outside through exactly one
@@ -196,7 +196,7 @@ function sleep(ms:number):Promise<void>{return new Promise((resolve)=>setTimeout
 async function openInCursor(url:string):Promise<void> {
   const running=()=>{try{execFileSync('/usr/bin/pgrep',['-xq','Cursor']);return true;}catch{return false;}};
   if(process.platform==='darwin'&&!process.env.NODE_TEST_CONTEXT&&!running()){
-    await new Promise<void>(resolve=>spawn('/usr/bin/open',['-a','Cursor'],{stdio:'ignore'}).on('close',()=>resolve()).on('error',()=>resolve()));
+    await new Promise<void>(resolve=>spawn('/usr/bin/open',['-a','Cursor'],{stdio:'ignore',env:appLaunchEnvironment()}).on('close',()=>resolve()).on('error',()=>resolve()));
     for(let i=0;i<30&&!running();i++)await sleep(500);
     await sleep(5000); // its window restores a few seconds after the process starts
   }

@@ -1,3 +1,4 @@
+import { appLaunchEnvironment } from './cursor-paths.js';
 import {openPrStatus} from './github-prs.js';
 import {generateMetaImage} from './social-meta-image.js';
 import { randomUUID } from 'node:crypto';
@@ -587,7 +588,7 @@ export class MetaBrain {
     const path=this.ownerPath(raw);if(!path)return 'I can open files only from Downloads, Desktop, Documents, Pictures, Movies or Music.';
     let real:string;try{real=realpathSync(path);}catch{return `No file at ${raw}.`;}
     if(!this.ownerPath(real))return 'That file is outside your folders.';
-    try{await promisify(execFile)('/usr/bin/open',[...(app?['-a',app]:[]),real],{timeout:15000});return `Opened ${basename(real)}${app?` in ${app}`:''}. Read the window to check it.`;}
+    try{await promisify(execFile)('/usr/bin/open',[...(app?['-a',app]:[]),real],{timeout:15000,env:appLaunchEnvironment()});return `Opened ${basename(real)}${app?` in ${app}`:''}. Read the window to check it.`;}
     catch{return app?`${app} could not open ${basename(real)}. Is ${app} installed?`:`${basename(real)} could not be opened.`;}
   }
   /**

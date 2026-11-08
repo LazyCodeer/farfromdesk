@@ -76,3 +76,11 @@ export function cursorProjectPath(slug:string,env:NodeJS.ProcessEnv=process.env)
     acc=acc?`${acc}-${descend}`:descend;
   }
 }
+/** Environment for apps FarFromDesk launches with `open`. A launched app inherits it, and an isolated Local
+ * build's HOME/CLAUDE_CONFIG_DIR made Claude Desktop lose its keychain and sign the owner out (live, 8 Nov 2026). */
+export function appLaunchEnvironment(env:NodeJS.ProcessEnv=process.env):NodeJS.ProcessEnv {
+  const out:NodeJS.ProcessEnv={};
+  for(const [k,v] of Object.entries(env))if(!/^(?:FFD_|WSB_|CLAUDE_CONFIG_DIR$|CODEX_HOME$|CURSOR_DATA_DIR$|ELECTRON_|NODE_OPTIONS$)/.test(k))out[k]=v;
+  out.HOME=cursorOwnerHome(env);
+  return out;
+}
