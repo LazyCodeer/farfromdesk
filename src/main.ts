@@ -5,7 +5,9 @@ import { AgentInstaller } from './agent-installer.js';
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { initializeState,stateDir,baseUrl,port } from './config.js';
-import { installBrainOverride } from './brain-override.js';
+import { installBrainOverride, installHostedBrain } from './brain-override.js';
+import { Cloud,CLOUD_URL } from './cloud.js';
+import { ALWAYS } from './owner-memory.js';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Approvals } from './approvals.js';
@@ -24,6 +26,7 @@ import { Workers } from './workers.js';
 import { PortableNative } from './portable-native.js';
 import { portableAgents } from './platform.js';
 import { acquireServiceLock } from './service-lock.js';
+import { PrWatch } from './pr-watch.js';
 import { MorningBrief } from './morning-brief.js';
 import { ProofScopeFence } from './proof-contract-scope.js';
 import { StuckDetection } from './stuck-detection.js';
@@ -32,7 +35,9 @@ import { repairProviderHooks } from './hook-install.js';
 import { clearStage,recordStage } from './startup-stage.js';
 
 const token=initializeState();
-if(installBrainOverride(stateDir))console.log('Brain override active: Meta chat calls go to brain-override.json.');
+const brainOverride=installBrainOverride(stateDir);if(brainOverride)console.log('Brain override active: Meta chat calls go to brain-override.json.');
+// Before anything is built: MetaModel and others keep the fetch they see at construction. `cloud` is defined below and only used per call.
+else installHostedBrain((path,body)=>cloud.hosted(path,body as object));
 const releaseLock=acquireServiceLock(stateDir);process.on('exit',releaseLock);
 const store=new Store(join(stateDir,'bridge.sqlite'));
 const agentInstaller=new AgentInstaller(store);
@@ -45,6 +50,7 @@ const approvals=new Approvals(store),native=portableAgents?new PortableNative(st
 // as observations and cannot establish a task verdict.
 try{new ProofScopeFence(store);}catch{console.error('Owner proof bindings are unavailable.');}
 router.morningBrief=new MorningBrief(store,router);
+const prWatch=new PrWatch(store);
 router.stuckDetection=new StuckDetection(store,router);
 router.stuckCiWatch=new StuckCiWatch(store,router);
 router.stuckDetection.recoverInputs();
@@ -52,6 +58,8 @@ router.scheduledBrief=(destination,owner,occurrence,canSend)=>router.morningBrie
 const coordinator=new Coordinator(store,native,router);router.coordinator=coordinator;
 const masters=new Masters(store,router),serverMode=new ServerMode(store),power=new PowerPolicy(store,router,wa,undefined,telegram,serverMode);
 router.serverMode=serverMode;
+const cloud=new Cloud(store,telegram,()=>ALWAYS.map(p=>router.brain.owner.read(p)?.trim()).filter(Boolean).join('\n\n'));
+telegram.cloudBase=CLOUD_URL;router.cloud=cloud;cloud.reminders=()=>router.schedules.upcoming('telegram');cloud.backupRoot=router.brain.secret.root;
 // With the lid closed nobody sees the desktop, so the low battery question goes to the phone.
 serverMode.onLowBattery=(percent,floor,lidClosed)=>{try{store.output(undefined,`🔋 Battery is at ${percent}%, below ${floor}%. ${lidClosed?'Your Mac is running with the lid closed on battery.':'Your Mac is on battery and FarFromDesk is keeping it awake.'} Reply /keepawake to keep it running until 5%, or /letsleep to let it sleep and save power. If you don't answer, it will sleep to protect the battery.`,`low-battery:${Date.now()}`,store.destination(),{kind:'system',origin:'system',plain:true});}catch{}};
 const workers=new Workers(store,router,masters);router.hasPendingCreation=id=>workers.pending(id);
@@ -119,11 +127,12 @@ router.probeApps();
 // A paused bridge must not keep touching protected provider folders.
 const discovery=setInterval(()=>{if(power.enabled){void coordinator.refresh();void masters.discover();}},30000);
 const setupRecovery=setInterval(()=>{if(power.enabled){void masters.reconcileDesktopSetup();workers.reconcileDesktop();}},5000);
-const maintenance=setInterval(()=>{power.apply();router.probeApps();router.autoCloseStale();if(power.enabled){router.morningBrief?.tick();void router.stuckDetection?.tick().catch(()=>console.error('Stuck tasks could not be checked.'));void router.stuckCiWatch?.tick().catch(()=>console.error('CI watches could not be checked.'));}void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));if(wa.status==='connected'||telegram.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
+const maintenance=setInterval(()=>{power.apply();router.probeApps();router.autoCloseStale();if(power.enabled){router.morningBrief?.tick();void prWatch.tick().catch(()=>console.error('PR watches could not be checked.'));void router.stuckDetection?.tick().catch(()=>console.error('Stuck tasks could not be checked.'));void router.stuckCiWatch?.tick().catch(()=>console.error('CI watches could not be checked.'));}void router.schedules.tick(router).catch(()=>console.error('Reminders could not be checked.'));if(wa.status==='connected'||telegram.status==='connected')queueCoordinatorUpdates(store,router);router.attachments.cleanup();wa.artifacts.cleanup();store.cleanupHooks();},60000);
 // Lid-closed status is read from the system, not assumed, while it is on.
+const cloudBeat=setInterval(()=>{if(store.controlChannel()==='telegram')void cloud.beat(false);},10000);cloudBeat.unref();
 const serverModePoll=setInterval(()=>{if(power.lidClosedEnabled)void power.refreshServerMode();},5000);
 let shutting=false;
-function shutdown(){if(shutting)return;shutting=true;router.stopped=true;emailRuntime?.host.close();agentInstaller.close();clearInterval(worker);clearInterval(discovery);clearInterval(setupRecovery);clearInterval(maintenance);clearInterval(serverModePoll);power.close();workers.close();masters.close();approvals.cancel();wa.close();telegram.close();native.close();server.close();setTimeout(()=>{store.close();process.exit(0);},1500).unref();}
+function shutdown(){if(shutting)return;shutting=true;router.stopped=true;emailRuntime?.host.close();agentInstaller.close();clearInterval(worker);clearInterval(discovery);clearInterval(setupRecovery);clearInterval(maintenance);clearInterval(serverModePoll);clearInterval(cloudBeat);power.close();workers.close();masters.close();approvals.cancel();wa.close();telegram.close();native.close();server.close();setTimeout(()=>{store.close();process.exit(0);},1500).unref();}
 process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);
 process.on('uncaughtException',e=>{console.error(`Bridge fatal error: ${e.message}`);shutdown();});
 process.on('unhandledRejection',e=>{console.error(`Bridge promise failed: ${e instanceof Error?e.message:'unknown failure'}`);shutdown();});

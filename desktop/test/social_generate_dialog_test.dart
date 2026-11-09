@@ -220,15 +220,15 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
-  testWidgets('Meta selection requires a key, then submits only the provider ID', (tester) async {
+  testWidgets('hosted images say when unavailable, then submit only the provider ID', (tester) async {
     final api = DispatchGateway();
     await open(tester, api);
     await choose(tester);
     await tester.tap(find.byKey(const Key('social-image-provider')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Meta API').last);
+    await tester.tap(find.text('FarFromDesk hosted').last);
     await tester.pumpAndSettle();
-    expect(find.textContaining('Add your Meta API key in Brain settings'), findsOneWidget);
+    expect(find.textContaining('hosted image model is unavailable'), findsOneWidget);
     await tester.tap(find.text('Send to session'));
     await tester.pumpAndSettle();
     expect(api.submissions, isEmpty);
@@ -239,7 +239,7 @@ void main() {
     await choose(tester);
     await tester.tap(find.byKey(const Key('social-image-provider')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Meta API').last);
+    await tester.tap(find.text('FarFromDesk hosted').last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Send to session'));
     await tester.pumpAndSettle();

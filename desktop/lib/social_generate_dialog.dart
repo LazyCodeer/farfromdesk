@@ -148,7 +148,7 @@ class _SocialGenerateDialogState extends State<SocialGenerateDialog> {
     }
     if (imageProvider == 'meta' && !metaConfigured(status)) {
       setState(
-        () => formError = 'Add your Meta API key in Brain settings, or choose Local SVG skill.',
+        () => formError = 'The hosted image model is unavailable right now. Choose Local SVG skill.',
       );
       return;
     }
@@ -192,7 +192,7 @@ class _SocialGenerateDialogState extends State<SocialGenerateDialog> {
         if (mounted) {
           setState(
             () => formError =
-                'The Meta key is no longer configured. Nothing was sent.',
+                'The hosted image model is unavailable. Nothing was sent.',
           );
         }
         return;
@@ -374,7 +374,7 @@ class _SocialGenerateDialogState extends State<SocialGenerateDialog> {
                         value: 'local',
                         child: Text('Local SVG skill'),
                       ),
-                      DropdownMenuItem(value: 'meta', child: Text('Meta API')),
+                      DropdownMenuItem(value: 'meta', child: Text('FarFromDesk hosted')),
                     ],
                     onChanged: posting
                         ? null
@@ -388,8 +388,8 @@ class _SocialGenerateDialogState extends State<SocialGenerateDialog> {
                     imageProvider == 'local'
                         ? 'Branded illustrations and carousels rendered locally. No image API key needed. Your selected session still uses its normal plan.'
                         : metaConfigured(status)
-                        ? 'Uses your saved Meta key for artwork. Provider charges may apply. Text and logos are composed locally.'
-                        : 'Add your Meta API key in Brain settings, or choose Local SVG skill. The key is never sent to the session.',
+                        ? 'Artwork comes from the image model FarFromDesk hosts. Text and logos are composed locally.'
+                        : 'The hosted image model is unavailable right now. Choose Local SVG skill.',
                     key: const Key('social-image-provider-help'),
                     style: TextStyle(
                       color: imageProvider == 'meta' && !metaConfigured(status)

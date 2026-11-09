@@ -140,6 +140,7 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
   // Same remote password as Phone access; the chat command sends a peer-to-peer link.
   const remoteControl=new RemoteControlService(new RemotePasswordAccess({load:()=>{try{return JSON.parse(store.get('phone-remote-password')??'null') as PasswordRecord|undefined;}catch{return undefined;}},save:record=>store.set('phone-remote-password',JSON.stringify(record))}),undefined,text=>store.output(undefined,text,`remote-reconnect:${Date.now()}`,undefined,{plain:true}),voiceTranscriber(store));
   router.remoteControl=text=>remoteControl.chat(text);
+  remoteControl.relay=async()=>await router.cloud?.relay?.()??[];
   // A locked Mac still accepts synthetic input, but it arrives at the lock screen, so a
   // screen action is refused and the owner is handed the link the "control my screen"
   // command sends. See src/session-lock.ts for why that is the whole point.
@@ -427,6 +428,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if((path==='/api/social'||path==='/api/social/result')&&!social){json(res,404,{error:'Social is not available.'});return;}
       if(path==='/api/social'&&social&&req.method==='GET'){if(req.headers.origin)throw new Error('Use native desktop Social.');const id=url.searchParams.get('id'),receipt=url.searchParams.get('receipt');json(res,200,id?(receipt?{receipt:social.receipt(id,receipt)}:{draft:social.get(id)}):social.list(url.searchParams.get('before')));return;}
+      // Desktop Social research, caption and image calls: the brain's fetch mapping sends them to the hosted model.
+      if(path.startsWith('/api/hosted/')&&req.method==='POST'){if(!isAdmin||req.headers.origin)throw new Error('Use native desktop Social.');const target=({'/api/hosted/responses':'https://api.meta.ai/v1/responses','/api/hosted/images/generations':'https://api.meta.ai/v1/images/generations'} as Record<string,string>)[path];if(!target){json(res,404,{error:'Not found.'});return;}
+        const r=await fetch(target,{method:'POST',headers:{authorization:`Bearer ${router.brain.secret.read()??''}`,'content-type':'application/json'},body:JSON.stringify(await body(req,100_000)),redirect:'error',signal:AbortSignal.timeout(170000)});
+        res.writeHead(r.status,{'content-type':'application/json'});res.end(Buffer.from(await r.arrayBuffer()));return;}
       if(path==='/api/social/result'&&social&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Social.');const d=await body(req,20_500_000);json(res,200,{result:social.complete(d.id,d.operationId,d.result)});return;}
       if(path==='/api/social'&&social&&req.method==='POST'){
         if(req.headers.origin)throw new Error('Use native desktop Social.');
@@ -446,6 +451,21 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
         json(res,200,{result});return;
       }
       if(path==='/api/meta-brain'&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Settings.');const d=await body(req);let view:any=saveBrainConfig(store,router.brain.secret,d);if(d?.key){try{await fetchMetaModels(store,router.brain.secret);view=router.brain.view();}catch{view={...view,modelsError:'Key saved, but Meta did not list its models. The usual models are shown.'};}}json(res,200,view);return;}
+      if(path==='/api/cloud-backup'&&(req.method==='GET'||req.method==='POST')) {
+        // Pro settings backup, sealed with the owner's passphrase before it leaves this computer.
+        const c=router.cloud;if(!c?.backupView||!c.enableBackup||!c.disableBackup||!c.restoreBackup||!c.authenticator)throw new Error('Settings backup is not available.');
+        if(req.method==='GET'){json(res,200,c.backupView());return;}
+        const d=await body(req);
+        if(d.action==='enable'){json(res,200,c.enableBackup(d.passphrase));return;}
+        if(d.action==='restore'){
+          try{json(res,200,await c.restoreBackup(d.passphrase,d.code));}
+          catch(e){if(!(e as {needsAuthenticator?:boolean}).needsAuthenticator)throw e;json(res,200,{...(c.backupView() as object),needsAuthenticator:true,error:(e as Error).message});}
+          return;
+        }
+        if(d.action==='authenticator'){json(res,200,await c.authenticator!(d.step,d.code));return;}
+        if(d.action==='disable'){json(res,200,c.disableBackup());return;}
+        throw new Error('Choose enable, restore, authenticator or disable.');
+      }
       if(path==='/api/memory'&&req.method==='GET'){json(res,200,router.brain.owner.view());return;}
       if(path.startsWith('/api/memory')&&req.method==='POST'){
         if(req.headers.origin)throw new Error('Use native desktop Settings.');

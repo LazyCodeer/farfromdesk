@@ -3,7 +3,7 @@ import { MetaBrain } from '../src/meta-brain.js';
 import { MetaSecret, DEFAULT_BRAIN } from '../src/meta-brain-config.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/store.js';
@@ -225,7 +225,7 @@ test('command menu and bot suffixes preserve existing commands and reject other 
   const f=fixture();try{
     await f.pair();const menu=f.calls.find(c=>c.method==='setMyCommands')!.body;
     assert.deepEqual(menu.scope,{type:'all_private_chats'});
-    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','muse','deepseek','cursor','screen','back','help','sessions','status','social']);
+    assert.deepEqual(menu.commands.map((c:any)=>c.command),['claude','codex','brain','cloud','laptops','muse','deepseek','cursor','screen','back','help','sessions','status','social']);
     await f.tg.receive(f.message(90,'/codex@other_bot'));assert.equal(f.store.jobs().length,0);
     await f.tg.receive(f.message(91,'/codex@FFD_TEST_BOT'));
     await f.tg.receive(f.message(92,'hello exact session'));assert.equal(f.store.job(telegramMessageId(bot,owner,92))?.binding_id,f.binding.id);
@@ -553,4 +553,113 @@ test('resume stays quiet when no bot was ever saved', async () => {
     await tg.resume();
     assert.equal(calls,0);
   } finally { tg?.close(); store.close(); rmSync(root,{recursive:true,force:true}); }
+});
+test('cloud handover: /cloud needs Pro, cloud mode pauses polling, saved requests replay once and are acked',async()=>{
+  const { Cloud }=await import('../src/cloud.js');
+  const f=fixture();try{await f.pair();
+    const sent:{path:string;body:any;auth?:string}[]=[];let plan='free',mode='laptop';let queue:any[]=[];
+    const cloudFetch:typeof fetch=async(url,init)=>{
+      const path=new URL(String(url)).pathname,body=JSON.parse(String(init?.body));sent.push({path,body,auth:(init?.headers as any)?.Authorization});
+      if(path==='/v1/accounts')return Response.json({accountId:'b123456',deviceKey:'k1',plan});
+      if(path==='/v1/cloud'&&plan==='free')return Response.json({error:'pro',checkoutUrl:'https://buy.test/x'},{status:402});
+      if(path==='/v1/cloud')mode=body.on?'cloud':'laptop';
+      if(path==='/v1/heartbeat')queue=queue.filter(q=>!body.ack?.includes(q.id)); // like the server: acked items are gone
+      return Response.json({plan,mode,credits:{messages:500},queue});
+    };
+    const cloud=new Cloud(f.store,f.tg,()=>'Owner is Sagar.','https://cloud.test',cloudFetch);
+    assert.match(await cloud.command(true),/needs FarFromDesk Pro[\s\S]*https:\/\/buy\.test\/x/);
+    assert.equal(sent[0].body.botToken,token);assert.equal(sent[0].body.ownerChatId,owner);
+    assert.equal(f.store.get('cloud-key'),'k1');assert.equal(f.tg.paused,false,'a1');
+    plan='pro';
+    assert.match(await cloud.command(true),/Answering from the cloud now\. 500/);
+    assert.equal(f.tg.paused,true,'a2');assert.equal(sent.at(-1)!.auth,'Bearer b123456.k1');
+    // Memory goes up once per change, only on Pro.
+    await cloud.beat();await cloud.beat();
+    assert.equal(sent.filter(s=>s.path==='/v1/heartbeat'&&s.body.memory==='Owner is Sagar.').length,1);
+    mode='laptop';queue=[{id:'q1',at:Date.now(),text:'Check my project',messageId:60}];
+    await cloud.beat();
+    assert.equal(f.tg.paused,false,'a3');assert.equal(f.store.jobs().length,1);
+    await cloud.beat();
+    assert.deepEqual(sent.at(-1)!.body.ack,['q1']);assert.equal(f.store.jobs().length,1,'replayed message is not dispatched twice');
+    await cloud.beat();assert.deepEqual(sent.at(-1)!.body.ack,[]);
+    assert.match(await cloud.command(false),/from this laptop again/);
+    // A webhook the cloud set no longer blocks connecting.
+    f.tg.cloudBase='https://cloud.test';f.webhook('https://cloud.test/tg/b123456');
+    await f.tg.connect(token);assert.equal(f.tg.paused,true,'a4');
+  }finally{f.close();}
+});
+
+test('cloud reminders: Pro uploads upcoming reminders, holds them while the cloud has the bot, skips ones the cloud sent',async()=>{
+  const { Cloud }=await import('../src/cloud.js');
+  const f=fixture();try{await f.pair();
+    const beats:any[]=[];let mode='laptop',fired:string[]=[];
+    const cloudFetch:typeof fetch=async(url,init)=>{
+      const path=new URL(String(url)).pathname,body=JSON.parse(String(init?.body));
+      if(path==='/v1/accounts')return Response.json({accountId:'b1',deviceKey:'k'});
+      if(path==='/v1/heartbeat')beats.push(body);
+      return Response.json({plan:'pro',mode,credits:{messages:500},queue:[],fired});
+    };
+    const cloud=new Cloud(f.store,f.tg,()=>'','https://cloud.test',cloudFetch);
+    const list=[{id:'schedule:a:1000',at:1000,text:'call mum'}];
+    cloud.reminders=()=>list;
+    assert.equal(cloud.reminder('schedule:a:1000',1000),'send','not registered: laptop sends');
+    await cloud.command(false);f.store.set('cloud-account','b1');f.store.set('cloud-key','k');
+    await cloud.beat();await cloud.beat();
+    assert.equal(beats.filter(b=>b.reminders).length,1,'sent once per change, only once Pro is known');
+    assert.equal(cloud.reminder('schedule:a:1000',Date.now()),'send','laptop holds the bot: send');
+    mode='cloud';await cloud.beat();
+    assert.equal(cloud.reminder('schedule:a:1000',Date.now()),'hold','cloud holds the bot: wait');
+    fired=['schedule:a:1000'];mode='laptop';await cloud.beat();
+    assert.equal(cloud.reminder('schedule:a:1000',Date.now()),'fired');
+    assert.equal(cloud.reminder('schedule:b:1',Date.now()-20*60_000),'send','long overdue and unsure: send late rather than never');
+  }finally{f.close();}
+});
+
+test('settings backup: sealed with a passphrase or recovery code, another computer on the same bot restores them',async()=>{
+  const { Cloud }=await import('../src/cloud.js');
+  const a=fixture(),b=fixture();try{await a.pair();await b.pair();
+    let stored:string|undefined,proof:string|undefined,locked=false;const uploads:string[]=[];
+    const cloudFetch:typeof fetch=async(url,init)=>{
+      const path=new URL(String(url)).pathname,body=JSON.parse(String(init?.body));
+      if(path==='/v1/accounts')return Response.json({accountId:'b1',deviceKey:'k',plan:'pro'});
+      if(path==='/v1/backup'){stored=body.blob;proof=body.recoveryProof;uploads.push(body.blob);return Response.json({at:5});}
+      if(path==='/v1/backup/get'){
+        if(!stored)return Response.json({error:'none'},{status:404});
+        if(locked&&body.code!=='123456'&&body.recoveryProof!==proof)return Response.json({error:'Enter the code from your authenticator app.',needs:'authenticator'},{status:403});
+        return Response.json({blob:stored,at:5});
+      }
+      if(path==='/v1/backup/authenticator'){if(body.action==='confirm')locked=true;return Response.json(body.action==='setup'?{secret:'S',uri:'otpauth://totp/x'}:{});}
+      return Response.json({plan:'pro',mode:'laptop',queue:[]});
+    };
+    const rootA=mkdtempSync(join(tmpdir(),'ffd-backup-a-')),rootB=mkdtempSync(join(tmpdir(),'ffd-backup-b-'));
+    mkdirSync(join(rootA,'memory'));writeFileSync(join(rootA,'memory','about-me.md'),'Owner is Sagar.');
+    writeFileSync(join(rootA,'voice-api-key'),'{"provider":"deepgram","key":"k-123"}');writeFileSync(join(rootA,'telegram-token'),'not backed up');
+    a.store.set('voice-engine','deepgram');
+    const laptopA=new Cloud(a.store,a.tg,()=>'','https://cloud.test',cloudFetch);laptopA.backupRoot=rootA;
+    await assert.rejects(laptopA.restoreBackup('whatever'),/no settings backup/);
+    assert.throws(()=>laptopA.enableBackup('short'),/at least 8/);
+    const {recoveryCode}=laptopA.enableBackup('correct horse battery') as any;
+    assert.match(recoveryCode,/^([A-Z2-9]{4}-){5}[A-Z2-9]{4}$/);
+    assert.equal(JSON.stringify(a.store.db.prepare('select * from settings').all()).includes(recoveryCode),false,'the recovery code is never stored');
+    await laptopA.beat();
+    assert.equal(uploads.length,1);assert.doesNotMatch(uploads[0],/Sagar|k-123|deepgram/,'only ciphertext leaves the laptop');
+    await laptopA.beat();assert.equal(uploads.length,1,'unchanged settings are not re-sent');
+    const laptopB=new Cloud(b.store,b.tg,()=>'','https://cloud.test',cloudFetch);laptopB.backupRoot=rootB;
+    await assert.rejects(laptopB.restoreBackup('wrong passphrase'),/doesn't open this backup/);
+    assert.equal((await laptopB.restoreBackup('correct horse battery') as any).enabled,true);
+    assert.equal(readFileSync(join(rootB,'memory','about-me.md'),'utf8'),'Owner is Sagar.');
+    assert.match(readFileSync(join(rootB,'voice-api-key'),'utf8'),/k-123/);
+    assert.equal(b.store.get('voice-engine'),'deepgram');
+    assert.throws(()=>readFileSync(join(rootB,'telegram-token')),'device files stay on their computer');
+    // Authenticator lock: the passphrase alone no longer downloads it; a code or the recovery code does.
+    await laptopA.authenticator('setup');assert.equal((await laptopA.authenticator('confirm','123456') as any).authenticator,true);
+    const c=fixture();try{await c.pair();
+      const laptopC=new Cloud(c.store,c.tg,()=>'','https://cloud.test',cloudFetch);laptopC.backupRoot=mkdtempSync(join(tmpdir(),'ffd-backup-c-'));
+      await assert.rejects(laptopC.restoreBackup('correct horse battery'),(e:any)=>e.needsAuthenticator===true);
+      assert.equal((await laptopC.restoreBackup('correct horse battery','123456') as any).authenticator,true);
+      laptopC.disableBackup();
+      assert.equal((await laptopC.restoreBackup(recoveryCode.toLowerCase().replaceAll('-',' ')) as any).enabled,true,'a hand-typed recovery code gets past the lock and opens it');
+      assert.equal(readFileSync(join(laptopC.backupRoot!,'memory','about-me.md'),'utf8'),'Owner is Sagar.');
+    }finally{c.close();}
+  }finally{a.close();b.close();}
 });

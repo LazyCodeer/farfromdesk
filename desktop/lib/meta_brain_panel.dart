@@ -58,11 +58,10 @@ class MetaBrainPanel extends StatefulWidget {
 }
 
 class _MetaBrainPanelState extends State<MetaBrainPanel> {
-  final keyInput = TextEditingController();
   late bool enabled, routing, summaries, management, learn, taskContracts;
   late String model, failure;
   late Set<String> providers;
-  bool saving = false, replacingKey = false, showRules = false;
+  bool saving = false, showRules = false;
   String? message;
   @override
   void initState() {
@@ -81,12 +80,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
 
   @override
   void dispose() {
-    keyInput.clear();
-    keyInput.dispose();
     super.dispose();
   }
 
-  Future<void> save({bool remove = false}) async {
+  Future<void> save() async {
     setState(() {
       saving = true;
       message = null;
@@ -105,14 +102,10 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
           'learn': learn,
           'taskContracts': taskContracts,
         },
-        if (!remove && keyInput.text.isNotEmpty) 'key': keyInput.text,
-        if (remove) 'removeKey': true,
       });
-      if (mounted) keyInput.clear();
       await widget.onSaved();
       if (mounted) {
         setState(() {
-          replacingKey = false;
           message = null;
         });
       }
@@ -120,12 +113,11 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
       // Do not surface raw network errors that might echo submitted credentials.
       if (mounted) {
         setState(() {
-          message = 'Could not save. Check the key and background service.';
+          message = 'Could not save. Check the background service.';
         });
       }
     } finally {
       if (mounted) {
-        keyInput.clear();
         setState(() => saving = false);
       }
     }
@@ -239,17 +231,6 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     onChanged: saving ? null : change,
   );
 
-  Widget keyField() => TextField(
-    controller: keyInput,
-    obscureText: true,
-    enableSuggestions: false,
-    autocorrect: false,
-    decoration: const InputDecoration(
-      labelText: 'Meta Model API key',
-      hintText: 'Paste your key',
-    ),
-  );
-
   Widget pageHeading(String title, String description) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: Column(
@@ -300,14 +281,14 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     final detail = !enabled
         ? 'Messages go straight to your proxy. Your item list is kept.'
         : !configured
-        ? 'Add your Meta key to start routing. Until then, messages use normal routing.'
+        ? 'The hosted brain is unavailable. Until it is back, messages use normal routing.'
         : !routing
         ? 'Messages use normal routing because routing permission is off.'
         : 'Reads each phone message and picks which session should answer.';
     final state = !enabled
         ? 'Off'
         : !configured
-        ? 'Needs a key'
+        ? 'Unavailable'
         : !routing
         ? 'Routing off'
         : 'On';
@@ -447,90 +428,16 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
     );
   }
 
-  List<String> get models => [
-    for (final m
-        in (widget.saved['models'] as List? ?? fallbackMetaBrainModels))
-      '$m',
-  ];
-
   Widget modelTab(bool configured) => box(
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         heading(
-          'Model and key',
-          'The brain sends each phone message to Meta to understand it, using your own key. Usage is billed to your Meta account. A new model applies to your next message.',
+          'Model',
+          'Hosted by FarFromDesk, so there is no key to add.',
+          subtitle: 'GPT luna reads each phone message.',
         ),
         const SizedBox(height: 8),
-        if (!configured || replacingKey)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Row(
-              children: [
-                Expanded(child: keyField()),
-                const SizedBox(width: 12),
-                FilledButton(
-                  key: const Key('save-meta-key'),
-                  onPressed: saving ? null : save,
-                  child: Text(saving ? 'Saving…' : 'Save'),
-                ),
-                if (replacingKey) ...[
-                  const SizedBox(width: 8),
-                  TextButton(
-                    onPressed: saving
-                        ? null
-                        : () => setState(() => replacingKey = false),
-                    child: const Text('Cancel'),
-                  ),
-                ],
-              ],
-            ),
-          )
-        else
-          row(
-            'Meta Model API key',
-            'Saved. Stored only on this computer.',
-            Wrap(
-              spacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton(
-                  onPressed: saving
-                      ? null
-                      : () => setState(() => replacingKey = true),
-                  child: const Text('Replace key'),
-                ),
-                TextButton(
-                  onPressed: saving ? null : () => save(remove: true),
-                  child: const Text('Remove key'),
-                ),
-              ],
-            ),
-          ),
-        if (widget.saved['modelsError'] is String)
-          Text(
-            widget.saved['modelsError'] as String,
-            style: const TextStyle(fontSize: 12, color: muted),
-          ),
-        if (configured)
-          row(
-            'Model',
-            'Reads each phone message.',
-            DropdownButton<String>(
-              value: models.contains(model) ? model : models.first,
-              underline: const SizedBox(),
-              items: [
-                for (final m in models)
-                  DropdownMenuItem(value: m, child: Text('Meta · $m')),
-              ],
-              onChanged: saving
-                  ? null
-                  : (v) {
-                      setState(() => model = v!);
-                      save();
-                    },
-            ),
-          ),
         row(
           "If the brain can't answer",
           failure == 'legacy'
@@ -551,7 +458,7 @@ class _MetaBrainPanelState extends State<MetaBrainPanel> {
                   },
           ),
           tip:
-              'Used when Meta is down, the key fails or the answer is unclear.',
+              'Used when the hosted brain is unreachable or the answer is unclear.',
         ),
       ],
     ),

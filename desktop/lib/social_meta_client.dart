@@ -15,9 +15,12 @@ class SocialMetaClient {
   SocialMetaClient({
     http.Client Function()? clientFactory,
     this.timeout = const Duration(seconds: 120),
+    this.base = 'https://api.meta.ai/v1',
   }) : _clientFactory = clientFactory ?? http.Client.new;
   final http.Client Function() _clientFactory;
   final Duration timeout;
+  /// The local FarFromDesk service forwards to the hosted model; tests use Meta's URL shape.
+  final String base;
 
   Future<Map<String, dynamic>> generate({
     required String kind,
@@ -25,7 +28,7 @@ class SocialMetaClient {
     required Map<String, dynamic> input,
   }) async {
     if (key.trim().isEmpty) {
-      throw StateError('Add a Meta Model API key in Brain settings first.');
+      throw StateError('FarFromDesk is not running. Restart it and try again.');
     }
     final brief = '${input['brief'] ?? ''}',
         research = '${input['research'] ?? ''}',
@@ -85,9 +88,7 @@ class SocialMetaClient {
             http.Request(
                 'POST',
                 Uri.parse(
-                  image
-                      ? 'https://api.meta.ai/v1/images/generations'
-                      : 'https://api.meta.ai/v1/responses',
+                  image ? '$base/images/generations' : '$base/responses',
                 ),
               )
               ..followRedirects = false

@@ -20,6 +20,16 @@ test('social rejects session and browser requests; even admin cannot enable prov
   const c=await post({op:'create',brief:'synthetic'});assert.equal(c.status,200);const d=(await c.json() as any).result;
   for(const op of ['account','remove-account','research','draft','image','prepare','check','review','publish']){const res=await post({op,id:d.id,revision:d.revision,accountId:'123456',token:'synthetic-token',confirmed:true,challenge:'invented'});assert.equal(res.status,403,op);}
   assert.equal(existsSync(join(root,'social-instagram.json')),false);
+  // Hosted proxy: admin only, forwards to the brain's (mapped) Meta URL, unknown paths 404.
+  const real=globalThis.fetch,seen:string[]=[];globalThis.fetch=(async(u:any,i?:any)=>String(u).startsWith('https://api.meta.ai/')?(seen.push(String(u)+' '+i.body),new Response('{"status":"completed","output":[]}',{status:200})):real(u,i)) as typeof fetch;
+  try{
+   const hp=(p:string,headers:Record<string,string>={})=>fetch(url+p,{method:'POST',headers:{authorization:'Bearer synthetic-admin','content-type':'application/json',...headers},body:'{"input":"news"}'});
+   const ok=await hp('/api/hosted/responses');assert.equal(ok.status,200);assert.equal((await ok.json() as any).status,'completed');
+   assert.deepEqual(seen,['https://api.meta.ai/v1/responses {"input":"news"}']);
+   assert.equal((await hp('/api/hosted/models')).status,404);
+   assert.notEqual((await hp('/api/hosted/responses',{authorization:`Bearer ${worker.token}`,'x-binding-id':worker.binding.id})).status,200);
+   assert.notEqual((await hp('/api/hosted/responses',{origin:url})).status,200);assert.equal(seen.length,1);
+  }finally{globalThis.fetch=real;}
   const begin=await post({op:'begin',id:d.id,revision:d.revision,kind:'draft'});assert.equal(begin.status,200);const operation=(await begin.json() as any).result;
   const payload=Buffer.from(JSON.stringify({id:d.id,operationId:operation.operationId,result:{text:'नमस्ते 🌿'}}));const split=payload.indexOf(Buffer.from('🌿'))+1;
   const saved=await new Promise<{status:number;body:string}>((resolve,reject)=>{const req=request(url+'/api/social/result',{method:'POST',agent:false,headers:{authorization:'Bearer synthetic-admin','content-type':'application/json'}},res=>{const chunks:Buffer[]=[];res.on('data',c=>chunks.push(c));res.on('end',()=>resolve({status:res.statusCode??0,body:Buffer.concat(chunks).toString('utf8')}));});req.on('error',reject);req.write(payload.subarray(0,split));setTimeout(()=>req.end(payload.subarray(split)),10);});

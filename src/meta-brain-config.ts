@@ -31,10 +31,16 @@ export function brainPolicy(store:Store):BrainPolicy {
     return added.length?{...policy,providers:[...policy.providers,...added]}:policy;
   }catch{return {...DEFAULT_BRAIN};}
 }
+export const HOSTED_KEY='ffd-hosted-brain-no-meta-key';
+let hosted=false;
+/** Called once the hosted brain is installed: from then on no Meta key is needed. */
+export function useHostedBrain(){hosted=true;}
 const keyPath=(root:string)=>join(root,'meta-model-api-key');
 export class MetaSecret {
   constructor(readonly root=process.env.WSB_STATE_DIR ?? defaultStateDirectory()) {}
-  read():string|undefined {try{return readFileSync(keyPath(this.root),'utf8').trim()||undefined;}catch{return undefined;}}
+  // The brain runs on the FarFromDesk cloud (installHostedBrain), so no Meta key is needed. The placeholder only
+  // satisfies callers that still check for one; it never leaves this computer.
+  read():string|undefined {const fallback=hosted?HOSTED_KEY:undefined;try{return readFileSync(keyPath(this.root),'utf8').trim()||fallback;}catch{return fallback;}}
   present(){return !!this.read();}
   save(value:unknown) {
     if(typeof value!=='string'||value.length<20||value.length>4096||/[^\x21-\x7e]/.test(value))throw new Error('Enter a valid Meta Model API key in desktop Settings.');
