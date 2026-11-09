@@ -428,6 +428,10 @@ export function serve(store:Store,router:Router,wa:WhatsApp,adminToken:string,se
       }
       if((path==='/api/social'||path==='/api/social/result')&&!social){json(res,404,{error:'Social is not available.'});return;}
       if(path==='/api/social'&&social&&req.method==='GET'){if(req.headers.origin)throw new Error('Use native desktop Social.');const id=url.searchParams.get('id'),receipt=url.searchParams.get('receipt');json(res,200,id?(receipt?{receipt:social.receipt(id,receipt)}:{draft:social.get(id)}):social.list(url.searchParams.get('before')));return;}
+      // Desktop Social research, caption and image calls: the brain's fetch mapping sends them to the hosted model.
+      if(path.startsWith('/api/hosted/')&&req.method==='POST'){if(!isAdmin||req.headers.origin)throw new Error('Use native desktop Social.');const target=({'/api/hosted/responses':'https://api.meta.ai/v1/responses','/api/hosted/images/generations':'https://api.meta.ai/v1/images/generations'} as Record<string,string>)[path];if(!target){json(res,404,{error:'Not found.'});return;}
+        const r=await fetch(target,{method:'POST',headers:{authorization:`Bearer ${router.brain.secret.read()??''}`,'content-type':'application/json'},body:JSON.stringify(await body(req,100_000)),redirect:'error',signal:AbortSignal.timeout(170000)});
+        res.writeHead(r.status,{'content-type':'application/json'});res.end(Buffer.from(await r.arrayBuffer()));return;}
       if(path==='/api/social/result'&&social&&req.method==='POST'){if(req.headers.origin)throw new Error('Use native desktop Social.');const d=await body(req,20_500_000);json(res,200,{result:social.complete(d.id,d.operationId,d.result)});return;}
       if(path==='/api/social'&&social&&req.method==='POST'){
         if(req.headers.origin)throw new Error('Use native desktop Social.');

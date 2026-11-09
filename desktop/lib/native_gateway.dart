@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ffi';
 
 import 'package:file_selector/file_selector.dart';
@@ -43,42 +42,6 @@ Future<Directory> createUpdateAttempt(Directory directory) async {
 int? compareBuilds(Object? running, Object? ours) {
   final a = ReleaseVersion.parse('$running'), b = ReleaseVersion.parse('$ours');
   return a == null || b == null ? null : a.compareTo(b);
-}
-
-/// Reads only the bounded, regular Brain key file when a social action begins.
-Future<String> readSocialBrainKey(String state) async {
-  RandomAccessFile? handle;
-  try {
-    final path = p.join(state, 'meta-model-api-key');
-    if (await FileSystemEntity.type(path, followLinks: false) !=
-        FileSystemEntityType.file) {
-      throw StateError('missing');
-    }
-    handle = await File(path).open(mode: FileMode.read);
-    final buffer = BytesBuilder(copy: false);
-    while (buffer.length < 4097) {
-      final chunk = await handle.read(4097 - buffer.length);
-      if (chunk.isEmpty) break;
-      buffer.add(chunk);
-    }
-    final bytes = buffer.takeBytes();
-    if (bytes.length > 4096) throw StateError('invalid');
-    final key = utf8.decode(bytes).trim();
-    if (key.length < 20 ||
-        key.length > 4096 ||
-        !RegExp(r'^[\x21-\x7e]+$').hasMatch(key)) {
-      throw StateError('invalid');
-    }
-    return key;
-  } catch (_) {
-    throw StateError('Add a Meta Model API key in Brain settings first.');
-  } finally {
-    try {
-      await handle?.close();
-    } catch (_) {
-      /* No credential data in errors. */
-    }
-  }
 }
 
 class NativeGateway extends Gateway {
@@ -991,12 +954,15 @@ class NativeGateway extends Gateway {
   Future<SocialGenerator> prepareSocialGenerator() async {
     if (!_isolatedLocal) {
       throw StateError(
-        'Meta generation is only available in FarFromDesk Local.',
+        'Hosted generation is only available in FarFromDesk Local.',
       );
     }
-    final key = await readSocialBrainKey(state);
-    return (kind, input) =>
-        SocialMetaClient().generate(kind: kind, key: key, input: input);
+    // The local service holds the credentials and forwards to the hosted model.
+    final key = _token ?? '';
+    return (kind, input) => SocialMetaClient(
+      base: 'http://127.0.0.1:$port/api/hosted',
+      timeout: const Duration(seconds: 175),
+    ).generate(kind: kind, key: key, input: input);
   }
 
   @override

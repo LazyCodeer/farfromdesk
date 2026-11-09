@@ -19,7 +19,7 @@ export function installBrainOverride(dir:string){
   return true;
 }
 
-const HOSTED:Record<string,string>={'https://api.meta.ai/v1/chat/completions':'/v1/brain','https://api.meta.ai/v1/images/generations':'/v1/image'};
+const HOSTED:Record<string,string>={'https://api.meta.ai/v1/chat/completions':'/v1/brain','https://api.meta.ai/v1/responses':'/v1/responses','https://api.meta.ai/v1/images/generations':'/v1/image'};
 /** Meta billing is down, so the brain's chat and image calls go to the FarFromDesk cloud (hosted luna and gpt-image)
  * under this laptop's cloud key. Callers keep their Meta request shapes; the cloud answers in the same shape. */
 export function installHostedBrain(call:(path:string,body:unknown)=>Promise<{status:number;body:unknown}>){
